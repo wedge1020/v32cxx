@@ -15,10 +15,14 @@
  *
  * %glr-parser is declared so the grammar can grow into genuinely ambiguous
  * C++ declarator territory (function-pointer types, the "most vexing
- * parse") later without a rewrite. As written, this grammar has no real
- * conflicts -- the typedef/class-name-vs-value disambiguation is handled
- * by the lexer (see lexer.l and symtab.h), which is what keeps `Foo * x;`
- * unambiguous without needing the parser to fork.
+ * parse") later without needing a parser-generator switch. As it happens,
+ * GLR isn't even doing real forking work for anything in this grammar today
+ * -- the 21 shift/reduce conflicts below (see %expect) are all resolved by
+ * bison's default shift preference, not by parser forking. The typedef/
+ * class-name-vs-value disambiguation that *does* need active resolution is
+ * handled entirely by the lexer (see lexer.l and symtab.h), which is what
+ * keeps `Foo * x;` unambiguous without the parser needing to do anything
+ * special with it.
  */
 
 %{
@@ -47,6 +51,35 @@
 %glr-parser
 %locations
 %define parse.error verbose
+
+/*
+ * 21 shift/reduce conflicts, confirmed via `bison -Wcounterexamples` and
+ * cross-checked against parser.output (states 2, 69, 102; 7 conflicts
+ * each, on tokens INT_KW/FLOAT_KW/VOID_KW/BOOL_KW/CHAR_KW/TYPE_NAME/
+ * IDENTIFIER). All 21 are the SAME root cause in three places (global
+ * scope, inside a namespace body, inside a class body): func_decl/func_def
+ * both start with `opt_virtual func_header`, and opt_virtual can derive
+ * nothing -- while var_decl starts directly with the very same type_spec,
+ * no such prefix. So at e.g. INT_KW, the tables are torn between reducing
+ * `opt_virtual -> ε` (heading toward a function) and shifting INT_KW
+ * straight into type_spec (heading toward a variable).
+ *
+ * This is safe: bison's default is to prefer shift, i.e. defer the
+ * decision rather than commit early, and the real fork only needs to
+ * happen one token later anyway -- after IDENTIFIER, `(` means function,
+ * anything else means variable. That's plain 1-token lookahead, so no
+ * input can actually be misparsed; the conflict is purely an artifact of
+ * *when* the tables notice the ambiguity, not a parsing hazard. See the
+ * comment on opt_virtual/func_header below for the grammar-level version
+ * of this explanation.
+ *
+ * %expect pins the count so bison stops warning about these 21 *and* so
+ * it errors loudly if a future grammar edit changes the count -- e.g. if
+ * out-of-line method definitions (Class::method) get added and introduce
+ * a genuinely new conflict alongside these, %expect will flag it instead
+ * of it silently blending into "yet another shift/reduce warning."
+ */
+%expect 21
 /* %error-verbose is the old (but still supported) spelling of what newer
  * bison calls `%define parse.error verbose`. Using the old spelling keeps
  * this grammar buildable on both bison 2.3 and current bison; you'll get
@@ -234,6 +267,16 @@ opt_virtual:
       /* empty */  { $$ = 0; }
     | VIRTUAL      { $$ = 1; }
     ;
+/* opt_virtual's ε alternative is the direct cause of 21 of this grammar's
+ * shift/reduce conflicts (see the %expect comment at the top of the file
+ * for the full explanation). In short: because opt_virtual can match
+ * nothing, func_decl/func_def (= opt_virtual func_header) and var_decl
+ * (which has no such prefix) both effectively "start" at type_spec from
+ * the parser's point of view, and the tables can't tell which rule they're
+ * in until they see whether '(' follows the first IDENTIFIER. Bison's
+ * default shift resolves this correctly by deferring that decision rather
+ * than committing early -- nothing to fix here, just something to
+ * remember if this area of the grammar gets restructured later. */
 
 func_header:
       type_spec IDENTIFIER '(' { symtab_push_scope(g_symtab, NULL, 0); } opt_param_list ')'

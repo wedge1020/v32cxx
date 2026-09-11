@@ -54,7 +54,7 @@
 
 
 /* First part of user prologue.  */
-#line 24 "src/parser.y"
+#line 28 "src/parser.y"
 
 /*
  * Classic yacc-style prologue instead of %code requires/%code top: some
@@ -550,20 +550,20 @@ static const yytype_int8 yytranslate[] =
 /* YYRLINE[YYN] -- source line where rule number YYN was defined.  */
 static const yytype_int16 yyrline[] =
 {
-       0,   104,   104,   113,   114,   118,   119,   120,   121,   122,
-     123,   130,   129,   168,   167,   191,   192,   193,   201,   202,
-     206,   211,   212,   213,   217,   218,   219,   234,   235,   239,
-     239,   256,   256,   266,   280,   291,   301,   302,   306,   307,
-     311,   323,   324,   325,   331,   332,   333,   334,   335,   336,
-     337,   346,   347,   351,   356,   364,   373,   384,   397,   398,
-     402,   416,   416,   425,   426,   430,   431,   436,   441,   446,
-     446,   456,   461,   462,   463,   468,   475,   476,   477,   485,
-     486,   503,   504,   505,   506,   507,   508,   509,   510,   511,
-     512,   516,   517,   523,   530,   537,   543,   549,   558,   559,
-     561,   563,   565,   567,   569,   571,   573,   575,   580,   581,
-     582,   583,   584,   585,   586,   587,   588,   589,   590,   591,
-     592,   593,   594,   596,   598,   600,   602,   607,   608,   612,
-     613
+       0,   137,   137,   146,   147,   151,   152,   153,   154,   155,
+     156,   163,   162,   201,   200,   224,   225,   226,   234,   235,
+     239,   244,   245,   246,   250,   251,   252,   267,   268,   282,
+     282,   299,   299,   309,   323,   334,   344,   345,   349,   350,
+     354,   366,   367,   368,   374,   375,   376,   377,   378,   379,
+     380,   389,   390,   394,   399,   407,   416,   427,   440,   441,
+     445,   459,   459,   468,   469,   473,   474,   479,   484,   489,
+     489,   499,   504,   505,   506,   511,   518,   519,   520,   528,
+     529,   546,   547,   548,   549,   550,   551,   552,   553,   554,
+     555,   559,   560,   566,   573,   580,   586,   592,   601,   602,
+     604,   606,   608,   610,   612,   614,   616,   618,   623,   624,
+     625,   626,   627,   628,   629,   630,   631,   632,   633,   634,
+     635,   636,   637,   639,   641,   643,   645,   650,   651,   655,
+     656
 };
 #endif
 
@@ -1582,7 +1582,7 @@ yyuserAction (yyRuleNum yyrule, int yyrhslen, yyGLRStackItem* yyvsp,
   switch (yyrule)
     {
   case 2: /* program: top_decl_list  */
-#line 105 "src/parser.y"
+#line 138 "src/parser.y"
         {
             g_program = ast_new(AST_PROGRAM, 1);
             g_program->list = (YY_CAST (yyGLRStackItem const *, yyvsp)[YYFILL (0)].yystate.yysemantics.yyval.list);
@@ -1592,55 +1592,55 @@ yyuserAction (yyRuleNum yyrule, int yyrhslen, yyGLRStackItem* yyvsp,
     break;
 
   case 3: /* top_decl_list: %empty  */
-#line 113 "src/parser.y"
+#line 146 "src/parser.y"
                                 { ((*yyvalp).list) = ast_list_new(); }
 #line 1598 "src/parser.c"
     break;
 
   case 4: /* top_decl_list: top_decl_list top_decl  */
-#line 114 "src/parser.y"
+#line 147 "src/parser.y"
                                 { ((*yyvalp).list) = (YY_CAST (yyGLRStackItem const *, yyvsp)[YYFILL (-1)].yystate.yysemantics.yyval.list); ast_list_append(&((*yyvalp).list), (YY_CAST (yyGLRStackItem const *, yyvsp)[YYFILL (0)].yystate.yysemantics.yyval.node)); }
 #line 1604 "src/parser.c"
     break;
 
   case 5: /* top_decl: namespace_decl  */
-#line 118 "src/parser.y"
+#line 151 "src/parser.y"
                         { ((*yyvalp).node) = (YY_CAST (yyGLRStackItem const *, yyvsp)[YYFILL (0)].yystate.yysemantics.yyval.node); }
 #line 1610 "src/parser.c"
     break;
 
   case 6: /* top_decl: class_decl ';'  */
-#line 119 "src/parser.y"
+#line 152 "src/parser.y"
                         { ((*yyvalp).node) = (YY_CAST (yyGLRStackItem const *, yyvsp)[YYFILL (-1)].yystate.yysemantics.yyval.node); }
 #line 1616 "src/parser.c"
     break;
 
   case 7: /* top_decl: func_def  */
-#line 120 "src/parser.y"
+#line 153 "src/parser.y"
                         { ((*yyvalp).node) = (YY_CAST (yyGLRStackItem const *, yyvsp)[YYFILL (0)].yystate.yysemantics.yyval.node); }
 #line 1622 "src/parser.c"
     break;
 
   case 8: /* top_decl: func_decl ';'  */
-#line 121 "src/parser.y"
+#line 154 "src/parser.y"
                         { ((*yyvalp).node) = (YY_CAST (yyGLRStackItem const *, yyvsp)[YYFILL (-1)].yystate.yysemantics.yyval.node); }
 #line 1628 "src/parser.c"
     break;
 
   case 9: /* top_decl: var_decl ';'  */
-#line 122 "src/parser.y"
+#line 155 "src/parser.y"
                          { ((*yyvalp).node) = (YY_CAST (yyGLRStackItem const *, yyvsp)[YYFILL (-1)].yystate.yysemantics.yyval.node); }
 #line 1634 "src/parser.c"
     break;
 
   case 10: /* top_decl: typedef_decl ';'  */
-#line 123 "src/parser.y"
+#line 156 "src/parser.y"
                          { ((*yyvalp).node) = (YY_CAST (yyGLRStackItem const *, yyvsp)[YYFILL (-1)].yystate.yysemantics.yyval.node); }
 #line 1640 "src/parser.c"
     break;
 
   case 11: /* $@1: %empty  */
-#line 130 "src/parser.y"
+#line 163 "src/parser.y"
         {
             /* Namespaces are reopenable: `namespace v32 { ... }` appearing
              * twice in the same TU should extend the same member set, not
@@ -1670,7 +1670,7 @@ yyuserAction (yyRuleNum yyrule, int yyrhslen, yyGLRStackItem* yyvsp,
     break;
 
   case 12: /* namespace_decl: NAMESPACE IDENTIFIER $@1 '{' top_decl_list '}'  */
-#line 156 "src/parser.y"
+#line 189 "src/parser.y"
         {
             symtab_pop_scope(g_symtab);
             ((*yyvalp).node) = ast_new(AST_NAMESPACE_DECL, (YY_CAST (yyGLRStackItem const *, yyvsp)[YYFILL (-5)].yystate.yyloc).first_line);
@@ -1681,7 +1681,7 @@ yyuserAction (yyRuleNum yyrule, int yyrhslen, yyGLRStackItem* yyvsp,
     break;
 
   case 13: /* $@2: %empty  */
-#line 168 "src/parser.y"
+#line 201 "src/parser.y"
         {
             /* Register the class *before* the body is scanned, so that
              * self-referential members (`Node *next;`) and constructor/
@@ -1697,7 +1697,7 @@ yyuserAction (yyRuleNum yyrule, int yyrhslen, yyGLRStackItem* yyvsp,
     break;
 
   case 14: /* class_decl: CLASS IDENTIFIER opt_base $@2 '{' member_list '}'  */
-#line 180 "src/parser.y"
+#line 213 "src/parser.y"
         {
             symtab_pop_scope(g_symtab);
             ((*yyvalp).node) = ast_new(AST_CLASS_DECL, (YY_CAST (yyGLRStackItem const *, yyvsp)[YYFILL (-6)].yystate.yyloc).first_line);
@@ -1710,37 +1710,37 @@ yyuserAction (yyRuleNum yyrule, int yyrhslen, yyGLRStackItem* yyvsp,
     break;
 
   case 15: /* opt_base: %empty  */
-#line 191 "src/parser.y"
+#line 224 "src/parser.y"
                                  { ((*yyvalp).str) = NULL; }
 #line 1716 "src/parser.c"
     break;
 
   case 16: /* opt_base: ':' PUBLIC TYPE_NAME  */
-#line 192 "src/parser.y"
+#line 225 "src/parser.y"
                                   { ((*yyvalp).str) = (YY_CAST (yyGLRStackItem const *, yyvsp)[YYFILL (0)].yystate.yysemantics.yyval.str); }
 #line 1722 "src/parser.c"
     break;
 
   case 17: /* opt_base: ':' PRIVATE TYPE_NAME  */
-#line 193 "src/parser.y"
+#line 226 "src/parser.y"
                                   { ((*yyvalp).str) = (YY_CAST (yyGLRStackItem const *, yyvsp)[YYFILL (0)].yystate.yysemantics.yyval.str); }
 #line 1728 "src/parser.c"
     break;
 
   case 18: /* member_list: %empty  */
-#line 201 "src/parser.y"
+#line 234 "src/parser.y"
                            { ((*yyvalp).list) = ast_list_new(); }
 #line 1734 "src/parser.c"
     break;
 
   case 19: /* member_list: member_list member  */
-#line 202 "src/parser.y"
+#line 235 "src/parser.y"
                            { ((*yyvalp).list) = (YY_CAST (yyGLRStackItem const *, yyvsp)[YYFILL (-1)].yystate.yysemantics.yyval.list); ast_list_append(&((*yyvalp).list), (YY_CAST (yyGLRStackItem const *, yyvsp)[YYFILL (0)].yystate.yysemantics.yyval.node)); }
 #line 1740 "src/parser.c"
     break;
 
   case 20: /* member: access_spec ':'  */
-#line 207 "src/parser.y"
+#line 240 "src/parser.y"
         {
             ((*yyvalp).node) = ast_new(AST_ACCESS_SPEC, (YY_CAST (yyGLRStackItem const *, yyvsp)[YYFILL (-1)].yystate.yyloc).first_line);
             ((*yyvalp).node)->access = (YY_CAST (yyGLRStackItem const *, yyvsp)[YYFILL (-1)].yystate.yysemantics.yyval.access);
@@ -1749,61 +1749,61 @@ yyuserAction (yyRuleNum yyrule, int yyrhslen, yyGLRStackItem* yyvsp,
     break;
 
   case 21: /* member: func_decl ';'  */
-#line 211 "src/parser.y"
+#line 244 "src/parser.y"
                       { ((*yyvalp).node) = (YY_CAST (yyGLRStackItem const *, yyvsp)[YYFILL (-1)].yystate.yysemantics.yyval.node); }
 #line 1755 "src/parser.c"
     break;
 
   case 22: /* member: func_def  */
-#line 212 "src/parser.y"
+#line 245 "src/parser.y"
                       { ((*yyvalp).node) = (YY_CAST (yyGLRStackItem const *, yyvsp)[YYFILL (0)].yystate.yysemantics.yyval.node); }
 #line 1761 "src/parser.c"
     break;
 
   case 23: /* member: var_decl ';'  */
-#line 213 "src/parser.y"
+#line 246 "src/parser.y"
                        { ((*yyvalp).node) = (YY_CAST (yyGLRStackItem const *, yyvsp)[YYFILL (-1)].yystate.yysemantics.yyval.node); }
 #line 1767 "src/parser.c"
     break;
 
   case 24: /* access_spec: PUBLIC  */
-#line 217 "src/parser.y"
+#line 250 "src/parser.y"
                  { ((*yyvalp).access) = ACC_PUBLIC; }
 #line 1773 "src/parser.c"
     break;
 
   case 25: /* access_spec: PRIVATE  */
-#line 218 "src/parser.y"
+#line 251 "src/parser.y"
                  { ((*yyvalp).access) = ACC_PRIVATE; }
 #line 1779 "src/parser.c"
     break;
 
   case 26: /* access_spec: PROTECTED  */
-#line 219 "src/parser.y"
+#line 252 "src/parser.y"
                  { ((*yyvalp).access) = ACC_PROTECTED; }
 #line 1785 "src/parser.c"
     break;
 
   case 27: /* opt_virtual: %empty  */
-#line 234 "src/parser.y"
+#line 267 "src/parser.y"
                    { ((*yyvalp).ival) = 0; }
 #line 1791 "src/parser.c"
     break;
 
   case 28: /* opt_virtual: VIRTUAL  */
-#line 235 "src/parser.y"
+#line 268 "src/parser.y"
                    { ((*yyvalp).ival) = 1; }
 #line 1797 "src/parser.c"
     break;
 
   case 29: /* $@3: %empty  */
-#line 239 "src/parser.y"
+#line 282 "src/parser.y"
                                { symtab_push_scope(g_symtab, NULL, 0); }
 #line 1803 "src/parser.c"
     break;
 
   case 30: /* func_header: type_spec IDENTIFIER '(' $@3 opt_param_list ')'  */
-#line 240 "src/parser.y"
+#line 283 "src/parser.y"
         {
             /* Overload note: this inserts every overload of `name` into
              * the same bucket, later ones shadowing earlier ones for
@@ -1824,13 +1824,13 @@ yyuserAction (yyRuleNum yyrule, int yyrhslen, yyGLRStackItem* yyvsp,
     break;
 
   case 31: /* $@4: %empty  */
-#line 256 "src/parser.y"
+#line 299 "src/parser.y"
                     { symtab_push_scope(g_symtab, NULL, 0); }
 #line 1830 "src/parser.c"
     break;
 
   case 32: /* func_header: TYPE_NAME '(' $@4 opt_param_list ')'  */
-#line 257 "src/parser.y"
+#line 300 "src/parser.y"
         {
             /* Constructor: the name token is TYPE_NAME because it's the
              * enclosing class's own (already-registered) name -- see
@@ -1844,7 +1844,7 @@ yyuserAction (yyRuleNum yyrule, int yyrhslen, yyGLRStackItem* yyvsp,
     break;
 
   case 33: /* func_header: '~' TYPE_NAME '(' ')'  */
-#line 267 "src/parser.y"
+#line 310 "src/parser.y"
         {
             symtab_push_scope(g_symtab, NULL, 0); /* kept for symmetry with the pop in func_decl/func_def */
             ((*yyvalp).node) = ast_new(AST_FUNC_DECL, (YY_CAST (yyGLRStackItem const *, yyvsp)[YYFILL (-3)].yystate.yyloc).first_line);
@@ -1859,7 +1859,7 @@ yyuserAction (yyRuleNum yyrule, int yyrhslen, yyGLRStackItem* yyvsp,
     break;
 
   case 34: /* func_decl: opt_virtual func_header  */
-#line 281 "src/parser.y"
+#line 324 "src/parser.y"
         {
             ((*yyvalp).node) = (YY_CAST (yyGLRStackItem const *, yyvsp)[YYFILL (0)].yystate.yysemantics.yyval.node);
             /* TODO: stash $1 (virtual-ness) on $$ once the vtable-lowering
@@ -1871,7 +1871,7 @@ yyuserAction (yyRuleNum yyrule, int yyrhslen, yyGLRStackItem* yyvsp,
     break;
 
   case 35: /* func_def: opt_virtual func_header block  */
-#line 292 "src/parser.y"
+#line 335 "src/parser.y"
         {
             ((*yyvalp).node) = (YY_CAST (yyGLRStackItem const *, yyvsp)[YYFILL (-1)].yystate.yysemantics.yyval.node);
             ((*yyvalp).node)->kind = AST_FUNC_DEF;
@@ -1882,31 +1882,31 @@ yyuserAction (yyRuleNum yyrule, int yyrhslen, yyGLRStackItem* yyvsp,
     break;
 
   case 36: /* opt_param_list: %empty  */
-#line 301 "src/parser.y"
+#line 344 "src/parser.y"
                     { ((*yyvalp).list) = ast_list_new(); }
 #line 1888 "src/parser.c"
     break;
 
   case 37: /* opt_param_list: param_list  */
-#line 302 "src/parser.y"
+#line 345 "src/parser.y"
                      { ((*yyvalp).list) = (YY_CAST (yyGLRStackItem const *, yyvsp)[YYFILL (0)].yystate.yysemantics.yyval.list); }
 #line 1894 "src/parser.c"
     break;
 
   case 38: /* param_list: param  */
-#line 306 "src/parser.y"
+#line 349 "src/parser.y"
                                { ((*yyvalp).list) = ast_list_new(); ast_list_append(&((*yyvalp).list), (YY_CAST (yyGLRStackItem const *, yyvsp)[YYFILL (0)].yystate.yysemantics.yyval.node)); }
 #line 1900 "src/parser.c"
     break;
 
   case 39: /* param_list: param_list ',' param  */
-#line 307 "src/parser.y"
+#line 350 "src/parser.y"
                                { ((*yyvalp).list) = (YY_CAST (yyGLRStackItem const *, yyvsp)[YYFILL (-2)].yystate.yysemantics.yyval.list); ast_list_append(&((*yyvalp).list), (YY_CAST (yyGLRStackItem const *, yyvsp)[YYFILL (0)].yystate.yysemantics.yyval.node)); }
 #line 1906 "src/parser.c"
     break;
 
   case 40: /* param: type_spec pointer_opt IDENTIFIER  */
-#line 312 "src/parser.y"
+#line 355 "src/parser.y"
         {
             symtab_insert(g_symtab, g_symtab->current, (YY_CAST (yyGLRStackItem const *, yyvsp)[YYFILL (0)].yystate.yysemantics.yyval.str), SYM_PARAM);
             ((*yyvalp).node) = ast_new(AST_PARAM, (YY_CAST (yyGLRStackItem const *, yyvsp)[YYFILL (0)].yystate.yyloc).first_line);
@@ -1919,79 +1919,79 @@ yyuserAction (yyRuleNum yyrule, int yyrhslen, yyGLRStackItem* yyvsp,
     break;
 
   case 41: /* pointer_opt: %empty  */
-#line 323 "src/parser.y"
+#line 366 "src/parser.y"
                    { ((*yyvalp).ival) = 0; }
 #line 1925 "src/parser.c"
     break;
 
   case 42: /* pointer_opt: '*'  */
-#line 324 "src/parser.y"
+#line 367 "src/parser.y"
                    { ((*yyvalp).ival) = 1; }
 #line 1931 "src/parser.c"
     break;
 
   case 43: /* pointer_opt: '&'  */
-#line 325 "src/parser.y"
+#line 368 "src/parser.y"
                    { ((*yyvalp).ival) = 2; }
 #line 1937 "src/parser.c"
     break;
 
   case 44: /* type_spec: INT_KW  */
-#line 331 "src/parser.y"
+#line 374 "src/parser.y"
                     { ((*yyvalp).node) = ast_ident("int", (YY_CAST (yyGLRStackItem const *, yyvsp)[YYFILL (0)].yystate.yyloc).first_line); }
 #line 1943 "src/parser.c"
     break;
 
   case 45: /* type_spec: FLOAT_KW  */
-#line 332 "src/parser.y"
+#line 375 "src/parser.y"
                     { ((*yyvalp).node) = ast_ident("float", (YY_CAST (yyGLRStackItem const *, yyvsp)[YYFILL (0)].yystate.yyloc).first_line); }
 #line 1949 "src/parser.c"
     break;
 
   case 46: /* type_spec: VOID_KW  */
-#line 333 "src/parser.y"
+#line 376 "src/parser.y"
                     { ((*yyvalp).node) = ast_ident("void", (YY_CAST (yyGLRStackItem const *, yyvsp)[YYFILL (0)].yystate.yyloc).first_line); }
 #line 1955 "src/parser.c"
     break;
 
   case 47: /* type_spec: BOOL_KW  */
-#line 334 "src/parser.y"
+#line 377 "src/parser.y"
                     { ((*yyvalp).node) = ast_ident("bool", (YY_CAST (yyGLRStackItem const *, yyvsp)[YYFILL (0)].yystate.yyloc).first_line); }
 #line 1961 "src/parser.c"
     break;
 
   case 48: /* type_spec: CHAR_KW  */
-#line 335 "src/parser.y"
+#line 378 "src/parser.y"
                     { ((*yyvalp).node) = ast_ident("char", (YY_CAST (yyGLRStackItem const *, yyvsp)[YYFILL (0)].yystate.yyloc).first_line); }
 #line 1967 "src/parser.c"
     break;
 
   case 49: /* type_spec: TYPE_NAME  */
-#line 336 "src/parser.y"
+#line 379 "src/parser.y"
                     { ((*yyvalp).node) = ast_ident((YY_CAST (yyGLRStackItem const *, yyvsp)[YYFILL (0)].yystate.yysemantics.yyval.str), (YY_CAST (yyGLRStackItem const *, yyvsp)[YYFILL (0)].yystate.yyloc).first_line); }
 #line 1973 "src/parser.c"
     break;
 
   case 50: /* type_spec: qualified_type  */
-#line 337 "src/parser.y"
+#line 380 "src/parser.y"
                      { ((*yyvalp).node) = (YY_CAST (yyGLRStackItem const *, yyvsp)[YYFILL (0)].yystate.yysemantics.yyval.node); }
 #line 1979 "src/parser.c"
     break;
 
   case 51: /* name_tok: IDENTIFIER  */
-#line 346 "src/parser.y"
+#line 389 "src/parser.y"
                   { ((*yyvalp).str) = (YY_CAST (yyGLRStackItem const *, yyvsp)[YYFILL (0)].yystate.yysemantics.yyval.str); }
 #line 1985 "src/parser.c"
     break;
 
   case 52: /* name_tok: TYPE_NAME  */
-#line 347 "src/parser.y"
+#line 390 "src/parser.y"
                   { ((*yyvalp).str) = (YY_CAST (yyGLRStackItem const *, yyvsp)[YYFILL (0)].yystate.yysemantics.yyval.str); }
 #line 1991 "src/parser.c"
     break;
 
   case 53: /* qname_prefix: name_tok COLONCOLON  */
-#line 352 "src/parser.y"
+#line 395 "src/parser.y"
         {
             ((*yyvalp).list) = ast_list_new();
             ast_list_append(&((*yyvalp).list), ast_ident((YY_CAST (yyGLRStackItem const *, yyvsp)[YYFILL (-1)].yystate.yysemantics.yyval.str), (YY_CAST (yyGLRStackItem const *, yyvsp)[YYFILL (-1)].yystate.yyloc).first_line));
@@ -2000,7 +2000,7 @@ yyuserAction (yyRuleNum yyrule, int yyrhslen, yyGLRStackItem* yyvsp,
     break;
 
   case 54: /* qname_prefix: qname_prefix name_tok COLONCOLON  */
-#line 357 "src/parser.y"
+#line 400 "src/parser.y"
         {
             ((*yyvalp).list) = (YY_CAST (yyGLRStackItem const *, yyvsp)[YYFILL (-2)].yystate.yysemantics.yyval.list);
             ast_list_append(&((*yyvalp).list), ast_ident((YY_CAST (yyGLRStackItem const *, yyvsp)[YYFILL (-1)].yystate.yysemantics.yyval.str), (YY_CAST (yyGLRStackItem const *, yyvsp)[YYFILL (-1)].yystate.yyloc).first_line));
@@ -2009,7 +2009,7 @@ yyuserAction (yyRuleNum yyrule, int yyrhslen, yyGLRStackItem* yyvsp,
     break;
 
   case 55: /* qualified_type: qname_prefix TYPE_NAME  */
-#line 365 "src/parser.y"
+#line 408 "src/parser.y"
         {
             ((*yyvalp).node) = ast_new(AST_QUALIFIED_ID, (YY_CAST (yyGLRStackItem const *, yyvsp)[YYFILL (-1)].yystate.yyloc).first_line);
             ((*yyvalp).node)->list = (YY_CAST (yyGLRStackItem const *, yyvsp)[YYFILL (-1)].yystate.yysemantics.yyval.list);
@@ -2019,7 +2019,7 @@ yyuserAction (yyRuleNum yyrule, int yyrhslen, yyGLRStackItem* yyvsp,
     break;
 
   case 56: /* qualified_id_expr: qname_prefix IDENTIFIER  */
-#line 374 "src/parser.y"
+#line 417 "src/parser.y"
         {
             ((*yyvalp).node) = ast_new(AST_QUALIFIED_ID, (YY_CAST (yyGLRStackItem const *, yyvsp)[YYFILL (-1)].yystate.yyloc).first_line);
             ((*yyvalp).node)->list = (YY_CAST (yyGLRStackItem const *, yyvsp)[YYFILL (-1)].yystate.yysemantics.yyval.list);
@@ -2029,7 +2029,7 @@ yyuserAction (yyRuleNum yyrule, int yyrhslen, yyGLRStackItem* yyvsp,
     break;
 
   case 57: /* var_decl: type_spec pointer_opt IDENTIFIER opt_initializer  */
-#line 385 "src/parser.y"
+#line 428 "src/parser.y"
         {
             symtab_insert(g_symtab, g_symtab->current, (YY_CAST (yyGLRStackItem const *, yyvsp)[YYFILL (-1)].yystate.yysemantics.yyval.str), SYM_VAR);
             ((*yyvalp).node) = ast_new(AST_VAR_DECL, (YY_CAST (yyGLRStackItem const *, yyvsp)[YYFILL (-1)].yystate.yyloc).first_line);
@@ -2043,19 +2043,19 @@ yyuserAction (yyRuleNum yyrule, int yyrhslen, yyGLRStackItem* yyvsp,
     break;
 
   case 58: /* opt_initializer: %empty  */
-#line 397 "src/parser.y"
+#line 440 "src/parser.y"
                      { ((*yyvalp).node) = NULL; }
 #line 2049 "src/parser.c"
     break;
 
   case 59: /* opt_initializer: '=' expr  */
-#line 398 "src/parser.y"
+#line 441 "src/parser.y"
                       { ((*yyvalp).node) = (YY_CAST (yyGLRStackItem const *, yyvsp)[YYFILL (0)].yystate.yysemantics.yyval.node); }
 #line 2055 "src/parser.c"
     break;
 
   case 60: /* typedef_decl: TYPEDEF type_spec pointer_opt IDENTIFIER  */
-#line 403 "src/parser.y"
+#line 446 "src/parser.y"
         {
             symtab_insert(g_symtab, g_symtab->current, (YY_CAST (yyGLRStackItem const *, yyvsp)[YYFILL (0)].yystate.yysemantics.yyval.str), SYM_TYPEDEF);
             ((*yyvalp).node) = ast_new(AST_TYPEDEF_DECL, (YY_CAST (yyGLRStackItem const *, yyvsp)[YYFILL (0)].yystate.yyloc).first_line);
@@ -2068,13 +2068,13 @@ yyuserAction (yyRuleNum yyrule, int yyrhslen, yyGLRStackItem* yyvsp,
     break;
 
   case 61: /* $@5: %empty  */
-#line 416 "src/parser.y"
+#line 459 "src/parser.y"
         { symtab_push_scope(g_symtab, NULL, 0); }
 #line 2074 "src/parser.c"
     break;
 
   case 62: /* block: '{' $@5 stmt_list '}'  */
-#line 417 "src/parser.y"
+#line 460 "src/parser.y"
         {
             symtab_pop_scope(g_symtab);
             ((*yyvalp).node) = ast_new(AST_BLOCK, (YY_CAST (yyGLRStackItem const *, yyvsp)[YYFILL (-3)].yystate.yyloc).first_line);
@@ -2084,25 +2084,25 @@ yyuserAction (yyRuleNum yyrule, int yyrhslen, yyGLRStackItem* yyvsp,
     break;
 
   case 63: /* stmt_list: %empty  */
-#line 425 "src/parser.y"
+#line 468 "src/parser.y"
                          { ((*yyvalp).list) = ast_list_new(); }
 #line 2090 "src/parser.c"
     break;
 
   case 64: /* stmt_list: stmt_list stmt  */
-#line 426 "src/parser.y"
+#line 469 "src/parser.y"
                           { ((*yyvalp).list) = (YY_CAST (yyGLRStackItem const *, yyvsp)[YYFILL (-1)].yystate.yysemantics.yyval.list); ast_list_append(&((*yyvalp).list), (YY_CAST (yyGLRStackItem const *, yyvsp)[YYFILL (0)].yystate.yysemantics.yyval.node)); }
 #line 2096 "src/parser.c"
     break;
 
   case 65: /* stmt: block  */
-#line 430 "src/parser.y"
+#line 473 "src/parser.y"
                                          { ((*yyvalp).node) = (YY_CAST (yyGLRStackItem const *, yyvsp)[YYFILL (0)].yystate.yysemantics.yyval.node); }
 #line 2102 "src/parser.c"
     break;
 
   case 66: /* stmt: IF '(' expr ')' stmt  */
-#line 432 "src/parser.y"
+#line 475 "src/parser.y"
         {
             ((*yyvalp).node) = ast_new(AST_IF, (YY_CAST (yyGLRStackItem const *, yyvsp)[YYFILL (-4)].yystate.yyloc).first_line);
             ((*yyvalp).node)->a = (YY_CAST (yyGLRStackItem const *, yyvsp)[YYFILL (-2)].yystate.yysemantics.yyval.node); ((*yyvalp).node)->b = (YY_CAST (yyGLRStackItem const *, yyvsp)[YYFILL (0)].yystate.yysemantics.yyval.node); ((*yyvalp).node)->c = NULL;
@@ -2111,7 +2111,7 @@ yyuserAction (yyRuleNum yyrule, int yyrhslen, yyGLRStackItem* yyvsp,
     break;
 
   case 67: /* stmt: IF '(' expr ')' stmt ELSE stmt  */
-#line 437 "src/parser.y"
+#line 480 "src/parser.y"
         {
             ((*yyvalp).node) = ast_new(AST_IF, (YY_CAST (yyGLRStackItem const *, yyvsp)[YYFILL (-6)].yystate.yyloc).first_line);
             ((*yyvalp).node)->a = (YY_CAST (yyGLRStackItem const *, yyvsp)[YYFILL (-4)].yystate.yysemantics.yyval.node); ((*yyvalp).node)->b = (YY_CAST (yyGLRStackItem const *, yyvsp)[YYFILL (-2)].yystate.yysemantics.yyval.node); ((*yyvalp).node)->c = (YY_CAST (yyGLRStackItem const *, yyvsp)[YYFILL (0)].yystate.yysemantics.yyval.node);
@@ -2120,7 +2120,7 @@ yyuserAction (yyRuleNum yyrule, int yyrhslen, yyGLRStackItem* yyvsp,
     break;
 
   case 68: /* stmt: WHILE '(' expr ')' stmt  */
-#line 442 "src/parser.y"
+#line 485 "src/parser.y"
         {
             ((*yyvalp).node) = ast_new(AST_WHILE, (YY_CAST (yyGLRStackItem const *, yyvsp)[YYFILL (-4)].yystate.yyloc).first_line);
             ((*yyvalp).node)->a = (YY_CAST (yyGLRStackItem const *, yyvsp)[YYFILL (-2)].yystate.yysemantics.yyval.node); ((*yyvalp).node)->b = (YY_CAST (yyGLRStackItem const *, yyvsp)[YYFILL (0)].yystate.yysemantics.yyval.node);
@@ -2129,13 +2129,13 @@ yyuserAction (yyRuleNum yyrule, int yyrhslen, yyGLRStackItem* yyvsp,
     break;
 
   case 69: /* $@6: %empty  */
-#line 446 "src/parser.y"
+#line 489 "src/parser.y"
               { symtab_push_scope(g_symtab, NULL, 0); }
 #line 2135 "src/parser.c"
     break;
 
   case 70: /* stmt: FOR '(' $@6 for_init ';' expr_opt ';' expr_opt ')' stmt  */
-#line 447 "src/parser.y"
+#line 490 "src/parser.y"
         {
             /* Own scope so a loop-local `int i` in for_init doesn't leak
              * into the enclosing block/function (and so a second, later
@@ -2149,7 +2149,7 @@ yyuserAction (yyRuleNum yyrule, int yyrhslen, yyGLRStackItem* yyvsp,
     break;
 
   case 71: /* stmt: RETURN expr_opt ';'  */
-#line 457 "src/parser.y"
+#line 500 "src/parser.y"
         {
             ((*yyvalp).node) = ast_new(AST_RETURN, (YY_CAST (yyGLRStackItem const *, yyvsp)[YYFILL (-2)].yystate.yyloc).first_line);
             ((*yyvalp).node)->a = (YY_CAST (yyGLRStackItem const *, yyvsp)[YYFILL (-1)].yystate.yysemantics.yyval.node);
@@ -2158,19 +2158,19 @@ yyuserAction (yyRuleNum yyrule, int yyrhslen, yyGLRStackItem* yyvsp,
     break;
 
   case 72: /* stmt: var_decl ';'  */
-#line 461 "src/parser.y"
+#line 504 "src/parser.y"
                         { ((*yyvalp).node) = (YY_CAST (yyGLRStackItem const *, yyvsp)[YYFILL (-1)].yystate.yysemantics.yyval.node); }
 #line 2164 "src/parser.c"
     break;
 
   case 73: /* stmt: typedef_decl ';'  */
-#line 462 "src/parser.y"
+#line 505 "src/parser.y"
                         { ((*yyvalp).node) = (YY_CAST (yyGLRStackItem const *, yyvsp)[YYFILL (-1)].yystate.yysemantics.yyval.node); }
 #line 2170 "src/parser.c"
     break;
 
   case 74: /* stmt: expr ';'  */
-#line 464 "src/parser.y"
+#line 507 "src/parser.y"
         {
             ((*yyvalp).node) = ast_new(AST_EXPR_STMT, (YY_CAST (yyGLRStackItem const *, yyvsp)[YYFILL (-1)].yystate.yyloc).first_line);
             ((*yyvalp).node)->a = (YY_CAST (yyGLRStackItem const *, yyvsp)[YYFILL (-1)].yystate.yysemantics.yyval.node);
@@ -2179,7 +2179,7 @@ yyuserAction (yyRuleNum yyrule, int yyrhslen, yyGLRStackItem* yyvsp,
     break;
 
   case 75: /* stmt: ';'  */
-#line 469 "src/parser.y"
+#line 512 "src/parser.y"
         {
             ((*yyvalp).node) = ast_new(AST_EXPR_STMT, (YY_CAST (yyGLRStackItem const *, yyvsp)[YYFILL (0)].yystate.yyloc).first_line);
         }
@@ -2187,19 +2187,19 @@ yyuserAction (yyRuleNum yyrule, int yyrhslen, yyGLRStackItem* yyvsp,
     break;
 
   case 76: /* for_init: %empty  */
-#line 475 "src/parser.y"
+#line 518 "src/parser.y"
                    { ((*yyvalp).node) = NULL; }
 #line 2193 "src/parser.c"
     break;
 
   case 77: /* for_init: var_decl  */
-#line 476 "src/parser.y"
+#line 519 "src/parser.y"
                     { ((*yyvalp).node) = (YY_CAST (yyGLRStackItem const *, yyvsp)[YYFILL (0)].yystate.yysemantics.yyval.node); }
 #line 2199 "src/parser.c"
     break;
 
   case 78: /* for_init: expr  */
-#line 478 "src/parser.y"
+#line 521 "src/parser.y"
         {
             ((*yyvalp).node) = ast_new(AST_EXPR_STMT, (YY_CAST (yyGLRStackItem const *, yyvsp)[YYFILL (0)].yystate.yyloc).first_line);
             ((*yyvalp).node)->a = (YY_CAST (yyGLRStackItem const *, yyvsp)[YYFILL (0)].yystate.yysemantics.yyval.node);
@@ -2208,85 +2208,85 @@ yyuserAction (yyRuleNum yyrule, int yyrhslen, yyGLRStackItem* yyvsp,
     break;
 
   case 79: /* expr_opt: %empty  */
-#line 485 "src/parser.y"
+#line 528 "src/parser.y"
                    { ((*yyvalp).node) = NULL; }
 #line 2214 "src/parser.c"
     break;
 
   case 80: /* expr_opt: expr  */
-#line 486 "src/parser.y"
+#line 529 "src/parser.y"
                     { ((*yyvalp).node) = (YY_CAST (yyGLRStackItem const *, yyvsp)[YYFILL (0)].yystate.yysemantics.yyval.node); }
 #line 2220 "src/parser.c"
     break;
 
   case 81: /* primary_expr: IDENTIFIER  */
-#line 503 "src/parser.y"
+#line 546 "src/parser.y"
                         { ((*yyvalp).node) = ast_ident((YY_CAST (yyGLRStackItem const *, yyvsp)[YYFILL (0)].yystate.yysemantics.yyval.str), (YY_CAST (yyGLRStackItem const *, yyvsp)[YYFILL (0)].yystate.yyloc).first_line); }
 #line 2226 "src/parser.c"
     break;
 
   case 82: /* primary_expr: INT_LITERAL  */
-#line 504 "src/parser.y"
+#line 547 "src/parser.y"
                           { ((*yyvalp).node) = ast_new(AST_INT_LIT, (YY_CAST (yyGLRStackItem const *, yyvsp)[YYFILL (0)].yystate.yyloc).first_line); ((*yyvalp).node)->ival = (YY_CAST (yyGLRStackItem const *, yyvsp)[YYFILL (0)].yystate.yysemantics.yyval.ival); }
 #line 2232 "src/parser.c"
     break;
 
   case 83: /* primary_expr: FLOAT_LITERAL  */
-#line 505 "src/parser.y"
+#line 548 "src/parser.y"
                            { ((*yyvalp).node) = ast_new(AST_FLOAT_LIT, (YY_CAST (yyGLRStackItem const *, yyvsp)[YYFILL (0)].yystate.yyloc).first_line); ((*yyvalp).node)->fval = (YY_CAST (yyGLRStackItem const *, yyvsp)[YYFILL (0)].yystate.yysemantics.yyval.fval); }
 #line 2238 "src/parser.c"
     break;
 
   case 84: /* primary_expr: STRING_LITERAL  */
-#line 506 "src/parser.y"
+#line 549 "src/parser.y"
                             { ((*yyvalp).node) = ast_new(AST_STRING_LIT, (YY_CAST (yyGLRStackItem const *, yyvsp)[YYFILL (0)].yystate.yyloc).first_line); ((*yyvalp).node)->str1 = (YY_CAST (yyGLRStackItem const *, yyvsp)[YYFILL (0)].yystate.yysemantics.yyval.str); }
 #line 2244 "src/parser.c"
     break;
 
   case 85: /* primary_expr: CHAR_LITERAL  */
-#line 507 "src/parser.y"
+#line 550 "src/parser.y"
                               { ((*yyvalp).node) = ast_new(AST_CHAR_LIT, (YY_CAST (yyGLRStackItem const *, yyvsp)[YYFILL (0)].yystate.yyloc).first_line); ((*yyvalp).node)->ival = (YY_CAST (yyGLRStackItem const *, yyvsp)[YYFILL (0)].yystate.yysemantics.yyval.ival); }
 #line 2250 "src/parser.c"
     break;
 
   case 86: /* primary_expr: TRUE_KW  */
-#line 508 "src/parser.y"
+#line 551 "src/parser.y"
                                { ((*yyvalp).node) = ast_new(AST_BOOL_LIT, (YY_CAST (yyGLRStackItem const *, yyvsp)[YYFILL (0)].yystate.yyloc).first_line); ((*yyvalp).node)->ival = 1; }
 #line 2256 "src/parser.c"
     break;
 
   case 87: /* primary_expr: FALSE_KW  */
-#line 509 "src/parser.y"
+#line 552 "src/parser.y"
                                 { ((*yyvalp).node) = ast_new(AST_BOOL_LIT, (YY_CAST (yyGLRStackItem const *, yyvsp)[YYFILL (0)].yystate.yyloc).first_line); ((*yyvalp).node)->ival = 0; }
 #line 2262 "src/parser.c"
     break;
 
   case 88: /* primary_expr: THIS  */
-#line 510 "src/parser.y"
+#line 553 "src/parser.y"
                                   { ((*yyvalp).node) = ast_new(AST_THIS, (YY_CAST (yyGLRStackItem const *, yyvsp)[YYFILL (0)].yystate.yyloc).first_line); }
 #line 2268 "src/parser.c"
     break;
 
   case 89: /* primary_expr: qualified_id_expr  */
-#line 511 "src/parser.y"
+#line 554 "src/parser.y"
                                     { ((*yyvalp).node) = (YY_CAST (yyGLRStackItem const *, yyvsp)[YYFILL (0)].yystate.yysemantics.yyval.node); }
 #line 2274 "src/parser.c"
     break;
 
   case 90: /* primary_expr: '(' expr ')'  */
-#line 512 "src/parser.y"
+#line 555 "src/parser.y"
                                       { ((*yyvalp).node) = (YY_CAST (yyGLRStackItem const *, yyvsp)[YYFILL (-1)].yystate.yysemantics.yyval.node); }
 #line 2280 "src/parser.c"
     break;
 
   case 91: /* postfix_expr: primary_expr  */
-#line 516 "src/parser.y"
+#line 559 "src/parser.y"
                                             { ((*yyvalp).node) = (YY_CAST (yyGLRStackItem const *, yyvsp)[YYFILL (0)].yystate.yysemantics.yyval.node); }
 #line 2286 "src/parser.c"
     break;
 
   case 92: /* postfix_expr: postfix_expr '(' opt_arg_list ')'  */
-#line 518 "src/parser.y"
+#line 561 "src/parser.y"
         {
             ((*yyvalp).node) = ast_new(AST_CALL, (YY_CAST (yyGLRStackItem const *, yyvsp)[YYFILL (-3)].yystate.yyloc).first_line);
             ((*yyvalp).node)->a = (YY_CAST (yyGLRStackItem const *, yyvsp)[YYFILL (-3)].yystate.yysemantics.yyval.node);
@@ -2296,7 +2296,7 @@ yyuserAction (yyRuleNum yyrule, int yyrhslen, yyGLRStackItem* yyvsp,
     break;
 
   case 93: /* postfix_expr: postfix_expr '.' IDENTIFIER  */
-#line 524 "src/parser.y"
+#line 567 "src/parser.y"
         {
             ((*yyvalp).node) = ast_new(AST_MEMBER, (YY_CAST (yyGLRStackItem const *, yyvsp)[YYFILL (-2)].yystate.yyloc).first_line);
             ((*yyvalp).node)->str1 = strdup(".");
@@ -2307,7 +2307,7 @@ yyuserAction (yyRuleNum yyrule, int yyrhslen, yyGLRStackItem* yyvsp,
     break;
 
   case 94: /* postfix_expr: postfix_expr ARROW IDENTIFIER  */
-#line 531 "src/parser.y"
+#line 574 "src/parser.y"
         {
             ((*yyvalp).node) = ast_new(AST_MEMBER, (YY_CAST (yyGLRStackItem const *, yyvsp)[YYFILL (-2)].yystate.yyloc).first_line);
             ((*yyvalp).node)->str1 = strdup("->");
@@ -2318,7 +2318,7 @@ yyuserAction (yyRuleNum yyrule, int yyrhslen, yyGLRStackItem* yyvsp,
     break;
 
   case 95: /* postfix_expr: postfix_expr '[' expr ']'  */
-#line 538 "src/parser.y"
+#line 581 "src/parser.y"
         {
             ((*yyvalp).node) = ast_new(AST_SUBSCRIPT, (YY_CAST (yyGLRStackItem const *, yyvsp)[YYFILL (-3)].yystate.yyloc).first_line);
             ((*yyvalp).node)->a = (YY_CAST (yyGLRStackItem const *, yyvsp)[YYFILL (-3)].yystate.yysemantics.yyval.node);
@@ -2328,7 +2328,7 @@ yyuserAction (yyRuleNum yyrule, int yyrhslen, yyGLRStackItem* yyvsp,
     break;
 
   case 96: /* postfix_expr: postfix_expr INC  */
-#line 544 "src/parser.y"
+#line 587 "src/parser.y"
         {
             ((*yyvalp).node) = ast_new(AST_UNOP, (YY_CAST (yyGLRStackItem const *, yyvsp)[YYFILL (-1)].yystate.yyloc).first_line);
             ((*yyvalp).node)->str1 = strdup("post++");
@@ -2338,7 +2338,7 @@ yyuserAction (yyRuleNum yyrule, int yyrhslen, yyGLRStackItem* yyvsp,
     break;
 
   case 97: /* postfix_expr: postfix_expr DEC  */
-#line 550 "src/parser.y"
+#line 593 "src/parser.y"
         {
             ((*yyvalp).node) = ast_new(AST_UNOP, (YY_CAST (yyGLRStackItem const *, yyvsp)[YYFILL (-1)].yystate.yyloc).first_line);
             ((*yyvalp).node)->str1 = strdup("post--");
@@ -2348,199 +2348,199 @@ yyuserAction (yyRuleNum yyrule, int yyrhslen, yyGLRStackItem* yyvsp,
     break;
 
   case 98: /* unary_expr: postfix_expr  */
-#line 558 "src/parser.y"
+#line 601 "src/parser.y"
                              { ((*yyvalp).node) = (YY_CAST (yyGLRStackItem const *, yyvsp)[YYFILL (0)].yystate.yysemantics.yyval.node); }
 #line 2354 "src/parser.c"
     break;
 
   case 99: /* unary_expr: '!' unary_expr  */
-#line 560 "src/parser.y"
+#line 603 "src/parser.y"
         { ((*yyvalp).node) = ast_new(AST_UNOP, (YY_CAST (yyGLRStackItem const *, yyvsp)[YYFILL (-1)].yystate.yyloc).first_line); ((*yyvalp).node)->str1 = strdup("!"); ((*yyvalp).node)->a = (YY_CAST (yyGLRStackItem const *, yyvsp)[YYFILL (0)].yystate.yysemantics.yyval.node); }
 #line 2360 "src/parser.c"
     break;
 
   case 100: /* unary_expr: '~' unary_expr  */
-#line 562 "src/parser.y"
+#line 605 "src/parser.y"
         { ((*yyvalp).node) = ast_new(AST_UNOP, (YY_CAST (yyGLRStackItem const *, yyvsp)[YYFILL (-1)].yystate.yyloc).first_line); ((*yyvalp).node)->str1 = strdup("~"); ((*yyvalp).node)->a = (YY_CAST (yyGLRStackItem const *, yyvsp)[YYFILL (0)].yystate.yysemantics.yyval.node); }
 #line 2366 "src/parser.c"
     break;
 
   case 101: /* unary_expr: '-' unary_expr  */
-#line 564 "src/parser.y"
+#line 607 "src/parser.y"
         { ((*yyvalp).node) = ast_new(AST_UNOP, (YY_CAST (yyGLRStackItem const *, yyvsp)[YYFILL (-1)].yystate.yyloc).first_line); ((*yyvalp).node)->str1 = strdup("neg"); ((*yyvalp).node)->a = (YY_CAST (yyGLRStackItem const *, yyvsp)[YYFILL (0)].yystate.yysemantics.yyval.node); }
 #line 2372 "src/parser.c"
     break;
 
   case 102: /* unary_expr: '&' unary_expr  */
-#line 566 "src/parser.y"
+#line 609 "src/parser.y"
         { ((*yyvalp).node) = ast_new(AST_UNOP, (YY_CAST (yyGLRStackItem const *, yyvsp)[YYFILL (-1)].yystate.yyloc).first_line); ((*yyvalp).node)->str1 = strdup("addr"); ((*yyvalp).node)->a = (YY_CAST (yyGLRStackItem const *, yyvsp)[YYFILL (0)].yystate.yysemantics.yyval.node); }
 #line 2378 "src/parser.c"
     break;
 
   case 103: /* unary_expr: '*' unary_expr  */
-#line 568 "src/parser.y"
+#line 611 "src/parser.y"
         { ((*yyvalp).node) = ast_new(AST_UNOP, (YY_CAST (yyGLRStackItem const *, yyvsp)[YYFILL (-1)].yystate.yyloc).first_line); ((*yyvalp).node)->str1 = strdup("deref"); ((*yyvalp).node)->a = (YY_CAST (yyGLRStackItem const *, yyvsp)[YYFILL (0)].yystate.yysemantics.yyval.node); }
 #line 2384 "src/parser.c"
     break;
 
   case 104: /* unary_expr: INC unary_expr  */
-#line 570 "src/parser.y"
+#line 613 "src/parser.y"
         { ((*yyvalp).node) = ast_new(AST_UNOP, (YY_CAST (yyGLRStackItem const *, yyvsp)[YYFILL (-1)].yystate.yyloc).first_line); ((*yyvalp).node)->str1 = strdup("pre++"); ((*yyvalp).node)->a = (YY_CAST (yyGLRStackItem const *, yyvsp)[YYFILL (0)].yystate.yysemantics.yyval.node); }
 #line 2390 "src/parser.c"
     break;
 
   case 105: /* unary_expr: DEC unary_expr  */
-#line 572 "src/parser.y"
+#line 615 "src/parser.y"
         { ((*yyvalp).node) = ast_new(AST_UNOP, (YY_CAST (yyGLRStackItem const *, yyvsp)[YYFILL (-1)].yystate.yyloc).first_line); ((*yyvalp).node)->str1 = strdup("pre--"); ((*yyvalp).node)->a = (YY_CAST (yyGLRStackItem const *, yyvsp)[YYFILL (0)].yystate.yysemantics.yyval.node); }
 #line 2396 "src/parser.c"
     break;
 
   case 106: /* unary_expr: NEW type_spec  */
-#line 574 "src/parser.y"
+#line 617 "src/parser.y"
         { ((*yyvalp).node) = ast_new(AST_NEW, (YY_CAST (yyGLRStackItem const *, yyvsp)[YYFILL (-1)].yystate.yyloc).first_line); ((*yyvalp).node)->type = (YY_CAST (yyGLRStackItem const *, yyvsp)[YYFILL (0)].yystate.yysemantics.yyval.node); }
 #line 2402 "src/parser.c"
     break;
 
   case 107: /* unary_expr: DELETE unary_expr  */
-#line 576 "src/parser.y"
+#line 619 "src/parser.y"
         { ((*yyvalp).node) = ast_new(AST_DELETE, (YY_CAST (yyGLRStackItem const *, yyvsp)[YYFILL (-1)].yystate.yyloc).first_line); ((*yyvalp).node)->a = (YY_CAST (yyGLRStackItem const *, yyvsp)[YYFILL (0)].yystate.yysemantics.yyval.node); }
 #line 2408 "src/parser.c"
     break;
 
   case 108: /* expr: unary_expr  */
-#line 580 "src/parser.y"
+#line 623 "src/parser.y"
                            { ((*yyvalp).node) = (YY_CAST (yyGLRStackItem const *, yyvsp)[YYFILL (0)].yystate.yysemantics.yyval.node); }
 #line 2414 "src/parser.c"
     break;
 
   case 109: /* expr: expr '*' expr  */
-#line 581 "src/parser.y"
+#line 624 "src/parser.y"
                        { ((*yyvalp).node) = ast_new(AST_BINOP, (YY_CAST (yyGLRStackItem const *, yyvsp)[YYFILL (-2)].yystate.yyloc).first_line); ((*yyvalp).node)->str1 = strdup("*"); ((*yyvalp).node)->a = (YY_CAST (yyGLRStackItem const *, yyvsp)[YYFILL (-2)].yystate.yysemantics.yyval.node); ((*yyvalp).node)->b = (YY_CAST (yyGLRStackItem const *, yyvsp)[YYFILL (0)].yystate.yysemantics.yyval.node); }
 #line 2420 "src/parser.c"
     break;
 
   case 110: /* expr: expr '/' expr  */
-#line 582 "src/parser.y"
+#line 625 "src/parser.y"
                        { ((*yyvalp).node) = ast_new(AST_BINOP, (YY_CAST (yyGLRStackItem const *, yyvsp)[YYFILL (-2)].yystate.yyloc).first_line); ((*yyvalp).node)->str1 = strdup("/"); ((*yyvalp).node)->a = (YY_CAST (yyGLRStackItem const *, yyvsp)[YYFILL (-2)].yystate.yysemantics.yyval.node); ((*yyvalp).node)->b = (YY_CAST (yyGLRStackItem const *, yyvsp)[YYFILL (0)].yystate.yysemantics.yyval.node); }
 #line 2426 "src/parser.c"
     break;
 
   case 111: /* expr: expr '%' expr  */
-#line 583 "src/parser.y"
+#line 626 "src/parser.y"
                        { ((*yyvalp).node) = ast_new(AST_BINOP, (YY_CAST (yyGLRStackItem const *, yyvsp)[YYFILL (-2)].yystate.yyloc).first_line); ((*yyvalp).node)->str1 = strdup("%"); ((*yyvalp).node)->a = (YY_CAST (yyGLRStackItem const *, yyvsp)[YYFILL (-2)].yystate.yysemantics.yyval.node); ((*yyvalp).node)->b = (YY_CAST (yyGLRStackItem const *, yyvsp)[YYFILL (0)].yystate.yysemantics.yyval.node); }
 #line 2432 "src/parser.c"
     break;
 
   case 112: /* expr: expr '+' expr  */
-#line 584 "src/parser.y"
+#line 627 "src/parser.y"
                        { ((*yyvalp).node) = ast_new(AST_BINOP, (YY_CAST (yyGLRStackItem const *, yyvsp)[YYFILL (-2)].yystate.yyloc).first_line); ((*yyvalp).node)->str1 = strdup("+"); ((*yyvalp).node)->a = (YY_CAST (yyGLRStackItem const *, yyvsp)[YYFILL (-2)].yystate.yysemantics.yyval.node); ((*yyvalp).node)->b = (YY_CAST (yyGLRStackItem const *, yyvsp)[YYFILL (0)].yystate.yysemantics.yyval.node); }
 #line 2438 "src/parser.c"
     break;
 
   case 113: /* expr: expr '-' expr  */
-#line 585 "src/parser.y"
+#line 628 "src/parser.y"
                        { ((*yyvalp).node) = ast_new(AST_BINOP, (YY_CAST (yyGLRStackItem const *, yyvsp)[YYFILL (-2)].yystate.yyloc).first_line); ((*yyvalp).node)->str1 = strdup("-"); ((*yyvalp).node)->a = (YY_CAST (yyGLRStackItem const *, yyvsp)[YYFILL (-2)].yystate.yysemantics.yyval.node); ((*yyvalp).node)->b = (YY_CAST (yyGLRStackItem const *, yyvsp)[YYFILL (0)].yystate.yysemantics.yyval.node); }
 #line 2444 "src/parser.c"
     break;
 
   case 114: /* expr: expr '<' expr  */
-#line 586 "src/parser.y"
+#line 629 "src/parser.y"
                        { ((*yyvalp).node) = ast_new(AST_BINOP, (YY_CAST (yyGLRStackItem const *, yyvsp)[YYFILL (-2)].yystate.yyloc).first_line); ((*yyvalp).node)->str1 = strdup("<"); ((*yyvalp).node)->a = (YY_CAST (yyGLRStackItem const *, yyvsp)[YYFILL (-2)].yystate.yysemantics.yyval.node); ((*yyvalp).node)->b = (YY_CAST (yyGLRStackItem const *, yyvsp)[YYFILL (0)].yystate.yysemantics.yyval.node); }
 #line 2450 "src/parser.c"
     break;
 
   case 115: /* expr: expr '>' expr  */
-#line 587 "src/parser.y"
+#line 630 "src/parser.y"
                        { ((*yyvalp).node) = ast_new(AST_BINOP, (YY_CAST (yyGLRStackItem const *, yyvsp)[YYFILL (-2)].yystate.yyloc).first_line); ((*yyvalp).node)->str1 = strdup(">"); ((*yyvalp).node)->a = (YY_CAST (yyGLRStackItem const *, yyvsp)[YYFILL (-2)].yystate.yysemantics.yyval.node); ((*yyvalp).node)->b = (YY_CAST (yyGLRStackItem const *, yyvsp)[YYFILL (0)].yystate.yysemantics.yyval.node); }
 #line 2456 "src/parser.c"
     break;
 
   case 116: /* expr: expr LE expr  */
-#line 588 "src/parser.y"
+#line 631 "src/parser.y"
                        { ((*yyvalp).node) = ast_new(AST_BINOP, (YY_CAST (yyGLRStackItem const *, yyvsp)[YYFILL (-2)].yystate.yyloc).first_line); ((*yyvalp).node)->str1 = strdup("<="); ((*yyvalp).node)->a = (YY_CAST (yyGLRStackItem const *, yyvsp)[YYFILL (-2)].yystate.yysemantics.yyval.node); ((*yyvalp).node)->b = (YY_CAST (yyGLRStackItem const *, yyvsp)[YYFILL (0)].yystate.yysemantics.yyval.node); }
 #line 2462 "src/parser.c"
     break;
 
   case 117: /* expr: expr GE expr  */
-#line 589 "src/parser.y"
+#line 632 "src/parser.y"
                        { ((*yyvalp).node) = ast_new(AST_BINOP, (YY_CAST (yyGLRStackItem const *, yyvsp)[YYFILL (-2)].yystate.yyloc).first_line); ((*yyvalp).node)->str1 = strdup(">="); ((*yyvalp).node)->a = (YY_CAST (yyGLRStackItem const *, yyvsp)[YYFILL (-2)].yystate.yysemantics.yyval.node); ((*yyvalp).node)->b = (YY_CAST (yyGLRStackItem const *, yyvsp)[YYFILL (0)].yystate.yysemantics.yyval.node); }
 #line 2468 "src/parser.c"
     break;
 
   case 118: /* expr: expr EQ expr  */
-#line 590 "src/parser.y"
+#line 633 "src/parser.y"
                        { ((*yyvalp).node) = ast_new(AST_BINOP, (YY_CAST (yyGLRStackItem const *, yyvsp)[YYFILL (-2)].yystate.yyloc).first_line); ((*yyvalp).node)->str1 = strdup("=="); ((*yyvalp).node)->a = (YY_CAST (yyGLRStackItem const *, yyvsp)[YYFILL (-2)].yystate.yysemantics.yyval.node); ((*yyvalp).node)->b = (YY_CAST (yyGLRStackItem const *, yyvsp)[YYFILL (0)].yystate.yysemantics.yyval.node); }
 #line 2474 "src/parser.c"
     break;
 
   case 119: /* expr: expr NE expr  */
-#line 591 "src/parser.y"
+#line 634 "src/parser.y"
                        { ((*yyvalp).node) = ast_new(AST_BINOP, (YY_CAST (yyGLRStackItem const *, yyvsp)[YYFILL (-2)].yystate.yyloc).first_line); ((*yyvalp).node)->str1 = strdup("!="); ((*yyvalp).node)->a = (YY_CAST (yyGLRStackItem const *, yyvsp)[YYFILL (-2)].yystate.yysemantics.yyval.node); ((*yyvalp).node)->b = (YY_CAST (yyGLRStackItem const *, yyvsp)[YYFILL (0)].yystate.yysemantics.yyval.node); }
 #line 2480 "src/parser.c"
     break;
 
   case 120: /* expr: expr ANDAND expr  */
-#line 592 "src/parser.y"
+#line 635 "src/parser.y"
                         { ((*yyvalp).node) = ast_new(AST_BINOP, (YY_CAST (yyGLRStackItem const *, yyvsp)[YYFILL (-2)].yystate.yyloc).first_line); ((*yyvalp).node)->str1 = strdup("&&"); ((*yyvalp).node)->a = (YY_CAST (yyGLRStackItem const *, yyvsp)[YYFILL (-2)].yystate.yysemantics.yyval.node); ((*yyvalp).node)->b = (YY_CAST (yyGLRStackItem const *, yyvsp)[YYFILL (0)].yystate.yysemantics.yyval.node); }
 #line 2486 "src/parser.c"
     break;
 
   case 121: /* expr: expr OROR expr  */
-#line 593 "src/parser.y"
+#line 636 "src/parser.y"
                         { ((*yyvalp).node) = ast_new(AST_BINOP, (YY_CAST (yyGLRStackItem const *, yyvsp)[YYFILL (-2)].yystate.yyloc).first_line); ((*yyvalp).node)->str1 = strdup("||"); ((*yyvalp).node)->a = (YY_CAST (yyGLRStackItem const *, yyvsp)[YYFILL (-2)].yystate.yysemantics.yyval.node); ((*yyvalp).node)->b = (YY_CAST (yyGLRStackItem const *, yyvsp)[YYFILL (0)].yystate.yysemantics.yyval.node); }
 #line 2492 "src/parser.c"
     break;
 
   case 122: /* expr: expr '=' expr  */
-#line 595 "src/parser.y"
+#line 638 "src/parser.y"
         { ((*yyvalp).node) = ast_new(AST_ASSIGN, (YY_CAST (yyGLRStackItem const *, yyvsp)[YYFILL (-2)].yystate.yyloc).first_line); ((*yyvalp).node)->str1 = strdup("="); ((*yyvalp).node)->a = (YY_CAST (yyGLRStackItem const *, yyvsp)[YYFILL (-2)].yystate.yysemantics.yyval.node); ((*yyvalp).node)->b = (YY_CAST (yyGLRStackItem const *, yyvsp)[YYFILL (0)].yystate.yysemantics.yyval.node); }
 #line 2498 "src/parser.c"
     break;
 
   case 123: /* expr: expr PLUSEQ expr  */
-#line 597 "src/parser.y"
+#line 640 "src/parser.y"
         { ((*yyvalp).node) = ast_new(AST_ASSIGN, (YY_CAST (yyGLRStackItem const *, yyvsp)[YYFILL (-2)].yystate.yyloc).first_line); ((*yyvalp).node)->str1 = strdup("+="); ((*yyvalp).node)->a = (YY_CAST (yyGLRStackItem const *, yyvsp)[YYFILL (-2)].yystate.yysemantics.yyval.node); ((*yyvalp).node)->b = (YY_CAST (yyGLRStackItem const *, yyvsp)[YYFILL (0)].yystate.yysemantics.yyval.node); }
 #line 2504 "src/parser.c"
     break;
 
   case 124: /* expr: expr MINUSEQ expr  */
-#line 599 "src/parser.y"
+#line 642 "src/parser.y"
         { ((*yyvalp).node) = ast_new(AST_ASSIGN, (YY_CAST (yyGLRStackItem const *, yyvsp)[YYFILL (-2)].yystate.yyloc).first_line); ((*yyvalp).node)->str1 = strdup("-="); ((*yyvalp).node)->a = (YY_CAST (yyGLRStackItem const *, yyvsp)[YYFILL (-2)].yystate.yysemantics.yyval.node); ((*yyvalp).node)->b = (YY_CAST (yyGLRStackItem const *, yyvsp)[YYFILL (0)].yystate.yysemantics.yyval.node); }
 #line 2510 "src/parser.c"
     break;
 
   case 125: /* expr: expr STAREQ expr  */
-#line 601 "src/parser.y"
+#line 644 "src/parser.y"
         { ((*yyvalp).node) = ast_new(AST_ASSIGN, (YY_CAST (yyGLRStackItem const *, yyvsp)[YYFILL (-2)].yystate.yyloc).first_line); ((*yyvalp).node)->str1 = strdup("*="); ((*yyvalp).node)->a = (YY_CAST (yyGLRStackItem const *, yyvsp)[YYFILL (-2)].yystate.yysemantics.yyval.node); ((*yyvalp).node)->b = (YY_CAST (yyGLRStackItem const *, yyvsp)[YYFILL (0)].yystate.yysemantics.yyval.node); }
 #line 2516 "src/parser.c"
     break;
 
   case 126: /* expr: expr SLASHEQ expr  */
-#line 603 "src/parser.y"
+#line 646 "src/parser.y"
         { ((*yyvalp).node) = ast_new(AST_ASSIGN, (YY_CAST (yyGLRStackItem const *, yyvsp)[YYFILL (-2)].yystate.yyloc).first_line); ((*yyvalp).node)->str1 = strdup("/="); ((*yyvalp).node)->a = (YY_CAST (yyGLRStackItem const *, yyvsp)[YYFILL (-2)].yystate.yysemantics.yyval.node); ((*yyvalp).node)->b = (YY_CAST (yyGLRStackItem const *, yyvsp)[YYFILL (0)].yystate.yysemantics.yyval.node); }
 #line 2522 "src/parser.c"
     break;
 
   case 127: /* opt_arg_list: %empty  */
-#line 607 "src/parser.y"
+#line 650 "src/parser.y"
                    { ((*yyvalp).list) = ast_list_new(); }
 #line 2528 "src/parser.c"
     break;
 
   case 128: /* opt_arg_list: arg_list  */
-#line 608 "src/parser.y"
+#line 651 "src/parser.y"
                     { ((*yyvalp).list) = (YY_CAST (yyGLRStackItem const *, yyvsp)[YYFILL (0)].yystate.yysemantics.yyval.list); }
 #line 2534 "src/parser.c"
     break;
 
   case 129: /* arg_list: expr  */
-#line 612 "src/parser.y"
+#line 655 "src/parser.y"
                             { ((*yyvalp).list) = ast_list_new(); ast_list_append(&((*yyvalp).list), (YY_CAST (yyGLRStackItem const *, yyvsp)[YYFILL (0)].yystate.yysemantics.yyval.node)); }
 #line 2540 "src/parser.c"
     break;
 
   case 130: /* arg_list: arg_list ',' expr  */
-#line 613 "src/parser.y"
+#line 656 "src/parser.y"
                              { ((*yyvalp).list) = (YY_CAST (yyGLRStackItem const *, yyvsp)[YYFILL (-2)].yystate.yysemantics.yyval.list); ast_list_append(&((*yyvalp).list), (YY_CAST (yyGLRStackItem const *, yyvsp)[YYFILL (0)].yystate.yysemantics.yyval.node)); }
 #line 2546 "src/parser.c"
     break;
@@ -4309,7 +4309,7 @@ yypdumpstack (yyGLRStack* yystackp)
 
 
 
-#line 616 "src/parser.y"
+#line 659 "src/parser.y"
 
 
 void yyerror(const char *msg) {
