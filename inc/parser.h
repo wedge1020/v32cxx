@@ -39,13 +39,6 @@
 #if YYDEBUG
 extern int yydebug;
 #endif
-/* "%code requires" blocks.  */
-#line 24 "src/parser.y"
-
-    #include "ast.h"
-    #include "symtab.h"
-
-#line 49 "inc/parser.h"
 
 /* Token kinds.  */
 #ifndef YYTOKENTYPE
@@ -107,7 +100,7 @@ extern int yydebug;
 #if ! defined YYSTYPE && ! defined YYSTYPE_IS_DECLARED
 union YYSTYPE
 {
-#line 40 "src/parser.y"
+#line 55 "src/parser.y"
 
     AstNode *node;
     AstList list;
@@ -116,7 +109,7 @@ union YYSTYPE
     double fval;
     AccessSpec access;
 
-#line 120 "inc/parser.h"
+#line 113 "inc/parser.h"
 
 };
 typedef union YYSTYPE YYSTYPE;

@@ -33,6 +33,18 @@ AstNode *ast_ident(const char *name, int line) {
     return n;
 }
 
+AstNode *ast_wrap_pointer(AstNode *inner, int line) {
+    AstNode *n = ast_new(AST_POINTER_TYPE, line);
+    n->a = inner;
+    return n;
+}
+
+AstNode *ast_wrap_reference(AstNode *inner, int line) {
+    AstNode *n = ast_new(AST_REFERENCE_TYPE, line);
+    n->a = inner;
+    return n;
+}
+
 static const char *kind_name(AstKind k) {
     switch (k) {
         case AST_PROGRAM: return "Program";
@@ -66,6 +78,8 @@ static const char *kind_name(AstKind k) {
         case AST_THIS: return "This";
         case AST_NEW: return "New";
         case AST_DELETE: return "Delete";
+        case AST_POINTER_TYPE: return "PointerType";
+        case AST_REFERENCE_TYPE: return "ReferenceType";
     }
     return "?";
 }

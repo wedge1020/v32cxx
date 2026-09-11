@@ -44,7 +44,9 @@ typedef enum {
     AST_BOOL_LIT,         /* ival=0/1 */
     AST_THIS,
     AST_NEW,              /* type=type being allocated */
-    AST_DELETE            /* a=expr being deleted */
+    AST_DELETE,           /* a=expr being deleted */
+    AST_POINTER_TYPE,     /* a=pointee type -- represents "T *" */
+    AST_REFERENCE_TYPE    /* a=referent type -- represents "T &" */
 } AstKind;
 
 typedef enum { ACC_PUBLIC, ACC_PRIVATE, ACC_PROTECTED } AccessSpec;
@@ -78,6 +80,20 @@ void ast_list_append(AstList *list, AstNode *node);
 
 AstNode *ast_new(AstKind kind, int line);
 AstNode *ast_ident(const char *name, int line);
+
+/* Wrap `inner` (a type node) as "inner *" / "inner &". Used wherever a
+ * declarator's pointer_opt (0=none, 1=*, 2=&) needs to be attached to the
+ * type it modifies, rather than silently discarded -- see var_decl, param,
+ * and typedef_decl in parser.y.
+ *
+ * LIMITATION: only a single level of indirection is modeled (`Type *p` or
+ * `Type &r`), not `Type **pp` or combinations like `Type *&ref`
+ * (reference-to-pointer, which is legal C++). Extending pointer_opt to a
+ * proper chain is the natural next step if/when you need it -- change it
+ * from a single int to a small list of modifier tags and call
+ * ast_wrap_pointer/ast_wrap_reference once per entry, innermost first. */
+AstNode *ast_wrap_pointer(AstNode *inner, int line);
+AstNode *ast_wrap_reference(AstNode *inner, int line);
 
 void ast_dump(const AstNode *node, int indent);
 

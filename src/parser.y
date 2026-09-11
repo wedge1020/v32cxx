@@ -21,21 +21,36 @@
  * unambiguous without needing the parser to fork.
  */
 
-%code requires {
-    #include "ast.h"
-    #include "symtab.h"
-}
-
-%code top {
-    #include <stdio.h>
-    #include <stdlib.h>
-    #include <string.h>
-    #include "driver.h"
-}
+%{
+/*
+ * Classic yacc-style prologue instead of %code requires/%code top: some
+ * systems (notably macOS, where /usr/bin/bison is frozen at GNU bison 2.3
+ * for licensing reasons) predate %code, which bison only added in 2.4.
+ * This form works on every bison version, old or new.
+ *
+ * NOTE: unlike %code requires, this block is emitted into parser.tab.c
+ * but is NOT copied into the generated parser.tab.h. That's fine here:
+ * the union below only needs AstNode/AstList/Symbol/etc. to be *visible*,
+ * and every other file that includes parser.tab.h (lexer.l, main.c)
+ * already includes driver.h -- which pulls in ast.h and symtab.h -- first.
+ * If you add a new .c file that includes parser.tab.h directly, make sure
+ * it includes driver.h (or ast.h+symtab.h) immediately before it.
+ */
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include "ast.h"
+#include "symtab.h"
+#include "driver.h"
+%}
 
 %glr-parser
 %locations
 %define parse.error verbose
+/* %error-verbose is the old (but still supported) spelling of what newer
+ * bison calls `%define parse.error verbose`. Using the old spelling keeps
+ * this grammar buildable on both bison 2.3 and current bison; you'll get
+ * a harmless "deprecated directive" warning on newer bison, nothing more. */
 
 %union {
     AstNode *node;
@@ -295,13 +310,12 @@ param_list:
 param:
     type_spec pointer_opt IDENTIFIER
         {
-            /* TODO: pointer_opt ($2: 0=value,1=*,2=&) isn't wrapped onto
-             * the type node yet -- a fuller version would introduce a
-             * Pointer/Reference type-modifier AST node here. */
             symtab_insert(g_symtab, g_symtab->current, $3, SYM_PARAM);
             $$ = ast_new(AST_PARAM, @3.first_line);
             $$->str1 = strdup($3);
-            $$->type = $1;
+            $$->type = ($2 == 1) ? ast_wrap_pointer($1, @1.first_line)
+                     : ($2 == 2) ? ast_wrap_reference($1, @1.first_line)
+                     : $1;
         }
     ;
 
@@ -372,7 +386,9 @@ var_decl:
             symtab_insert(g_symtab, g_symtab->current, $3, SYM_VAR);
             $$ = ast_new(AST_VAR_DECL, @3.first_line);
             $$->str1 = strdup($3);
-            $$->type = $1;
+            $$->type = ($2 == 1) ? ast_wrap_pointer($1, @1.first_line)
+                     : ($2 == 2) ? ast_wrap_reference($1, @1.first_line)
+                     : $1;
             $$->a = $4;
         }
     ;
@@ -388,7 +404,9 @@ typedef_decl:
             symtab_insert(g_symtab, g_symtab->current, $4, SYM_TYPEDEF);
             $$ = ast_new(AST_TYPEDEF_DECL, @4.first_line);
             $$->str1 = strdup($4);
-            $$->type = $2;
+            $$->type = ($3 == 1) ? ast_wrap_pointer($2, @2.first_line)
+                     : ($3 == 2) ? ast_wrap_reference($2, @2.first_line)
+                     : $2;
         }
     ;
 
