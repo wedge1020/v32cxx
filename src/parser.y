@@ -106,7 +106,7 @@
 %token PLUSEQ MINUSEQ STAREQ SLASHEQ INC DEC
 
 %type <node> program top_decl namespace_decl class_decl member
-%type <node> func_decl func_def func_header var_decl typedef_decl
+%type <node> func_decl func_def func_header var_decl typedef_decl out_of_line_def
 %type <node> block stmt for_init opt_initializer
 %type <node> expr expr_opt unary_expr postfix_expr primary_expr
 %type <node> qualified_id_expr qualified_type type_spec param
@@ -154,6 +154,7 @@ top_decl:
     | func_decl ';'     { $$ = $1; }
     | var_decl ';'       { $$ = $1; }
     | typedef_decl ';'   { $$ = $1; }
+    | out_of_line_def    { $$ = $1; }
     ;
 
 /* ---- namespaces --------------------------------------------------- */
@@ -337,6 +338,78 @@ func_def:
             $$->kind = AST_FUNC_DEF;
             $$->a = $3;
             symtab_pop_scope(g_symtab);
+        }
+    ;
+
+/* ---- out-of-line member definitions: ReturnType Class::method(...) {},
+ * Class::Class(...) {} (constructor), Class::~Class() {} (destructor).
+ *
+ * SCOPE: single-level qualifiers only, matching the rest of this skeleton
+ * (no nested classes). `qname_prefix` will happily parse a longer chain
+ * like `v32::Timer::method`, but the semantic-analysis pass currently
+ * resolves against a *flat* class registry keyed by the class's bare
+ * name, using only the *last* component of the chain -- so a namespaced
+ * class's out-of-line definitions aren't correctly scoped yet. See the
+ * TODO in sema.c's attach_out_of_line() before relying on that case.
+ *
+ * These productions don't try to verify the qualifier actually names a
+ * real, previously-declared class, or that a matching prototype exists in
+ * it -- that's exactly the job handed to sema_run() in sema.c. The parser
+ * just records the qualifier chain (as an AST_QUALIFIED_ID) on the node's
+ * `b` slot -- see the AST_FUNC_DECL/AST_FUNC_DEF comments in ast.h -- and
+ * gets out of the way.
+ *
+ * CONFLICT NOTE: adding a new type_spec-starting alternative here sits in
+ * exactly the same states (2/69/102) already flagged by the %expect 21 at
+ * the top of this file for the var_decl/func_decl ambiguity. Rebuild with
+ * `bison -Wcounterexamples` after this change and update %expect to
+ * whatever new count you get -- don't assume it's still 21. If any new
+ * counterexample involves something *other* than the declaration-vs-
+ * function-start pattern already documented there, treat that as a real
+ * bug to chase, not another one to wave through.
+ */
+
+out_of_line_def:
+    type_spec qname_prefix IDENTIFIER '(' { symtab_push_scope(g_symtab, NULL, 0); } opt_param_list ')' block
+        {
+            $$ = ast_new(AST_FUNC_DEF, @1.first_line);
+            $$->str1 = strdup($3);
+            $$->type = $1;
+            $$->list = $6;
+            $$->a = $8;
+            $$->b = ast_new(AST_QUALIFIED_ID, @2.first_line);
+            $$->b->list = $2;
+            symtab_pop_scope(g_symtab);
+        }
+    | qname_prefix TYPE_NAME '(' { symtab_push_scope(g_symtab, NULL, 0); } opt_param_list ')' block
+        {
+            /* Constructor: Class::Class(...) {} -- the name after "::" is
+             * TYPE_NAME because it's the class's own already-registered
+             * name, same trick as the in-class constructor rule. */
+            $$ = ast_new(AST_FUNC_DEF, @1.first_line);
+            $$->str1 = strdup($2);
+            $$->type = NULL;
+            $$->list = $5;
+            $$->a = $7;
+            $$->b = ast_new(AST_QUALIFIED_ID, @1.first_line);
+            $$->b->list = $1;
+            symtab_pop_scope(g_symtab);
+        }
+    | qname_prefix '~' TYPE_NAME '(' ')' block
+        {
+            /* Destructor: Class::~Class() {} -- never takes parameters, so
+             * no function-scope push/pop is needed here (unlike the two
+             * alternatives above). */
+            $$ = ast_new(AST_FUNC_DEF, @1.first_line);
+            size_t len = strlen($3) + 2;
+            char *dtor_name = malloc(len);
+            snprintf(dtor_name, len, "~%s", $3);
+            $$->str1 = dtor_name;
+            $$->type = NULL;
+            $$->list = ast_list_new();
+            $$->a = $6;
+            $$->b = ast_new(AST_QUALIFIED_ID, @1.first_line);
+            $$->b->list = $1;
         }
     ;
 

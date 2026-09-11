@@ -2,6 +2,7 @@
 #include <stdlib.h>
 #include "driver.h"
 #include "parser.h"
+#include "sema.h"
 
 /* Definitions for the globals declared extern in driver.h. */
 SymTab *g_symtab = NULL;
@@ -30,6 +31,13 @@ int main(int argc, char **argv) {
     if (rc == 0 && g_program != NULL) {
         printf("---- parse OK: AST for %s ----\n", g_current_filename);
         ast_dump(g_program, 0);
+
+        int sema_errors = sema_run(g_program);
+        sema_dump(g_program);
+        if (sema_errors > 0) {
+            fprintf(stderr, "---- %d semantic error(s) in %s ----\n", sema_errors, g_current_filename);
+            rc = 1;
+        }
     } else {
         fprintf(stderr, "---- parse failed for %s ----\n", g_current_filename);
     }

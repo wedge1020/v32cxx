@@ -20,7 +20,12 @@ typedef enum {
     AST_VAR_DECL,         /* str1=name, type=declared type, a=initializer or NULL */
     AST_TYPEDEF_DECL,     /* str1=new name, type=underlying type */
     AST_FUNC_DECL,        /* str1=name, type=return type (NULL for ctor/dtor),
-                              list=params, access, a=NULL (no body) */
+                              list=params, access, a=NULL (no body).
+                              b=NULL normally; only ever non-NULL on an
+                              AST_FUNC_DEF built by out_of_line_def in
+                              parser.y, where b=AST_QUALIFIED_ID holding
+                              the Class:: (or Namespace::Class::) qualifier
+                              chain the definition was written against. */
     AST_FUNC_DEF,         /* same as AST_FUNC_DECL but a=body (AST_BLOCK) */
     AST_PARAM,            /* str1=name, type=param type */
     AST_BLOCK,            /* list=statements */
@@ -73,6 +78,19 @@ struct AstNode {
 
     AstNode *a, *b, *c, *d;
     AstList list;
+
+    /*
+     * Opaque annotation slot for later compiler passes (semantic
+     * analysis, lowering, ...) to attach computed, pass-specific
+     * information without growing this struct per feature. NULL until a
+     * pass populates it; what it points to depends on both node->kind and
+     * which pass has run. Currently used by sema.c:
+     *   - AST_CLASS_DECL  -> ClassLayout*   (see sema.h)
+     *   - AST_FUNC_DECL/AST_FUNC_DEF -> FuncSemaInfo* (see sema.h)
+     * ast_new() zero-initializes this via calloc, so it's safely NULL
+     * on every node until something sets it.
+     */
+    void *sema_info;
 };
 
 AstList ast_list_new(void);
