@@ -60,40 +60,121 @@ static void free_registry(void) {
     g_class_registry = NULL;
 }
 
-/* ---- pass 1: collect every class, recursing into namespace bodies ---- */
+/* ---- flat typedef registry, keyed by bare (unqualified) name ----------
+ *
+ * NOTE: this is a SEPARATE mechanism from symtab.c's SYM_TYPEDEF entries,
+ * not a duplicate of it. symtab's registry exists so the LEXER can decide
+ * TYPE_NAME vs IDENTIFIER while parsing is still in progress; it doesn't
+ * record what a typedef's underlying type actually IS, just that the name
+ * is one. This registry exists later, after parsing, specifically to
+ * answer "what does this typedef resolve to" for type comparison -- a
+ * different question, needed by a different pass, which is why it's a
+ * different, sema-owned structure rather than an extension of symtab's.
+ *
+ * Same flat/bare-name simplification as the class registry above, and for
+ * the same reason: no attempt to scope typedefs by namespace. Only
+ * top-level and namespace-nested typedefs are collected (see
+ * collect_declarations below) -- typedefs local to a function body are
+ * intentionally NOT registered here, since they're correctly invisible
+ * outside that function in real C++ anyway (nothing outside it could
+ * reference them in a parameter type), so there's nothing useful to
+ * resolve them against for the purposes this registry exists for
+ * (comparing PARAMETER types across declarations).
+ */
 
-static void collect_classes(AstList *decls) {
+typedef struct TypedefRegEntry {
+    const char *name;
+    AstNode *underlying_type;   /* the AST_TYPEDEF_DECL's own `type` field */
+    struct TypedefRegEntry *next;
+} TypedefRegEntry;
+
+static TypedefRegEntry *g_typedef_registry = NULL;
+
+static void register_typedef(AstNode *typedef_decl) {
+    TypedefRegEntry *e = malloc(sizeof(TypedefRegEntry));
+    e->name = typedef_decl->str1;
+    e->underlying_type = typedef_decl->type;
+    e->next = g_typedef_registry;
+    g_typedef_registry = e;
+}
+
+static AstNode *find_typedef_target(const char *name) {
+    for (TypedefRegEntry *e = g_typedef_registry; e != NULL; e = e->next) {
+        if (strcmp(e->name, name) == 0) return e->underlying_type;
+    }
+    return NULL;
+}
+
+static void free_typedef_registry(void) {
+    TypedefRegEntry *e = g_typedef_registry;
+    while (e != NULL) {
+        TypedefRegEntry *next = e->next;
+        free(e);
+        e = next;
+    }
+    g_typedef_registry = NULL;
+}
+
+/* ---- pass 1: collect every class AND typedef, recursing into namespace
+ * bodies (was collect_classes; renamed since it now does both) --------- */
+
+static void collect_declarations(AstList *decls) {
     for (int i = 0; i < decls->count; i++) {
         AstNode *n = decls->items[i];
         if (n->kind == AST_CLASS_DECL) {
             register_class(n);
+        } else if (n->kind == AST_TYPEDEF_DECL) {
+            register_typedef(n);
         } else if (n->kind == AST_NAMESPACE_DECL) {
-            collect_classes(&n->list);
+            collect_declarations(&n->list);
         }
     }
 }
 
 /* ---- type-signature comparison and mangling ---------------------------
  *
- * PURELY SYNTACTIC, not semantic: two type AST nodes are compared by their
- * written shape (same kind, same names, same pointer/reference nesting),
- * NOT by resolving typedefs to their underlying type. That means:
- *
- *   typedef int MyInt;
- *   void f(int x);
- *   void f(MyInt x);
- *
- * ...is treated as two DIFFERENT signatures here, when real C++ would
- * consider it an invalid redeclaration (MyInt IS int). Fixing that needs
- * typedef resolution -- walking the symbol table to find what a TYPE_NAME
- * naming a typedef actually resolves to, recursively (a typedef can name
- * another typedef) -- which needs access to the SymTab that parsing built,
- * not just the AST sema.c currently walks. Worth doing before this is
- * trusted for anything beyond straightforward, typedef-free overloads;
- * flagged rather than silently wrong.
+ * Typedef-transparent as of this pass (previously purely syntactic -- see
+ * resolve_typedef_chain below for the fix and its own remaining limits).
  */
 
+/* Follows an AST_IDENT that names a registered typedef through to its
+ * underlying type, repeatedly (a typedef may alias another typedef),
+ * stopping at whichever comes first: a non-typedef AST_IDENT (a built-in
+ * keyword type or an actual class name), or any non-AST_IDENT node
+ * (pointer/reference/qualified-id) -- resolution doesn't need to chase
+ * further at THIS level in that case, because types_equal's and
+ * type_signature_str's own recursion into pointer/reference contents
+ * (via ->a) re-invokes this same resolution one level down, so e.g.
+ * `typedef int *IntPtr;` used against a literal `int *` still compares
+ * correctly: resolving "IntPtr" yields the AST_POINTER_TYPE node itself,
+ * whose ->a ("int") gets re-resolved (a no-op here, but would chase
+ * further if int itself were, hypothetically, ALSO a typedef name) when
+ * the pointee is compared.
+ *
+ * Defensively bounded against a typedef chain that resolves back to
+ * itself, though that shouldn't be constructible in the first place given
+ * this project's single-pass parsing model: a typedef can only name a
+ * type that's already been declared, so `typedef A B; typedef B A;` can't
+ * happen -- A would have to already exist, as something other than B,
+ * before the second line could even parse.
+ */
+static const AstNode *resolve_typedef_chain(const AstNode *type) {
+    int guard = 0;
+    while (type != NULL && type->kind == AST_IDENT && guard < 64) {
+        AstNode *target = find_typedef_target(type->str1);
+        if (target == NULL) break;
+        type = target;
+        guard++;
+    }
+    return type;
+}
+
 static int types_equal(const AstNode *t1, const AstNode *t2) {
+    if (t1 == NULL || t2 == NULL) {
+        return t1 == t2;
+    }
+    t1 = resolve_typedef_chain(t1);
+    t2 = resolve_typedef_chain(t2);
     if (t1 == NULL || t2 == NULL) {
         return t1 == t2;
     }
@@ -140,7 +221,21 @@ static int param_lists_match(const AstList *a, const AstList *b) {
  * `v32::Timer &` -> "v32_Timer_ref". "::" and "*"/"&" aren't legal in a C
  * identifier, hence the "_"-joining and "_ptr"/"_ref" suffixes instead of
  * just splicing the written syntax in verbatim. */
+/* Renders a type as a short, C-identifier-safe fragment for use inside a
+ * mangled name -- e.g. Timer -> "Timer", `Timer *` -> "Timer_ptr",
+ * `v32::Timer &` -> "v32_Timer_ref". "::" and "*"/"&" aren't legal in a C
+ * identifier, hence the "_"-joining and "_ptr"/"_ref" suffixes instead of
+ * just splicing the written syntax in verbatim.
+ *
+ * Typedef-transparent, same as types_equal (and via the same
+ * resolve_typedef_chain): `typedef int MyInt; void f(MyInt);` mangles
+ * using "int", not "MyInt". That's deliberate, not a missed rename -- it
+ * keeps this consistent with types_equal considering the two signatures
+ * identical; mangling one of them by its typedef spelling and the other
+ * by its underlying spelling would produce two DIFFERENT C names for
+ * what's supposed to be recognized as the same signature. */
 static char *type_signature_str(const AstNode *type) {
+    type = resolve_typedef_chain(type);
     if (type == NULL) {
         return strdup("void");
     }
@@ -210,10 +305,44 @@ static char *param_signature_str(const AstList *params) {
  * destructor it is, so the (redundant) original class name isn't repeated
  * inside the dtor's own name component.
  */
+/* Maps an "operator+"-shaped name (always exactly this spelling -- see
+ * operator_symbol in parser.y, which is the only place these strings get
+ * constructed) to a C-identifier-safe fragment. Exact-string match, so
+ * declaration order doesn't matter (e.g. checking "<=" before "<" isn't
+ * required the way a prefix-based scheme would need). Falls back to
+ * "op_unknown" for anything unrecognized, which shouldn't be reachable
+ * given the grammar only ever builds names from this fixed list -- fails
+ * safe (a working but oddly-named mangled name) rather than crashing if
+ * that assumption is ever wrong. */
+static const char *mangle_operator_symbol(const char *name) {
+    const char *sym = name + 8; /* skip past the literal "operator" prefix */
+    if (strcmp(sym, "+") == 0) return "op_add";
+    if (strcmp(sym, "-") == 0) return "op_sub";
+    if (strcmp(sym, "*") == 0) return "op_mul";
+    if (strcmp(sym, "/") == 0) return "op_div";
+    if (strcmp(sym, "=") == 0) return "op_assign";
+    if (strcmp(sym, "!") == 0) return "op_not";
+    if (strcmp(sym, "==") == 0) return "op_eq";
+    if (strcmp(sym, "!=") == 0) return "op_ne";
+    if (strcmp(sym, "<") == 0) return "op_lt";
+    if (strcmp(sym, ">") == 0) return "op_gt";
+    if (strcmp(sym, "<=") == 0) return "op_le";
+    if (strcmp(sym, ">=") == 0) return "op_ge";
+    if (strcmp(sym, "+=") == 0) return "op_addeq";
+    if (strcmp(sym, "-=") == 0) return "op_subeq";
+    if (strcmp(sym, "*=") == 0) return "op_muleq";
+    if (strcmp(sym, "/=") == 0) return "op_diveq";
+    if (strcmp(sym, "[]") == 0) return "op_index";
+    if (strcmp(sym, "()") == 0) return "op_call";
+    return "op_unknown";
+}
+
 static char *mangle(const char *class_name, const char *method_name, const AstList *params) {
     const char *name_part = method_name;
     if (method_name[0] == '~') {
         name_part = "dtor";
+    } else if (strncmp(method_name, "operator", 8) == 0) {
+        name_part = mangle_operator_symbol(method_name);
     }
 
     char *param_sig = param_signature_str(params);
@@ -408,11 +537,23 @@ static void compute_layout(AstNode *class_decl) {
     layout->data_members = ast_list_new();
     layout->methods = ast_list_new();
 
+    /* C++'s default access for `class` (never `struct`, which this
+     * project doesn't support) is private when no access-specifier
+     * precedes the first member -- e.g. a class body that starts
+     * straight into `int x;` with no leading `public:`/`private:`. */
+    AccessSpec current_access = ACC_PRIVATE;
+
     for (int i = 0; i < class_decl->list.count; i++) {
         AstNode *member = class_decl->list.items[i];
+        if (member->kind == AST_ACCESS_SPEC) {
+            current_access = member->access;
+            continue;
+        }
         if (member->kind == AST_VAR_DECL) {
+            member->access = current_access;
             ast_list_append(&layout->data_members, member);
         } else if (member->kind == AST_FUNC_DECL || member->kind == AST_FUNC_DEF) {
+            member->access = current_access;
             ast_list_append(&layout->methods, member);
             if (member->sema_info == NULL) {
                 /* Wasn't touched by attach_out_of_line (either it's an
@@ -421,9 +562,6 @@ static void compute_layout(AstNode *class_decl) {
                 member->sema_info = make_func_info(class_decl->str1, member->str1, &member->list, 0);
             }
         }
-        /* AST_ACCESS_SPEC markers are intentionally not represented in
-         * either list -- access control enforcement (is this member
-         * reachable from here?) isn't implemented yet, see the README. */
     }
 
     if (class_decl->str2 != NULL) {
@@ -480,14 +618,16 @@ static void mangle_free_functions(AstList *decls) {
 
 int sema_run(AstNode *program) {
     g_error_count = 0;
-    free_registry(); /* defensive: in case sema_run() is ever called twice in one process */
+    free_registry();          /* defensive: in case sema_run() is ever called twice in one process */
+    free_typedef_registry();  /* same */
 
-    collect_classes(&program->list);
+    collect_declarations(&program->list);
     attach_out_of_line(&program->list);
     compute_layouts(&program->list);
     mangle_free_functions(&program->list);
 
     free_registry();
+    free_typedef_registry();
     return g_error_count;
 }
 
@@ -497,12 +637,21 @@ static void indent_line(int indent) {
     for (int i = 0; i < indent; i++) fputs("  ", stdout);
 }
 
+static const char *access_str(AccessSpec a) {
+    switch (a) {
+        case ACC_PUBLIC: return "public";
+        case ACC_PRIVATE: return "private";
+        case ACC_PROTECTED: return "protected";
+    }
+    return "?";
+}
+
 static void dump_class_layout(const AstNode *class_decl, int indent) {
     ClassLayout *layout = (ClassLayout *)class_decl->sema_info;
 
     indent_line(indent);
     printf("class %s", class_decl->str1);
-    if (class_decl->str2 != NULL) printf(" : %s", class_decl->str2);
+    if (class_decl->str2 != NULL) printf(" : %s %s", access_str(class_decl->access), class_decl->str2);
     printf("\n");
 
     if (layout == NULL) {
@@ -514,8 +663,9 @@ static void dump_class_layout(const AstNode *class_decl, int indent) {
     indent_line(indent + 1);
     printf("data members:\n");
     for (int i = 0; i < layout->data_members.count; i++) {
+        AstNode *dm = layout->data_members.items[i];
         indent_line(indent + 2);
-        printf("%s\n", layout->data_members.items[i]->str1);
+        printf("%s [%s]\n", dm->str1, access_str(dm->access));
     }
 
     indent_line(indent + 1);
@@ -524,11 +674,12 @@ static void dump_class_layout(const AstNode *class_decl, int indent) {
         AstNode *m = layout->methods.items[i];
         FuncSemaInfo *info = (FuncSemaInfo *)m->sema_info;
         indent_line(indent + 2);
-        printf("%s -> %s%s%s\n",
+        printf("%s -> %s%s%s [%s]\n",
                m->str1,
                info != NULL ? info->mangled_name : "(unmangled)",
                m->kind == AST_FUNC_DEF ? " [has body]" : " [prototype only]",
-               m->ival == 1 ? " [virtual]" : "");
+               m->ival == 1 ? " [virtual]" : "",
+               access_str(m->access));
     }
 
     if (layout->base_class_decl != NULL) {

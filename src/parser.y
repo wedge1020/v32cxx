@@ -110,7 +110,7 @@
 %token CLASS PUBLIC PRIVATE PROTECTED NAMESPACE TYPEDEF
 %token RETURN IF ELSE WHILE FOR
 %token INT_KW FLOAT_KW VOID_KW BOOL_KW CHAR_KW
-%token NEW DELETE THIS VIRTUAL TRUE_KW FALSE_KW
+%token NEW DELETE THIS VIRTUAL TRUE_KW FALSE_KW OPERATOR
 %token COLONCOLON ARROW EQ NE LE GE ANDAND OROR
 %token PLUSEQ MINUSEQ STAREQ SLASHEQ INC DEC
 
@@ -118,12 +118,12 @@
 %type <node> func_decl func_def func_header var_decl typedef_decl out_of_line_def
 %type <node> block stmt for_init opt_initializer
 %type <node> expr expr_opt unary_expr postfix_expr primary_expr
-%type <node> qualified_id_expr qualified_type type_spec param
+%type <node> qualified_id_expr qualified_type type_spec param opt_base
 
 %type <list> top_decl_list member_list stmt_list
 %type <list> param_list opt_param_list arg_list opt_arg_list qname_prefix
 
-%type <str> opt_base name_tok
+%type <str> name_tok func_name operator_symbol
 %type <access> access_spec
 %type <ival> pointer_opt opt_virtual
 
@@ -245,7 +245,12 @@ class_decl:
             symtab_pop_scope(g_symtab);
             $$ = ast_new(AST_CLASS_DECL, @1.first_line);
             $$->str1 = strdup($2);
-            $$->str2 = $3 ? strdup($3) : NULL;
+            $$->str2 = $3 ? strdup($3->str1) : NULL;
+            /* Inheritance access-specifier (public/private/protected),
+             * carried on $3 (see opt_base) -- meaningless when $3/str2 is
+             * NULL (no base at all), but ACC_PUBLIC is a harmless inert
+             * default for that case rather than leaving it uninitialized. */
+            $$->access = $3 ? $3->access : ACC_PUBLIC;
             $$->list = $6;
             g_current_class_sym = NULL;
         }
@@ -253,12 +258,26 @@ class_decl:
 
 opt_base:
       /* empty */                { $$ = NULL; }
-    | ':' PUBLIC TYPE_NAME        { $$ = $3; }
-    | ':' PRIVATE TYPE_NAME       { $$ = $3; }
-    /* TODO: the inheritance access-specifier (public/private above) isn't
-     * carried onto the AST yet -- $$ only keeps the base class name.
-     * Stash it (e.g. reuse AstNode.access) once the lowering pass needs
-     * to know whether inheritance is public or private. */
+    | ':' PUBLIC TYPE_NAME
+        {
+            /* Represented as a plain AST_IDENT carrying the base name in
+             * str1 and the inheritance access-specifier in ->access --
+             * reusing ast_ident() rather than adding a new semantic-value
+             * type just to pair a string with an enum. class_decl's
+             * action below unpacks both fields. */
+            $$ = ast_ident($3, @3.first_line);
+            $$->access = ACC_PUBLIC;
+        }
+    | ':' PRIVATE TYPE_NAME
+        {
+            $$ = ast_ident($3, @3.first_line);
+            $$->access = ACC_PRIVATE;
+        }
+    | ':' PROTECTED TYPE_NAME
+        {
+            $$ = ast_ident($3, @3.first_line);
+            $$->access = ACC_PROTECTED;
+        }
     ;
 
 member_list:
@@ -309,8 +328,68 @@ opt_virtual:
  * than committing early -- nothing to fix here, just something to
  * remember if this area of the grammar gets restructured later. */
 
+/* ---- operator overloading: `operator+`, `operator==`, `operator[]`, etc.
+ * are just another spelling of "the function's own name" wherever
+ * func_header spells one out of IDENTIFIER -- func_name below is a drop-in
+ * replacement for IDENTIFIER in exactly those spots (func_header's first
+ * alternative here, and out_of_line_def's regular-method alternative),
+ * producing an ordinary string like "operator+" that flows through
+ * everything downstream (attach_out_of_line matching, vtable slot keys)
+ * exactly like any other function name. The one place that DOES need to
+ * know it's an operator is sema.c's mangle(), which maps it to a
+ * C-identifier-safe fragment (op_add, op_eq, ...) the same way it already
+ * maps a destructor's "~Foo" to "dtor" -- see mangle_operator_symbol()
+ * there.
+ *
+ * Deliberately supported: binary +, -, *, /; comparisons ==, !=, <, >,
+ * <=, >=; compound assignment +=, -=, *=, /=; plain assignment =; unary
+ * !; subscript []; call (). Unary vs. binary +/- needs no special
+ * grammar handling at all -- it falls out entirely from how many
+ * parameters the surrounding param list happens to have, exactly the
+ * same way it would for any other overloaded method name.
+ *
+ * Deliberately NOT supported yet:
+ *   - `<<`/`>>` -- this project doesn't have shift-operator TOKENS at all
+ *     yet (not even as ordinary bitwise operators in `expr`), so there's
+ *     nothing for operator_symbol to reuse; would need its own lexer/expr
+ *     work first, unrelated to operator overloading specifically.
+ *   - `++`/`--` -- real C++ disambiguates prefix from postfix via a
+ *     dummy, otherwise-meaningless `int` parameter on the postfix form
+ *     (`T operator++(int)`), which is a genuine special case worth
+ *     handling deliberately rather than folding in as an afterthought.
+ *   - `operator ReturnType()` (user-defined conversion operators) --
+ *     structurally different (no separate return-type token at all,
+ *     which is what everything else here assumes exists).
+ */
+
+func_name:
+      IDENTIFIER            { $$ = $1; }
+    | OPERATOR operator_symbol   { $$ = $2; }
+    ;
+
+operator_symbol:
+      '+'       { $$ = strdup("operator+"); }
+    | '-'       { $$ = strdup("operator-"); }
+    | '*'       { $$ = strdup("operator*"); }
+    | '/'       { $$ = strdup("operator/"); }
+    | '='       { $$ = strdup("operator="); }
+    | '!'       { $$ = strdup("operator!"); }
+    | EQ        { $$ = strdup("operator=="); }
+    | NE        { $$ = strdup("operator!="); }
+    | '<'       { $$ = strdup("operator<"); }
+    | '>'       { $$ = strdup("operator>"); }
+    | LE        { $$ = strdup("operator<="); }
+    | GE        { $$ = strdup("operator>="); }
+    | PLUSEQ    { $$ = strdup("operator+="); }
+    | MINUSEQ   { $$ = strdup("operator-="); }
+    | STAREQ    { $$ = strdup("operator*="); }
+    | SLASHEQ   { $$ = strdup("operator/="); }
+    | '[' ']'   { $$ = strdup("operator[]"); }
+    | '(' ')'   { $$ = strdup("operator()"); }
+    ;
+
 func_header:
-      type_spec IDENTIFIER '(' { symtab_push_scope(g_symtab, NULL, 0); } opt_param_list ')'
+      type_spec func_name '(' { symtab_push_scope(g_symtab, NULL, 0); } opt_param_list ')'
         {
             /* Overload note: this inserts every overload of `name` into
              * the same bucket, later ones shadowing earlier ones for
@@ -412,7 +491,7 @@ func_def:
  */
 
 out_of_line_def:
-    type_spec qname_prefix IDENTIFIER '(' { symtab_push_scope(g_symtab, NULL, 0); } opt_param_list ')' block
+    type_spec qname_prefix func_name '(' { symtab_push_scope(g_symtab, NULL, 0); } opt_param_list ')' block
         {
             $$ = ast_new(AST_FUNC_DEF, @1.first_line);
             $$->str1 = strdup($3);

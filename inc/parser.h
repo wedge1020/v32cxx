@@ -77,21 +77,22 @@ extern int yydebug;
     VIRTUAL = 283,                 /* VIRTUAL  */
     TRUE_KW = 284,                 /* TRUE_KW  */
     FALSE_KW = 285,                /* FALSE_KW  */
-    COLONCOLON = 286,              /* COLONCOLON  */
-    ARROW = 287,                   /* ARROW  */
-    EQ = 288,                      /* EQ  */
-    NE = 289,                      /* NE  */
-    LE = 290,                      /* LE  */
-    GE = 291,                      /* GE  */
-    ANDAND = 292,                  /* ANDAND  */
-    OROR = 293,                    /* OROR  */
-    PLUSEQ = 294,                  /* PLUSEQ  */
-    MINUSEQ = 295,                 /* MINUSEQ  */
-    STAREQ = 296,                  /* STAREQ  */
-    SLASHEQ = 297,                 /* SLASHEQ  */
-    INC = 298,                     /* INC  */
-    DEC = 299,                     /* DEC  */
-    LOWER_THAN_ELSE = 300          /* LOWER_THAN_ELSE  */
+    OPERATOR = 286,                /* OPERATOR  */
+    COLONCOLON = 287,              /* COLONCOLON  */
+    ARROW = 288,                   /* ARROW  */
+    EQ = 289,                      /* EQ  */
+    NE = 290,                      /* NE  */
+    LE = 291,                      /* LE  */
+    GE = 292,                      /* GE  */
+    ANDAND = 293,                  /* ANDAND  */
+    OROR = 294,                    /* OROR  */
+    PLUSEQ = 295,                  /* PLUSEQ  */
+    MINUSEQ = 296,                 /* MINUSEQ  */
+    STAREQ = 297,                  /* STAREQ  */
+    SLASHEQ = 298,                 /* SLASHEQ  */
+    INC = 299,                     /* INC  */
+    DEC = 300,                     /* DEC  */
+    LOWER_THAN_ELSE = 301          /* LOWER_THAN_ELSE  */
   };
   typedef enum yytokentype yytoken_kind_t;
 #endif
@@ -109,7 +110,7 @@ union YYSTYPE
     double fval;
     AccessSpec access;
 
-#line 113 "inc/parser.h"
+#line 114 "inc/parser.h"
 
 };
 typedef union YYSTYPE YYSTYPE;

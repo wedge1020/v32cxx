@@ -15,12 +15,39 @@
 typedef enum {
     AST_PROGRAM,
     AST_NAMESPACE_DECL,   /* str1=name, list=members */
-    AST_CLASS_DECL,       /* str1=name, str2=base name or NULL, list=members */
+    AST_CLASS_DECL,       /* str1=name, str2=base name or NULL, list=members.
+                              access=the inheritance access-specifier
+                              (public/private/protected on `: public Base`
+                              etc.) -- meaningless when str2 is NULL (no
+                              base at all); sema.c reads this when
+                              computing effective access of inherited
+                              members. */
     AST_ACCESS_SPEC,      /* access=the new default access for what follows */
-    AST_VAR_DECL,         /* str1=name, type=declared type, a=initializer or NULL */
+    AST_VAR_DECL,         /* str1=name, type=declared type, a=initializer or NULL.
+                              access: meaningful only once sema.c has run and
+                              this is a class member -- see compute_layout()
+                              in sema.c, which stamps each member's access
+                              level here as it walks the class body tracking
+                              AST_ACCESS_SPEC markers (defaulting to
+                              ACC_PRIVATE per `class`'s C++ default when no
+                              marker precedes it). Meaningless/unset on a
+                              free (non-member) variable declaration. */
     AST_TYPEDEF_DECL,     /* str1=new name, type=underlying type */
     AST_FUNC_DECL,        /* str1=name, type=return type (NULL for ctor/dtor),
-                              list=params, access, a=NULL (no body).
+                              list=params, a=NULL (no body).
+                              str1 for an operator overload is literally
+                              "operator+", "operator==", "operator[]", etc.
+                              (see operator_symbol in parser.y for the
+                              full supported list) -- an ordinary string,
+                              handled like any other function name
+                              everywhere except sema.c's mangle(), which
+                              maps it to a C-identifier-safe fragment
+                              (op_add, op_eq, ...) the same way it already
+                              maps a destructor's "~Foo" to "dtor".
+                              access: same meaning and same sema.c-stamped
+                              timing as on AST_VAR_DECL above -- meaningless
+                              until sema.c has run, and only meaningful at
+                              all for a class member, not a free function.
                               ival=virtual-ness: 1 if `virtual` was written
                               on THIS declaration. sema.c's vtable builder
                               may ALSO set this to 1 after parsing, on a

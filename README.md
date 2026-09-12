@@ -64,11 +64,16 @@ What parses and is understood today:
 A first slice of semantic analysis then runs over the parsed program and:
 
 - Matches out-of-line method definitions back up to their in-class
-  declaration — by name *and* parameter signature, so overloaded
-  constructors/methods attach to the right one
-- Computes each class's layout: its data members, its methods, and its
-  **vtable** — one slot per distinct virtual method in the hierarchy,
-  with overrides correctly reusing their base's slot
+  declaration — by name *and* parameter signature (typedef-transparent,
+  so a method declared using a typedef and defined using its underlying
+  type still matches correctly), so overloaded constructors/methods
+  attach to the right one
+- Computes each class's layout: its data members, its methods (each
+  tagged with its actual access level — `public`/`private`/`protected`,
+  correctly defaulting to private when a class body has no leading
+  access-specifier), and its **vtable** — one slot per distinct virtual
+  method in the hierarchy, with overrides correctly reusing their base's
+  slot
 - Assigns every function and method a mangled name that encodes its
   parameter types
 - Reports errors (unknown types, mismatched out-of-line definitions)
@@ -78,7 +83,9 @@ A first slice of semantic analysis then runs over the parsed program and:
 Vircon32 C code generation (including turning vtable slot assignments
 into a real C vtable struct and dispatch code — the *slots* are assigned,
 nothing emits them yet), real overload resolution at call sites, and
-access-control enforcement. Templates
+actually **enforcing** access control (member access is now tracked, but
+nothing yet checks whether a given reference to a member is legal from
+where it occurs). Templates
 and exceptions are intentionally not planned at all (see below). This is
 genuinely early — expect rough edges, and expect this README to need
 updating often as things change.

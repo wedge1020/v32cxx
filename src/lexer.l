@@ -72,6 +72,7 @@ ALNUM   [A-Za-z0-9_]
 "delete"     { g_last_ident_sym = NULL; return DELETE; }
 "this"       { g_last_ident_sym = NULL; return THIS; }
 "virtual"    { g_last_ident_sym = NULL; return VIRTUAL; }
+"operator"   { g_last_ident_sym = NULL; return OPERATOR; }
 "true"       { g_last_ident_sym = NULL; return TRUE_KW; }
 "false"      { g_last_ident_sym = NULL; return FALSE_KW; }
 

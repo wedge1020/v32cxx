@@ -7,13 +7,15 @@
  * First slice of semantic analysis. Deliberately narrow in scope -- see
  * the per-pass comments in sema.c and the README's "what's not here yet"
  * list for what this does NOT do (inherited-DATA-member layout merging,
- * access-control enforcement, call-site overload resolution, typedef-
- * transparent type comparison, multiple inheritance -- not planned at
+ * access-control ENFORCEMENT [tracking is done, see #3 below -- checking
+ * whether a given access from a given context is actually legal is not],
+ * call-site overload resolution, multiple inheritance -- not planned at
  * all, see the project README).
  *
  * What it DOES do, run in this order by sema_run():
  *   1. Walk the whole program (recursing into namespaces) and register
- *      every class by its bare name into a flat registry.
+ *      every class AND every typedef by its bare name into flat
+ *      registries.
  *   2. Attach out-of-line definitions (FUNC_DEF nodes produced by
  *      out_of_line_def in parser.y, identifiable by a non-NULL `b`
  *      qualifier chain) onto the matching in-class prototype -- matched
@@ -24,24 +26,30 @@
  *      duplicate is left in place but flagged (FuncSemaInfo.is_out_of_line)
  *      so a later codegen pass knows to skip re-emitting it.
  *   3. Compute a ClassLayout for every class: its data members and methods
- *      split out from AccessSpec markers, its resolved base class (by AST
- *      pointer, not just name), and its vtable (see build_vtable() in
- *      sema.c) -- assigning a slot to every virtual method, correctly
- *      reusing the base's slot for an override (even one that doesn't
- *      repeat the `virtual` keyword, matching real C++) rather than
- *      creating a second, unrelated slot.
+ *      split out from AccessSpec markers (each member's OWN access level
+ *      -- public/private/protected -- is stamped onto it as this walk
+ *      happens, defaulting to private per `class`'s C++ default when no
+ *      marker precedes the first member), its resolved base class (by AST
+ *      pointer, not just name, plus the inheritance access-specifier
+ *      carried on AST_CLASS_DECL.access), and its vtable (see
+ *      build_vtable() in sema.c) -- assigning a slot to every virtual
+ *      method, correctly reusing the base's slot for an override (even
+ *      one that doesn't repeat the `virtual` keyword, matching real C++)
+ *      rather than creating a second, unrelated slot.
  *   4. Assign every method (and every free function) a mangled name that
  *      folds in a parameter-type signature (see mangle() in sema.c), so
  *      overloads -- including out-of-line-defined ones -- get distinct
  *      names instead of colliding.
  *
- * NOTE ON #2 and #4: the type comparison behind both (and behind vtable
- * slot matching in #3) is purely syntactic (same written shape), not
- * semantic -- it does not resolve typedefs to their underlying type, so
- * `void f(int)` and `void f(MyIntTypedef)` are currently treated as
- * different signatures even where real C++ would consider them the same.
- * See the doc comment on types_equal() in sema.c for what fixing that
- * would require.
+ * NOTE ON #2, #3's vtable matching, and #4: the type comparison behind
+ * all three (types_equal/param_lists_match in sema.c) is typedef-
+ * transparent as of this pass -- `void f(int)` and `void f(MyIntTypedef)`
+ * are correctly treated as the same signature, resolving through
+ * typedef-of-typedef chains too. See resolve_typedef_chain()'s doc
+ * comment in sema.c for exactly what it does and does not chase (it's
+ * name-based typedef resolution, not full semantic type equivalence --
+ * e.g. it has no notion of `const`, since this project's type grammar
+ * doesn't parse cv-qualifiers at all yet).
  *
  * NOTE ON #3's vtable: this assigns slot NUMBERS and resolves which
  * AstNode implements each slot for each class -- it does not generate
