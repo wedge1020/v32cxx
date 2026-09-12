@@ -85,14 +85,19 @@ A first slice of semantic analysis then runs over the parsed program and:
   doesn't try to resolve everything (arithmetic results and free-function
   call results aren't type-checked at all yet), but what it does resolve,
   it checks correctly, and it never falsely flags what it can't resolve
+- **Resolves call-site overloads**: for a call like `c.add(5, 10)`, picks
+  which specific overload of `add` is actually meant, by argument count
+  and (when more than one candidate shares that count) argument type —
+  covering both method calls and free-function calls. No implicit
+  conversions are modeled, and — same honesty as the point above — a call
+  whose arguments it can't confidently type is left unresolved rather than
+  guessed at, never silently assumed to be fine
 
 **What's still missing before this is a usable transpiler:** actual
 Vircon32 C code generation (including turning vtable slot assignments
-into a real C vtable struct and dispatch code — the *slots* are assigned,
-nothing emits them yet), and real overload resolution at call sites
-(knowing *which* overload of a called function is meant — the mangling
-and matching that already exist assume you're looking at a declaration,
-not a call expression). Templates
+into a real C vtable struct and dispatch code, and the resolved overload
+info above into an actual call to the right generated C function — both
+are decided, nothing emits them into C yet). Templates
 and exceptions are intentionally not planned at all (see below). This is
 genuinely early — expect rough edges, and expect this README to need
 updating often as things change.

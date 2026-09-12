@@ -7,13 +7,14 @@
  * First slice of semantic analysis. Deliberately narrow in scope -- see
  * the per-pass comments in sema.c and the README's "what's not here yet"
  * list for what this does NOT do (inherited-DATA-member layout merging,
- * call-site overload resolution, multiple inheritance -- not planned at
- * all, see the project README).
+ * multiple inheritance -- not planned at all, see the project README).
  *
  * What it DOES do, run in this order by sema_run():
  *   1. Walk the whole program (recursing into namespaces) and register
- *      every class AND every typedef by its bare name into flat
- *      registries.
+ *      every class, typedef, AND free function by name into flat
+ *      registries (free functions grouped, not deduplicated -- a name
+ *      can have several entries, which is exactly what an overload set
+ *      is).
  *   2. Attach out-of-line definitions (FUNC_DEF nodes produced by
  *      out_of_line_def in parser.y, identifiable by a non-NULL `b`
  *      qualifier chain) onto the matching in-class prototype -- matched
@@ -47,16 +48,31 @@
  *      deliberately bounded scope (best-effort: it only checks what it
  *      can confidently resolve the type of; anything else is silently
  *      skipped, never falsely flagged either way).
+ *   6. Resolve call-site overloads: for every AST_CALL, figure out which
+ *      specific candidate (by name, then by argument count, then by
+ *      argument type when more than one candidate shares that count) the
+ *      call actually refers to, attaching the answer as a CallResolution
+ *      on the call's sema_info (see below). Runs as part of the SAME
+ *      body walk as #5 (inside check_node's AST_CALL case in sema.c),
+ *      not a separate pass over the program -- both need the same
+ *      "calling context" walk through every method/function body. Same
+ *      best-effort philosophy as #5: an argument whose type can't be
+ *      confidently determined means the call is left unresolved rather
+ *      than guessed at, UNLESS there's only one candidate by that name at
+ *      all, in which case there's no real ambiguity to resolve and arity
+ *      alone is enough. NOT implemented: any notion of implicit
+ *      conversions -- argument types must match a candidate's parameter
+ *      types exactly (typedef-transparent, nothing more permissive).
  *
- * NOTE ON #2, #3's vtable matching, and #4: the type comparison behind
- * all three (types_equal/param_lists_match in sema.c) is typedef-
- * transparent as of this pass -- `void f(int)` and `void f(MyIntTypedef)`
- * are correctly treated as the same signature, resolving through
- * typedef-of-typedef chains too. See resolve_typedef_chain()'s doc
- * comment in sema.c for exactly what it does and does not chase (it's
- * name-based typedef resolution, not full semantic type equivalence --
- * e.g. it has no notion of `const`, since this project's type grammar
- * doesn't parse cv-qualifiers at all yet).
+ * NOTE ON #2, #3's vtable matching, #4, and #6: the type comparison
+ * behind all of these (types_equal/param_lists_match in sema.c) is
+ * typedef-transparent as of this pass -- `void f(int)` and
+ * `void f(MyIntTypedef)` are correctly treated as the same signature,
+ * resolving through typedef-of-typedef chains too. See
+ * resolve_typedef_chain()'s doc comment in sema.c for exactly what it
+ * does and does not chase (it's name-based typedef resolution, not full
+ * semantic type equivalence -- e.g. it has no notion of `const`, since
+ * this project's type grammar doesn't parse cv-qualifiers at all yet).
  *
  * NOTE ON #3's vtable: this assigns slot NUMBERS and resolves which
  * AstNode implements each slot for each class -- it does not generate
@@ -112,6 +128,15 @@ typedef struct ClassLayout {
                                  * appended after. */
 } ClassLayout;
 
+/* Attached to an AST_CALL's sema_info once overload resolution (sema.c's
+ * resolve_call) determines which specific function/method a call
+ * expression refers to -- see the doc comment on AST_CALL in ast.h for
+ * exactly what it means for a call to NOT have this attached. */
+typedef struct CallResolution {
+    AstNode *resolved_target;  /* the specific FUNC_DECL/FUNC_DEF this call
+                                * resolves to. */
+} CallResolution;
+
 typedef struct FuncSemaInfo {
     char *mangled_name;   /* e.g. "Player__update__void" for a no-arg
                             * method, "Counter__Counter__int" for a
@@ -139,9 +164,15 @@ typedef struct FuncSemaInfo {
  */
 int sema_run(AstNode *program);
 
-/* Prints a human-readable summary of every class's computed layout and
- * every function's mangled name -- useful for eyeballing that sema_run()
- * did what you expected, the same role ast_dump() plays for parsing. */
+/* Prints a human-readable summary of every class's computed layout,
+ * every function's mangled name, and (in a "call resolutions:" section)
+ * every call expression that successfully resolved to a specific
+ * overload -- useful for eyeballing that sema_run() did what you
+ * expected, the same role ast_dump() plays for parsing. The call-
+ * resolution section matters more than it might look: a successfully
+ * resolved call and a silently-skipped one produce no other visible
+ * difference, so this is the only way to positively confirm resolution
+ * actually happened rather than just "didn't error". */
 void sema_dump(const AstNode *program);
 
 #endif /* SEMA_H */

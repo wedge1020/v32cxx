@@ -115,8 +115,39 @@ static void free_typedef_registry(void) {
     g_typedef_registry = NULL;
 }
 
-/* ---- pass 1: collect every class AND typedef, recursing into namespace
- * bodies (was collect_classes; renamed since it now does both) --------- */
+/* ---- flat free-function registry, grouping ALL top-level (and
+ * namespace-nested) functions -- deliberately NOT deduplicated by name,
+ * since overloads are exactly multiple entries sharing a name. Used by
+ * call-site overload resolution (resolve_call, further down) to collect
+ * every candidate a free-function call could mean. */
+
+typedef struct FreeFuncRegEntry {
+    AstNode *func;
+    struct FreeFuncRegEntry *next;
+} FreeFuncRegEntry;
+
+static FreeFuncRegEntry *g_free_func_registry = NULL;
+
+static void register_free_function(AstNode *func) {
+    FreeFuncRegEntry *e = malloc(sizeof(FreeFuncRegEntry));
+    e->func = func;
+    e->next = g_free_func_registry;
+    g_free_func_registry = e;
+}
+
+static void free_free_func_registry(void) {
+    FreeFuncRegEntry *e = g_free_func_registry;
+    while (e != NULL) {
+        FreeFuncRegEntry *next = e->next;
+        free(e);
+        e = next;
+    }
+    g_free_func_registry = NULL;
+}
+
+/* ---- pass 1: collect every class, typedef, AND free function, recursing
+ * into namespace bodies (was collect_classes; renamed since it now does
+ * all three) ------------------------------------------------------------ */
 
 static void collect_declarations(AstList *decls) {
     for (int i = 0; i < decls->count; i++) {
@@ -125,6 +156,14 @@ static void collect_declarations(AstList *decls) {
             register_class(n);
         } else if (n->kind == AST_TYPEDEF_DECL) {
             register_typedef(n);
+        } else if ((n->kind == AST_FUNC_DECL || n->kind == AST_FUNC_DEF) && n->b == NULL) {
+            /* n->b == NULL excludes an out-of-line method definition's
+             * own top-level duplicate (see attach_out_of_line) -- that's
+             * not a free function, it's a parse-time artifact of a
+             * class's method being defined outside the class body, and
+             * its real, callable identity lives on the class's member
+             * list, found via the class registry instead. */
+            register_free_function(n);
         } else if (n->kind == AST_NAMESPACE_DECL) {
             collect_declarations(&n->list);
         }
@@ -755,52 +794,87 @@ static void check_member_access(int line, const char *member_name, const AstNode
  * anything outside the deliberately-bounded scope described above --
  * NULL means "unknown", not "not a class", so callers must treat it as
  * "nothing to check" rather than an error. */
-static AstNode *resolve_expr_class(const AstNode *expr, AstNode *current_class, LocalVarType *locals) {
+/* The general form: infers an expression's static TYPE (not just "which
+ * class", though that remains the most common case that matters
+ * elsewhere in this file) -- literals get a synthesized builtin-keyword
+ * type node, `this` gets the enclosing class's name, and everything else
+ * follows the same identifier/member/call resolution the access-control
+ * pass already relied on (originally written directly inside what's now
+ * just a thin wrapper, resolve_expr_class, kept for the call sites that
+ * only ever wanted a class and predate this generalization).
+ *
+ * Note on AST_CALL here specifically: this does NOT consult a call's own
+ * already-computed CallResolution (if any) -- it re-derives a return type
+ * via first-found-by-name lookup, the same approximation access control
+ * always used. That means a nested call used as an argument to an outer,
+ * overloaded call (`outer(inner())`) has its type inferred from
+ * whichever overload of `inner` happens to be found first, not
+ * necessarily the one `inner`'s own call actually resolved to. Narrow,
+ * rare case (return-type-based evidence feeding an overload decision on
+ * an enclosing call) -- worth knowing about, not worth the pass-ordering
+ * dependency avoiding it would require (resolve_call, further down, is
+ * itself what populates a call's CallResolution, so relying on it here
+ * would mean this function's correctness depends on being called AFTER
+ * resolution has already happened for every nested call, which the
+ * single-pass tree walk doesn't guarantee in general). */
+static AstNode *infer_expr_type(const AstNode *expr, AstNode *current_class, LocalVarType *locals) {
     if (expr == NULL) return NULL;
     switch (expr->kind) {
+        case AST_INT_LIT: return ast_ident("int", expr->line);
+        case AST_FLOAT_LIT: return ast_ident("float", expr->line);
+        case AST_BOOL_LIT: return ast_ident("bool", expr->line);
+        case AST_CHAR_LIT: return ast_ident("char", expr->line);
         case AST_THIS:
-            return current_class;
+            return (current_class != NULL) ? ast_ident(current_class->str1, expr->line) : NULL;
         case AST_IDENT: {
             LocalVarType *lv = find_local(locals, expr->str1);
-            if (lv != NULL) return type_to_class(lv->type);
+            if (lv != NULL) return lv->type;
             if (current_class != NULL) {
                 AstNode *owner = NULL;
                 AstNode *member = find_member_in_hierarchy(current_class, expr->str1, &owner);
-                if (member != NULL && member->kind == AST_VAR_DECL) return type_to_class(member->type);
+                if (member != NULL && member->kind == AST_VAR_DECL) return member->type;
             }
             return NULL;
         }
         case AST_MEMBER: {
-            AstNode *obj_class = resolve_expr_class(expr->a, current_class, locals);
+            AstNode *obj_class = type_to_class(infer_expr_type(expr->a, current_class, locals));
             if (obj_class == NULL) return NULL;
             AstNode *owner = NULL;
             AstNode *member = find_member_in_hierarchy(obj_class, expr->str2, &owner);
             if (member == NULL || member->kind != AST_VAR_DECL) return NULL;
-            return type_to_class(member->type);
+            return member->type;
         }
         case AST_CALL: {
             const AstNode *callee = expr->a;
             AstNode *owner = NULL;
             AstNode *method = NULL;
             if (callee != NULL && callee->kind == AST_MEMBER) {
-                AstNode *obj_class = resolve_expr_class(callee->a, current_class, locals);
+                AstNode *obj_class = type_to_class(infer_expr_type(callee->a, current_class, locals));
                 if (obj_class == NULL) return NULL;
                 method = find_member_in_hierarchy(obj_class, callee->str2, &owner);
             } else if (callee != NULL && callee->kind == AST_IDENT && current_class != NULL) {
                 /* Unqualified call inside a method -- could be an
                  * implicit this->method(). Free-function calls (when
                  * current_class is NULL, or the name isn't a member)
-                 * aren't resolved here at all; see the TODO on
-                 * call-site overload resolution for why that needs its
-                 * own function registry, separate from this pass. */
+                 * aren't resolved here at all; that's what
+                 * resolve_call()'s free-function registry is for, kept
+                 * deliberately separate from this type-inference helper. */
                 method = find_member_in_hierarchy(current_class, callee->str1, &owner);
             }
             if (method == NULL || (method->kind != AST_FUNC_DECL && method->kind != AST_FUNC_DEF)) return NULL;
-            return type_to_class(method->type);
+            return method->type;
         }
         default:
             return NULL;
     }
+}
+
+/* Thin wrapper kept for the (access-control) call sites that only ever
+ * wanted "is this expression's type a class, and if so which one" --
+ * everything they relied on now lives in the more general
+ * infer_expr_type above. */
+static AstNode *resolve_expr_class(const AstNode *expr, AstNode *current_class, LocalVarType *locals) {
+    return type_to_class(infer_expr_type(expr, current_class, locals));
 }
 
 /* Walks every statement/expression reachable from `n`, performing the
@@ -811,6 +885,171 @@ static AstNode *resolve_expr_class(const AstNode *expr, AstNode *current_class, 
  * declarations into `*locals` as they're encountered, so later
  * statements can resolve references to them -- see LocalVarType's doc
  * comment for the block-scoping caveat. */
+/* ---- call-site overload resolution --------------------------------------
+ *
+ * Picks which specific FUNC_DECL/FUNC_DEF a call expression refers to,
+ * among however many same-named candidates exist, by matching argument
+ * COUNT always and argument TYPES (via infer_expr_type + types_equal)
+ * whenever every argument's type can be confidently determined.
+ *
+ * Deliberately best-effort, same philosophy as access control: if even
+ * one argument's type can't be pinned down and there's more than one
+ * candidate, this makes NO attempt to guess -- it silently leaves the
+ * call unresolved rather than risk a wrong pick. The single-candidate
+ * case is the one exception that doesn't need argument types at all
+ * (see resolve_call's comment on why that matters in practice).
+ *
+ * NOT implemented: any notion of implicit conversions (int-to-float
+ * promotion, a class-to-base-class pointer conversion, ...) -- argument
+ * types must match a candidate's parameter types EXACTLY (typedef-
+ * transparent, via the same types_equal used elsewhere in this file, but
+ * nothing more permissive than that). A call that real C++ would resolve
+ * via an implicit conversion may report "no matching overload" here
+ * instead.
+ */
+
+/* Collects every same-named FUNC_DECL/FUNC_DEF member candidate for a
+ * call, matching real C++ name-hiding: if `class_decl` itself declares
+ * ANY overload of `name` at all, only THOSE are candidates -- a derived
+ * class's own declarations hide a base's same-named ones entirely
+ * (no `using`-declaration support to bring them back). Only falls
+ * through to search the base class when `class_decl` has NONE. */
+static void collect_method_candidates(AstNode *class_decl, const char *name,
+                                       AstNode ***out, int *out_count, int *out_cap) {
+    while (class_decl != NULL) {
+        ClassLayout *layout = (ClassLayout *)class_decl->sema_info;
+        int found_here = 0;
+        if (layout != NULL) {
+            for (int i = 0; i < layout->methods.count; i++) {
+                AstNode *m = layout->methods.items[i];
+                if (strcmp(m->str1, name) == 0) {
+                    if (*out_count == *out_cap) {
+                        *out_cap = *out_cap ? *out_cap * 2 : 4;
+                        *out = realloc(*out, sizeof(AstNode *) * (size_t)(*out_cap));
+                    }
+                    (*out)[(*out_count)++] = m;
+                    found_here = 1;
+                }
+            }
+        }
+        if (found_here) break; /* name hiding: stop at the first class that declares this name at all */
+        class_decl = (layout != NULL) ? layout->base_class_decl : NULL;
+    }
+}
+
+static void collect_free_function_candidates(const char *name, AstNode ***out, int *out_count, int *out_cap) {
+    for (FreeFuncRegEntry *e = g_free_func_registry; e != NULL; e = e->next) {
+        if (strcmp(e->func->str1, name) == 0) {
+            if (*out_count == *out_cap) {
+                *out_cap = *out_cap ? *out_cap * 2 : 4;
+                *out = realloc(*out, sizeof(AstNode *) * (size_t)(*out_cap));
+            }
+            (*out)[(*out_count)++] = e->func;
+        }
+    }
+}
+
+static void resolve_call(AstNode *call, AstNode *current_class, LocalVarType *locals) {
+    const AstNode *callee = call->a;
+    if (callee == NULL) return;
+
+    const char *name;
+    AstNode **candidates = NULL;
+    int count = 0, cap = 0;
+
+    if (callee->kind == AST_MEMBER) {
+        AstNode *obj_class = resolve_expr_class(callee->a, current_class, locals);
+        if (obj_class == NULL) return; /* can't enumerate candidates without knowing the object's class */
+        name = callee->str2;
+        collect_method_candidates(obj_class, name, &candidates, &count, &cap);
+    } else if (callee->kind == AST_IDENT) {
+        name = callee->str1;
+        if (current_class != NULL) {
+            collect_method_candidates(current_class, name, &candidates, &count, &cap);
+        }
+        if (count == 0) {
+            /* Real C++ lookup order: member functions (just tried above)
+             * take precedence over free functions of the same name when
+             * called unqualified from inside a method. */
+            collect_free_function_candidates(name, &candidates, &count, &cap);
+        }
+    } else {
+        return; /* other callee shapes (e.g. a call through a computed
+                    function pointer) not handled */
+    }
+
+    if (count == 0) {
+        free(candidates);
+        return; /* nothing named this at all -- not this pass's job to
+                    diagnose "no such function", only to resolve overloads
+                    among candidates that DO exist by that name */
+    }
+
+    if (count == 1) {
+        /* Only one candidate exists at all -- no real overload ambiguity
+         * to resolve, so this doesn't need every argument's type known.
+         * That matters: most calls in an ordinary program aren't
+         * overloaded at all, and requiring full argument-type resolution
+         * even for those would make this pass far less useful than it
+         * should be. Still worth checking arity even here, though --
+         * real C++ would reject a call with the wrong number of
+         * arguments even when there's only one candidate to consider. */
+        if (candidates[0]->list.count == call->list.count) {
+            CallResolution *cr = calloc(1, sizeof(CallResolution));
+            cr->resolved_target = candidates[0];
+            call->sema_info = cr;
+        } else {
+            sema_error(call->line, "'%s' expects %d argument(s), but %d were given",
+                       name, candidates[0]->list.count, call->list.count);
+        }
+        free(candidates);
+        return;
+    }
+
+    /* Genuinely overloaded: need every argument's type resolved to
+     * confidently pick among candidates. */
+    AstNode **arg_types = calloc((size_t)call->list.count, sizeof(AstNode *));
+    int all_known = 1;
+    for (int i = 0; i < call->list.count; i++) {
+        arg_types[i] = infer_expr_type(call->list.items[i], current_class, locals);
+        if (arg_types[i] == NULL) all_known = 0;
+    }
+
+    if (!all_known) {
+        /* Best-effort: can't confidently disambiguate without knowing
+         * every argument's type, so this doesn't guess -- silently
+         * skipped rather than risking a false error or a wrong pick. */
+        free(arg_types);
+        free(candidates);
+        return;
+    }
+
+    AstNode *match = NULL;
+    int match_count = 0;
+    for (int i = 0; i < count; i++) {
+        AstNode *cand = candidates[i];
+        if (cand->list.count != call->list.count) continue;
+        int ok = 1;
+        for (int j = 0; j < cand->list.count; j++) {
+            if (!types_equal(cand->list.items[j]->type, arg_types[j])) { ok = 0; break; }
+        }
+        if (ok) { match = cand; match_count++; }
+    }
+
+    if (match_count == 1) {
+        CallResolution *cr = calloc(1, sizeof(CallResolution));
+        cr->resolved_target = match;
+        call->sema_info = cr;
+    } else if (match_count == 0) {
+        sema_error(call->line, "no matching overload of '%s' for this call", name);
+    } else {
+        sema_error(call->line, "call to '%s' is ambiguous between %d matching overloads", name, match_count);
+    }
+
+    free(arg_types);
+    free(candidates);
+}
+
 static void check_node(AstNode *n, AstNode *current_class, LocalVarType **locals) {
     if (n == NULL) return;
     switch (n->kind) {
@@ -891,6 +1130,10 @@ static void check_node(AstNode *n, AstNode *current_class, LocalVarType **locals
         case AST_CALL:
             check_node(n->a, current_class, locals); /* callee -- if AST_MEMBER, already checked above */
             for (int i = 0; i < n->list.count; i++) check_node(n->list.items[i], current_class, locals);
+            /* Post-order: children (including any nested calls used as
+             * arguments) are fully processed above before this call
+             * itself attempts resolution. */
+            resolve_call(n, current_class, *locals);
             break;
         default:
             /* Literals, AST_THIS, AST_QUALIFIED_ID, AST_NEW,
@@ -955,15 +1198,18 @@ int sema_run(AstNode *program) {
     g_error_count = 0;
     free_registry();          /* defensive: in case sema_run() is ever called twice in one process */
     free_typedef_registry();  /* same */
+    free_free_func_registry(); /* same */
 
     collect_declarations(&program->list);
     attach_out_of_line(&program->list);
     compute_layouts(&program->list);
     mangle_free_functions(&program->list);
 
-    /* Access-control enforcement runs last and BEFORE the registries are
-     * freed below -- it needs find_class()/resolve_typedef_chain() (via
-     * type_to_class) still working, and it needs every class's
+    /* Access-control enforcement AND call-site overload resolution (the
+     * latter happens inside check_node's AST_CALL case, called from the
+     * former) both run last and BEFORE the registries are freed below --
+     * they need find_class()/resolve_typedef_chain() (via type_to_class)
+     * and the free-function registry still populated, and every class's
      * ClassLayout (access stamps, vtable, base_class_decl) already
      * computed by compute_layouts() above. */
     access_check_methods(&program->list);
@@ -971,6 +1217,7 @@ int sema_run(AstNode *program) {
 
     free_registry();
     free_typedef_registry();
+    free_free_func_registry();
     return g_error_count;
 }
 
@@ -1078,7 +1325,87 @@ static void dump_decls(const AstList *decls, int indent) {
     }
 }
 
+/* ---- call resolution dump -----------------------------------------------
+ *
+ * A separate, display-only walk (same relationship dump_class_layout has
+ * to compute_layout: it doesn't perform resolution, just reports what the
+ * resolution pass already decided) -- exists specifically so a
+ * SUCCESSFUL resolution is visible. Without this, "resolved correctly"
+ * and "silently skipped, best-effort" look identical from the outside:
+ * both produce zero output. Only calls that DID resolve are listed;
+ * skipped/no-match/ambiguous calls either produce no line here (skipped)
+ * or already produced a "semantic error" line elsewhere (no-match/
+ * ambiguous) -- not repeated here.
+ */
+
+static void dump_calls_in_node(const AstNode *n) {
+    if (n == NULL) return;
+    switch (n->kind) {
+        case AST_BLOCK:
+            for (int i = 0; i < n->list.count; i++) dump_calls_in_node(n->list.items[i]);
+            break;
+        case AST_IF:
+            dump_calls_in_node(n->a); dump_calls_in_node(n->b); dump_calls_in_node(n->c);
+            break;
+        case AST_WHILE:
+            dump_calls_in_node(n->a); dump_calls_in_node(n->b);
+            break;
+        case AST_FOR:
+            dump_calls_in_node(n->a); dump_calls_in_node(n->b);
+            dump_calls_in_node(n->c); dump_calls_in_node(n->d);
+            break;
+        case AST_RETURN:
+        case AST_EXPR_STMT:
+        case AST_DELETE:
+        case AST_VAR_DECL:
+            dump_calls_in_node(n->a);
+            break;
+        case AST_BINOP:
+        case AST_ASSIGN:
+        case AST_SUBSCRIPT:
+            dump_calls_in_node(n->a); dump_calls_in_node(n->b);
+            break;
+        case AST_UNOP:
+        case AST_MEMBER:
+            dump_calls_in_node(n->a);
+            break;
+        case AST_CALL: {
+            dump_calls_in_node(n->a);
+            for (int i = 0; i < n->list.count; i++) dump_calls_in_node(n->list.items[i]);
+            CallResolution *cr = (CallResolution *)n->sema_info;
+            if (cr != NULL && cr->resolved_target != NULL) {
+                FuncSemaInfo *info = (FuncSemaInfo *)cr->resolved_target->sema_info;
+                indent_line(1);
+                printf("call @line%d -> %s\n", n->line, info != NULL ? info->mangled_name : "(unmangled)");
+            }
+            break;
+        }
+        default:
+            break;
+    }
+}
+
+static void dump_call_resolutions(const AstList *decls) {
+    for (int i = 0; i < decls->count; i++) {
+        const AstNode *n = decls->items[i];
+        if (n->kind == AST_NAMESPACE_DECL) {
+            dump_call_resolutions(&n->list);
+        } else if (n->kind == AST_FUNC_DEF) {
+            dump_calls_in_node(n->a);
+        } else if (n->kind == AST_CLASS_DECL) {
+            ClassLayout *layout = (ClassLayout *)n->sema_info;
+            if (layout != NULL) {
+                for (int j = 0; j < layout->methods.count; j++) {
+                    dump_calls_in_node(layout->methods.items[j]->a);
+                }
+            }
+        }
+    }
+}
+
 void sema_dump(const AstNode *program) {
     printf("---- semantic analysis summary ----\n");
     dump_decls(&program->list, 0);
+    printf("call resolutions:\n");
+    dump_call_resolutions(&program->list);
 }

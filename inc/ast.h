@@ -76,7 +76,24 @@ typedef enum {
     AST_BINOP,            /* str1=operator text, a=lhs, b=rhs */
     AST_UNOP,             /* str1=operator text, a=operand */
     AST_ASSIGN,           /* str1=operator text ("=","+=",...), a=lhs, b=rhs */
-    AST_CALL,             /* a=callee, list=args */
+    AST_CALL,             /* a=callee, list=args.
+                              sema_info: NULL until sema.c's overload-
+                              resolution pass runs. If it resolved this
+                              call to exactly one candidate (whether
+                              because there was only one function by that
+                              name, or because argument types picked one
+                              out among several), sema_info becomes a
+                              CallResolution* (see sema.h) pointing at it.
+                              Staying NULL after the pass runs is NOT
+                              necessarily an error: it also covers "no
+                              function by this name was found at all" and
+                              "genuinely overloaded, but an argument's
+                              type couldn't be confidently determined" --
+                              both silently skipped, as opposed to "no
+                              candidate's signature matched" or
+                              "more than one candidate matched", which
+                              DO report an error (see resolve_call() in
+                              sema.c for exactly which case is which). */
     AST_MEMBER,           /* str1=".": or "->", str2=member name, a=object */
     AST_SUBSCRIPT,        /* a=array, b=index */
     AST_IDENT,            /* str1=name */
