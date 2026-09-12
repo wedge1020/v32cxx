@@ -1384,7 +1384,16 @@ static void dump_call_resolutions(const AstList *decls) {
         const AstNode *n = decls->items[i];
         if (n->kind == AST_NAMESPACE_DECL) {
             dump_call_resolutions(&n->list);
-        } else if (n->kind == AST_FUNC_DEF) {
+        } else if (n->kind == AST_FUNC_DEF && n->b == NULL) {
+            /* n->b == NULL excludes an out-of-line method definition's
+             * own top-level duplicate (see attach_out_of_line). Its body
+             * is the SAME shared AstNode as the real in-class target's
+             * (target->a = n->a, a shared pointer, not a copy) -- walking
+             * both would print every call inside it twice. The
+             * AST_CLASS_DECL branch below, via layout->methods, is the
+             * one true walk for every method's body, in-class or
+             * out-of-line alike; this branch is only for genuine free
+             * functions. */
             dump_calls_in_node(n->a);
         } else if (n->kind == AST_CLASS_DECL) {
             ClassLayout *layout = (ClassLayout *)n->sema_info;
