@@ -424,14 +424,59 @@ does no validation of its own, so running it against a program sema
 already flagged as broken has undefined results, not a graceful
 degradation.
 
+## Lowering, phase 2: this-injection
+
+Turns a method's implicit receiver into an explicit first parameter
+(`ClassName *this`), and rewrites every reference to it — `this` itself,
+an explicit `this->x` (unchanged, already in the target form), an
+implicit bare identifier that meant `this->x`, and an unqualified call to
+another method (`foo()` meaning `this->foo()`) — into one consistent
+explicit form. After this phase, a method body has no implicit member
+access left in it anywhere.
+
+**Reuse over duplication:** this needs to answer exactly the same
+question access-control enforcement already had to answer — "is this
+bare name a local/parameter, or does it refer to a member (possibly
+inherited)?" — so rather than writing a second implementation of that
+logic in `lower.c` and risking it drifting out of sync with the original
+over time, `find_member_in_hierarchy`, `find_local`, and the
+`LocalVarType` struct were pulled out of `sema.c`'s `static` scope and
+exposed via `sema.h` instead. Same known limitation as before: local
+variable tracking is flat, not properly block-scoped — a variable's name
+correctly shadows a same-named member for as long as it's "in scope" by
+this pass's simplified accounting, which is what `tests/sample13.cpp`'s
+`getValue()` (a local `value` shadowing the member `value`) specifically
+exercises.
+
+**Mechanism:** unlike the read-only walks so far (`check_node` for access
+control/overload resolution), this pass genuinely MUTATES the AST —
+`rewrite_expr`/`rewrite_stmt` take `AstNode **` (a pointer to the SLOT
+holding a node — `&n->a`, an element of a param/arg list, ...) rather
+than `AstNode *`, specifically so a node can be swapped out for a
+different one entirely (an `AST_IDENT` becoming an `AST_MEMBER`, an
+`AST_THIS` becoming an `AST_IDENT` named `"this"`), not just have its
+own fields edited in place.
+
+**A real mutation hazard, worth remembering:** `this_inject_method`
+mutates `method->list` (the parameter list) in place, prepending the new
+`this` parameter. That's safe for this project's CURRENT pipeline
+ordering, because `sema_run()` has already finished and cached everything
+it computed (mangled names, vtable slots) as plain data before
+`lower_run()` ever touches the AST — but it does mean `sema_run()` must
+never be invoked again on an AST that's already been through
+this-injection. Signature-matching logic like `attach_out_of_line`'s
+would see the injected `this` parameter and misbehave. Not a live concern
+today (one parse, one `sema_run()`, one `lower_run()`, done), but exactly
+the kind of ordering invariant that's easy to violate by accident if this
+project ever grows an incremental or re-analysis mode later.
+
 **What's NOT done yet, in the order upcoming phases would tackle them:**
-actually emitting a `struct` definition as C text (this phase only
-computes the layout as a data structure, not any generated syntax);
-`this`-injection (turning a method's implicit receiver into an explicit
-first parameter); vtable dispatch codegen (turning a virtual call into
-an indirect call through the field this phase locates); operator-
-overload-to-function-call rewriting; reference-to-pointer rewriting;
-`new`/`delete`-to-runtime-call rewriting.
+actually emitting a `struct` definition, or a this-injected method's new
+signature/body, as C text (both phases above produce a data structure /
+a mutated AST, not generated syntax at all); vtable dispatch codegen
+(turning a virtual call into an indirect call through the field phase 1
+locates); operator-overload-to-function-call rewriting;
+reference-to-pointer rewriting; `new`/`delete`-to-runtime-call rewriting.
 
 ## What's deliberately not here yet
 
@@ -558,9 +603,13 @@ overload-to-function-call rewriting; reference-to-pointer rewriting;
        vtable pointer is introduced exactly once and correctly inherited
        (not duplicated) further down, plus a class with no virtual
        methods at all getting no vtable pointer field.
-    2. Next: `this`-injection (an implicit method receiver becomes an
-       explicit first parameter).
-    3. Then: vtable dispatch codegen (a virtual call becomes an indirect
+    2. ~~`this`-injection.~~ Done — an implicit method receiver becomes
+       an explicit first parameter, and every implicit member reference
+       (bare identifier, unqualified method call) becomes explicit
+       through it. `tests/sample13.cpp` exercises explicit vs. implicit
+       `this->x`, an unqualified method call, and a local variable
+       correctly shadowing a same-named member instead of being rewritten.
+    3. Next: vtable dispatch codegen (a virtual call becomes an indirect
        call through the field phase 1 locates).
     4. Then: operator-overload-to-function-call rewriting,
        reference-to-pointer rewriting, `new`/`delete`-to-runtime-call

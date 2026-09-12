@@ -93,21 +93,25 @@ A first slice of semantic analysis then runs over the parsed program and:
   whose arguments it can't confidently type is left unresolved rather than
   guessed at, never silently assumed to be fine
 
-A first "lowering" phase has now started too — transforming what
-semantic analysis figured out into something closer to what generated C
-needs. So far: computing each class's flattened field layout (base
+Lowering — transforming what semantic analysis figured out into
+something closer to what generated C needs — has started too, in two
+phases so far: computing each class's flattened field layout (base
 class fields folded in as a literal prefix, so single-inheritance
 polymorphism works the same way it would in real C++, plus correct
-vtable-pointer placement across a hierarchy). Still just a computed data
-structure at this point, not emitted C syntax.
+vtable-pointer placement across a hierarchy), and `this`-injection
+(a method's implicit receiver becomes an explicit first parameter, and
+every implicit member reference in its body — bare identifiers,
+unqualified calls to other methods — becomes explicit through it). Both
+are still just computed data / a transformed AST at this point, not
+emitted C syntax.
 
 **What's still missing before this is a usable transpiler:** actual
-Vircon32 C code generation (emitting the struct layout above as real
-`struct` syntax, turning vtable slot assignments into a real C vtable
-struct and dispatch code, and the resolved overload info into an actual
-call to the right generated C function — all of this is *decided*,
-nothing emits it into C text yet), several more lowering phases first
-(`this`-injection, vtable dispatch rewriting, operator-overload and
+Vircon32 C code generation (emitting the struct layouts and this-injected
+methods above as real C syntax, turning vtable slot assignments into a
+real C vtable struct and dispatch code, and the resolved overload info
+into an actual call to the right generated C function — all of this is
+*decided*, nothing emits it into C text yet), a few more lowering phases
+first (vtable dispatch rewriting, operator-overload and
 reference-to-pointer rewriting, `new`/`delete` runtime calls). Templates
 and exceptions are intentionally not planned at all (see below). This is
 genuinely early — expect rough edges, and expect this README to need

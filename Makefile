@@ -57,6 +57,7 @@ test: all
 	-./$(BIN_DIR)/v32c++ tests/sample10.cpp
 	-./$(BIN_DIR)/v32c++ tests/sample11.cpp
 	./$(BIN_DIR)/v32c++ tests/sample12.cpp
+	./$(BIN_DIR)/v32c++ tests/sample13.cpp
 # sample4/sample5 are deliberately-invalid inputs (see their own header
 # comments) -- they're SUPPOSED to return nonzero. The leading '-' tells
 # make to ignore their exit code and keep going, rather than aborting the

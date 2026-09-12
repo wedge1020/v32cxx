@@ -92,8 +92,204 @@ static void compute_struct_layouts(AstList *decls) {
     }
 }
 
+/* ---- phase 2: this-injection --------------------------------------------
+ *
+ * Turns a method's implicit receiver into an explicit first parameter,
+ * and rewrites every reference to it -- `this` itself, and any bare
+ * identifier that implicitly meant `this->something` -- into an
+ * explicit form built on that parameter. After this phase, a method's
+ * body no longer has ANY implicit member access left in it: everything
+ * is either a local/parameter reference or an explicit `->` chain.
+ *
+ * Reuses find_member_in_hierarchy/find_local/LocalVarType from sema.h --
+ * this is exactly the same "is this bare name a local, or does it mean a
+ * member" question access-control enforcement already had to answer, so
+ * this phase answers it the same way rather than risking a second copy
+ * of that logic drifting out of sync with the original over time.
+ *
+ * Scope note, matching the same caveat LocalVarType already carries from
+ * access control: local-variable tracking here is flat, not properly
+ * block-scoped. A local variable's name correctly SHADOWS a same-named
+ * member for as long as it's in scope (checked first, before falling
+ * back to member lookup) -- see tests/sample13.cpp for a case that
+ * specifically exercises this.
+ */
+
+/* Mutates *slot in place -- replaces the AstNode it points to with a
+ * rewritten one wherever a `this` or implicit member reference needs to
+ * become explicit, and simply recurses (without replacing) everywhere
+ * else. Takes AstNode** (a pointer to the SLOT holding the node, i.e.
+ * a field like &n->a or an element of a list), not AstNode*, precisely
+ * because rewriting sometimes means swapping out which node the parent
+ * points to entirely, not just mutating a node already there. */
+static void rewrite_expr(AstNode **slot, AstNode *class_decl, LocalVarType *locals) {
+    AstNode *n = *slot;
+    if (n == NULL) return;
+
+    switch (n->kind) {
+        case AST_THIS:
+            *slot = ast_ident("this", n->line);
+            break;
+        case AST_IDENT: {
+            if (find_local(locals, n->str1) != NULL) {
+                break; /* a local/parameter reference, not a member access at all -- leave it alone */
+            }
+            AstNode *owner = NULL;
+            AstNode *member = find_member_in_hierarchy(class_decl, n->str1, &owner);
+            if (member != NULL) {
+                /* Implicit this->member (a data member OR a method being
+                 * called unqualified) -- make it explicit. This also
+                 * correctly handles `foo();` meaning `this->foo();`: the
+                 * callee identifier gets rewritten to `this->foo` here,
+                 * and AST_CALL (below) doesn't need to know or care that
+                 * its callee just changed shape. */
+                AstNode *mem = ast_new(AST_MEMBER, n->line);
+                mem->str1 = strdup("->");
+                mem->str2 = strdup(n->str1);
+                mem->a = ast_ident("this", n->line);
+                *slot = mem;
+            }
+            break;
+        }
+        case AST_MEMBER:
+            rewrite_expr(&n->a, class_decl, locals);
+            break;
+        case AST_CALL:
+            rewrite_expr(&n->a, class_decl, locals);
+            for (int i = 0; i < n->list.count; i++) {
+                rewrite_expr(&n->list.items[i], class_decl, locals);
+            }
+            break;
+        case AST_BINOP:
+        case AST_ASSIGN:
+        case AST_SUBSCRIPT:
+            rewrite_expr(&n->a, class_decl, locals);
+            rewrite_expr(&n->b, class_decl, locals);
+            break;
+        case AST_UNOP:
+        case AST_DELETE:
+            rewrite_expr(&n->a, class_decl, locals);
+            break;
+        default:
+            /* Literals, AST_QUALIFIED_ID, AST_NEW, ... -- nothing to
+             * rewrite; these can't contain a `this` or a bare member
+             * reference. */
+            break;
+    }
+}
+
+static void rewrite_stmt(AstNode **slot, AstNode *class_decl, LocalVarType **locals) {
+    AstNode *n = *slot;
+    if (n == NULL) return;
+
+    switch (n->kind) {
+        case AST_BLOCK:
+            for (int i = 0; i < n->list.count; i++) {
+                rewrite_stmt(&n->list.items[i], class_decl, locals);
+            }
+            break;
+        case AST_IF:
+            rewrite_expr(&n->a, class_decl, *locals);
+            rewrite_stmt(&n->b, class_decl, locals);
+            rewrite_stmt(&n->c, class_decl, locals);
+            break;
+        case AST_WHILE:
+            rewrite_expr(&n->a, class_decl, *locals);
+            rewrite_stmt(&n->b, class_decl, locals);
+            break;
+        case AST_FOR:
+            rewrite_stmt(&n->a, class_decl, locals); /* init: var_decl or expr_stmt or NULL */
+            rewrite_expr(&n->b, class_decl, *locals); /* cond */
+            rewrite_expr(&n->c, class_decl, *locals); /* step */
+            rewrite_stmt(&n->d, class_decl, locals);
+            break;
+        case AST_RETURN:
+        case AST_EXPR_STMT:
+            rewrite_expr(&n->a, class_decl, *locals);
+            break;
+        case AST_VAR_DECL: {
+            rewrite_expr(&n->a, class_decl, *locals); /* initializer, if any */
+            LocalVarType *lv = malloc(sizeof(LocalVarType));
+            lv->name = n->str1;
+            lv->type = n->type;
+            lv->next = *locals;
+            *locals = lv;
+            break;
+        }
+        default:
+            /* AST_TYPEDEF_DECL, ... -- nothing to rewrite. */
+            break;
+    }
+}
+
+/* Prepends an explicit "this" parameter (pointer to the owning class) to
+ * `method`'s parameter list, then rewrites its body so every `this` and
+ * every implicit member reference becomes explicit through that
+ * parameter.
+ *
+ * MUTATES method->list (the parameter list) in place. This is safe for
+ * this project's CURRENT pipeline ordering -- sema_run() has already
+ * finished (and cached everything it computed, like mangled names and
+ * vtable slots, as plain data rather than re-deriving it from the
+ * parameter list on demand) before lower_run() ever runs -- but it does
+ * mean sema_run() must never be re-invoked on an AST that's already been
+ * through this-injection: signature-matching logic like
+ * attach_out_of_line's would see the injected "this" parameter and
+ * misbehave. Not a concern for main.c's current single-pass pipeline;
+ * worth remembering if this project ever grows an incremental/
+ * re-analysis mode. */
+static void this_inject_method(AstNode *method, AstNode *class_decl) {
+    if (method->kind != AST_FUNC_DEF) return; /* only definitions have bodies to rewrite */
+
+    AstNode *this_param = ast_new(AST_PARAM, method->line);
+    this_param->str1 = strdup("this");
+    this_param->type = ast_wrap_pointer(ast_ident(class_decl->str1, method->line), method->line);
+
+    AstList new_params = ast_list_new();
+    ast_list_append(&new_params, this_param);
+    for (int i = 0; i < method->list.count; i++) {
+        ast_list_append(&new_params, method->list.items[i]);
+    }
+    method->list = new_params;
+
+    /* Seed local tracking with the method's ORIGINAL parameters (index 0
+     * of the NEW list is the injected "this" itself, which -- as a
+     * plain identifier named "this" -- doesn't need to be in this map at
+     * all: nothing will ever look up the name "this" via find_local,
+     * since AST_THIS nodes are rewritten directly, not through the
+     * AST_IDENT/find_local path). */
+    LocalVarType *locals = NULL;
+    for (int i = 1; i < method->list.count; i++) {
+        AstNode *param = method->list.items[i];
+        LocalVarType *lv = malloc(sizeof(LocalVarType));
+        lv->name = param->str1;
+        lv->type = param->type;
+        lv->next = locals;
+        locals = lv;
+    }
+
+    rewrite_stmt(&method->a, class_decl, &locals);
+}
+
+static void this_inject_classes(AstList *decls) {
+    for (int i = 0; i < decls->count; i++) {
+        AstNode *n = decls->items[i];
+        if (n->kind == AST_CLASS_DECL) {
+            ClassLayout *layout = (ClassLayout *)n->sema_info;
+            if (layout != NULL) {
+                for (int j = 0; j < layout->methods.count; j++) {
+                    this_inject_method(layout->methods.items[j], n);
+                }
+            }
+        } else if (n->kind == AST_NAMESPACE_DECL) {
+            this_inject_classes(&n->list);
+        }
+    }
+}
+
 int lower_run(AstNode *program) {
     compute_struct_layouts(&program->list);
+    this_inject_classes(&program->list);
     return 0;
 }
 
@@ -192,7 +388,38 @@ static void dump_struct_layouts(const AstList *decls, int indent) {
     }
 }
 
+/* Reuses ast_dump() (the same generic dumper parsing's own output uses)
+ * rather than writing a second, parallel printer for method bodies --
+ * these ARE just ordinary AstNode trees, now mutated by this-injection;
+ * nothing about displaying them needs to be lowering-specific. Only
+ * FUNC_DEF methods are shown (prototype-only ones have no body for
+ * this-injection to have touched, so there's nothing new to see). */
+static void dump_this_injected_methods(const AstList *decls, int indent) {
+    for (int i = 0; i < decls->count; i++) {
+        const AstNode *n = decls->items[i];
+        if (n->kind == AST_CLASS_DECL) {
+            ClassLayout *layout = (ClassLayout *)n->sema_info;
+            if (layout != NULL) {
+                for (int j = 0; j < layout->methods.count; j++) {
+                    AstNode *m = layout->methods.items[j];
+                    if (m->kind == AST_FUNC_DEF) {
+                        ast_dump(m, indent);
+                    }
+                }
+            }
+        } else if (n->kind == AST_NAMESPACE_DECL) {
+            indent_line(indent);
+            printf("namespace %s {\n", n->str1);
+            dump_this_injected_methods(&n->list, indent + 1);
+            indent_line(indent);
+            printf("}\n");
+        }
+    }
+}
+
 void lower_dump(const AstNode *program) {
     printf("---- lowering summary (struct layouts) ----\n");
     dump_struct_layouts(&program->list, 0);
+    printf("---- lowering summary (this-injected method bodies) ----\n");
+    dump_this_injected_methods(&program->list, 0);
 }

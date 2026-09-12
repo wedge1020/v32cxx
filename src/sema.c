@@ -691,13 +691,7 @@ static void mangle_free_functions(AstList *decls) {
  * protected member of any base" rule instead.
  */
 
-typedef struct LocalVarType {
-    const char *name;
-    AstNode *type;              /* the declared type, as written */
-    struct LocalVarType *next;
-} LocalVarType;
-
-static LocalVarType *find_local(LocalVarType *locals, const char *name) {
+LocalVarType *find_local(LocalVarType *locals, const char *name) {
     for (LocalVarType *lv = locals; lv != NULL; lv = lv->next) {
         if (strcmp(lv->name, name) == 0) return lv;
     }
@@ -739,7 +733,7 @@ static AstNode *type_to_class(const AstNode *type) {
  * an ancestor of `class_decl`, not class_decl itself) -- callers need
  * this to distinguish "same class" from "derived class" for the private-
  * vs-protected legality check. */
-static AstNode *find_member_in_hierarchy(AstNode *class_decl, const char *name, AstNode **owner_out) {
+AstNode *find_member_in_hierarchy(AstNode *class_decl, const char *name, AstNode **owner_out) {
     while (class_decl != NULL) {
         ClassLayout *layout = (ClassLayout *)class_decl->sema_info;
         if (layout != NULL) {

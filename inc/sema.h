@@ -164,6 +164,33 @@ typedef struct FuncSemaInfo {
  */
 int sema_run(AstNode *program);
 
+/* A simple, flat, NOT-properly-block-scoped map of local variable/
+ * parameter name -> declared type, built while walking a function/method
+ * body. See the long comment on this same struct (moved here from
+ * sema.c) for the block-scoping caveat: this is exposed (not `static` in
+ * sema.c) specifically so lower.c's this-injection phase can reuse the
+ * exact same "is this bare name a local, or does it refer to a member"
+ * logic access-control enforcement already established, rather than
+ * risking a second, subtly different copy of that logic drifting out of
+ * sync with this one over time. */
+typedef struct LocalVarType {
+    const char *name;
+    AstNode *type;              /* the declared type, as written */
+    struct LocalVarType *next;
+} LocalVarType;
+
+LocalVarType *find_local(LocalVarType *locals, const char *name);
+
+/* Searches `class_decl`'s own members first, then walks up its base
+ * chain (single inheritance, so this is a simple chain, not a search
+ * tree), looking for a member named `name`. Name-only match (see the
+ * TODO in sema.c about overload-aware lookup). Sets *owner_out to the
+ * class that ACTUALLY declared the returned member (which may be an
+ * ancestor of `class_decl`), needed by callers (access-control's
+ * legality check, this-injection's rewriting) to know whether a
+ * reference is to this class's own member or an inherited one. */
+AstNode *find_member_in_hierarchy(AstNode *class_decl, const char *name, AstNode **owner_out);
+
 /* Prints a human-readable summary of every class's computed layout,
  * every function's mangled name, and (in a "call resolutions:" section)
  * every call expression that successfully resolved to a specific
