@@ -616,6 +616,341 @@ static void mangle_free_functions(AstList *decls) {
     }
 }
 
+/* ---- pass 5: access-control enforcement --------------------------------
+ *
+ * Builds on the access TRACKING already stamped by compute_layout() above
+ * (member->access) to actually check whether a given reference to a
+ * member is legal from where it occurs -- the "calling context" this
+ * project didn't have any notion of before this pass.
+ *
+ * SCOPE, deliberately bounded: this resolves the STATIC CLASS TYPE of a
+ * limited set of expression shapes -- `this`, a function's own
+ * parameters, local variables declared via `var_decl` (flat tracking,
+ * not properly block-scoped -- see LocalVarType below), member-access
+ * chains through any of those, and method-call return types. Anything
+ * outside that (arithmetic results, free-function call results, anything
+ * whose type this can't pin down) resolves to NULL and is silently
+ * SKIPPED, never flagged as either legal or illegal. This is a best-
+ * effort diagnostic, not a soundness guarantee: it catches real
+ * violations it can definitely see, and says nothing about ones it
+ * can't -- which is the honest, appropriately conservative choice here,
+ * since a false "this access is fine" is worse than staying silent.
+ *
+ * Access legality, matching real C++'s common-case rules (a
+ * simplification -- see the note on protected access below):
+ *   - public:    always legal.
+ *   - private:   legal only from the EXACT class that declared it (never
+ *                a derived class, even though the member is inherited).
+ *   - protected: legal from the declaring class OR any (transitive)
+ *                derived class.
+ *
+ * NOT implemented: the C++ standard's more restrictive rule that a
+ * derived class can only access an INHERITED protected member through an
+ * object of ITS OWN (or further-derived) type, not through a
+ * base-typed reference/pointer even from within a derived class's own
+ * method. This project allows the simpler "derived class can touch any
+ * protected member of any base" rule instead.
+ */
+
+typedef struct LocalVarType {
+    const char *name;
+    AstNode *type;              /* the declared type, as written */
+    struct LocalVarType *next;
+} LocalVarType;
+
+static LocalVarType *find_local(LocalVarType *locals, const char *name) {
+    for (LocalVarType *lv = locals; lv != NULL; lv = lv->next) {
+        if (strcmp(lv->name, name) == 0) return lv;
+    }
+    return NULL;
+}
+
+/* Resolves a type AST node (AST_IDENT/AST_QUALIFIED_ID, possibly wrapped
+ * in AST_POINTER_TYPE/AST_REFERENCE_TYPE, possibly a typedef) down to the
+ * AST_CLASS_DECL it names, or NULL if it doesn't name a registered class
+ * at all (a builtin type, an unregistered/unknown name, ...). Pointers
+ * and references are treated as resolving to the SAME class as their
+ * pointee/referent -- accessing a member through `Foo*`/`Foo&` follows
+ * the same rules as through a plain `Foo`, matching real C++. */
+static AstNode *type_to_class(const AstNode *type) {
+    type = resolve_typedef_chain(type);
+    if (type == NULL) return NULL;
+    switch (type->kind) {
+        case AST_POINTER_TYPE:
+        case AST_REFERENCE_TYPE:
+            return type_to_class(type->a);
+        case AST_IDENT:
+            return find_class(type->str1);
+        case AST_QUALIFIED_ID:
+            if (type->list.count == 0) return NULL;
+            return find_class(type->list.items[type->list.count - 1]->str1);
+        default:
+            return NULL;
+    }
+}
+
+/* Searches `class_decl`'s own members first, then walks up base_class_decl
+ * (single inheritance, so this is a simple chain, not a search tree),
+ * looking for a member named `name`. Name-only match -- see the TODO
+ * elsewhere in this file about overload-aware lookup; if a name has
+ * multiple overloads with DIFFERING access levels (unusual, but legal
+ * C++), this returns whichever one compute_layout() happened to list
+ * first, not necessarily the one actually being called. Sets *owner_out
+ * to the class that ACTUALLY declared the returned member (which may be
+ * an ancestor of `class_decl`, not class_decl itself) -- callers need
+ * this to distinguish "same class" from "derived class" for the private-
+ * vs-protected legality check. */
+static AstNode *find_member_in_hierarchy(AstNode *class_decl, const char *name, AstNode **owner_out) {
+    while (class_decl != NULL) {
+        ClassLayout *layout = (ClassLayout *)class_decl->sema_info;
+        if (layout != NULL) {
+            for (int i = 0; i < layout->data_members.count; i++) {
+                if (strcmp(layout->data_members.items[i]->str1, name) == 0) {
+                    if (owner_out != NULL) *owner_out = class_decl;
+                    return layout->data_members.items[i];
+                }
+            }
+            for (int i = 0; i < layout->methods.count; i++) {
+                if (strcmp(layout->methods.items[i]->str1, name) == 0) {
+                    if (owner_out != NULL) *owner_out = class_decl;
+                    return layout->methods.items[i];
+                }
+            }
+        }
+        class_decl = (layout != NULL) ? layout->base_class_decl : NULL;
+    }
+    return NULL;
+}
+
+/* Is `class_decl` the same as `ancestor`, or (transitively) derived from
+ * it? Used for the protected-access rule. */
+static int is_same_or_descendant(AstNode *class_decl, AstNode *ancestor) {
+    while (class_decl != NULL) {
+        if (class_decl == ancestor) return 1;
+        ClassLayout *layout = (ClassLayout *)class_decl->sema_info;
+        class_decl = (layout != NULL) ? layout->base_class_decl : NULL;
+    }
+    return 0;
+}
+
+static void check_member_access(int line, const char *member_name, const AstNode *member,
+                                 AstNode *owner, AstNode *current_class) {
+    if (member->access == ACC_PUBLIC) {
+        return;
+    }
+    if (member->access == ACC_PRIVATE) {
+        if (current_class == owner) return;
+        sema_error(line, "'%s' is a private member of class '%s' and cannot be accessed here",
+                   member_name, owner->str1);
+        return;
+    }
+    /* ACC_PROTECTED */
+    if (current_class != NULL && is_same_or_descendant(current_class, owner)) return;
+    sema_error(line, "'%s' is a protected member of class '%s' and cannot be accessed here",
+               member_name, owner->str1);
+}
+
+/* The core of this pass's expression handling: infers which class (if
+ * any) an expression's static type resolves to. Returns NULL for
+ * anything outside the deliberately-bounded scope described above --
+ * NULL means "unknown", not "not a class", so callers must treat it as
+ * "nothing to check" rather than an error. */
+static AstNode *resolve_expr_class(const AstNode *expr, AstNode *current_class, LocalVarType *locals) {
+    if (expr == NULL) return NULL;
+    switch (expr->kind) {
+        case AST_THIS:
+            return current_class;
+        case AST_IDENT: {
+            LocalVarType *lv = find_local(locals, expr->str1);
+            if (lv != NULL) return type_to_class(lv->type);
+            if (current_class != NULL) {
+                AstNode *owner = NULL;
+                AstNode *member = find_member_in_hierarchy(current_class, expr->str1, &owner);
+                if (member != NULL && member->kind == AST_VAR_DECL) return type_to_class(member->type);
+            }
+            return NULL;
+        }
+        case AST_MEMBER: {
+            AstNode *obj_class = resolve_expr_class(expr->a, current_class, locals);
+            if (obj_class == NULL) return NULL;
+            AstNode *owner = NULL;
+            AstNode *member = find_member_in_hierarchy(obj_class, expr->str2, &owner);
+            if (member == NULL || member->kind != AST_VAR_DECL) return NULL;
+            return type_to_class(member->type);
+        }
+        case AST_CALL: {
+            const AstNode *callee = expr->a;
+            AstNode *owner = NULL;
+            AstNode *method = NULL;
+            if (callee != NULL && callee->kind == AST_MEMBER) {
+                AstNode *obj_class = resolve_expr_class(callee->a, current_class, locals);
+                if (obj_class == NULL) return NULL;
+                method = find_member_in_hierarchy(obj_class, callee->str2, &owner);
+            } else if (callee != NULL && callee->kind == AST_IDENT && current_class != NULL) {
+                /* Unqualified call inside a method -- could be an
+                 * implicit this->method(). Free-function calls (when
+                 * current_class is NULL, or the name isn't a member)
+                 * aren't resolved here at all; see the TODO on
+                 * call-site overload resolution for why that needs its
+                 * own function registry, separate from this pass. */
+                method = find_member_in_hierarchy(current_class, callee->str1, &owner);
+            }
+            if (method == NULL || (method->kind != AST_FUNC_DECL && method->kind != AST_FUNC_DEF)) return NULL;
+            return type_to_class(method->type);
+        }
+        default:
+            return NULL;
+    }
+}
+
+/* Walks every statement/expression reachable from `n`, performing the
+ * access check wherever a member is actually referenced (explicitly via
+ * `.`/`->`, or implicitly via a bare identifier that resolves to an
+ * INHERITED member -- e.g. a derived class's method naming a base
+ * class's private data member directly). Also accumulates local variable
+ * declarations into `*locals` as they're encountered, so later
+ * statements can resolve references to them -- see LocalVarType's doc
+ * comment for the block-scoping caveat. */
+static void check_node(AstNode *n, AstNode *current_class, LocalVarType **locals) {
+    if (n == NULL) return;
+    switch (n->kind) {
+        case AST_BLOCK:
+            for (int i = 0; i < n->list.count; i++) check_node(n->list.items[i], current_class, locals);
+            break;
+        case AST_IF:
+            check_node(n->a, current_class, locals);
+            check_node(n->b, current_class, locals);
+            check_node(n->c, current_class, locals);
+            break;
+        case AST_WHILE:
+            check_node(n->a, current_class, locals);
+            check_node(n->b, current_class, locals);
+            break;
+        case AST_FOR:
+            check_node(n->a, current_class, locals);
+            check_node(n->b, current_class, locals);
+            check_node(n->c, current_class, locals);
+            check_node(n->d, current_class, locals);
+            break;
+        case AST_RETURN:
+        case AST_EXPR_STMT:
+        case AST_DELETE:
+            check_node(n->a, current_class, locals);
+            break;
+        case AST_VAR_DECL: {
+            check_node(n->a, current_class, locals); /* initializer, if any */
+            LocalVarType *lv = malloc(sizeof(LocalVarType));
+            lv->name = n->str1;
+            lv->type = n->type;
+            lv->next = *locals;
+            *locals = lv;
+            break;
+        }
+        case AST_BINOP:
+        case AST_ASSIGN:
+        case AST_SUBSCRIPT:
+            check_node(n->a, current_class, locals);
+            check_node(n->b, current_class, locals);
+            break;
+        case AST_UNOP:
+            check_node(n->a, current_class, locals);
+            break;
+        case AST_IDENT: {
+            /* A bare name that resolves to an INHERITED member (not a
+             * local/param, which would shadow it) is an implicit
+             * this->member access, and needs the same legality check an
+             * explicit one would get -- this is what catches a derived
+             * class quietly reading/writing a base class's private data
+             * by name alone. */
+            if (current_class != NULL && find_local(*locals, n->str1) == NULL) {
+                AstNode *owner = NULL;
+                AstNode *member = find_member_in_hierarchy(current_class, n->str1, &owner);
+                if (member != NULL) {
+                    check_member_access(n->line, n->str1, member, owner, current_class);
+                }
+            }
+            break;
+        }
+        case AST_MEMBER:
+            check_node(n->a, current_class, locals); /* the object -- catches chains like a.b.c */
+            {
+                AstNode *obj_class = resolve_expr_class(n->a, current_class, *locals);
+                if (obj_class != NULL) {
+                    AstNode *owner = NULL;
+                    AstNode *member = find_member_in_hierarchy(obj_class, n->str2, &owner);
+                    /* member == NULL means we resolved the object's class
+                     * but not this specific member name -- not this
+                     * pass's job to diagnose "no such member", only
+                     * access legality for ones it DID find. */
+                    if (member != NULL) {
+                        check_member_access(n->line, n->str2, member, owner, current_class);
+                    }
+                }
+            }
+            break;
+        case AST_CALL:
+            check_node(n->a, current_class, locals); /* callee -- if AST_MEMBER, already checked above */
+            for (int i = 0; i < n->list.count; i++) check_node(n->list.items[i], current_class, locals);
+            break;
+        default:
+            /* Literals, AST_THIS, AST_QUALIFIED_ID, AST_NEW,
+             * AST_TYPEDEF_DECL, AST_ACCESS_SPEC, ... -- nothing to check
+             * or recurse into. */
+            break;
+    }
+}
+
+static void check_function_body(AstNode *func, AstNode *current_class) {
+    if (func->kind != AST_FUNC_DEF) return; /* only definitions have bodies to walk */
+    LocalVarType *locals = NULL;
+    for (int i = 0; i < func->list.count; i++) {
+        AstNode *param = func->list.items[i];
+        LocalVarType *lv = malloc(sizeof(LocalVarType));
+        lv->name = param->str1;
+        lv->type = param->type;
+        lv->next = locals;
+        locals = lv;
+    }
+    check_node(func->a, current_class, &locals);
+    /* `locals` is deliberately never freed -- single-shot CLI tool, same
+     * memory philosophy as the rest of this project (see e.g.
+     * symtab_destroy's doc comment). */
+}
+
+static void access_check_methods(AstList *decls) {
+    for (int i = 0; i < decls->count; i++) {
+        AstNode *n = decls->items[i];
+        if (n->kind == AST_CLASS_DECL) {
+            ClassLayout *layout = (ClassLayout *)n->sema_info;
+            if (layout != NULL) {
+                for (int j = 0; j < layout->methods.count; j++) {
+                    check_function_body(layout->methods.items[j], n);
+                }
+            }
+        } else if (n->kind == AST_NAMESPACE_DECL) {
+            access_check_methods(&n->list);
+        }
+    }
+}
+
+static void access_check_free_functions(AstList *decls) {
+    for (int i = 0; i < decls->count; i++) {
+        AstNode *n = decls->items[i];
+        if (n->kind == AST_NAMESPACE_DECL) {
+            access_check_free_functions(&n->list);
+        } else if (n->kind == AST_FUNC_DEF && n->b == NULL) {
+            /* n->b == NULL excludes out-of-line method definitions' own
+             * top-level duplicate (see attach_out_of_line) -- those get
+             * checked once already, as part of their owning class's
+             * methods list above, with the correct calling-context class.
+             * Checking them AGAIN here with current_class = NULL would
+             * incorrectly flag every private/protected access in every
+             * out-of-line method body. */
+            check_function_body(n, NULL);
+        }
+    }
+}
+
 int sema_run(AstNode *program) {
     g_error_count = 0;
     free_registry();          /* defensive: in case sema_run() is ever called twice in one process */
@@ -625,6 +960,14 @@ int sema_run(AstNode *program) {
     attach_out_of_line(&program->list);
     compute_layouts(&program->list);
     mangle_free_functions(&program->list);
+
+    /* Access-control enforcement runs last and BEFORE the registries are
+     * freed below -- it needs find_class()/resolve_typedef_chain() (via
+     * type_to_class) still working, and it needs every class's
+     * ClassLayout (access stamps, vtable, base_class_decl) already
+     * computed by compute_layouts() above. */
+    access_check_methods(&program->list);
+    access_check_free_functions(&program->list);
 
     free_registry();
     free_typedef_registry();

@@ -7,8 +7,6 @@
  * First slice of semantic analysis. Deliberately narrow in scope -- see
  * the per-pass comments in sema.c and the README's "what's not here yet"
  * list for what this does NOT do (inherited-DATA-member layout merging,
- * access-control ENFORCEMENT [tracking is done, see #3 below -- checking
- * whether a given access from a given context is actually legal is not],
  * call-site overload resolution, multiple inheritance -- not planned at
  * all, see the project README).
  *
@@ -40,6 +38,15 @@
  *      folds in a parameter-type signature (see mangle() in sema.c), so
  *      overloads -- including out-of-line-defined ones -- get distinct
  *      names instead of colliding.
+ *   5. Enforce access control: walk every method/function BODY and check
+ *      every actual member reference (explicit `.`/`->`, or an implicit
+ *      `this->` via a bare name that resolves to an INHERITED member)
+ *      against the accessing class's relationship to whichever class
+ *      declared that member -- see the long comment above
+ *      check_member_access() in sema.c for the exact rule and its
+ *      deliberately bounded scope (best-effort: it only checks what it
+ *      can confidently resolve the type of; anything else is silently
+ *      skipped, never falsely flagged either way).
  *
  * NOTE ON #2, #3's vtable matching, and #4: the type comparison behind
  * all three (types_equal/param_lists_match in sema.c) is typedef-

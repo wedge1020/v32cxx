@@ -78,17 +78,32 @@ A first slice of semantic analysis then runs over the parsed program and:
   parameter types
 - Reports errors (unknown types, mismatched out-of-line definitions)
   without crashing, so you see everything wrong in one run
+- **Enforces access control**: walks every method/function body and flags
+  illegal `private`/`protected` member access — including through
+  inheritance (a derived class touching a base's private member, even
+  implicitly) — using a best-effort read of each expression's type. It
+  doesn't try to resolve everything (arithmetic results and free-function
+  call results aren't type-checked at all yet), but what it does resolve,
+  it checks correctly, and it never falsely flags what it can't resolve
 
 **What's still missing before this is a usable transpiler:** actual
 Vircon32 C code generation (including turning vtable slot assignments
 into a real C vtable struct and dispatch code — the *slots* are assigned,
-nothing emits them yet), real overload resolution at call sites, and
-actually **enforcing** access control (member access is now tracked, but
-nothing yet checks whether a given reference to a member is legal from
-where it occurs). Templates
+nothing emits them yet), and real overload resolution at call sites
+(knowing *which* overload of a called function is meant — the mangling
+and matching that already exist assume you're looking at a declaration,
+not a call expression). Templates
 and exceptions are intentionally not planned at all (see below). This is
 genuinely early — expect rough edges, and expect this README to need
 updating often as things change.
+
+**A note on the preprocessor:** there isn't one yet — `#include`/`#define`
+lines are currently just discarded, not expanded (see
+`docs/DESIGN_NOTES.md` for exactly what that breaks). The plan is a
+small, purpose-built preprocessor for this project (`v32pp`), built once
+it's actually needed rather than speculatively now; in the meantime,
+piping source through a real preprocessor (GNU `cpp`) as a stopgap is a
+reasonable option if you need `#include`/`#define` before `v32pp` exists.
 
 ## What's deliberately out of scope
 
