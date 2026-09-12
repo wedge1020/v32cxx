@@ -354,9 +354,15 @@ func_decl:
     opt_virtual func_header
         {
             $$ = $2;
-            /* TODO: stash $1 (virtual-ness) on $$ once the vtable-lowering
-             * pass needs it -- e.g. repurpose AstNode.ival as a flags
-             * field. */
+            $$->ival = $1; /* virtual-ness, per parsing -- see AST_FUNC_DECL
+                             * in ast.h. Note this reflects only what was
+                             * literally written here; sema.c's vtable
+                             * builder may ALSO set this to 1 on a class
+                             * whose method silently overrides an inherited
+                             * virtual slot without repeating the keyword
+                             * (matching real C++), so by the time sema has
+                             * run, ival means "is this virtual", not just
+                             * "was 'virtual' written on this exact line". */
             symtab_pop_scope(g_symtab); /* prototype only; no body needs the param scope */
         }
     ;
@@ -366,6 +372,7 @@ func_def:
         {
             $$ = $2;
             $$->kind = AST_FUNC_DEF;
+            $$->ival = $1; /* see the comment in func_decl above */
             $$->a = $3;
             symtab_pop_scope(g_symtab);
         }

@@ -6,9 +6,10 @@
 /*
  * First slice of semantic analysis. Deliberately narrow in scope -- see
  * the per-pass comments in sema.c and the README's "what's not here yet"
- * list for what this does NOT do (inherited-member layout merging,
- * access-control enforcement, vtable slot assignment, call-site overload
- * resolution, typedef-transparent type comparison).
+ * list for what this does NOT do (inherited-DATA-member layout merging,
+ * access-control enforcement, call-site overload resolution, typedef-
+ * transparent type comparison, multiple inheritance -- not planned at
+ * all, see the project README).
  *
  * What it DOES do, run in this order by sema_run():
  *   1. Walk the whole program (recursing into namespaces) and register
@@ -23,33 +24,77 @@
  *      duplicate is left in place but flagged (FuncSemaInfo.is_out_of_line)
  *      so a later codegen pass knows to skip re-emitting it.
  *   3. Compute a ClassLayout for every class: its data members and methods
- *      split out from AccessSpec markers, plus its resolved base class
- *      (by AST pointer, not just name).
+ *      split out from AccessSpec markers, its resolved base class (by AST
+ *      pointer, not just name), and its vtable (see build_vtable() in
+ *      sema.c) -- assigning a slot to every virtual method, correctly
+ *      reusing the base's slot for an override (even one that doesn't
+ *      repeat the `virtual` keyword, matching real C++) rather than
+ *      creating a second, unrelated slot.
  *   4. Assign every method (and every free function) a mangled name that
  *      folds in a parameter-type signature (see mangle() in sema.c), so
  *      overloads -- including out-of-line-defined ones -- get distinct
  *      names instead of colliding.
  *
- * NOTE ON #2 and #4: the type comparison behind both is purely syntactic
- * (same written shape), not semantic -- it does not resolve typedefs to
- * their underlying type, so `void f(int)` and `void f(MyIntTypedef)` are
- * currently treated as different signatures even where real C++ would
- * consider them the same. See the doc comment on types_equal() in
- * sema.c for what fixing that would require.
+ * NOTE ON #2 and #4: the type comparison behind both (and behind vtable
+ * slot matching in #3) is purely syntactic (same written shape), not
+ * semantic -- it does not resolve typedefs to their underlying type, so
+ * `void f(int)` and `void f(MyIntTypedef)` are currently treated as
+ * different signatures even where real C++ would consider them the same.
+ * See the doc comment on types_equal() in sema.c for what fixing that
+ * would require.
+ *
+ * NOTE ON #3's vtable: this assigns slot NUMBERS and resolves which
+ * AstNode implements each slot for each class -- it does not generate
+ * an actual C vtable struct or the function-pointer-table initializer
+ * that a lowering/codegen pass would eventually need to emit. That's
+ * deliberately a separate, later step; see sema_dump()'s vtable output
+ * for what's available to build on.
  */
+
+typedef struct VtableEntry {
+    AstNode *method;    /* the AST_FUNC_DECL/AST_FUNC_DEF providing THIS
+                         * class's implementation for the slot -- either
+                         * this class's own override, or (if not
+                         * overridden here) the same node inherited
+                         * unchanged from the base's vtable. */
+    int slot_index;
+} VtableEntry;
+
+typedef struct Vtable {
+    VtableEntry *entries;
+    int count;
+    int capacity;
+} Vtable;
 
 typedef struct ClassLayout {
     AstList data_members;      /* AST_VAR_DECL nodes, in declaration order */
     AstList methods;           /* AST_FUNC_DECL/AST_FUNC_DEF nodes, in declaration order */
     AstNode *base_class_decl;  /* resolved AST_CLASS_DECL of the base class, or NULL.
-                                 * NOTE: inherited members are NOT merged into
+                                 * NOTE: inherited DATA members are NOT merged into
                                  * data_members/methods above -- a consumer that
                                  * needs "all members including inherited ones"
                                  * has to walk base_class_decl's own ClassLayout
                                  * (via its sema_info) explicitly. Not merged
                                  * automatically to avoid silently duplicating
                                  * members if layout computation ever runs more
-                                 * than once over the same AST. */
+                                 * than once over the same AST. (Virtual METHODS
+                                 * are handled differently -- see `vtable` below,
+                                 * which does carry inherited slots forward, since
+                                 * that's what a vtable needs to do.) */
+    Vtable *vtable;             /* NULL if this class has no virtual methods,
+                                 * own or inherited. Otherwise, one slot per
+                                 * distinct virtual method in the hierarchy
+                                 * (by name+signature, with all destructors
+                                 * across the hierarchy sharing one slot --
+                                 * see vtable_slot_key() in sema.c), in the
+                                 * order first introduced by the base-most
+                                 * class that declared each one. A derived
+                                 * class's vtable is NOT just its own new/
+                                 * overridden methods -- it's the base's
+                                 * vtable, copied, with overridden slots
+                                 * repointed at this class's own
+                                 * implementation and new virtual methods
+                                 * appended after. */
 } ClassLayout;
 
 typedef struct FuncSemaInfo {

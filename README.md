@@ -50,10 +50,12 @@ What parses and is understood today:
   sections
 - Constructors and destructors, defined either inside the class body or
   out-of-line (`Player::Player(...) { ... }`)
-- `virtual` function declarations (parsed; virtual dispatch isn't lowered
-  to a vtable yet)
-- Function and operator overloading (parsed; call-site resolution isn't
-  implemented yet)
+- `virtual` function declarations, with overrides correctly recognized
+  even when a derived class doesn't repeat the `virtual` keyword (real
+  C++ semantics)
+- Function and operator overloading, with parameter-type-aware name
+  mangling so overloads don't collide (call-site resolution — knowing
+  which overload a given call *expression* means — isn't implemented yet)
 - Qualified names (`v32::Timer`), pointers and references (`Type*`,
   `Type&`)
 - A conventional C-like statement/expression language: `if`/`else`,
@@ -62,15 +64,21 @@ What parses and is understood today:
 A first slice of semantic analysis then runs over the parsed program and:
 
 - Matches out-of-line method definitions back up to their in-class
-  declaration
-- Computes each class's layout (its data members and methods)
-- Assigns every function and method a first-cut mangled name
+  declaration — by name *and* parameter signature, so overloaded
+  constructors/methods attach to the right one
+- Computes each class's layout: its data members, its methods, and its
+  **vtable** — one slot per distinct virtual method in the hierarchy,
+  with overrides correctly reusing their base's slot
+- Assigns every function and method a mangled name that encodes its
+  parameter types
 - Reports errors (unknown types, mismatched out-of-line definitions)
   without crashing, so you see everything wrong in one run
 
 **What's still missing before this is a usable transpiler:** actual
-Vircon32 C code generation, vtable lowering for virtual dispatch, real
-overload resolution at call sites, and access-control enforcement. Templates
+Vircon32 C code generation (including turning vtable slot assignments
+into a real C vtable struct and dispatch code — the *slots* are assigned,
+nothing emits them yet), real overload resolution at call sites, and
+access-control enforcement. Templates
 and exceptions are intentionally not planned at all (see below). This is
 genuinely early — expect rough edges, and expect this README to need
 updating often as things change.

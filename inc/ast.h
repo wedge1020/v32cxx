@@ -21,6 +21,18 @@ typedef enum {
     AST_TYPEDEF_DECL,     /* str1=new name, type=underlying type */
     AST_FUNC_DECL,        /* str1=name, type=return type (NULL for ctor/dtor),
                               list=params, access, a=NULL (no body).
+                              ival=virtual-ness: 1 if `virtual` was written
+                              on THIS declaration. sema.c's vtable builder
+                              may ALSO set this to 1 after parsing, on a
+                              method that silently overrides an inherited
+                              virtual slot without repeating the keyword
+                              (matching real C++) -- so post-sema, ival
+                              means "is this virtual", not just "was
+                              'virtual' literally written here". Always 0
+                              on an out-of-line definition itself (the
+                              grammar doesn't accept `virtual` there,
+                              matching real C++ -- it only ever belongs on
+                              the in-class declaration).
                               b=NULL normally; only ever non-NULL on an
                               AST_FUNC_DEF built by out_of_line_def in
                               parser.y, where b=AST_QUALIFIED_ID holding

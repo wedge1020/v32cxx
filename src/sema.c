@@ -306,7 +306,104 @@ static void attach_out_of_line(AstList *decls) {
 
 /* ---- pass 3: per-class layout ----------------------------------------- */
 
+/* ---- vtable slot assignment --------------------------------------------
+ *
+ * Single inheritance only (matches this project's whole scope), which is
+ * what keeps this tractable: a derived class has exactly one base, so
+ * "this class's vtable" is unambiguously "the base's vtable, with some
+ * slots overridden and maybe some new ones appended" -- no diamond
+ * inheritance, no virtual-base-class slot-sharing puzzles to solve.
+ */
+
+/* Two virtual methods occupy the SAME slot if they have the same name and
+ * parameter signature -- EXCEPT destructors, which all share one
+ * conceptual slot per class hierarchy regardless of their (necessarily
+ * class-specific) literal spelling ("~Base" vs "~Derived" are different
+ * strings but the same override relationship in real C++). */
+static const char *vtable_slot_key(const AstNode *method) {
+    return (method->str1[0] == '~') ? "~" : method->str1;
+}
+
+static int vtable_find_slot(const Vtable *vt, const AstNode *candidate) {
+    const char *key = vtable_slot_key(candidate);
+    for (int i = 0; i < vt->count; i++) {
+        AstNode *existing = vt->entries[i].method;
+        if (strcmp(vtable_slot_key(existing), key) == 0 &&
+            param_lists_match(&existing->list, &candidate->list)) {
+            return i;
+        }
+    }
+    return -1;
+}
+
+static void vtable_append_slot(Vtable *vt, AstNode *method) {
+    if (vt->count == vt->capacity) {
+        vt->capacity = vt->capacity ? vt->capacity * 2 : 4;
+        vt->entries = realloc(vt->entries, sizeof(VtableEntry) * (size_t)vt->capacity);
+    }
+    vt->entries[vt->count].method = method;
+    vt->entries[vt->count].slot_index = vt->count;
+    vt->count++;
+}
+
+/* Builds `layout->vtable` for the class `layout` belongs to. Must be
+ * called only after layout->base_class_decl (if any) has ALREADY had its
+ * own layout -- and therefore its own vtable -- computed; see the call
+ * site in compute_layout() for how that's guaranteed regardless of
+ * top-to-bottom visitation order. */
+static void build_vtable(ClassLayout *layout) {
+    Vtable *base_vtable = NULL;
+    if (layout->base_class_decl != NULL) {
+        ClassLayout *base_layout = (ClassLayout *)layout->base_class_decl->sema_info;
+        base_vtable = (base_layout != NULL) ? base_layout->vtable : NULL;
+    }
+
+    Vtable *vt = calloc(1, sizeof(Vtable));
+
+    /* Inherit every slot from the base's vtable first, pointing at
+     * whichever AstNode currently implements it there -- overwritten
+     * below wherever this class actually overrides it. */
+    if (base_vtable != NULL) {
+        for (int i = 0; i < base_vtable->count; i++) {
+            vtable_append_slot(vt, base_vtable->entries[i].method);
+        }
+    }
+
+    for (int i = 0; i < layout->methods.count; i++) {
+        AstNode *m = layout->methods.items[i];
+        int slot = vtable_find_slot(vt, m);
+        if (slot >= 0) {
+            /* Overriding an inherited slot. Real C++ treats this as
+             * virtual even if 'virtual' isn't repeated on the override --
+             * match that here rather than requiring the keyword again at
+             * every level of the hierarchy. */
+            vt->entries[slot].method = m;
+            m->ival = 1;
+        } else if (m->ival == 1) {
+            /* A genuinely new virtual method (or a virtual destructor
+             * introduced at this level, if the base had none). */
+            vtable_append_slot(vt, m);
+        }
+        /* else: an ordinary, non-virtual, non-overriding method -- not
+         * part of any vtable at all. */
+    }
+
+    if (vt->count == 0) {
+        free(vt);
+        layout->vtable = NULL;
+    } else {
+        layout->vtable = vt;
+    }
+}
+
 static void compute_layout(AstNode *class_decl) {
+    if (class_decl->sema_info != NULL) {
+        return; /* already computed -- this happens when a class is
+                  * visited here as another class's base before
+                  * compute_layouts()'s own top-level loop reaches it
+                  * directly; see the recursive call below. */
+    }
+
     ClassLayout *layout = calloc(1, sizeof(ClassLayout));
     layout->data_members = ast_list_new();
     layout->methods = ast_list_new();
@@ -334,10 +431,24 @@ static void compute_layout(AstNode *class_decl) {
         if (layout->base_class_decl == NULL) {
             sema_error(class_decl->line, "class '%s' inherits from unknown base '%s'",
                        class_decl->str1, class_decl->str2);
+        } else {
+            /* Ensure the base's layout (and vtable) exists BEFORE this
+             * class's own vtable is built, regardless of which order
+             * compute_layouts()'s top-level walk happens to visit
+             * classes in. Can't cycle: the parser requires a base class
+             * to already be a registered TYPE_NAME before it can be
+             * named in `opt_base`, so a class can never (even
+             * transitively) end up inheriting from itself. */
+            compute_layout(layout->base_class_decl);
         }
-        /* Deliberately not merging the base's members into data_members/
-         * methods here -- see the ClassLayout doc comment in sema.h. */
+        /* Deliberately not merging the base's DATA members into
+         * data_members/methods here -- see the ClassLayout doc comment
+         * in sema.h. Virtual METHODS are handled differently, by
+         * build_vtable() below, since a vtable specifically needs
+         * inherited slots carried forward. */
     }
+
+    build_vtable(layout);
 
     class_decl->sema_info = layout;
 }
@@ -413,10 +524,11 @@ static void dump_class_layout(const AstNode *class_decl, int indent) {
         AstNode *m = layout->methods.items[i];
         FuncSemaInfo *info = (FuncSemaInfo *)m->sema_info;
         indent_line(indent + 2);
-        printf("%s -> %s%s\n",
+        printf("%s -> %s%s%s\n",
                m->str1,
                info != NULL ? info->mangled_name : "(unmangled)",
-               m->kind == AST_FUNC_DEF ? " [has body]" : " [prototype only]");
+               m->kind == AST_FUNC_DEF ? " [has body]" : " [prototype only]",
+               m->ival == 1 ? " [virtual]" : "");
     }
 
     if (layout->base_class_decl != NULL) {
@@ -425,6 +537,22 @@ static void dump_class_layout(const AstNode *class_decl, int indent) {
     } else if (class_decl->str2 != NULL) {
         indent_line(indent + 1);
         printf("base class resolved: NO (dangling reference to '%s')\n", class_decl->str2);
+    }
+
+    indent_line(indent + 1);
+    if (layout->vtable == NULL) {
+        printf("vtable: (none -- no virtual methods, own or inherited)\n");
+    } else {
+        printf("vtable:\n");
+        for (int i = 0; i < layout->vtable->count; i++) {
+            AstNode *m = layout->vtable->entries[i].method;
+            FuncSemaInfo *info = (FuncSemaInfo *)m->sema_info;
+            indent_line(indent + 2);
+            printf("[%d] %s -> %s\n",
+                   layout->vtable->entries[i].slot_index,
+                   m->str1,
+                   info != NULL ? info->mangled_name : "(unmangled)");
+        }
     }
 }
 
