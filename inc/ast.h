@@ -143,10 +143,24 @@ struct AstNode {
      * which pass has run. Currently used by sema.c:
      *   - AST_CLASS_DECL  -> ClassLayout*   (see sema.h)
      *   - AST_FUNC_DECL/AST_FUNC_DEF -> FuncSemaInfo* (see sema.h)
+     *   - AST_CALL -> CallResolution* (see sema.h), only if resolved
      * ast_new() zero-initializes this via calloc, so it's safely NULL
      * on every node until something sets it.
      */
     void *sema_info;
+
+    /*
+     * A SEPARATE opaque annotation slot, owned by lower.c rather than
+     * sema.c -- kept distinct from sema_info specifically so lowering's
+     * own output doesn't collide with (or have to overwrite) semantic
+     * analysis's results, which lowering itself still needs to READ
+     * while producing its own output (e.g. lower.c reads a class's
+     * ClassLayout via sema_info while computing that same class's
+     * StructLayout, stored here). Currently used by lower.c:
+     *   - AST_CLASS_DECL -> StructLayout* (see lower.h)
+     * Also zero-initialized (NULL) by ast_new().
+     */
+    void *lower_info;
 };
 
 AstList ast_list_new(void);

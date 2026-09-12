@@ -3,6 +3,7 @@
 #include "driver.h"
 #include "parser.h"
 #include "sema.h"
+#include "lower.h"
 
 /* Definitions for the globals declared extern in driver.h. */
 SymTab *g_symtab = NULL;
@@ -37,6 +38,13 @@ int main(int argc, char **argv) {
         if (sema_errors > 0) {
             fprintf(stderr, "---- %d semantic error(s) in %s ----\n", sema_errors, g_current_filename);
             rc = 1;
+        } else {
+            /* Lowering trusts sema's results (ClassLayout, vtables, ...)
+             * to be complete and correct, so it only runs once sema has
+             * come back clean -- see lower_run()'s precondition in
+             * lower.h. */
+            lower_run(g_program);
+            lower_dump(g_program);
         }
     } else {
         fprintf(stderr, "---- parse failed for %s ----\n", g_current_filename);

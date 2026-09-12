@@ -93,11 +93,22 @@ A first slice of semantic analysis then runs over the parsed program and:
   whose arguments it can't confidently type is left unresolved rather than
   guessed at, never silently assumed to be fine
 
+A first "lowering" phase has now started too — transforming what
+semantic analysis figured out into something closer to what generated C
+needs. So far: computing each class's flattened field layout (base
+class fields folded in as a literal prefix, so single-inheritance
+polymorphism works the same way it would in real C++, plus correct
+vtable-pointer placement across a hierarchy). Still just a computed data
+structure at this point, not emitted C syntax.
+
 **What's still missing before this is a usable transpiler:** actual
-Vircon32 C code generation (including turning vtable slot assignments
-into a real C vtable struct and dispatch code, and the resolved overload
-info above into an actual call to the right generated C function — both
-are decided, nothing emits them into C yet). Templates
+Vircon32 C code generation (emitting the struct layout above as real
+`struct` syntax, turning vtable slot assignments into a real C vtable
+struct and dispatch code, and the resolved overload info into an actual
+call to the right generated C function — all of this is *decided*,
+nothing emits it into C text yet), several more lowering phases first
+(`this`-injection, vtable dispatch rewriting, operator-overload and
+reference-to-pointer rewriting, `new`/`delete` runtime calls). Templates
 and exceptions are intentionally not planned at all (see below). This is
 genuinely early — expect rough edges, and expect this README to need
 updating often as things change.
@@ -172,7 +183,10 @@ src/
   symtab.h/.c   scoped symbol table (backs typedef/class-name lookup and
                 the lexer's qualified-name handling)
   sema.h/.c     semantic-analysis pass: class layouts, out-of-line
-                definition matching, name mangling
+                definition matching, name mangling, access control,
+                call-site overload resolution
+  lower.h/.c    lowering passes, starting with class-to-struct field
+                layout (more phases to come)
   driver.h      shared state between the lexer and parser
   main.c        CLI entry point
 tests/          example .cpp inputs, including intentionally-invalid ones

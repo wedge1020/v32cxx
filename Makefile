@@ -37,7 +37,8 @@ $(SRC_DIR)/lexer.o: $(SRC_DIR)/lexer.c | $(OBJ_DIR)
 	$(CC) $(CFLAGS) -I$(INC_DIR) -c $< -o $@
 
 $(BIN_DIR)/v32c++: $(OBJ_DIR)/parser.o $(OBJ_DIR)/lexer.o \
-                          $(OBJ_DIR)/ast.o $(OBJ_DIR)/symtab.o $(OBJ_DIR)/sema.o $(OBJ_DIR)/main.o
+                          $(OBJ_DIR)/ast.o $(OBJ_DIR)/symtab.o $(OBJ_DIR)/sema.o \
+                          $(OBJ_DIR)/lower.o $(OBJ_DIR)/main.o
 	$(CC) $(CFLAGS) -o $@ $^
 # If linking fails looking for yywrap/yy_flex_* symbols on your system,
 # add -lfl to this link line (some flex installs need it even with
@@ -55,6 +56,7 @@ test: all
 	./$(BIN_DIR)/v32c++ tests/sample9.cpp
 	-./$(BIN_DIR)/v32c++ tests/sample10.cpp
 	-./$(BIN_DIR)/v32c++ tests/sample11.cpp
+	./$(BIN_DIR)/v32c++ tests/sample12.cpp
 # sample4/sample5 are deliberately-invalid inputs (see their own header
 # comments) -- they're SUPPOSED to return nonzero. The leading '-' tells
 # make to ignore their exit code and keep going, rather than aborting the
