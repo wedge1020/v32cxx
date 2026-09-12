@@ -73,32 +73,168 @@ static void collect_classes(AstList *decls) {
     }
 }
 
-/* ---- mangling --------------------------------------------------------
+/* ---- type-signature comparison and mangling ---------------------------
  *
- * First cut: "Class__method" for members, bare name for free functions.
- * KNOWN GAP: no parameter-type encoding, so overloaded methods/functions
- * (same name, different params) currently mangle to the SAME string --
- * that will collide the moment codegen tries to emit two C functions with
- * identical names. Needed before codegen can handle overloading: extend
- * this to fold in a type-based suffix once params carry resolved,
- * comparable type information (which itself needs the pointer/reference
- * wrapping already in the AST to be paired with resolved class/typedef
- * identity, not just raw ast_ident/QualifiedId text).
+ * PURELY SYNTACTIC, not semantic: two type AST nodes are compared by their
+ * written shape (same kind, same names, same pointer/reference nesting),
+ * NOT by resolving typedefs to their underlying type. That means:
+ *
+ *   typedef int MyInt;
+ *   void f(int x);
+ *   void f(MyInt x);
+ *
+ * ...is treated as two DIFFERENT signatures here, when real C++ would
+ * consider it an invalid redeclaration (MyInt IS int). Fixing that needs
+ * typedef resolution -- walking the symbol table to find what a TYPE_NAME
+ * naming a typedef actually resolves to, recursively (a typedef can name
+ * another typedef) -- which needs access to the SymTab that parsing built,
+ * not just the AST sema.c currently walks. Worth doing before this is
+ * trusted for anything beyond straightforward, typedef-free overloads;
+ * flagged rather than silently wrong.
  */
 
-static char *mangle(const char *class_name, const char *method_name) {
-    if (class_name == NULL) {
-        return strdup(method_name);
+static int types_equal(const AstNode *t1, const AstNode *t2) {
+    if (t1 == NULL || t2 == NULL) {
+        return t1 == t2;
     }
-    size_t len = strlen(class_name) + 2 + strlen(method_name) + 1;
-    char *out = malloc(len);
-    snprintf(out, len, "%s__%s", class_name, method_name);
+    if (t1->kind != t2->kind) {
+        return 0;
+    }
+    switch (t1->kind) {
+        case AST_IDENT:
+            return strcmp(t1->str1, t2->str1) == 0;
+        case AST_QUALIFIED_ID: {
+            if (t1->list.count != t2->list.count) return 0;
+            for (int i = 0; i < t1->list.count; i++) {
+                if (strcmp(t1->list.items[i]->str1, t2->list.items[i]->str1) != 0) {
+                    return 0;
+                }
+            }
+            return 1;
+        }
+        case AST_POINTER_TYPE:
+        case AST_REFERENCE_TYPE:
+            return types_equal(t1->a, t2->a);
+        default:
+            /* Not a type-position AST kind -- shouldn't happen given what
+             * the parser puts in a `type` slot, but fail closed (treat as
+             * "not equal") rather than crash or silently match. */
+            return 0;
+    }
+}
+
+static int param_lists_match(const AstList *a, const AstList *b) {
+    if (a->count != b->count) {
+        return 0;
+    }
+    for (int i = 0; i < a->count; i++) {
+        if (!types_equal(a->items[i]->type, b->items[i]->type)) {
+            return 0;
+        }
+    }
+    return 1;
+}
+
+/* Renders a type as a short, C-identifier-safe fragment for use inside a
+ * mangled name -- e.g. Timer -> "Timer", `Timer *` -> "Timer_ptr",
+ * `v32::Timer &` -> "v32_Timer_ref". "::" and "*"/"&" aren't legal in a C
+ * identifier, hence the "_"-joining and "_ptr"/"_ref" suffixes instead of
+ * just splicing the written syntax in verbatim. */
+static char *type_signature_str(const AstNode *type) {
+    if (type == NULL) {
+        return strdup("void");
+    }
+    switch (type->kind) {
+        case AST_IDENT:
+            return strdup(type->str1);
+        case AST_QUALIFIED_ID: {
+            size_t len = 1;
+            for (int i = 0; i < type->list.count; i++) {
+                len += strlen(type->list.items[i]->str1) + 1;
+            }
+            char *out = malloc(len);
+            out[0] = '\0';
+            for (int i = 0; i < type->list.count; i++) {
+                if (i > 0) strcat(out, "_");
+                strcat(out, type->list.items[i]->str1);
+            }
+            return out;
+        }
+        case AST_POINTER_TYPE:
+        case AST_REFERENCE_TYPE: {
+            char *inner = type_signature_str(type->a);
+            const char *suffix = (type->kind == AST_POINTER_TYPE) ? "ptr" : "ref";
+            size_t len = strlen(inner) + strlen(suffix) + 2;
+            char *out = malloc(len);
+            snprintf(out, len, "%s_%s", inner, suffix);
+            free(inner);
+            return out;
+        }
+        default:
+            return strdup("unknown");
+    }
+}
+
+/* Joins every parameter's type_signature_str with "_", or "void" for an
+ * empty parameter list -- matching the C convention of writing `f(void)`
+ * for "takes nothing," which reads better in a mangled name than a bare
+ * trailing "__". */
+static char *param_signature_str(const AstList *params) {
+    if (params->count == 0) {
+        return strdup("void");
+    }
+    char *acc = strdup("");
+    for (int i = 0; i < params->count; i++) {
+        char *part = type_signature_str(params->items[i]->type);
+        size_t len = strlen(acc) + strlen(part) + 2;
+        char *joined = malloc(len);
+        if (i == 0) {
+            snprintf(joined, len, "%s", part);
+        } else {
+            snprintf(joined, len, "%s_%s", acc, part);
+        }
+        free(acc);
+        free(part);
+        acc = joined;
+    }
+    return acc;
+}
+
+/*
+ * "Class__method__paramSig" for a member, "method__paramSig" for a free
+ * function. Destructors get special-cased: the AST stores a destructor's
+ * name as e.g. "~Counter" (see func_header in parser.y), and '~' is not a
+ * legal C identifier character -- splicing it in unmodified would have
+ * produced a mangled name codegen could never actually emit. "dtor" is
+ * used in its place; the class name already disambiguates which class's
+ * destructor it is, so the (redundant) original class name isn't repeated
+ * inside the dtor's own name component.
+ */
+static char *mangle(const char *class_name, const char *method_name, const AstList *params) {
+    const char *name_part = method_name;
+    if (method_name[0] == '~') {
+        name_part = "dtor";
+    }
+
+    char *param_sig = param_signature_str(params);
+    char *out;
+    if (class_name == NULL) {
+        size_t len = strlen(name_part) + 2 + strlen(param_sig) + 1;
+        out = malloc(len);
+        snprintf(out, len, "%s__%s", name_part, param_sig);
+    } else {
+        size_t len = strlen(class_name) + 2 + strlen(name_part) + 2 + strlen(param_sig) + 1;
+        out = malloc(len);
+        snprintf(out, len, "%s__%s__%s", class_name, name_part, param_sig);
+    }
+    free(param_sig);
     return out;
 }
 
-static FuncSemaInfo *make_func_info(const char *class_name, const char *method_name, int is_out_of_line) {
+static FuncSemaInfo *make_func_info(const char *class_name, const char *method_name,
+                                     const AstList *params, int is_out_of_line) {
     FuncSemaInfo *info = calloc(1, sizeof(FuncSemaInfo));
-    info->mangled_name = mangle(class_name, method_name);
+    info->mangled_name = mangle(class_name, method_name, params);
     info->is_out_of_line = is_out_of_line;
     return info;
 }
@@ -136,11 +272,14 @@ static void attach_out_of_line(AstList *decls) {
         for (int j = 0; j < class_decl->list.count; j++) {
             AstNode *member = class_decl->list.items[j];
             if (member->kind == AST_FUNC_DECL &&
-                member->str1 != NULL && strcmp(member->str1, n->str1) == 0) {
-                /* TODO: name-only match -- the first same-named prototype
-                 * wins. Wrong the moment an overloaded method is defined
-                 * out-of-line; needs real parameter-signature comparison,
-                 * same gap noted on mangle() above. */
+                member->str1 != NULL && strcmp(member->str1, n->str1) == 0 &&
+                param_lists_match(&member->list, &n->list)) {
+                /* Full name-AND-signature match: this is what makes
+                 * `Vector::Vector(int)` attach to the right constructor
+                 * when Vector() and Vector(int) both exist, instead of
+                 * both out-of-line ctor definitions colliding onto
+                 * whichever same-named prototype happened to come first
+                 * in the class body. */
                 target = member;
                 break;
             }
@@ -154,14 +293,14 @@ static void attach_out_of_line(AstList *decls) {
 
         target->kind = AST_FUNC_DEF;
         target->a = n->a;
-        target->sema_info = make_func_info(class_name, n->str1, 0);
+        target->sema_info = make_func_info(class_name, n->str1, &target->list, 0);
 
         /* Leave the top-level duplicate in the AST (codegen needs
          * *something* stable to skip over rather than silently vanishing
          * nodes mid-pass) but flag it so codegen knows not to re-emit it
          * -- the authoritative copy is now reachable via the class's
          * member list / ClassLayout.methods. */
-        n->sema_info = make_func_info(class_name, n->str1, 1);
+        n->sema_info = make_func_info(class_name, n->str1, &n->list, 1);
     }
 }
 
@@ -182,7 +321,7 @@ static void compute_layout(AstNode *class_decl) {
                 /* Wasn't touched by attach_out_of_line (either it's an
                  * in-class-only method, or it never got a body at all --
                  * still fine to mangle a bodyless prototype). */
-                member->sema_info = make_func_info(class_decl->str1, member->str1, 0);
+                member->sema_info = make_func_info(class_decl->str1, member->str1, &member->list, 0);
             }
         }
         /* AST_ACCESS_SPEC markers are intentionally not represented in
@@ -223,7 +362,7 @@ static void mangle_free_functions(AstList *decls) {
         if (n->kind == AST_NAMESPACE_DECL) {
             mangle_free_functions(&n->list);
         } else if ((n->kind == AST_FUNC_DECL || n->kind == AST_FUNC_DEF) && n->sema_info == NULL) {
-            n->sema_info = make_func_info(NULL, n->str1, 0);
+            n->sema_info = make_func_info(NULL, n->str1, &n->list, 0);
         }
     }
 }

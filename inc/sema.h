@@ -6,24 +6,36 @@
 /*
  * First slice of semantic analysis. Deliberately narrow in scope -- see
  * the per-pass comments in sema.c and the README's "what's not here yet"
- * list for what this does NOT do (overload-aware matching, inherited-
- * member layout merging, access-control enforcement, vtable slot
- * assignment, full parameter-type-aware mangling).
+ * list for what this does NOT do (inherited-member layout merging,
+ * access-control enforcement, vtable slot assignment, call-site overload
+ * resolution, typedef-transparent type comparison).
  *
  * What it DOES do, run in this order by sema_run():
  *   1. Walk the whole program (recursing into namespaces) and register
  *      every class by its bare name into a flat registry.
  *   2. Attach out-of-line definitions (FUNC_DEF nodes produced by
  *      out_of_line_def in parser.y, identifiable by a non-NULL `b`
- *      qualifier chain) onto the matching in-class prototype, turning
+ *      qualifier chain) onto the matching in-class prototype -- matched
+ *      by name AND parameter-type signature (see types_equal/
+ *      param_lists_match in sema.c), so this correctly picks the right
+ *      overload rather than just the first same-named prototype -- turning
  *      that prototype into the authoritative FUNC_DEF. The top-level
  *      duplicate is left in place but flagged (FuncSemaInfo.is_out_of_line)
  *      so a later codegen pass knows to skip re-emitting it.
  *   3. Compute a ClassLayout for every class: its data members and methods
  *      split out from AccessSpec markers, plus its resolved base class
  *      (by AST pointer, not just name).
- *   4. Assign every method (and every free function) a first-cut mangled
- *      name.
+ *   4. Assign every method (and every free function) a mangled name that
+ *      folds in a parameter-type signature (see mangle() in sema.c), so
+ *      overloads -- including out-of-line-defined ones -- get distinct
+ *      names instead of colliding.
+ *
+ * NOTE ON #2 and #4: the type comparison behind both is purely syntactic
+ * (same written shape), not semantic -- it does not resolve typedefs to
+ * their underlying type, so `void f(int)` and `void f(MyIntTypedef)` are
+ * currently treated as different signatures even where real C++ would
+ * consider them the same. See the doc comment on types_equal() in
+ * sema.c for what fixing that would require.
  */
 
 typedef struct ClassLayout {
@@ -41,11 +53,19 @@ typedef struct ClassLayout {
 } ClassLayout;
 
 typedef struct FuncSemaInfo {
-    char *mangled_name;   /* e.g. "Player__update" for a method, or just
-                            * "clamp" for a free function -- see sema.c's
-                            * mangle() for the scheme and its known gaps
-                            * (no parameter-type disambiguation yet, so two
-                            * overloads of the same name currently collide). */
+    char *mangled_name;   /* e.g. "Player__update__void" for a no-arg
+                            * method, "Counter__Counter__int" for a
+                            * one-int-param constructor, or "Counter__dtor__void"
+                            * for its destructor (the mangled name can't
+                            * contain the literal "~" from the AST's
+                            * "~Counter" spelling, since that's not a legal
+                            * C identifier character -- see mangle() in
+                            * sema.c). Free functions omit the class
+                            * component: "clamp__int_int_int". Two
+                            * overloads (different parameter types) of the
+                            * same name now get distinct mangled names --
+                            * see the syntactic-vs-semantic type comparison
+                            * caveat on the file-level comment above. */
     int is_out_of_line;   /* 1 on the top-level duplicate left behind by an
                             * out-of-line definition after its body has been
                             * moved onto the real class member -- codegen

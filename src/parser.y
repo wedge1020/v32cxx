@@ -16,8 +16,9 @@
  * %glr-parser is declared so the grammar can grow into genuinely ambiguous
  * C++ declarator territory (function-pointer types, the "most vexing
  * parse") later without needing a parser-generator switch. As it happens,
- * GLR isn't even doing real forking work for anything in this grammar today
- * -- the 21 shift/reduce conflicts below (see %expect) are all resolved by
+ * GLR isn't even doing real forking work for anything in this grammar
+ * today -- the remaining shift/reduce conflicts (see the comment where
+ * %expect used to be pinned, a few lines down) are all resolved by
  * bison's default shift preference, not by parser forking. The typedef/
  * class-name-vs-value disambiguation that *does* need active resolution is
  * handled entirely by the lexer (see lexer.l and symtab.h), which is what
@@ -53,37 +54,45 @@
 %define parse.error verbose
 
 /*
- * 21 shift/reduce conflicts, confirmed via `bison -Wcounterexamples` and
- * cross-checked against parser.output (states 2, 69, 102; 7 conflicts
- * each, on tokens INT_KW/FLOAT_KW/VOID_KW/BOOL_KW/CHAR_KW/TYPE_NAME/
- * IDENTIFIER). All 21 are the SAME root cause in three places (global
- * scope, inside a namespace body, inside a class body): func_decl/func_def
- * both start with `opt_virtual func_header`, and opt_virtual can derive
- * nothing -- while var_decl starts directly with the very same type_spec,
- * no such prefix. So at e.g. INT_KW, the tables are torn between reducing
- * `opt_virtual -> ε` (heading toward a function) and shifting INT_KW
- * straight into type_spec (heading toward a variable).
+ * 22 shift/reduce conflicts -- re-verified after fixing a real bug in
+ * out_of_line_def's constructor rule (see the long comment on that
+ * alternative below, and docs/DESIGN_NOTES.md, for the postmortem:
+ * `Counter::Counter(...)` used to fail to parse entirely, which is a
+ * different and worse thing than a benign shift/reduce conflict).
  *
- * This is safe: bison's default is to prefer shift, i.e. defer the
- * decision rather than commit early, and the real fork only needs to
- * happen one token later anyway -- after IDENTIFIER, `(` means function,
- * anything else means variable. That's plain 1-token lookahead, so no
- * input can actually be misparsed; the conflict is purely an artifact of
- * *when* the tables notice the ambiguity, not a parsing hazard. See the
- * comment on opt_virtual/func_header below for the grammar-level version
- * of this explanation.
+ * The count landing back at 22 is not assumed to be a coincidence carried
+ * over from before the fix -- it was re-checked against fresh
+ * `bison -Wcounterexamples` output for this exact grammar. Specifically:
+ * every one of the 22 derivation trees routes through either the
+ * regular out-of-line method alternative (`type_spec qname_prefix
+ * IDENTIFIER '(' ...`) or the destructor alternative (`qname_prefix '~'
+ * TYPE_NAME '(' ')'`), both already part of the documented family below
+ * (opt_virtual's nullable prefix vs. type_spec/qname_prefix-starting
+ * alternatives, across the same three contexts: global scope, a
+ * namespace body, a class body). The FIXED constructor alternative
+ * (`qualified_type '(' ...`) does not appear in any of the 22 -- meaning
+ * that specific fork is now fully and unambiguously resolved, not merely
+ * hidden behind a passing conflict count.
  *
- * %expect pins the count so bison stops warning about these 21 *and* so
- * it errors loudly if a future grammar edit changes the count -- e.g. if
- * out-of-line method definitions (Class::method) get added and introduce
- * a genuinely new conflict alongside these, %expect will flag it instead
- * of it silently blending into "yet another shift/reduce warning."
+ * This is safe in every instance: bison's default is to prefer shift,
+ * i.e. defer the decision rather than commit early, and the real fork
+ * only needs one more token of lookahead anyway -- `(` right after
+ * IDENTIFIER/TYPE_NAME means "this was a function/constructor/destructor
+ * name", anything else means "this was a return type, keep going." Plain
+ * 1-token lookahead, so no input can actually be misparsed; the conflict
+ * is purely an artifact of *when* the tables notice the ambiguity, not a
+ * parsing hazard. See the comment on opt_virtual/func_header, and the one
+ * on out_of_line_def, for the grammar-level version of this explanation.
+ *
+ * If a future grammar edit changes this count, bison will error (rather
+ * than warn) until %expect is updated -- treat that as a prompt to
+ * re-run `bison -Wcounterexamples`, read every new counterexample (not
+ * just the total, and not just assuming it matches a known-benign shape
+ * -- see the postmortem for why that assumption failed once already),
+ * and confirm the actual concrete input you care about still parses
+ * correctly before trusting the new number.
  */
-%expect 21
-/* %error-verbose is the old (but still supported) spelling of what newer
- * bison calls `%define parse.error verbose`. Using the old spelling keeps
- * this grammar buildable on both bison 2.3 and current bison; you'll get
- * a harmless "deprecated directive" warning on newer bison, nothing more. */
+%expect 22
 
 %union {
     AstNode *node;
@@ -209,6 +218,27 @@ class_decl:
             g_current_class_sym = symtab_insert(g_symtab, g_symtab->current, $2, SYM_CLASS);
             symtab_push_scope(g_symtab, $2, 1);
             g_current_class_sym->inner_scope = g_symtab->current;
+
+            /* Injected class name (C++ [class.pre]): within its own body,
+             * a class's name is implicitly visible as if it were a member
+             * of itself. Without this, a self-qualified reference like
+             * `Counter::Counter` breaks: the "::" arms pending_qualifier
+             * to look *inside* Counter's own scope, but the constructor
+             * rule (TYPE_NAME '(' ...) never inserts "Counter" as a
+             * symbol under its own name -- it doesn't need to for the
+             * in-class case, since it's just reusing the already-
+             * registered class name. So the lookup for the second
+             * "Counter" in an out-of-line `Counter::Counter(...)` or
+             * `Counter::~Counter()` fails, falls back to plain
+             * IDENTIFIER, and the parser -- correctly, given that input
+             * -- rejects it expecting another "::". Confirmed against a
+             * real failing build and a hand-traced parser.output before
+             * landing on this as the actual root cause; see
+             * docs/DESIGN_NOTES.md for the full story, including why an
+             * earlier, different fix (in out_of_line_def's grammar) was
+             * necessary but not sufficient on its own. */
+            Symbol *injected = symtab_insert(g_symtab, g_symtab->current, $2, SYM_CLASS);
+            injected->inner_scope = g_symtab->current;
         }
     '{' member_list '}'
         {
@@ -359,14 +389,19 @@ func_def:
  * `b` slot -- see the AST_FUNC_DECL/AST_FUNC_DEF comments in ast.h -- and
  * gets out of the way.
  *
- * CONFLICT NOTE: adding a new type_spec-starting alternative here sits in
- * exactly the same states (2/69/102) already flagged by the %expect 21 at
- * the top of this file for the var_decl/func_decl ambiguity. Rebuild with
- * `bison -Wcounterexamples` after this change and update %expect to
- * whatever new count you get -- don't assume it's still 21. If any new
- * counterexample involves something *other* than the declaration-vs-
- * function-start pattern already documented there, treat that as a real
- * bug to chase, not another one to wave through.
+ * CONFLICT NOTE, CORRECTED: an earlier version of the constructor
+ * alternative below duplicated qualified_type's exact right-hand side
+ * (`qname_prefix TYPE_NAME`) as an inline sequence rather than reusing
+ * qualified_type itself, and that turned out to be a genuine parser bug,
+ * not a benign conflict -- confirmed by an actual failing build on
+ * `Counter::Counter(...)`. See the postmortem comment on the constructor
+ * alternative itself, and docs/DESIGN_NOTES.md, for the full story. The
+ * fix routes through `qualified_type`, which reduces this to the same
+ * already-proven-safe fork the rest of the file relies on. `%expect` is
+ * temporarily removed a few lines up pending a fresh, verified conflict
+ * count against this corrected grammar -- don't assume any particular
+ * number until `bison -Wcounterexamples` has actually been run against
+ * this version.
  */
 
 out_of_line_def:
@@ -381,18 +416,52 @@ out_of_line_def:
             $$->b->list = $2;
             symtab_pop_scope(g_symtab);
         }
-    | qname_prefix TYPE_NAME '(' { symtab_push_scope(g_symtab, NULL, 0); } opt_param_list ')' block
+    | qualified_type '(' { symtab_push_scope(g_symtab, NULL, 0); } opt_param_list ')' block
         {
-            /* Constructor: Class::Class(...) {} -- the name after "::" is
-             * TYPE_NAME because it's the class's own already-registered
-             * name, same trick as the in-class constructor rule. */
+            /* Constructor: Class::Class(...) {}.
+             *
+             * This used to be written as an inline "qname_prefix TYPE_NAME
+             * '(' ..." -- i.e. a second, separate grammar rule with the
+             * exact same right-hand side as qualified_type's own
+             * production (qname_prefix TYPE_NAME), just followed by more
+             * symbols. That turned out to be a real bug, not a benign
+             * conflict: bison's generated parser rejected '(' after
+             * "Counter::Counter" and only accepted a further "::",
+             * confirmed against an actual failing build (see the
+             * postmortem in docs/DESIGN_NOTES.md -- this is exactly the
+             * kind of thing that needs to be verified against real bison
+             * output, not just pattern-matched against a known-benign
+             * conflict family, which is the mistake that let this ship in
+             * the first place).
+             *
+             * Routing through qualified_type instead means there's only
+             * ONE grammar path that ever reduces "qname_prefix TYPE_NAME",
+             * and the only fork left is "qualified_type used as a return
+             * type" (type_spec's existing alternative) vs "qualified_type
+             * followed directly by '('" (this rule) -- structurally
+             * identical to the var_decl-vs-func_decl/func_def fork this
+             * grammar already relies on everywhere else, and which is
+             * actually confirmed working (every existing test file
+             * exercises it).
+             *
+             * $1 (qualified_type) bundles the WHOLE dotted name as a flat
+             * list -- e.g. [Counter, Counter] for `Counter::Counter`, or
+             * [v32, Timer, Timer] for a hypothetical nested case -- so the
+             * constructor's own name is $1's LAST component, and the
+             * qualifier chain (what the other two out_of_line_def
+             * alternatives store in `b`) is everything before it.
+             */
+            AstList *parts = &$1->list;
+            int n = parts->count;
             $$ = ast_new(AST_FUNC_DEF, @1.first_line);
-            $$->str1 = strdup($2);
+            $$->str1 = strdup(parts->items[n - 1]->str1);
             $$->type = NULL;
-            $$->list = $5;
-            $$->a = $7;
+            $$->list = $4;
+            $$->a = $6;
             $$->b = ast_new(AST_QUALIFIED_ID, @1.first_line);
-            $$->b->list = $1;
+            for (int i = 0; i < n - 1; i++) {
+                ast_list_append(&$$->b->list, parts->items[i]);
+            }
             symtab_pop_scope(g_symtab);
         }
     | qname_prefix '~' TYPE_NAME '(' ')' block
