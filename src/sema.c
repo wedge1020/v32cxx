@@ -377,6 +377,24 @@ static const char *mangle_operator_symbol(const char *name) {
 }
 
 static char *mangle(const char *class_name, const char *method_name, const AstList *params) {
+    if (class_name == NULL && strcmp(method_name, "main") == 0) {
+        /* Vircon32 requires an actual, unmangled `main` to exist (a
+         * whole-cartridge entry point, not a library function -- there's
+         * no OS to hand a mangled name to). Only ever special-cased for
+         * a top-level free function (class_name == NULL); a METHOD
+         * happening to be named "main" is an ordinary method, mangled
+         * normally like anything else. See codegen.c's
+         * emit_function_header/print_stmt for the matching special
+         * cases this alone doesn't finish -- forcing `void` as the
+         * printed return type, and stripping any `return expr;`'s value
+         * (Vircon32 rejects returning a value from `void main()`, and
+         * requiring the C++ source to already declare `void main()`
+         * itself, rather than accepting `int main()` and quietly
+         * changing its meaning, was ruled out precisely because it's
+         * quietly changing behavior -- keeping the C++ source able to
+         * read like ordinary C++ was judged more valuable here). */
+        return strdup("main");
+    }
     const char *name_part = method_name;
     if (method_name[0] == '~') {
         name_part = "dtor";

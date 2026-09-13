@@ -1017,6 +1017,69 @@ target, which narrows the design space once that gets tackled, but
 doesn't change the fact that it still needs an actual decision, not a
 quick fix bundled in here.
 
+## Second compile attempt: `main()` finally handled, plus a gap found via a near-mistake
+
+`tests/sample14.cpp` still didn't compile after the previous round's
+fixes -- two new errors, both genuinely informative about how Vircon32
+actually works, not just codegen bugs to patch quietly.
+
+**`main` is not declared.** The deferred `main()` design question from
+two rounds back stopped being deferrable -- it was now the thing
+actually blocking a real compile. Fixed properly, not partially:
+`sema.c`'s `mangle()` special-cases a top-level (never a method) free
+function literally named `main`, keeping it unmangled -- and, critically,
+`codegen.c` ALSO forces its printed return type to `void` regardless of
+what the C++ source declared (commonly `int main()`), and strips any
+`return expr;` inside it down to `expr; return;` (evaluating the
+expression as a statement, for whatever side effects it might have,
+before a bare `return;`). All three pieces were necessary together --
+fixing only the name would have traded "main not declared" for "returns
+a value from a void function" the moment `tests/sample2.cpp`'s
+`int main() { return 0; }` got rebuilt. `print_stmt` now threads a
+`strip_return_value` flag through every recursive call (a `return` can
+be arbitrarily nested inside `main`'s own if/while/for/block structure,
+and nothing about a bare `AST_RETURN` node says which function it
+belongs to) -- deliberately not solved by mutating the AST during
+lowering instead, since this is entirely about how Vircon32's `main` in
+particular needs to be PRINTED, not a transformation any other consumer
+of the lowered AST would ever need.
+
+**`doubleIt` "declared but not fully defined."** A stricter, more
+informative version of the earlier "not declared" error -- Vircon32
+does whole-program analysis with no separate compile-then-link step, so
+a bare prototype for a function that's genuinely never defined anywhere
+in the compiled unit isn't tolerated at all, unlike ordinary C where a
+matching prototype is enough at compile time and an unresolved body only
+fails later, at link time. This is a `tests/sample14.cpp` completeness
+issue, not a codegen bug -- `doubleIt` was deliberately prototype-only
+there, to test call resolution without needing its own implementation,
+which is a perfectly fine thing for OUR sema/lowering tests to check but
+not something Vircon32 itself will ever compile standalone.
+
+**Fixing that test file surfaced a genuine, previously-undiscovered gap,
+caught before it shipped rather than after.** The natural fix -- add
+`int doubleIt(int x);` followed later by `int doubleIt(int x) { ... }`,
+an entirely ordinary C++ pattern -- would have registered TWO separate
+entries for the same free function (nothing in this project pairs a free
+function's prototype to its own later definition the way
+`attach_out_of_line` does for methods). `resolve_call` would then see two
+identically-shaped candidates for every call to `doubleIt()` and report
+it as ambiguous. Worked around in the test file itself (a single
+combined declaration, no separate prototype) rather than fixed at the
+compiler level -- fixing it properly means giving free functions the
+same prototype-to-definition matching methods already have, which is a
+real gap worth closing eventually but bigger than this test file's own
+needs justify addressing on its own right now. Documented here so it
+isn't lost: **a free function declared with a separate prototype and
+later definition, both present in the same file, will currently be
+misdiagnosed as an ambiguous overload** -- an entirely ordinary,
+idiomatic C++ pattern that this project cannot yet handle correctly.
+
+**Confirmed compiling cleanly** after these fixes (Matthew's report).
+The only remaining warning is `-Wsign-compare` in flex-generated
+`lexer.c` -- pre-existing, not something this project's own source
+controls, and not a concern.
+
 ## What's deliberately not here yet
 
 - **Inheritance-aware name lookup at parse/lex time.** `Player : public

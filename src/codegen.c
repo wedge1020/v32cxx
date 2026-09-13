@@ -438,7 +438,7 @@ static void print_expr(FILE *out, const AstNode *e) {
  * handled; anything else is a genuine gap, flagged loudly rather than
  * silently dropped.
  */
-static void print_stmt(FILE *out, const AstNode *s, int indent);
+static void print_stmt(FILE *out, const AstNode *s, int indent, int strip_return_value);
 
 static void indent_spaces(FILE *out, int indent) {
     for (int i = 0; i < indent; i++) fprintf(out, "    ");
@@ -458,14 +458,24 @@ static void print_var_decl_inline(FILE *out, const AstNode *n) {
     }
 }
 
-static void print_stmt(FILE *out, const AstNode *s, int indent) {
+/* `strip_return_value`: 1 only when printing `main`'s own body (see
+ * emit_function_definition) -- Vircon32 requires `void main()`, so a
+ * `return expr;` inside it (perfectly ordinary in the C++ source, which
+ * might have declared `int main()`) has to become `expr; return;`
+ * instead: evaluate the expression as a statement, for any side effects
+ * it might have, then a bare `return;` to satisfy the void signature.
+ * Threaded through every recursive call rather than re-detected at each
+ * AST_RETURN, since a return can be arbitrarily nested inside main's own
+ * if/while/for/block structure and there's nothing about a RETURN
+ * statement itself that says which function it belongs to. */
+static void print_stmt(FILE *out, const AstNode *s, int indent, int strip_return_value) {
     if (s == NULL) return;
     switch (s->kind) {
         case AST_BLOCK:
             indent_spaces(out, indent);
             fprintf(out, "{\n");
             for (int i = 0; i < s->list.count; i++) {
-                print_stmt(out, s->list.items[i], indent + 1);
+                print_stmt(out, s->list.items[i], indent + 1, strip_return_value);
             }
             indent_spaces(out, indent);
             fprintf(out, "}\n");
@@ -475,11 +485,11 @@ static void print_stmt(FILE *out, const AstNode *s, int indent) {
             fprintf(out, "if (");
             print_expr(out, s->a);
             fprintf(out, ")\n");
-            print_stmt(out, s->b, indent); /* s->b is itself an AST_BLOCK -- prints its own braces */
+            print_stmt(out, s->b, indent, strip_return_value); /* s->b is itself an AST_BLOCK -- prints its own braces */
             if (s->c != NULL) {
                 indent_spaces(out, indent);
                 fprintf(out, "else\n");
-                print_stmt(out, s->c, indent);
+                print_stmt(out, s->c, indent, strip_return_value);
             }
             break;
         case AST_WHILE:
@@ -487,7 +497,7 @@ static void print_stmt(FILE *out, const AstNode *s, int indent) {
             fprintf(out, "while (");
             print_expr(out, s->a);
             fprintf(out, ")\n");
-            print_stmt(out, s->b, indent);
+            print_stmt(out, s->b, indent, strip_return_value);
             break;
         case AST_FOR:
             indent_spaces(out, indent);
@@ -504,9 +514,17 @@ static void print_stmt(FILE *out, const AstNode *s, int indent) {
             fprintf(out, "; ");
             print_expr(out, s->c);
             fprintf(out, ")\n");
-            print_stmt(out, s->d, indent);
+            print_stmt(out, s->d, indent, strip_return_value);
             break;
         case AST_RETURN:
+            if (strip_return_value && s->a != NULL) {
+                indent_spaces(out, indent);
+                print_expr(out, s->a);
+                fprintf(out, ";\n");
+                indent_spaces(out, indent);
+                fprintf(out, "return;\n");
+                break;
+            }
             indent_spaces(out, indent);
             fprintf(out, "return");
             if (s->a != NULL) {
@@ -564,11 +582,22 @@ static void print_stmt(FILE *out, const AstNode *s, int indent) {
  * virtual method that's expected to be called polymorphically without
  * ever having its own body.
  */
-static void emit_function_header(FILE *out, const AstNode *func) {
-    FuncSemaInfo *info = (FuncSemaInfo *)func->sema_info;
-    const char *name = (info != NULL) ? info->mangled_name : func->str1;
+/* `name` is passed in rather than re-derived, since emit_function_
+ * definition below needs it too (to decide whether to strip return
+ * values in the body) and there's no reason to look it up twice. */
+static void emit_function_header(FILE *out, const AstNode *func, const char *name) {
+    int is_main = (strcmp(name, "main") == 0);
 
-    print_type(out, func->type);
+    if (is_main) {
+        /* Vircon32 requires `void main()` specifically -- see mangle()'s
+         * own doc comment in sema.c for why this is forced here rather
+         * than requiring the C++ source to already declare it that way.
+         * func->type is deliberately ignored in this case, whatever the
+         * C++ source actually declared (commonly `int main()`). */
+        fprintf(out, "void");
+    } else {
+        print_type(out, func->type);
+    }
     fprintf(out, " %s(", name);
     if (func->list.count == 0) {
         fprintf(out, "void"); /* Vircon32/C: an empty parameter list needs
@@ -585,14 +614,20 @@ static void emit_function_header(FILE *out, const AstNode *func) {
 }
 
 static void emit_function_prototype(FILE *out, const AstNode *func) {
-    emit_function_header(out, func);
+    FuncSemaInfo *info = (FuncSemaInfo *)func->sema_info;
+    const char *name = (info != NULL) ? info->mangled_name : func->str1;
+    emit_function_header(out, func, name);
     fprintf(out, ";\n");
 }
 
 static void emit_function_definition(FILE *out, const AstNode *func) {
-    emit_function_header(out, func);
+    FuncSemaInfo *info = (FuncSemaInfo *)func->sema_info;
+    const char *name = (info != NULL) ? info->mangled_name : func->str1;
+    int is_main = (strcmp(name, "main") == 0);
+
+    emit_function_header(out, func, name);
     fprintf(out, "\n");
-    print_stmt(out, func->a, 0); /* func->a is the body, an AST_BLOCK */
+    print_stmt(out, func->a, 0, is_main); /* func->a is the body, an AST_BLOCK */
     fprintf(out, "\n");
 }
 

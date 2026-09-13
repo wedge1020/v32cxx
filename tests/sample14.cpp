@@ -30,7 +30,29 @@ int Shape::describe() {
     return a;
 }
 
-int doubleIt(int x);
+int doubleIt(int x) {
+    return x * 2;
+}
+// A single declaration doing double duty as both the forward reference
+// Shape::area/Circle::area need and doubleIt's real implementation --
+// DELIBERATELY not split into a separate `int doubleIt(int x);`
+// declaration followed later by this definition, the way a prototype-
+// then-implementation free function ordinarily would be in real C++.
+// That split would register TWO separate entries for the same name in
+// this project's free-function registry (nothing pairs a free
+// function's prototype to its own later definition the way
+// attach_out_of_line does for methods) -- resolve_call would then see
+// two identically-shaped candidates for every call to doubleIt() and
+// report it as ambiguous, a real, newly-discovered gap this project has
+// rather than a deliberate scope choice. Tracked in docs/DESIGN_NOTES.md
+// as a genuine limitation; worked around here rather than fixed, since
+// fixing it properly means giving free functions the same prototype-to-
+// definition matching methods already have, which is a bigger change
+// than this test file's own needs justify on its own. This project's
+// own multi-pass design doesn't care about declare-before-use ordering
+// at all, so moving the full definition here (instead of split further
+// down, closer to the out-of-line method definitions) changes nothing
+// about what actually gets resolved.
 
 int Shape::area() {
     return doubleIt(size);   // free-function call
@@ -51,4 +73,16 @@ int Circle::describeTwice() {
 
 int Circle::area() {
     return doubleIt(size * 2);
+}
+
+void main() {
+    // Deliberately empty -- Vircon32 requires an actual `main` to exist
+    // (a whole-cartridge entry point, no OS to be a library function
+    // for), which this file needed to compile standalone at all, but
+    // this test is specifically about call-site codegen, not about
+    // constructing objects. Vtable STATIC INSTANCES don't exist yet
+    // (see docs/DESIGN_NOTES.md) -- actually instantiating a Shape or
+    // Circle here and calling a virtual method on it would compile but
+    // behave incorrectly (an uninitialized vtable pointer), which would
+    // be a misleading thing for a test to appear to demonstrate.
 }
