@@ -116,10 +116,17 @@ static void free_typedef_registry(void) {
 }
 
 /* ---- flat free-function registry, grouping ALL top-level (and
- * namespace-nested) functions -- deliberately NOT deduplicated by name,
- * since overloads are exactly multiple entries sharing a name. Used by
- * call-site overload resolution (resolve_call, further down) to collect
- * every candidate a free-function call could mean. */
+ * namespace-nested) functions -- entries share a name whenever two
+ * functions are genuinely overloaded (different signatures), but
+ * register_free_function (below) does dedupe an EXACT name+signature
+ * match against an existing entry -- see that function's own doc
+ * comment for why (an ordinary prototype-then-definition free function
+ * would otherwise register as two candidates and misreport as an
+ * ambiguous call). Used by call-site overload resolution (resolve_call,
+ * further down) to collect every genuine candidate a free-function call
+ * could mean. */
+
+static int param_lists_match(const AstList *a, const AstList *b);
 
 typedef struct FreeFuncRegEntry {
     AstNode *func;
@@ -128,7 +135,35 @@ typedef struct FreeFuncRegEntry {
 
 static FreeFuncRegEntry *g_free_func_registry = NULL;
 
+/* If an existing registered entry has the SAME name AND the SAME
+ * parameter signature, this is the "other half" of an entirely ordinary
+ * C++ pattern -- a free function's prototype, declared separately from
+ * its own later definition -- not a genuine second candidate. Without
+ * this check, resolve_call would see two identically-shaped candidates
+ * for every call to that function and report it as ambiguous, which is
+ * exactly the bug a near-miss while fixing tests/sample14.cpp surfaced
+ * (see docs/DESIGN_NOTES.md) -- caught before it shipped as a workaround
+ * in that one test file rather than fixed here, until now.
+ *
+ * Prefers keeping whichever entry HAS a body (AST_FUNC_DEF) if the two
+ * disagree on that -- a prototype's own registration gets replaced by
+ * its later definition, since the definition is what every later pass
+ * (mangling already ran by the time this matters, but lowering and
+ * codegen both need an actual body) needs to see. If the SAME kind
+ * shows up twice (two prototypes, or -- a genuine redefinition error
+ * this project doesn't otherwise diagnose -- two definitions), the
+ * first one registered wins; not this pass's job to flag a duplicate
+ * body as an error, only to avoid the ambiguous-overload
+ * misdiagnosis. */
 static void register_free_function(AstNode *func) {
+    for (FreeFuncRegEntry *e = g_free_func_registry; e != NULL; e = e->next) {
+        if (strcmp(e->func->str1, func->str1) == 0 && param_lists_match(&e->func->list, &func->list)) {
+            if (func->kind == AST_FUNC_DEF && e->func->kind != AST_FUNC_DEF) {
+                e->func = func;
+            }
+            return;
+        }
+    }
     FreeFuncRegEntry *e = malloc(sizeof(FreeFuncRegEntry));
     e->func = func;
     e->next = g_free_func_registry;
@@ -255,11 +290,6 @@ static int param_lists_match(const AstList *a, const AstList *b) {
     return 1;
 }
 
-/* Renders a type as a short, C-identifier-safe fragment for use inside a
- * mangled name -- e.g. Timer -> "Timer", `Timer *` -> "Timer_ptr",
- * `v32::Timer &` -> "v32_Timer_ref". "::" and "*"/"&" aren't legal in a C
- * identifier, hence the "_"-joining and "_ptr"/"_ref" suffixes instead of
- * just splicing the written syntax in verbatim. */
 /* Renders a type as a short, C-identifier-safe fragment for use inside a
  * mangled name -- e.g. Timer -> "Timer", `Timer *` -> "Timer_ptr",
  * `v32::Timer &` -> "v32_Timer_ref". "::" and "*"/"&" aren't legal in a C

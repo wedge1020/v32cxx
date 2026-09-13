@@ -86,6 +86,7 @@ test: all | $(OUT_DIR)
 	./$(BIN_DIR)/v32c++  tests/sample18.cpp 2>&1 | tee out/sample18.txt
 	-./$(BIN_DIR)/v32c++ tests/sample19.cpp 2>&1 | tee out/sample19.txt
 	-./$(BIN_DIR)/v32c++ tests/sample20.cpp 2>&1 | tee out/sample20.txt
+	./$(BIN_DIR)/v32c++  tests/sample21.cpp 2>&1 | tee out/sample21.txt
 # sample4/sample5 are deliberately-invalid inputs (see their own header
 # comments) -- they're SUPPOSED to return nonzero. The leading '-' tells
 # make to ignore their exit code and keep going, rather than aborting the

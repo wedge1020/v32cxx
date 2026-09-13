@@ -30,33 +30,24 @@ int Shape::describe() {
     return a;
 }
 
-int doubleIt(int x) {
-    return x * 2;
-}
-// A single declaration doing double duty as both the forward reference
-// Shape::area/Circle::area need and doubleIt's real implementation --
-// DELIBERATELY not split into a separate `int doubleIt(int x);`
-// declaration followed later by this definition, the way a prototype-
-// then-implementation free function ordinarily would be in real C++.
-// That split would register TWO separate entries for the same name in
-// this project's free-function registry (nothing pairs a free
-// function's prototype to its own later definition the way
-// attach_out_of_line does for methods) -- resolve_call would then see
-// two identically-shaped candidates for every call to doubleIt() and
-// report it as ambiguous, a real, newly-discovered gap this project has
-// rather than a deliberate scope choice. Tracked in docs/DESIGN_NOTES.md
-// as a genuine limitation; worked around here rather than fixed, since
-// fixing it properly means giving free functions the same prototype-to-
-// definition matching methods already have, which is a bigger change
-// than this test file's own needs justify on its own. This project's
-// own multi-pass design doesn't care about declare-before-use ordering
-// at all, so moving the full definition here (instead of split further
-// down, closer to the out-of-line method definitions) changes nothing
-// about what actually gets resolved.
+int doubleIt(int x);
 
 int Shape::area() {
     return doubleIt(size);   // free-function call
 }
+
+int doubleIt(int x) {
+    return x * 2;
+}
+// Back to the natural, ordinary C++ pattern -- declare, then define
+// separately later -- now that sema.c's register_free_function dedupes
+// an exact name+signature match against an existing registry entry
+// instead of registering a second, identically-shaped candidate. This
+// used to need a workaround here (a single combined declaration) to
+// avoid resolve_call misreporting every call to doubleIt() as
+// ambiguous; see docs/DESIGN_NOTES.md for the full story. Restoring
+// this pattern is itself a real test of that fix, in addition to
+// tests/sample21.cpp's more isolated one.
 
 class Circle : public Shape {
     public:

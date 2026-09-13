@@ -1057,28 +1057,53 @@ which is a perfectly fine thing for OUR sema/lowering tests to check but
 not something Vircon32 itself will ever compile standalone.
 
 **Fixing that test file surfaced a genuine, previously-undiscovered gap,
-caught before it shipped rather than after.** The natural fix -- add
+caught before it shipped rather than after -- and now actually fixed,
+not just worked around.** The natural fix -- add
 `int doubleIt(int x);` followed later by `int doubleIt(int x) { ... }`,
 an entirely ordinary C++ pattern -- would have registered TWO separate
 entries for the same free function (nothing in this project pairs a free
 function's prototype to its own later definition the way
 `attach_out_of_line` does for methods). `resolve_call` would then see two
 identically-shaped candidates for every call to `doubleIt()` and report
-it as ambiguous. Worked around in the test file itself (a single
-combined declaration, no separate prototype) rather than fixed at the
-compiler level -- fixing it properly means giving free functions the
-same prototype-to-definition matching methods already have, which is a
-real gap worth closing eventually but bigger than this test file's own
-needs justify addressing on its own right now. Documented here so it
-isn't lost: **a free function declared with a separate prototype and
-later definition, both present in the same file, will currently be
-misdiagnosed as an ambiguous overload** -- an entirely ordinary,
-idiomatic C++ pattern that this project cannot yet handle correctly.
+it as ambiguous. Worked around in the test file itself at the time (a
+single combined declaration, no separate prototype), with the real fix
+tracked here as a known gap rather than lost.
 
-**Confirmed compiling cleanly** after these fixes (Matthew's report).
-The only remaining warning is `-Wsign-compare` in flex-generated
-`lexer.c` -- pre-existing, not something this project's own source
-controls, and not a concern.
+**Fixed properly once Matthew confirmed the compile succeeded and asked
+about it directly.** `register_free_function` (sema.c) now checks, before
+adding a new registry entry, whether an existing entry already shares the
+SAME name and the SAME parameter signature -- if so, this is the "other
+half" of a prototype-then-definition pair, not a genuine second
+candidate, and no new entry gets added; if the two disagree on which one
+has a body, the entry gets upgraded to whichever one is `AST_FUNC_DEF`
+(the definition is more useful to lowering/codegen, which need an actual
+body). `tests/sample14.cpp`'s `doubleIt` reverted back to the natural,
+separated declare-then-define form as a real test of this (restoring it
+was itself a verification step, not just a cosmetic revert), and a new,
+deliberately narrow `tests/sample21.cpp` isolates the exact scenario --
+a declared-then-separately-defined free function, called alongside a
+second, unrelated free function -- apart from everything else
+`sample14.cpp` also happens to exercise. A small, unrelated duplicated
+doc comment above `param_lists_match` (pre-existing, noticed while
+working in this exact area) was cleaned up in the same pass.
+
+**Confirmed compiling cleanly** after the `main()`/`doubleIt`-body fixes
+from the previous round (Matthew's report, before the free-function
+dedup fix above). The only remaining warning is `-Wsign-compare` in
+flex-generated `lexer.c` -- pre-existing, not something this project's
+own source controls, and not a concern.
+
+**One more Vircon32 quirk confirmed, needing no code change**: a
+function prototype needs its parameter NAMES specified, not just types
+(unlike standard C, where `int foo(int, int);` is valid on its own).
+`emit_function_header` and `emit_method_prototype` (codegen.c) have
+always printed a name for every parameter in every prototype they emit,
+for both methods and free functions alike -- there was never a code path
+that printed a bare, unnamed parameter type to begin with, so this one
+turned out to already be correct by construction rather than needing a
+fix. Confirmed rather than assumed, the same as everything else in this
+file -- worth writing down precisely because it so easily could have
+gone the other way.
 
 ## What's deliberately not here yet
 
