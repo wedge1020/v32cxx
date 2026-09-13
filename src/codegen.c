@@ -86,33 +86,31 @@ static void emit_typedefs(FILE *out, const AstList *decls) {
 
 /* ---- vtable struct types ----------------------------------------------
  *
- * Walks up `class_decl`'s own ancestry to find whichever class's OWN
- * ClassLayout.methods list literally contains `target_method` (a
- * pointer-identity search, not a name match -- a name match could pick
- * the wrong overload/override). Needed because a vtable slot's
- * `canonical_method` (sema.h) can belong to an ANCESTOR, not necessarily
- * `class_decl` itself, and this module needs to know that ancestor's own
- * name to print the receiver parameter's type correctly. Falls back to
- * `class_decl` itself if the search somehow comes up empty (best-effort,
- * shouldn't happen for a canonical_method that genuinely came from this
- * hierarchy in the first place).
+ * find_declaring_class (needed here to know a vtable slot's
+ * canonical_method's OWN declaring class, since it can be an ancestor of
+ * whichever class's vtable is currently being emitted) now lives in
+ * sema.c/sema.h -- lower.c's finalize_call needs the exact same
+ * "which class actually declares this method" lookup for its own,
+ * separate reason (inserting a cast on an inherited method's receiver
+ * argument -- see AST_CAST in ast.h and finalize_call's own doc comment
+ * in lower.c), so it moved to a shared location rather than existing
+ * twice with the two copies inevitably drifting apart eventually.
  */
-static const AstNode *find_declaring_class(const AstNode *class_decl, const AstNode *target_method) {
-    const AstNode *cur = class_decl;
-    while (cur != NULL) {
-        ClassLayout *layout = (ClassLayout *)cur->sema_info;
-        if (layout == NULL) break;
-        for (int i = 0; i < layout->methods.count; i++) {
-            if (layout->methods.items[i] == target_method) return cur;
-        }
-        cur = layout->base_class_decl;
-    }
-    return class_decl;
-}
 
 /* Emits `class_decl`'s vtable struct TYPE -- one field per virtual slot,
  * each a function pointer. Does nothing if the class has no vtable at
  * all (layout->vtable == NULL).
+ *
+ * FUNCTION-POINTER DECLARATOR SYNTAX: Vircon32 C does NOT use standard
+ * C's `ReturnType (*name)(ParamTypes);` form for a function-pointer
+ * field -- confirmed against the real compiler (Matthew hand-converted
+ * this exact struct while testing tests/sample14.cpp's generated
+ * output, and it's what let compilation get past this point at all) --
+ * it wants `ReturnType(ParamTypes)* name;` instead: the parenthesized
+ * parameter list sits directly after the return type, with NO `*` or
+ * name inside it at all, and the `*` plus the field name come after the
+ * closing paren. Matches the pattern in Vircon32's own documented
+ * function-pointer example, `void()* Action = &DoSomething;`.
  *
  * Each field's name is the slot's canonical_method's OWN mangled name
  * (matching lower.c's phase 3 exactly -- `obj->vtable->FIELD(...)`
@@ -149,7 +147,7 @@ static void emit_vtable_struct(FILE *out, const AstNode *class_decl) {
 
         fprintf(out, "    ");
         print_type(out, canonical->type);
-        fprintf(out, " (*%s)(%s *", field_name, canonical_class->str1);
+        fprintf(out, "(%s *", canonical_class->str1);
 
         int already_this_injected = (canonical->kind == AST_FUNC_DEF);
         int start = already_this_injected ? 1 : 0;
@@ -157,7 +155,7 @@ static void emit_vtable_struct(FILE *out, const AstNode *class_decl) {
             fprintf(out, ", ");
             print_type(out, canonical->list.items[p]->type);
         }
-        fprintf(out, ");\n");
+        fprintf(out, ")* %s;\n", field_name);
     }
     fprintf(out, "};\n\n");
 }
@@ -398,6 +396,17 @@ static void print_expr(FILE *out, const AstNode *e) {
             print_expr(out, e->b);
             fprintf(out, "]");
             break;
+        case AST_CAST:
+            /* An explicit "(Type)expr", introduced only by lower.c's
+             * finalize_call (see AST_CAST's own doc comment in ast.h) --
+             * confirmed valid Vircon32 syntax (Matthew tested
+             * "(Node *) 0" directly against the real compiler). */
+            fprintf(out, "((");
+            print_type(out, e->type);
+            fprintf(out, ")");
+            print_expr(out, e->a);
+            fprintf(out, ")");
+            break;
         case AST_QUALIFIED_ID:
             /* Not expected as a general expression (this project's
              * grammar only ever produces one as the class-name marker on
@@ -598,6 +607,50 @@ static void emit_function_definition(FILE *out, const AstNode *func) {
  * genuine free function from an out-of-line method definition's own
  * top-level duplicate (see attach_out_of_line).
  */
+/* Prints a prototype for a METHOD specifically -- unlike
+ * emit_function_prototype (used for anything already this-injected, or
+ * a free function, neither of which needs special handling), a
+ * prototype-only AST_FUNC_DECL method has never been through this-
+ * injection at all (phase 2 only ever touches AST_FUNC_DEF), so its own
+ * parameter list has no receiver in it. Reconstructed explicitly here,
+ * using `class_decl`'s own name directly -- simpler than
+ * find_declaring_class's ancestor-walking, since we're already iterating
+ * this exact class's own methods list, not looking anything up through
+ * an object expression.
+ *
+ * THIS CLOSES A REAL, CONFIRMED BUG: a prototype-only method OR free
+ * function that's genuinely called somewhere (not just declared and
+ * ignored) needs a prototype in the generated output regardless of
+ * whether it also gets a body here -- Matthew's test build hit exactly
+ * this for tests/sample14.cpp's `doubleIt` (declared, deliberately never
+ * defined in that file -- Vircon32's lack of any multi-file compilation
+ * model means it's expected to be satisfied by something else entirely
+ * at the eventual all-in-one-file compile step, but the CALL inside this
+ * file still needs a prototype to type-check against). Emitting NO
+ * prototype at all for a declared-but-undefined function was simply
+ * wrong, not merely a narrow edge case -- fixed for both methods (this
+ * function) and free functions (see emit_function_prototypes_free_
+ * functions below). */
+static void emit_method_prototype(FILE *out, const AstNode *class_decl, const AstNode *method) {
+    if (method->kind == AST_FUNC_DEF) {
+        emit_function_prototype(out, method); /* already this-injected -- print as-is */
+        return;
+    }
+
+    FuncSemaInfo *info = (FuncSemaInfo *)method->sema_info;
+    const char *name = (info != NULL) ? info->mangled_name : method->str1;
+
+    print_type(out, method->type);
+    fprintf(out, " %s(%s *this", name, class_decl->str1);
+    for (int p = 0; p < method->list.count; p++) {
+        fprintf(out, ", ");
+        AstNode *param = method->list.items[p];
+        print_type(out, param->type);
+        fprintf(out, " %s", param->str1);
+    }
+    fprintf(out, ");\n");
+}
+
 static void emit_function_prototypes_classes(FILE *out, const AstList *decls) {
     for (int i = 0; i < decls->count; i++) {
         const AstNode *n = decls->items[i];
@@ -605,8 +658,7 @@ static void emit_function_prototypes_classes(FILE *out, const AstList *decls) {
             ClassLayout *layout = (ClassLayout *)n->sema_info;
             if (layout != NULL) {
                 for (int j = 0; j < layout->methods.count; j++) {
-                    AstNode *m = layout->methods.items[j];
-                    if (m->kind == AST_FUNC_DEF) emit_function_prototype(out, m);
+                    emit_method_prototype(out, n, layout->methods.items[j]);
                 }
             }
         } else if (n->kind == AST_NAMESPACE_DECL) {
@@ -621,6 +673,13 @@ static void emit_function_prototypes_free_functions(FILE *out, const AstList *de
         if (n->kind == AST_NAMESPACE_DECL) {
             emit_function_prototypes_free_functions(out, &n->list);
         } else if (n->kind == AST_FUNC_DEF && n->b == NULL) {
+            emit_function_prototype(out, n);
+        } else if (n->kind == AST_FUNC_DECL) {
+            /* A prototype-only free function (e.g. `int doubleIt(int x);`
+             * with no body anywhere in this file) -- no this-injection
+             * concern at all here (that only ever applies to methods),
+             * so its own parameter list is already exactly right;
+             * emit_function_prototype handles it unchanged. */
             emit_function_prototype(out, n);
         }
     }

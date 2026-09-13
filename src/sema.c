@@ -887,6 +887,19 @@ AstNode *resolve_expr_class(const AstNode *expr, AstNode *current_class, LocalVa
     return type_to_class(infer_expr_type(expr, current_class, locals));
 }
 
+const AstNode *find_declaring_class(const AstNode *class_decl, const AstNode *target_method) {
+    const AstNode *cur = class_decl;
+    while (cur != NULL) {
+        ClassLayout *layout = (ClassLayout *)cur->sema_info;
+        if (layout == NULL) break;
+        for (int i = 0; i < layout->methods.count; i++) {
+            if (layout->methods.items[i] == target_method) return cur;
+        }
+        cur = layout->base_class_decl;
+    }
+    return class_decl;
+}
+
 /* Walks every statement/expression reachable from `n`, performing the
  * access check wherever a member is actually referenced (explicitly via
  * `.`/`->`, or implicitly via a bare identifier that resolves to an

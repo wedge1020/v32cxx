@@ -90,29 +90,37 @@
  * will fail to COMPILE (no prototype exists for the call to resolve
  * against), not merely fail to link.
  *
- * A REAL, UNRESOLVED RISK FOUND BY TRACING THROUGH BY HAND, NOT YET
- * FIXED: a virtual call's `this` argument is passed through EXACTLY as
- * this-injection typed it -- the CALLING class's own receiver type --
- * with no cast inserted, even when the vtable field being called through
- * was declared using an ANCESTOR class's receiver type (which it always
- * is, for an inherited-but-overridden slot -- see canonical_method in
- * sema.h). Concretely: `Circle::describeTwice` (tests/sample14.cpp)
- * calls the inherited virtual `area()` via `this->vtable->
- * Shape__area__void(this)` -- but that vtable field's declared C type is
- * `int (*)(Shape *)`, and `this` here is `Circle *`. Passing a mismatched
- * struct-pointer argument with no cast is at minimum a warning in
- * standard C, and given how strict Vircon32's compiler has already shown
- * itself to be (rejecting bare `0` for a null pointer, rejecting `struct
- * Name` as any type-use at all), it may well be a hard error there.
- * NOT fixed here deliberately: the correct fix needs call-site codegen
- * to know the vtable field's OWN declared receiver type and insert an
- * explicit cast when it differs from the caller's `this` type, which
- * needs more plumbing than this round's scope, and inventing a cast
- * without knowing whether Vircon32 even needs the standard C spelling of
- * one risks the same mistake this project has already made twice
- * (guessing at target behavior instead of testing it). Needs a real
- * compile of tests/sample14.cpp's generated output to confirm one way
- * or the other before this can be called resolved.
+ * A REAL RISK FOUND BY TRACING THROUGH BY HAND -- NOW FIXED, CONFIRMED
+ * ONLY BY REASONING, NOT YET BY A REAL COMPILE: a call to an INHERITED
+ * method (virtual or not) used to pass its receiver argument through
+ * exactly as this-injection typed it -- the CALLING class's own receiver
+ * type -- even when the callee's OWN declared receiver type was an
+ * ancestor's. Concretely: `Circle::describeTwice` (tests/sample14.cpp)
+ * calls the inherited virtual `area()`, and separately the inherited
+ * non-virtual `describe()`; in BOTH cases a `Circle *this` was being
+ * passed where the callee expects `Shape *`, no cast, which is at
+ * minimum a warning in standard C and given how strict Vircon32 has
+ * shown itself to be elsewhere, plausibly a hard error there.
+ *
+ * FIXED once Matthew confirmed Vircon32 accepts an explicit C-style cast
+ * (tested `(Node *) 0` directly against the real compiler) -- that was
+ * the missing piece; guessing at a fix without knowing casts were even
+ * supported would have repeated the same mistake this project has
+ * already avoided twice by testing instead of assuming. lower.c's
+ * finalize_call now inserts an explicit `(Type *)` cast on a receiver
+ * argument whenever the callee's actual declaring class (found via the
+ * new, shared find_declaring_class in sema.h) differs from the caller's
+ * own static receiver type -- for BOTH the virtual-dispatch path and the
+ * direct non-virtual call path, since tracing showed both are affected
+ * the same way. A new AST_CAST node kind (ast.h) carries this through to
+ * codegen, which prints it as `((Type *)expr)`. Verified by hand against
+ * tests/sample14.cpp's exact call sites, including confirming the fix
+ * does NOT over-apply: `Shape::describe`'s own call to `area()` (where
+ * caller and callee's declaring class are the same, no mismatch exists)
+ * correctly gets no cast at all. STILL NEEDS a real compile to confirm
+ * this reasoning holds against the actual compiler, the same as every
+ * other quirk in this file -- reasoning correctly through the mechanism
+ * is not the same thing as a confirmed working build.
  *
  * A SEPARATE, ADJACENT GAP NOTICED WHILE TRACING THE ABOVE: this project
  * has no special handling anywhere for a user-defined `main` -- it gets

@@ -80,6 +80,7 @@ static const char *kind_name(AstKind k) {
         case AST_DELETE: return "Delete";
         case AST_POINTER_TYPE: return "PointerType";
         case AST_REFERENCE_TYPE: return "ReferenceType";
+        case AST_CAST: return "Cast";
     }
     return "?";
 }

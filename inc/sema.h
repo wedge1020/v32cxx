@@ -255,6 +255,23 @@ AstNode *find_member_in_hierarchy(AstNode *class_decl, const char *name, AstNode
  * keeps the two from ever quietly disagreeing. */
 AstNode *resolve_expr_class(const AstNode *expr, AstNode *current_class, LocalVarType *locals);
 
+/* Walks up `class_decl`'s own ancestry (via each class's base_class_decl)
+ * to find whichever class's OWN ClassLayout.methods list literally
+ * contains `target_method` (a pointer-identity search, not a name match
+ * -- a name match could pick the wrong overload/override). Needed
+ * anywhere a method/slot's DECLARING class specifically matters, not
+ * just which class it's being accessed THROUGH: lower.c's finalize_call
+ * uses this to know what pointer type an inherited method's "this"
+ * parameter actually needs (an ancestor's, not necessarily the calling
+ * object's own runtime type); codegen.c's vtable-struct-type emission
+ * uses it for the same reason, to print a vtable field's receiver
+ * parameter as the class that first declared it virtual, not whichever
+ * class's vtable is currently being emitted. Falls back to `class_decl`
+ * itself if the search somehow comes up empty (best-effort, shouldn't
+ * happen for a target_method that genuinely came from this hierarchy in
+ * the first place). */
+const AstNode *find_declaring_class(const AstNode *class_decl, const AstNode *target_method);
+
 /* Resolves a type AST node down to the AST_CLASS_DECL it names (chasing
  * typedefs and unwrapping pointer/reference wrappers), or NULL if it
  * doesn't name a registered class at all. Exposed for the same reuse

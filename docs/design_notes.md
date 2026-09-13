@@ -904,17 +904,18 @@ not just two; `sample14` confirmed the canonical-field-naming rule holds
 even for the simplest possible override case. No new bugs found in this
 round.
 
-## Method/function body emission
+## Method/function body emission, and fixing the receiver-cast risk it surfaced
 
 `codegen.c` now emits actual C statement/expression text for every
 method and free function that has a body -- `print_stmt`/`print_expr`
 (every fully-lowered statement and expression kind, since lowering has
 already reduced the AST to something C-shaped) plus a shared
 `emit_function_header` for prototypes and definitions alike. Full
-reasoning, including two real risks found by tracing through by hand
-rather than assumed away, lives in `codegen.h`'s own doc comment (kept
-there rather than duplicated here, since that's where anyone touching
-this code will actually look first) -- summarized:
+reasoning, including a real risk found by tracing through by hand and
+then actually fixed once new information made that possible, lives in
+`codegen.h`'s own doc comment (kept there rather than duplicated here,
+since that's where anyone touching this code will actually look first)
+-- summarized:
 
 - **Parenthesization**: every binary/assignment/prefix-unary expression
   gets unconditional parens, rather than this project reconstructing
@@ -926,22 +927,95 @@ this code will actually look first) -- summarized:
   touches them, so they'd have no receiver parameter to work with
   anyway. If one is ever actually called, the generated C fails to
   *compile*, not merely to link.
-- **A real, unresolved risk**: a virtual call's `this` argument is
-  passed exactly as this-injection typed it (the calling class's own
-  receiver type), with no cast, even when the vtable field being called
-  through was declared using an ancestor's receiver type -- which it
-  always is, for an inherited-but-overridden slot. Concretely,
-  `Circle::describeTwice` (`tests/sample14.cpp`) passes a `Circle *`
-  where the vtable field's declared type is `Shape *`, no cast inserted
-  anywhere. Given how strict Vircon32 has already shown itself to be,
-  this needs a real compile to confirm whether it's tolerated or not --
-  not fixed here, deliberately, rather than guess at both whether it's a
-  problem and what the right cast syntax is.
+- **A real risk found by hand-tracing, and fixed**: a call to an
+  inherited method -- virtual OR non-virtual, tracing showed both are
+  affected -- was passing its receiver argument through exactly as
+  this-injection typed it (the calling class's own receiver type), with
+  no cast, even when the callee's own declared receiver type was an
+  ancestor's. Concretely, `Circle::describeTwice` (`tests/sample14.cpp`)
+  passes a `Circle *` into both the inherited virtual `area()` (via the
+  vtable) and the inherited non-virtual `describe()` (direct call),
+  where each callee's declared receiver is `Shape *`. This got fixed,
+  not just flagged, once Matthew confirmed against the real compiler
+  that Vircon32 accepts an explicit C-style cast (`(Node *) 0` compiled
+  fine) -- that confirmation was the missing piece; a fix attempted
+  before knowing casts were even supported would have been another guess
+  dressed up as a solution. `lower.c`'s `finalize_call` now inserts an
+  explicit cast on a receiver argument whenever the callee's actual
+  declaring class (via a new, shared `find_declaring_class` in
+  `sema.h` -- previously a codegen.c-only helper, now used by both files
+  for the same underlying reason, so it lives in one place instead of
+  two that would eventually drift) differs from the caller's own static
+  receiver type. A new `AST_CAST` node kind carries this through to
+  codegen. Verified by hand against `tests/sample14.cpp`'s exact call
+  sites, including confirming the fix does NOT over-apply:
+  `Shape::describe`'s own call to `area()`, where caller and callee's
+  declaring class are the same, correctly gets no cast. Still needs an
+  actual compile to confirm this reasoning holds -- reasoning correctly
+  through a mechanism isn't the same thing as a confirmed working build,
+  and this project has a consistent practice of not calling something
+  resolved until real output says so.
 - **A separate, adjacent gap**: this project has no special handling for
   a user-defined `main` at all -- it gets mangled like anything else
   (`main__void`), so generated C has no actual `main` entry point, and
   nothing enforces Vircon32's `void main()` requirement on the C++
   source either. Needs an actual design decision, not a quick fix.
+
+## First real compile attempt: two genuine bugs found, one non-issue
+
+Matthew hand-compiled `tests/sample14.cpp`'s generated output against the
+real Vircon32 compiler for the first time this round -- exactly the kind
+of test this project has relied on throughout, and it caught two real
+bugs the cast-fix round's reasoning-only verification couldn't have.
+
+**Bug 1 -- Vircon32's function-pointer declarator syntax is not standard
+C's.** `emit_vtable_struct` was emitting `ReturnType (*name)(ParamTypes);`
+(the ordinary C form), which is exactly what failed to compile
+(`expected a type`). Vircon32 wants `ReturnType(ParamTypes)* name;`
+instead -- confirmed by Matthew hand-converting the struct and
+compilation getting past that point -- matching the pattern in
+Vircon32's own documented function-pointer example,
+`void()* Action = &DoSomething;`. Fixed in `emit_vtable_struct`; the
+receiver-reconstruction logic underneath (which parameter needs to be
+skipped depending on whether this-injection already touched
+`canonical_method`) was untouched, since that was never the broken part.
+
+**Bug 2 -- a real, confirmed gap in prototype emission, not a narrow
+edge case.** `doubleIt` (declared in `tests/sample14.cpp`, deliberately
+never defined there) produced `identifier "doubleIt__int" has not been
+declared` -- because this project's codegen only ever emitted a
+prototype for something that ALSO got a body here. Given Vircon32
+has no multi-file compilation model at all (an entire program becomes
+one big file via `#include`, per Matthew), a declared-but-undefined
+function is an entirely ordinary, expected pattern -- meant to be
+satisfied by something `#include`d from elsewhere, not a mistake to work
+around. Fixed for both free functions (`emit_function_prototypes_free_
+functions` now also handles a bare `AST_FUNC_DECL`, no this-injection
+concern at all since that never applies to free functions) and methods
+(a new `emit_method_prototype`, reconstructing the receiver parameter
+directly from `class_decl`'s own name when handed a prototype-only
+`AST_FUNC_DECL` method -- simpler than `find_declaring_class`'s ancestor
+walk, since iterating a class's own methods list already tells you
+which class it belongs to). `tests/sample1.cpp`'s `Timer` constructor/
+destructor/`getTicks` (declared, never defined, never called) now also
+get prototypes as a side effect -- harmless, since nothing calls them,
+but worth knowing generated output volume goes up slightly across the
+whole suite, not just for this file.
+
+**Non-issue, already fixed on this end**: the `-Wswitch` warning on
+`AST_CAST` and the AST dump showing `?` instead of `Cast` both trace to
+the same stale build -- `ast.c`'s `kind_name()` already has
+`case AST_CAST: return "Cast";` in every file sent since the cast-fix
+round. Re-sent this round to make sure the full, current file is what
+gets built against, rather than a hand-patched or partially-synced copy.
+
+**Noted, not acted on**: Vircon32's lack of multi-file compilation (one
+`#include`-assembled file per program) is directly relevant context for
+the still-open `main()` design question from the body-emission round --
+there's genuinely only one `main` across an entire program on this
+target, which narrows the design space once that gets tackled, but
+doesn't change the fact that it still needs an actual decision, not a
+quick fix bundled in here.
 
 ## What's deliberately not here yet
 

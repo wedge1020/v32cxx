@@ -356,6 +356,34 @@ static void prepend_arg(AstList *list, AstNode *arg) {
     *list = new_list;
 }
 
+/* Wraps `obj_expr` in an explicit cast to `expected_class`'s own pointer
+ * type, if its OWN static type (`actual_class`) differs from what the
+ * callee actually declared its receiver parameter as. Needed because
+ * this project's single-inheritance struct layout guarantees a derived
+ * class's fields are a valid PREFIX of its base's (so the memory really
+ * is layout-compatible), but C's type system has no way to know that on
+ * its own -- passing a `Circle *` where a function expects `Shape *`
+ * with no cast is at minimum a warning in standard C, and Vircon32 has
+ * already shown itself stricter than that about pointer-type mismatches
+ * elsewhere (see docs/DESIGN_NOTES.md). Confirmed against the real
+ * compiler that an explicit C-style cast (`(Type *)expr`) is valid
+ * Vircon32 syntax, which is what makes this fix possible at all rather
+ * than just a documented risk.
+ *
+ * Returns `obj_expr` UNCHANGED if no cast is needed (same class, or not
+ * enough information to know either way -- best-effort, never inserts a
+ * cast on a guess). */
+static AstNode *cast_receiver_if_needed(AstNode *obj_expr, const AstNode *actual_class,
+                                        const AstNode *expected_class) {
+    if (expected_class == NULL || actual_class == expected_class) {
+        return obj_expr;
+    }
+    AstNode *cast = ast_new(AST_CAST, obj_expr->line);
+    cast->type = ast_wrap_pointer(ast_ident(expected_class->str1, obj_expr->line), obj_expr->line);
+    cast->a = obj_expr;
+    return cast;
+}
+
 static void finalize_call(AstNode *call, AstNode *class_decl, LocalVarType *locals) {
     CallResolution *cr = (CallResolution *)call->sema_info;
     if (cr == NULL || cr->resolved_target == NULL) {
@@ -371,10 +399,10 @@ static void finalize_call(AstNode *call, AstNode *class_decl, LocalVarType *loca
          * point, since phase 2 (this-injection) already rewrote every
          * implicit form into this same shape. */
         AstNode *obj_expr = callee->a;
+        AstNode *obj_class = resolve_expr_class(obj_expr, class_decl, locals);
 
         if (target->ival == 1) {
             /* Virtual: dispatch through the vtable. */
-            AstNode *obj_class = resolve_expr_class(obj_expr, class_decl, locals);
             AstNode *canonical = NULL;
             int slot = (obj_class != NULL) ? find_vtable_slot_for_method(obj_class, target, &canonical) : -1;
             if (slot < 0) {
@@ -386,7 +414,12 @@ static void finalize_call(AstNode *call, AstNode *class_decl, LocalVarType *loca
             AstNode *vtable_ref = ast_new(AST_MEMBER, call->line);
             vtable_ref->str1 = strdup("->");
             vtable_ref->str2 = strdup("vtable");
-            vtable_ref->a = obj_expr;
+            vtable_ref->a = obj_expr; /* UNCAST here deliberately -- ->vtable
+                sits at the same offset regardless of static type, and every
+                class's OWN vtable struct independently redeclares every
+                canonical field name anyway (see emit_vtable_struct in
+                codegen.c), so there's no correctness reason to cast for
+                this specific access; only the CALL ARGUMENT below needs it */
 
             AstNode *slot_ref = ast_new(AST_MEMBER, call->line);
             slot_ref->str1 = strdup("->");
@@ -394,12 +427,16 @@ static void finalize_call(AstNode *call, AstNode *class_decl, LocalVarType *loca
             slot_ref->a = vtable_ref;
 
             call->a = slot_ref;
+
+            const AstNode *canonical_class = (obj_class != NULL) ? find_declaring_class(obj_class, canonical) : NULL;
+            prepend_arg(&call->list, cast_receiver_if_needed(obj_expr, obj_class, canonical_class));
         } else {
             /* Non-virtual: direct call to the mangled function. */
+            const AstNode *target_class = (obj_class != NULL) ? find_declaring_class(obj_class, target) : NULL;
+            AstNode *arg = cast_receiver_if_needed(obj_expr, obj_class, target_class);
             call->a = ast_ident(target_mangled, call->line);
+            prepend_arg(&call->list, arg);
         }
-
-        prepend_arg(&call->list, obj_expr);
     } else if (callee->kind == AST_IDENT) {
         /* A free-function call -- just finalize the callee to its
          * mangled name; there's no receiver to thread through. */
@@ -705,6 +742,14 @@ static void fix_reference_access_expr(AstNode **slot, LocalVarType *locals) {
         case AST_DELETE:
             fix_reference_access_expr(&n->a, locals);
             break;
+        case AST_CAST:
+            /* Recurses into the cast's wrapped expression (always just
+             * "this" in every case this project currently produces --
+             * see finalize_call's cast_receiver_if_needed -- but handled
+             * on principle, not just for the cases seen so far, same as
+             * every other node kind this walk covers). */
+            fix_reference_access_expr(&n->a, locals);
+            break;
         case AST_NEW:
             for (int i = 0; i < n->list.count; i++) {
                 fix_reference_access_expr(&n->list.items[i], locals);
@@ -879,6 +924,10 @@ static void new_delete_rewrite_expr(AstNode **slot) {
             break;
         case AST_UNOP:
             new_delete_rewrite_expr(&n->a);
+            break;
+        case AST_CAST:
+            new_delete_rewrite_expr(&n->a); /* same reasoning as the
+                AST_CAST case in fix_reference_access_expr, above */
             break;
         default:
             break;

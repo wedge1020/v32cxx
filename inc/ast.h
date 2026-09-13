@@ -112,7 +112,24 @@ typedef enum {
                               subtlety) */
     AST_DELETE,           /* a=expr being deleted */
     AST_POINTER_TYPE,     /* a=pointee type -- represents "T *" */
-    AST_REFERENCE_TYPE    /* a=referent type -- represents "T &" */
+    AST_REFERENCE_TYPE,   /* a=referent type -- represents "T &" */
+    AST_CAST              /* type=target type, a=expr being cast -- an
+                              explicit "(Type)expr". Never produced by the
+                              parser (this project's grammar has no C-
+                              style cast-expression syntax) -- introduced
+                              only by lower.c's finalize_call, to make a
+                              receiver ("this") argument's pointer type
+                              match whatever the callee actually declares
+                              it as. See finalize_call's own doc comment
+                              in lower.c for exactly why that's needed:
+                              this project's single-inheritance struct
+                              layout guarantees a derived class's fields
+                              are a valid prefix of its base's, but C's
+                              type system has no way to know that on its
+                              own, so calling an inherited method with a
+                              derived-typed "this" needs an explicit cast
+                              to the base pointer type the callee was
+                              actually declared to take. */
 } AstKind;
 
 typedef enum { ACC_PUBLIC, ACC_PRIVATE, ACC_PROTECTED } AccessSpec;
