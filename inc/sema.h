@@ -144,13 +144,27 @@ typedef struct ClassLayout {
                                  * appended after. */
 } ClassLayout;
 
-/* Attached to an AST_CALL's sema_info once overload resolution (sema.c's
- * resolve_call) determines which specific function/method a call
- * expression refers to -- see the doc comment on AST_CALL in ast.h for
- * exactly what it means for a call to NOT have this attached. */
+/* Attached to a node's sema_info once overload resolution determines
+ * which specific function/method it refers to -- an AST_CALL (via
+ * resolve_call), an AST_NEW (via resolve_new_expr, resolving which
+ * constructor overload), or a BinOp/Assign/Unop/Subscript used as
+ * natural operator syntax (via resolve_operator_use). See the doc
+ * comment on AST_CALL in ast.h for exactly what it means for a call to
+ * NOT have this attached. */
 typedef struct CallResolution {
     AstNode *resolved_target;  /* the specific FUNC_DECL/FUNC_DEF this call
                                 * resolves to. */
+    int is_member;             /* Only meaningful for an operator-overload
+                                * resolution (AST_CALL/AST_NEW always know
+                                * this structurally from their own shape --
+                                * an AST_CALL's callee's OWN kind, AST_MEMBER
+                                * vs AST_IDENT, already says it; an AST_NEW
+                                * is always a member/constructor). 1 if
+                                * `resolved_target` is a class member (so
+                                * lowering needs to prepend the receiver as
+                                * an explicit argument when rewriting this
+                                * into a real call), 0 if it's a free
+                                * function (no implicit receiver at all). */
 } CallResolution;
 
 typedef struct FuncSemaInfo {

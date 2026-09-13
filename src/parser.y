@@ -843,6 +843,8 @@ unary_expr:
         { $$ = ast_new(AST_UNOP, @1.first_line); $$->str1 = strdup("pre--"); $$->a = $2; }
     | NEW type_spec
         { $$ = ast_new(AST_NEW, @1.first_line); $$->type = $2; }
+    | NEW type_spec '(' opt_arg_list ')'
+        { $$ = ast_new(AST_NEW, @1.first_line); $$->type = $2; $$->list = $4; }
     | DELETE unary_expr
         { $$ = ast_new(AST_DELETE, @1.first_line); $$->a = $2; }
     ;

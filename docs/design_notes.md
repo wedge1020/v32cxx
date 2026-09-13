@@ -612,6 +612,184 @@ mutated AST, never generated syntax. That's the Vircon32 C code
 generator's job, still ahead, and now has a genuinely complete lowered
 AST to work from.
 
+## A postmortem: the same dump bug, twice, in two different files
+
+`lower.c`'s `dump_this_injected_methods` — the function behind the
+"fully lowered method bodies" section — only ever walked `AST_CLASS_DECL`
+entries, printing their methods. It had no branch for a top-level
+`AST_FUNC_DEF` at all. For any test file consisting entirely of free
+functions (`tests/sample16.cpp`, `tests/sample17.cpp`), that section
+printed nothing whatsoever, even though the actual lowering underneath
+had almost certainly run correctly — only the DISPLAY was broken. For a
+mixed file (`tests/sample15.cpp`), it silently dropped every free
+function (`addThem`, `checkEqual`, `getElement`, the free `operator*`,
+`scaleIt`) while still showing the two methods, which is exactly the
+free-function operator-overload path the test existed to demonstrate.
+
+This is the same *category* of bug as the `dump_call_resolutions` fix
+from a couple rounds earlier (`sema.c`) — a dump function iterating
+`AstList *decls` at the top level and forgetting that "top-level
+declaration" includes genuine free functions, not just classes and
+namespaces — just missing the branch entirely this time, rather than
+missing the `n->b == NULL` guard on an existing one. Caught by the same
+method both times: real test output showing something that didn't match
+what the code should have produced, not by reasoning about the code in
+the abstract.
+
+Given this happened twice, this round included a full audit of every
+`decls`-walking function in both `sema.c` and `lower.c` — every pass that
+genuinely needs to (`collect_declarations`, `mangle_free_functions`,
+`access_check_free_functions`, `dump_decls`/`dump_call_resolutions`,
+`finalize_calls_free_functions`, `fix_references_free_functions`,
+`new_delete_rewrite_free_functions`) already has the free-function branch
+correctly guarded with `n->b == NULL`. `dump_this_injected_methods` was
+the only remaining gap, now fixed the same way.
+
+## A third bug: comparing a count across a mutating-phase boundary
+
+`resolve_operator_use` (phase 4) checked a member operator's arity via
+`member->list.count == expected_params`. That's correct for a
+prototype-only member (`AST_FUNC_DECL`) — but wrong for one with a body
+(`AST_FUNC_DEF`), because by the time phase 4 runs, phase 2
+(this-injection) has already prepended `this` onto every `AST_FUNC_DEF`'s
+parameter list (it explicitly does NOT touch `AST_FUNC_DECL` — see
+`this_inject_method`'s early return for anything that isn't
+`AST_FUNC_DEF`). So a member operator WITH a body has a `list.count` one
+higher than what it was declared with; one WITHOUT a body doesn't.
+
+`tests/sample15.cpp` exposed this precisely: `operator+` and `operator==`
+both have out-of-line bodies and were silently left as plain `BinOp`
+nodes (arity check failed, fell through to the free-function fallback,
+found nothing, gave up silently — exactly the "best-effort, no false
+positive" design working as intended, just on a false premise).
+`operator[]` has no body in that test and happened to work — not because
+the logic was right for it, but because it was never this-injected in
+the first place, so its count was never off. Same underlying bug, one
+symptom visible, one accidentally masked — which is a genuinely
+misleading way for a bug to present, and exactly why "operator[] worked,
+so the mechanism is probably fine" would have been the wrong conclusion
+to draw from a partial test result.
+
+Fixed with `effective_param_count()`: `AST_FUNC_DEF` subtracts one (the
+injected `this`) before comparing; anything else compares its raw count
+directly. Audited every other `list.count ==` comparison in both files
+afterward — the free-function fallback in this same function is safe
+(free functions are never this-injected at all), and both remaining
+occurrences in `sema.c` run entirely inside `sema_run()`, before
+this-injection has touched anything. This was the only place actually
+comparing a count on the wrong side of that mutation.
+
+**The general lesson, worth naming since this project now has multiple
+compiler passes that mutate the AST in place**: any comparison against a
+count, an index, or anything else that a LATER pass might change needs
+to be checked against exactly what state that data is in at the point
+the comparison actually runs — not what it was when the comparing code
+was written, and not assumed uniform just because it usually is. This is
+a different flavor of the same discipline as the sema-registry-lifetime
+bug from the vtable-dispatch round: reusing logic (or, here, a plain
+struct field) across a pass boundary means auditing what's true on both
+sides of that boundary, not just what the value meant where it was first
+defined.
+
+**Verified fixed against real output**, not just plausible-looking code:
+`tests/sample15.cpp` now shows `addThem`'s `a + b` and `checkEqual`'s
+`a == b` both correctly rewritten to `Call(Vector2D__op_add__Vector2D,
+[a, b])` and `Call(Vector2D__op_eq__Vector2D, [a, b])` respectively —
+the two cases that were silently broken before. Combined with
+`getElement`'s subscript and the free `scaleIt`'s `operator*`, already
+confirmed correct in an earlier round, every operator form this phase
+supports (member binary, member subscript, free binary) has now been
+checked against actual output, not just read as plausible code.
+
+## Closing two documented gaps: operator diagnostics, and `new`'s arguments
+
+Two gaps flagged clearly (not silently) when they were first introduced
+got closed this round, together, because closing one made closing the
+other substantially easier.
+
+**Operator-overload resolution moved from lower.c into sema_run()
+entirely.** When operator resolution was first built, it had to live in
+`lower.c` because nothing else existed yet to resolve natural operator
+syntax (`a + b`) into a call at all. That came with a real, explicitly
+documented cost: no `sema_error()` on a genuine mismatch (a class-typed
+operand with no matching operator was just silently left as a plain
+built-in operation), and no access-control enforcement for a resolved
+member operator. Both are closed now: `resolve_operator_use` lives in
+`sema.c`, runs during `check_node`'s normal walk, and shares the exact
+same matching/diagnostic core (`resolve_overload_generic`, extracted from
+what used to be `resolve_call`'s own body) that a regular call already
+used. A mismatch is now a real "no matching overload" error; a resolved
+member operator now goes through `check_member_access()` exactly like an
+explicit member call would.
+
+This had a genuinely nice side effect, not just a diagnostics win:
+sema_run() runs entirely BEFORE this-injection (a lower.c-only concern),
+so the operator-arity comparison bug from a couple rounds back — where
+`member->list.count` was one too high for any method that had already
+been this-injected — can't happen here anymore, by construction, not by
+remembering to call a workaround function. `effective_param_count()` is
+gone from `lower.c` entirely; there's no timing hazard left for it to
+guard against. `lower.c`'s phase 4 shrank to almost nothing: it just
+checks whether sema already attached a `CallResolution` (now carrying an
+`is_member` flag, since lowering still needs to know whether to prepend
+the receiver as an explicit argument) and, if so, builds the equivalent
+`AST_CALL` and hands it to `finalize_call` — no name lookup, no arity
+checking, no candidate collection happens in `lower.c` anymore at all.
+
+**`new T(args)` — the grammar gap — is fixed.** `parser.y`'s
+`unary_expr` rule gained `NEW type_spec '(' opt_arg_list ')'` alongside
+the existing bare `NEW type_spec`, reusing the same `opt_arg_list`/
+`arg_list` nonterminals an ordinary call already uses. `AST_NEW` now
+carries `list=constructor arguments` (empty for both `new T` and
+`new T()` -- this project doesn't distinguish default- from
+value-initialization). A new `resolve_new_expr` in `sema.c` resolves
+which constructor overload a `new T(args)` refers to -- a constructor is
+just a same-named (`ClassName`) member, so `collect_method_candidates`
+already finds it correctly -- reusing the exact same
+`resolve_overload_generic` core operators and regular calls now share.
+An arity/type mismatch is a real sema-time error instead of nothing at
+all having been checked.
+
+**What this does NOT yet mean**: `new T(args)` still doesn't allocate a
+real `sizeof(struct T)` or invoke the resolved constructor -- `lower.c`'s
+phase 6 is still an explicitly-labeled placeholder (see that phase's own
+doc comment), now just accepting and forwarding the (already resolved
+and arity-checked) arguments to `v32_new_TypeName` rather than
+discarding them. The two remaining blockers to a truly faithful `new`
+lowering are unchanged: no `sizeof` AST representation, and no actual
+constructor-invocation codegen yet. Both remain future work, now with
+one fewer excuse (the grammar) standing in front of them.
+
+**A side effect worth naming, since it came up while wiring this in**:
+adding a `list` to `AST_NEW` meant every tree-walking pass that used to
+treat `AST_NEW` as "an argument-free leaf, nothing to recurse into" had
+to be checked -- and one of them (`lower.c`'s phase 2, `rewrite_expr`)
+had an explicit comment claiming exactly that ("these can't contain a
+`this` or a bare member reference"), which was true right up until this
+change made it false (`new Foo(x, this->y)` very much can). Found and
+fixed as part of this same round, not discovered later, specifically by
+re-checking every switch statement in both files that dispatches on
+`AST_BINOP`/`AST_UNOP`/etc. for a missing `AST_NEW` arm -- the same kind
+of audit the `dump_this_injected_methods` postmortem already established
+as worth doing whenever a node's shape changes, not just when a pass is
+new. That same audit also caught `sema.c`'s `dump_calls_in_node` (the
+function backing the "call resolutions:" dump section) not printing a
+successful resolution for anything except `AST_CALL` -- meaning the two
+new resolution paths this round added (operators, constructors) would
+have been invisible in that dump even when they worked correctly,
+exactly the "silently skipped and successfully resolved look identical"
+failure mode that section's own doc comment warns about. Fixed in the
+same pass, before it could ship as a fourth instance of the same mistake.
+
+**Not yet verified against real build output** -- this project doesn't
+have `bison`/`flex` available in the environment these changes are being
+written in, so the grammar change (and everything downstream of it)
+needs a real `make`/`make test` run to confirm, the same as every other
+round. `tests/sample18.cpp` (valid, `new Point(3, 4)`), `sample19.cpp`
+(deliberately invalid: wrong constructor arity), and `sample20.cpp`
+(deliberately invalid: private operator called from outside its class)
+were written to exercise exactly the two new diagnostics this round adds.
+
 ## What's deliberately not here yet
 
 - **Inheritance-aware name lookup at parse/lex time.** `Player : public
@@ -762,8 +940,12 @@ AST to work from.
        placeholder (no `sizeof`, no constructor invocation — the grammar
        doesn't even parse constructor arguments in `new` yet). `tests/
        sample17.cpp` exercises the placeholder calls.
-    7. **The lowering track is now complete through phase 6.** Next up:
-       the Vircon32 C code generator itself.
+    7. **The lowering track is now complete through phase 6, and fully
+       verified against real output** — including two real bugs (phase
+       4's operator-arity comparison, and the `dump_this_injected_methods`
+       display gap) found and fixed along the way, not just plausible-
+       looking code taken on faith. Next up: the Vircon32 C code
+       generator itself.
 13. Remaining natural next candidates, independent of the lowering track
     above: the preprocessor gap (see the project README — a custom
     `v32pp` is the long-term plan, with `cpp` as a stopgap in the

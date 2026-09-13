@@ -170,10 +170,20 @@ static void rewrite_expr(AstNode **slot, AstNode *class_decl, LocalVarType *loca
         case AST_DELETE:
             rewrite_expr(&n->a, class_decl, locals);
             break;
+        case AST_NEW:
+            /* Constructor arguments (if any) can absolutely contain a
+             * bare `this` or an implicit member reference -- `new
+             * Foo(x, this->y)` -- same as any other expression's
+             * arguments. This case didn't exist before this project's
+             * grammar supported constructor arguments in a `new`
+             * expression at all; it needs to now. */
+            for (int i = 0; i < n->list.count; i++) {
+                rewrite_expr(&n->list.items[i], class_decl, locals);
+            }
+            break;
         default:
-            /* Literals, AST_QUALIFIED_ID, AST_NEW, ... -- nothing to
-             * rewrite; these can't contain a `this` or a bare member
-             * reference. */
+            /* Literals, AST_QUALIFIED_ID, ... -- nothing to rewrite;
+             * these can't contain a `this` or a bare member reference. */
             break;
     }
 }
@@ -401,161 +411,67 @@ static void finalize_call(AstNode *call, AstNode *class_decl, LocalVarType *loca
 
 /* ---- phase 4: operator-overload-to-function-call rewriting -------------
  *
- * Until now, operator-overload SUPPORT in this project has only ever
- * covered DECLARING an operator (`Vector2D operator+(Vector2D other)`,
- * parsed and mangled like any other method since the operator-overload-
- * syntax round). Nothing has ever resolved USING one -- an ordinary
- * `a + b` in source is just an AST_BINOP node, with no indication
- * anywhere that it might mean a call to `a`'s `operator+`. This phase is
- * the first place that gap gets closed: it looks for a matching operator
- * overload (member first, respecting name-hiding via
- * find_member_in_hierarchy; a free function as a fallback, matching how
- * real C++ allows binary operators to be declared either way) and, if
- * found, rewrites the BinOp/Assign/Unop/Subscript node into the
- * equivalent AST_CALL -- then hands it straight to finalize_call, reusing
- * every bit of dispatch logic (virtual/non-virtual/free) phase 3 already
- * built, rather than duplicating any of it.
+ * As of this round, ALL of the actual RESOLUTION (finding which
+ * operatorX overload -- if any -- a BinOp/Assign/Unop/Subscript refers
+ * to; member-vs-free precedence; arity/type matching; "no matching
+ * overload" diagnostics; access-control enforcement) has moved into
+ * sema_run() (see resolve_operator_use in sema.c), for exactly the same
+ * reason regular calls have always been resolved there: it gets the SAME
+ * diagnostics and access-control treatment a regular call gets, which
+ * resolving at lowering time never could (no sema_error() mechanism is
+ * reachable from here, and access-control's own pass has already
+ * finished by the time lowering runs). See sema.c's resolve_operator_use
+ * for the full reasoning; docs/DESIGN_NOTES.md has the postmortem on why
+ * this moved (an operator-arity comparison bug that this-injection's
+ * timing made real, and would keep making real for anyone who touched
+ * this again, versus simply not existing once resolution runs before
+ * this-injection ever happens at all).
  *
- * KNOWN GAP, asymmetric with regular calls: a normal call gets resolved
- * (and, on failure, diagnosed) during sema_run(), with a real "no
- * matching overload" error and full access-control enforcement. Operator
- * USE resolution happens here instead, at LOWERING time, after sema has
- * already finished. That means: no error if a class-typed operand's
- * types/arity genuinely don't match any declared operator -- the
- * expression is just silently left as a plain built-in BinOp/Assign/
- * Unop/Subscript, which downstream codegen would then treat as a native
- * C operation on operands it doesn't actually support; and no access-
- * control check for a private/protected operator invoked from somewhere
- * that shouldn't be allowed to. Both real, and both flagged rather than
- * silently present -- moving this resolution earlier, into sema_run()
- * itself, is future work.
+ * This phase's job is now much smaller: if sema found a match (a
+ * CallResolution is already attached to the node's sema_info, complete
+ * with an `is_member` flag telling this phase whether to prepend the
+ * receiver as an explicit argument), rewrite the node into the
+ * equivalent AST_CALL and hand it to finalize_call, reusing every bit of
+ * dispatch logic phase 3 already built -- exactly like a normal call,
+ * just arriving via different syntax. If sema found nothing, the node is
+ * left completely untouched: a plain built-in operation on operands that
+ * were never class-typed in the first place (a class-typed operand with
+ * no matching operator is now a sema-time ERROR instead, so lowering
+ * never even sees that case -- main.c doesn't run lower_run() at all
+ * when sema_run() reported any errors).
  */
 
-static const char *binop_operator_name(const char *op) {
-    if (strcmp(op, "+") == 0) return "operator+";
-    if (strcmp(op, "-") == 0) return "operator-";
-    if (strcmp(op, "*") == 0) return "operator*";
-    if (strcmp(op, "/") == 0) return "operator/";
-    if (strcmp(op, "==") == 0) return "operator==";
-    if (strcmp(op, "!=") == 0) return "operator!=";
-    if (strcmp(op, "<") == 0) return "operator<";
-    if (strcmp(op, ">") == 0) return "operator>";
-    if (strcmp(op, "<=") == 0) return "operator<=";
-    if (strcmp(op, ">=") == 0) return "operator>=";
-    return NULL; /* &&/|| aren't in this project's supported operator_symbol
-                  * list at all (see parser.y), so they're never overloadable
-                  * here -- always a plain built-in BinOp. */
-}
+static void rewrite_operator_use(AstNode **slot, AstNode *lhs_or_operand, AstNode *rhs_or_null,
+                                  AstNode *class_decl, LocalVarType *locals) {
+    AstNode *n = *slot;
+    CallResolution *cr = (CallResolution *)n->sema_info;
+    if (cr == NULL || cr->resolved_target == NULL) return; /* sema found no
+        match -- leave as a plain built-in operation */
 
-static const char *assign_operator_name(const char *op) {
-    if (strcmp(op, "=") == 0) return "operator=";
-    if (strcmp(op, "+=") == 0) return "operator+=";
-    if (strcmp(op, "-=") == 0) return "operator-=";
-    if (strcmp(op, "*=") == 0) return "operator*=";
-    if (strcmp(op, "/=") == 0) return "operator/=";
-    return NULL;
-}
-
-static const char *unop_operator_name(const char *op) {
-    /* Only "neg" (unary minus) and "!" correspond to operators this
-     * project's grammar actually supports overloading (see
-     * operator_symbol in parser.y) -- "~", "addr", "deref", and the
-     * pre/post ++/-- forms have no overload syntax to have matched, so
-     * they're never rewritten here, always plain built-in AST_UNOP. */
-    if (strcmp(op, "neg") == 0) return "operator-";
-    if (strcmp(op, "!") == 0) return "operator!";
-    return NULL;
-}
-
-/* Looks for a matching operator overload for `op_name` given
- * `lhs_or_operand` (and, for a binary operator, `rhs_or_null`) and, if
- * found, replaces *slot (currently a BinOp/Assign/Unop/Subscript node)
- * with the equivalent AST_CALL, immediately finalized via finalize_call.
- * If nothing matches, *slot is left completely untouched. */
-/* A method's list.count includes the injected "this" parameter ONLY if
- * this-injection has already run on it -- which only ever happens for
- * AST_FUNC_DEF (a body to rewrite); this_inject_method returns
- * immediately for anything that isn't (see phase 2), so a prototype-only
- * AST_FUNC_DECL's list.count still reflects exactly what was written,
- * no "this" counted in it. Comparing a raw list.count against an
- * expected EXPLICIT-parameter count is therefore off by one for any
- * member operator that has a body and correct (by coincidence, not
- * design) for one that doesn't -- exactly the shape of a real bug this
- * project shipped once already (tests/sample15.cpp: operator+ and
- * operator== both have out-of-line bodies and were silently skipped;
- * operator[] has no body in that test and happened to work). This
- * computes the count that's ACTUALLY comparable against a written
- * arity, regardless of which case applies. */
-static int effective_param_count(const AstNode *method) {
-    if (method->kind == AST_FUNC_DEF) {
-        return method->list.count - 1; /* subtract the injected "this" */
-    }
-    return method->list.count;
-}
-
-static void resolve_operator_use(AstNode **slot, const char *op_name, AstNode *lhs_or_operand,
-                                  AstNode *rhs_or_null, AstNode *class_decl, LocalVarType *locals) {
-    if (op_name == NULL) return;
-
-    AstNode *obj_class = resolve_expr_class(lhs_or_operand, class_decl, locals);
-    AstNode *target = NULL;
-    int is_member = 0;
-
-    if (obj_class != NULL) {
-        AstNode *owner = NULL;
-        AstNode *member = find_member_in_hierarchy(obj_class, op_name, &owner);
-        int expected_params = (rhs_or_null != NULL) ? 1 : 0; /* member operators take
-            the OTHER operand explicitly; `this` supplies the left-hand one implicitly */
-        if (member != NULL && effective_param_count(member) == expected_params) {
-            target = member;
-            is_member = 1;
-        }
-    }
-
-    if (target == NULL) {
-        AstNode **candidates = NULL;
-        int count = 0, cap = 0;
-        collect_free_function_candidates(op_name, &candidates, &count, &cap);
-        int expected_params = (rhs_or_null != NULL) ? 2 : 1; /* a free operator takes
-            BOTH operands explicitly -- there's no implicit `this` at all */
-        for (int i = 0; i < count; i++) {
-            if (candidates[i]->list.count == expected_params) {
-                target = candidates[i];
-                break;
-            }
-        }
-        free(candidates);
-    }
-
-    if (target == NULL) {
-        return; /* no matching operator declared anywhere applicable --
-                    leave this as a plain built-in operation */
-    }
-
-    AstNode *call = ast_new(AST_CALL, (*slot)->line);
-    if (is_member) {
-        AstNode *mem = ast_new(AST_MEMBER, (*slot)->line);
+    AstNode *call = ast_new(AST_CALL, n->line);
+    if (cr->is_member) {
+        AstNode *mem = ast_new(AST_MEMBER, n->line);
         mem->str1 = strdup("->"); /* transient -- finalize_call replaces
             this whole callee wrapper with the real dispatch form below,
             so the exact string here never survives into the final AST */
-        mem->str2 = strdup(op_name);
+        mem->str2 = strdup(cr->resolved_target->str1);
         mem->a = lhs_or_operand;
         call->a = mem;
         if (rhs_or_null != NULL) {
             ast_list_append(&call->list, rhs_or_null);
         }
     } else {
-        call->a = ast_ident(op_name, (*slot)->line);
+        call->a = ast_ident(cr->resolved_target->str1, n->line);
         ast_list_append(&call->list, lhs_or_operand);
         if (rhs_or_null != NULL) {
             ast_list_append(&call->list, rhs_or_null);
         }
     }
 
-    CallResolution *cr = calloc(1, sizeof(CallResolution));
-    cr->resolved_target = target;
-    call->sema_info = cr;
-
+    call->sema_info = cr; /* reuse the SAME CallResolution sema already
+        built -- finalize_call only ever reads ->resolved_target off of
+        it, so sharing it here (rather than allocating a fresh copy) is
+        safe and avoids a pointless duplicate allocation */
     *slot = call;
     finalize_call(call, class_decl, locals);
 }
@@ -579,21 +495,29 @@ static void finalize_calls_expr(AstNode **slot, AstNode *class_decl, LocalVarTyp
         case AST_BINOP:
             finalize_calls_expr(&n->a, class_decl, locals);
             finalize_calls_expr(&n->b, class_decl, locals);
-            resolve_operator_use(slot, binop_operator_name(n->str1), n->a, n->b, class_decl, locals);
+            rewrite_operator_use(slot, n->a, n->b, class_decl, locals);
             break;
         case AST_ASSIGN:
             finalize_calls_expr(&n->a, class_decl, locals);
             finalize_calls_expr(&n->b, class_decl, locals);
-            resolve_operator_use(slot, assign_operator_name(n->str1), n->a, n->b, class_decl, locals);
+            rewrite_operator_use(slot, n->a, n->b, class_decl, locals);
             break;
         case AST_SUBSCRIPT:
             finalize_calls_expr(&n->a, class_decl, locals);
             finalize_calls_expr(&n->b, class_decl, locals);
-            resolve_operator_use(slot, "operator[]", n->a, n->b, class_decl, locals);
+            rewrite_operator_use(slot, n->a, n->b, class_decl, locals);
             break;
         case AST_UNOP:
             finalize_calls_expr(&n->a, class_decl, locals);
-            resolve_operator_use(slot, unop_operator_name(n->str1), n->a, NULL, class_decl, locals);
+            rewrite_operator_use(slot, n->a, NULL, class_decl, locals);
+            break;
+        case AST_NEW:
+            /* The type being allocated isn't an expression -- only the
+             * constructor ARGUMENTS (if any) might contain nested calls/
+             * operators needing this same finalization. */
+            for (int i = 0; i < n->list.count; i++) {
+                finalize_calls_expr(&n->list.items[i], class_decl, locals);
+            }
             break;
         case AST_DELETE:
             finalize_calls_expr(&n->a, class_decl, locals);
@@ -781,6 +705,11 @@ static void fix_reference_access_expr(AstNode **slot, LocalVarType *locals) {
         case AST_DELETE:
             fix_reference_access_expr(&n->a, locals);
             break;
+        case AST_NEW:
+            for (int i = 0; i < n->list.count; i++) {
+                fix_reference_access_expr(&n->list.items[i], locals);
+            }
+            break;
         default:
             break;
     }
@@ -868,25 +797,29 @@ static void fix_references_free_functions(AstList *decls) {
 
 /* ---- phase 6: new/delete-to-runtime-call rewriting ----------------------
  *
- * Rewrites `new T` into a call to a PER-TYPE placeholder allocator
- * (`v32_new_TypeName`), and `delete expr` into a call to a SINGLE,
- * generic placeholder deallocator (`v32_delete`).
+ * Rewrites `new T` / `new T(args)` into a call to a PER-TYPE placeholder
+ * allocator (`v32_new_TypeName`, with `args` forwarded to it unchanged),
+ * and `delete expr` into a call to a SINGLE, generic placeholder
+ * deallocator (`v32_delete`).
  *
- * DELIBERATELY A PLACEHOLDER, not a faithful lowering. A real `new T`
- * needs to (a) allocate exactly sizeof(struct T) bytes and (b) invoke
- * T's constructor with whatever arguments were written. Neither is
- * possible here yet: (a) needs a `sizeof` AST representation this
- * project doesn't have; (b) needs constructor ARGUMENTS to be parseable
- * in a `new` expression at all, which they currently aren't --
- * `unary_expr: NEW type_spec` in parser.y only ever captured a bare
- * type name, never `(args)`. That's a genuine grammar gap that predates
- * this phase and blocks a faithful lowering; this phase doesn't work
- * around it, it just makes sure the AST has SOME concrete, C-shaped call
- * expression here rather than an un-lowerable AST_NEW/AST_DELETE node
- * surviving into codegen. The actual runtime library behind
- * `v32_new_*`/`v32_delete`, and fixing the grammar to support
- * constructor arguments, are both tracked as future work, not silently
- * assumed solved.
+ * STILL DELIBERATELY A PLACEHOLDER, not a faithful lowering -- though
+ * less of one than it used to be. The grammar gap that used to block
+ * this entirely is closed: `NEW type_spec '(' opt_arg_list ')'` is now a
+ * real alternative in parser.y, `new T(args)` parses, and sema.c's
+ * resolve_new_expr resolves which constructor overload it refers to
+ * (with the same arity/type diagnostics a regular call gets -- a
+ * genuine mismatch is now a real sema_error(), not silently ignored).
+ * What's STILL missing, and still blocks a truly faithful lowering: a
+ * real `new T(args)` needs to (a) allocate exactly sizeof(struct T)
+ * bytes, which needs a `sizeof` AST representation this project doesn't
+ * have, and (b) actually INVOKE the resolved constructor with `args`,
+ * which this phase doesn't do -- it forwards `args` to `v32_new_T`
+ * unchanged, but nothing about that name or call obligates a future
+ * runtime implementation to construct anything; that's still an
+ * assumption this phase documents rather than enforces. Both (a) and
+ * (b) are tracked as future work for when the actual runtime library and
+ * code generator take shape, not silently assumed solved by this phase
+ * merely accepting and forwarding arguments now.
  */
 
 static void new_delete_rewrite_expr(AstNode **slot) {
@@ -894,6 +827,16 @@ static void new_delete_rewrite_expr(AstNode **slot) {
     if (n == NULL) return;
     switch (n->kind) {
         case AST_NEW: {
+            /* Constructor arguments (if any -- sema.c's resolve_new_expr
+             * has already checked their arity/types against whichever
+             * constructor overload they resolved to, or left this alone
+             * if the type has no declared constructor at all) might
+             * themselves contain nested calls/operators/new/delete
+             * needing this same rewriting -- post-order, finalize them
+             * before building the replacement call. */
+            for (int i = 0; i < n->list.count; i++) {
+                new_delete_rewrite_expr(&n->list.items[i]);
+            }
             AstNode *cls = type_to_class(n->type);
             const char *type_name = (cls != NULL) ? cls->str1 : "unknown";
             size_t len = strlen("v32_new_") + strlen(type_name) + 1;
@@ -902,6 +845,12 @@ static void new_delete_rewrite_expr(AstNode **slot) {
             AstNode *call = ast_new(AST_CALL, n->line);
             call->a = ast_ident(fn_name, n->line);
             free(fn_name);
+            call->list = n->list; /* forward the (already-finalized)
+                constructor arguments to the placeholder allocator -- a
+                real runtime implementation of v32_new_TypeName would be
+                the thing that actually allocates and then invokes the
+                constructor with them; this phase still doesn't do
+                either, see the phase's own doc comment below */
             *slot = call;
             break;
         }

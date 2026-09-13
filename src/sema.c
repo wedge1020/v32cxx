@@ -845,6 +845,15 @@ static AstNode *infer_expr_type(const AstNode *expr, AstNode *current_class, Loc
             if (member == NULL || member->kind != AST_VAR_DECL) return NULL;
             return member->type;
         }
+        case AST_NEW: {
+            /* `new T(...)`'s type is "pointer to T" -- reuses expr->type
+             * (the type node the parser already built) as the pointee,
+             * the same way every other case here reuses an existing type
+             * node by reference rather than deep-copying it. */
+            AstNode *ptr = ast_new(AST_POINTER_TYPE, expr->line);
+            ptr->a = expr->type;
+            return ptr;
+        }
         case AST_CALL: {
             const AstNode *callee = expr->a;
             AstNode *owner = NULL;
@@ -950,6 +959,94 @@ void collect_free_function_candidates(const char *name, AstNode ***out, int *out
     }
 }
 
+/* The name-matching/arity/type-matching/diagnostic core shared by every
+ * kind of "which overload does this refer to" resolution in this
+ * project: an explicit call (resolve_call), a constructor invoked via
+ * `new T(args)` (resolve_new_expr), and -- as of this round, moved here
+ * from lower.c specifically so it gets the same diagnostics and access-
+ * control treatment a regular call gets -- an operator used via natural
+ * syntax like `a + b` (resolve_operator_use). `site` is whichever node
+ * the resulting CallResolution should be attached to (an AST_CALL, an
+ * AST_NEW, or the BinOp/Assign/Unop/Subscript node itself for an
+ * operator); `args`/`arg_count` are the actual argument EXPRESSIONS,
+ * kept as an explicit array rather than assumed to live in `site->list`
+ * because an operator's operands live in `->a`/`->b`, not a list. `name`
+ * is used only for diagnostic text. */
+static void resolve_overload_generic(AstNode *site, const char *name, AstNode **candidates, int count,
+                                      AstNode **args, int arg_count,
+                                      AstNode *current_class, LocalVarType *locals) {
+    if (count == 0) {
+        free(candidates);
+        return; /* nothing named this at all -- not this pass's job to
+                    diagnose "no such function", only to resolve overloads
+                    among candidates that DO exist by that name */
+    }
+
+    if (count == 1) {
+        /* Only one candidate exists at all -- no real overload ambiguity
+         * to resolve, so this doesn't need every argument's type known.
+         * That matters: most calls in an ordinary program aren't
+         * overloaded at all, and requiring full argument-type resolution
+         * even for those would make this pass far less useful than it
+         * should be. Still worth checking arity even here, though --
+         * real C++ would reject a call with the wrong number of
+         * arguments even when there's only one candidate to consider. */
+        if (candidates[0]->list.count == arg_count) {
+            CallResolution *cr = calloc(1, sizeof(CallResolution));
+            cr->resolved_target = candidates[0];
+            site->sema_info = cr;
+        } else {
+            sema_error(site->line, "'%s' expects %d argument(s), but %d were given",
+                       name, candidates[0]->list.count, arg_count);
+        }
+        free(candidates);
+        return;
+    }
+
+    /* Genuinely overloaded: need every argument's type resolved to
+     * confidently pick among candidates. */
+    AstNode **arg_types = calloc((size_t)arg_count, sizeof(AstNode *));
+    int all_known = 1;
+    for (int i = 0; i < arg_count; i++) {
+        arg_types[i] = infer_expr_type(args[i], current_class, locals);
+        if (arg_types[i] == NULL) all_known = 0;
+    }
+
+    if (!all_known) {
+        /* Best-effort: can't confidently disambiguate without knowing
+         * every argument's type, so this doesn't guess -- silently
+         * skipped rather than risking a false error or a wrong pick. */
+        free(arg_types);
+        free(candidates);
+        return;
+    }
+
+    AstNode *match = NULL;
+    int match_count = 0;
+    for (int i = 0; i < count; i++) {
+        AstNode *cand = candidates[i];
+        if (cand->list.count != arg_count) continue;
+        int ok = 1;
+        for (int j = 0; j < cand->list.count; j++) {
+            if (!types_equal(cand->list.items[j]->type, arg_types[j])) { ok = 0; break; }
+        }
+        if (ok) { match = cand; match_count++; }
+    }
+
+    if (match_count == 1) {
+        CallResolution *cr = calloc(1, sizeof(CallResolution));
+        cr->resolved_target = match;
+        site->sema_info = cr;
+    } else if (match_count == 0) {
+        sema_error(site->line, "no matching overload of '%s' for this call", name);
+    } else {
+        sema_error(site->line, "call to '%s' is ambiguous between %d matching overloads", name, match_count);
+    }
+
+    free(arg_types);
+    free(candidates);
+}
+
 static void resolve_call(AstNode *call, AstNode *current_class, LocalVarType *locals) {
     const AstNode *callee = call->a;
     if (callee == NULL) return;
@@ -979,76 +1076,147 @@ static void resolve_call(AstNode *call, AstNode *current_class, LocalVarType *lo
                     function pointer) not handled */
     }
 
-    if (count == 0) {
-        free(candidates);
-        return; /* nothing named this at all -- not this pass's job to
-                    diagnose "no such function", only to resolve overloads
-                    among candidates that DO exist by that name */
-    }
+    resolve_overload_generic(call, name, candidates, count, call->list.items, call->list.count,
+                              current_class, locals);
+}
 
-    if (count == 1) {
-        /* Only one candidate exists at all -- no real overload ambiguity
-         * to resolve, so this doesn't need every argument's type known.
-         * That matters: most calls in an ordinary program aren't
-         * overloaded at all, and requiring full argument-type resolution
-         * even for those would make this pass far less useful than it
-         * should be. Still worth checking arity even here, though --
-         * real C++ would reject a call with the wrong number of
-         * arguments even when there's only one candidate to consider. */
-        if (candidates[0]->list.count == call->list.count) {
-            CallResolution *cr = calloc(1, sizeof(CallResolution));
-            cr->resolved_target = candidates[0];
-            call->sema_info = cr;
-        } else {
-            sema_error(call->line, "'%s' expects %d argument(s), but %d were given",
-                       name, candidates[0]->list.count, call->list.count);
+/* Resolves which constructor overload a `new T(args)` expression refers
+ * to -- a constructor is exactly a same-named ("ClassName") member of
+ * the class being allocated, so collect_method_candidates already finds
+ * these correctly (constructors are stored in ClassLayout.methods like
+ * any other method). Reuses the exact same matching/diagnostic core a
+ * regular call uses, so an arity/type mismatch here gets the same
+ * "no matching overload" treatment, not a silent fallback to whatever a
+ * lowering-time placeholder might guess. If `T` has no declared
+ * constructor at all (count == 0), this is silently a no-op -- not this
+ * pass's job to diagnose "no such constructor"; an implicitly
+ * default-constructible type is a perfectly ordinary case. */
+static void resolve_new_expr(AstNode *new_node, AstNode *current_class, LocalVarType *locals) {
+    AstNode *cls = type_to_class(new_node->type);
+    if (cls == NULL) return; /* not a registered class at all */
+
+    AstNode **candidates = NULL;
+    int count = 0, cap = 0;
+    collect_method_candidates(cls, cls->str1, &candidates, &count, &cap);
+
+    resolve_overload_generic(new_node, cls->str1, candidates, count,
+                              new_node->list.items, new_node->list.count, current_class, locals);
+}
+
+static const char *binop_operator_name(const char *op) {
+    if (strcmp(op, "+") == 0) return "operator+";
+    if (strcmp(op, "-") == 0) return "operator-";
+    if (strcmp(op, "*") == 0) return "operator*";
+    if (strcmp(op, "/") == 0) return "operator/";
+    if (strcmp(op, "==") == 0) return "operator==";
+    if (strcmp(op, "!=") == 0) return "operator!=";
+    if (strcmp(op, "<") == 0) return "operator<";
+    if (strcmp(op, ">") == 0) return "operator>";
+    if (strcmp(op, "<=") == 0) return "operator<=";
+    if (strcmp(op, ">=") == 0) return "operator>=";
+    return NULL; /* &&/|| aren't in this project's supported operator_symbol
+                  * list at all (see parser.y), so they're never overloadable
+                  * here -- always a plain built-in BinOp. */
+}
+
+static const char *assign_operator_name(const char *op) {
+    if (strcmp(op, "=") == 0) return "operator=";
+    if (strcmp(op, "+=") == 0) return "operator+=";
+    if (strcmp(op, "-=") == 0) return "operator-=";
+    if (strcmp(op, "*=") == 0) return "operator*=";
+    if (strcmp(op, "/=") == 0) return "operator/=";
+    return NULL;
+}
+
+static const char *unop_operator_name(const char *op) {
+    /* Only "neg" (unary minus) and "!" correspond to operators this
+     * project's grammar actually supports overloading (see
+     * operator_symbol in parser.y) -- "~", "addr", "deref", and the
+     * pre/post ++/-- forms have no overload syntax to have matched, so
+     * they're never rewritten here, always plain built-in AST_UNOP. */
+    if (strcmp(op, "neg") == 0) return "operator-";
+    if (strcmp(op, "!") == 0) return "operator!";
+    return NULL;
+}
+
+/* Resolves natural operator syntax (`a + b`, `a == b`, `v[i]`) against a
+ * class's declared `operatorX` overloads -- MOVED HERE from lower.c this
+ * round specifically so it gets the same treatment a regular call
+ * already gets: a genuine mismatch is now a real sema_error() (not
+ * silently left as a plain built-in operation the way lowering-time
+ * resolution had to, having no diagnostic mechanism reachable from
+ * there), and a resolved MEMBER operator now goes through
+ * check_member_access() exactly like an explicit member call would --
+ * closing an access-control gap that existed for as long as operator
+ * resolution has existed in this project.
+ *
+ * Member operators take precedence over a free-function operator of the
+ * same name, matching how collect_method_candidates/resolve_call already
+ * treat member-vs-free precedence for an ordinary unqualified call: if
+ * `obj_class` declares ANY overload of `op_name` at all, resolution
+ * commits to that candidate set and reports "no matching overload" on a
+ * mismatch rather than silently falling through to check for a
+ * free-function version too. This project doesn't implement argument-
+ * dependent lookup, so that's a reasoned simplification, not an
+ * oversight -- and it's the more diagnostic-friendly choice besides.
+ *
+ * `lhs_or_operand` is never itself counted as an explicit argument: for
+ * a member match it's the implicit receiver (like `this`); only for the
+ * free-function fallback does it become arg[0], since a free function
+ * has no implicit receiver at all. */
+static void resolve_operator_use(AstNode *node, const char *op_name, AstNode *lhs_or_operand,
+                                  AstNode *rhs_or_null, AstNode *current_class, LocalVarType *locals) {
+    if (op_name == NULL) return;
+
+    AstNode *obj_class = resolve_expr_class(lhs_or_operand, current_class, locals);
+    if (obj_class == NULL) return; /* not class-typed -- a plain built-in
+        op on primitives, nothing for this pass to resolve at all */
+
+    AstNode *member_args[1];
+    int member_arg_count = 0;
+    if (rhs_or_null != NULL) member_args[member_arg_count++] = rhs_or_null;
+
+    AstNode **member_candidates = NULL;
+    int member_count = 0, member_cap = 0;
+    collect_method_candidates(obj_class, op_name, &member_candidates, &member_count, &member_cap);
+
+    if (member_count > 0) {
+        resolve_overload_generic(node, op_name, member_candidates, member_count,
+                                  member_args, member_arg_count, current_class, locals);
+        CallResolution *cr = (CallResolution *)node->sema_info;
+        if (cr != NULL && cr->resolved_target != NULL) {
+            cr->is_member = 1;
+            AstNode *owner = NULL;
+            find_member_in_hierarchy(obj_class, op_name, &owner); /* just to
+                recover `owner`; name-hiding guarantees this is the same
+                class collect_method_candidates already committed to */
+            check_member_access(node->line, op_name, cr->resolved_target, owner, current_class);
         }
-        free(candidates);
-        return;
+        return; /* a member overload exists by this name at all -- commit
+            to that candidate set, same precedence rule resolve_call uses */
     }
 
-    /* Genuinely overloaded: need every argument's type resolved to
-     * confidently pick among candidates. */
-    AstNode **arg_types = calloc((size_t)call->list.count, sizeof(AstNode *));
-    int all_known = 1;
-    for (int i = 0; i < call->list.count; i++) {
-        arg_types[i] = infer_expr_type(call->list.items[i], current_class, locals);
-        if (arg_types[i] == NULL) all_known = 0;
+    /* No member operator at all -- fall back to a free-function one. */
+    AstNode *free_args[2];
+    int free_arg_count = 0;
+    free_args[free_arg_count++] = lhs_or_operand;
+    if (rhs_or_null != NULL) free_args[free_arg_count++] = rhs_or_null;
+
+    AstNode **free_candidates = NULL;
+    int free_count = 0, free_cap = 0;
+    collect_free_function_candidates(op_name, &free_candidates, &free_count, &free_cap);
+
+    if (free_count == 0) {
+        free(free_candidates);
+        return; /* no operator overload declared anywhere applicable at
+            all -- leave this as a plain built-in operation */
     }
 
-    if (!all_known) {
-        /* Best-effort: can't confidently disambiguate without knowing
-         * every argument's type, so this doesn't guess -- silently
-         * skipped rather than risking a false error or a wrong pick. */
-        free(arg_types);
-        free(candidates);
-        return;
+    resolve_overload_generic(node, op_name, free_candidates, free_count,
+                              free_args, free_arg_count, current_class, locals);
+    if (node->sema_info != NULL) {
+        ((CallResolution *)node->sema_info)->is_member = 0;
     }
-
-    AstNode *match = NULL;
-    int match_count = 0;
-    for (int i = 0; i < count; i++) {
-        AstNode *cand = candidates[i];
-        if (cand->list.count != call->list.count) continue;
-        int ok = 1;
-        for (int j = 0; j < cand->list.count; j++) {
-            if (!types_equal(cand->list.items[j]->type, arg_types[j])) { ok = 0; break; }
-        }
-        if (ok) { match = cand; match_count++; }
-    }
-
-    if (match_count == 1) {
-        CallResolution *cr = calloc(1, sizeof(CallResolution));
-        cr->resolved_target = match;
-        call->sema_info = cr;
-    } else if (match_count == 0) {
-        sema_error(call->line, "no matching overload of '%s' for this call", name);
-    } else {
-        sema_error(call->line, "call to '%s' is ambiguous between %d matching overloads", name, match_count);
-    }
-
-    free(arg_types);
-    free(candidates);
 }
 
 static void check_node(AstNode *n, AstNode *current_class, LocalVarType **locals) {
@@ -1087,13 +1255,27 @@ static void check_node(AstNode *n, AstNode *current_class, LocalVarType **locals
             break;
         }
         case AST_BINOP:
+            check_node(n->a, current_class, locals);
+            check_node(n->b, current_class, locals);
+            resolve_operator_use(n, binop_operator_name(n->str1), n->a, n->b, current_class, *locals);
+            break;
         case AST_ASSIGN:
+            check_node(n->a, current_class, locals);
+            check_node(n->b, current_class, locals);
+            resolve_operator_use(n, assign_operator_name(n->str1), n->a, n->b, current_class, *locals);
+            break;
         case AST_SUBSCRIPT:
             check_node(n->a, current_class, locals);
             check_node(n->b, current_class, locals);
+            resolve_operator_use(n, "operator[]", n->a, n->b, current_class, *locals);
             break;
         case AST_UNOP:
             check_node(n->a, current_class, locals);
+            resolve_operator_use(n, unop_operator_name(n->str1), n->a, NULL, current_class, *locals);
+            break;
+        case AST_NEW:
+            for (int i = 0; i < n->list.count; i++) check_node(n->list.items[i], current_class, locals);
+            resolve_new_expr(n, current_class, *locals);
             break;
         case AST_IDENT: {
             /* A bare name that resolves to an INHERITED member (not a
@@ -1137,9 +1319,11 @@ static void check_node(AstNode *n, AstNode *current_class, LocalVarType **locals
             resolve_call(n, current_class, *locals);
             break;
         default:
-            /* Literals, AST_THIS, AST_QUALIFIED_ID, AST_NEW,
-             * AST_TYPEDEF_DECL, AST_ACCESS_SPEC, ... -- nothing to check
-             * or recurse into. */
+            /* Literals, AST_THIS, AST_QUALIFIED_ID, AST_DELETE's own
+             * operand (already handled via the AST_DELETE case above,
+             * which shares AST_RETURN/AST_EXPR_STMT's single-child
+             * recursion), AST_TYPEDEF_DECL, AST_ACCESS_SPEC, ... --
+             * nothing to check or recurse into. */
             break;
     }
 }
@@ -1361,6 +1545,15 @@ static void dump_decls(const AstList *decls, int indent) {
  * ambiguous) -- not repeated here.
  */
 
+static void print_resolution_if_any(const AstNode *n) {
+    CallResolution *cr = (CallResolution *)n->sema_info;
+    if (cr != NULL && cr->resolved_target != NULL) {
+        FuncSemaInfo *info = (FuncSemaInfo *)cr->resolved_target->sema_info;
+        indent_line(1);
+        printf("call @line%d -> %s\n", n->line, info != NULL ? info->mangled_name : "(unmangled)");
+    }
+}
+
 static void dump_calls_in_node(const AstNode *n) {
     if (n == NULL) return;
     switch (n->kind) {
@@ -1386,21 +1579,35 @@ static void dump_calls_in_node(const AstNode *n) {
         case AST_BINOP:
         case AST_ASSIGN:
         case AST_SUBSCRIPT:
+            /* These can carry their OWN CallResolution now too (an
+             * operator used via natural syntax -- see resolve_operator_use)
+             * -- not just AST_CALL. Print it the same way AST_CALL's own
+             * case does, or a successful operator resolution would be
+             * just as invisible here as the "dump_this_injected_methods"
+             * gap made lowered free functions invisible a couple of
+             * rounds back. Same category of bug, caught before it shipped
+             * this time by remembering this dump function's whole stated
+             * purpose is making resolution visible. */
             dump_calls_in_node(n->a); dump_calls_in_node(n->b);
+            print_resolution_if_any(n);
             break;
         case AST_UNOP:
+            dump_calls_in_node(n->a);
+            print_resolution_if_any(n); /* same reasoning as BINOP/ASSIGN/SUBSCRIPT above */
+            break;
         case AST_MEMBER:
             dump_calls_in_node(n->a);
+            break;
+        case AST_NEW:
+            /* A constructor call, resolved by sema.c's resolve_new_expr --
+             * same treatment. */
+            for (int i = 0; i < n->list.count; i++) dump_calls_in_node(n->list.items[i]);
+            print_resolution_if_any(n);
             break;
         case AST_CALL: {
             dump_calls_in_node(n->a);
             for (int i = 0; i < n->list.count; i++) dump_calls_in_node(n->list.items[i]);
-            CallResolution *cr = (CallResolution *)n->sema_info;
-            if (cr != NULL && cr->resolved_target != NULL) {
-                FuncSemaInfo *info = (FuncSemaInfo *)cr->resolved_target->sema_info;
-                indent_line(1);
-                printf("call @line%d -> %s\n", n->line, info != NULL ? info->mangled_name : "(unmangled)");
-            }
+            print_resolution_if_any(n);
             break;
         }
         default:

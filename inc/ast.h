@@ -104,7 +104,12 @@ typedef enum {
     AST_CHAR_LIT,         /* ival=char code */
     AST_BOOL_LIT,         /* ival=0/1 */
     AST_THIS,
-    AST_NEW,              /* type=type being allocated */
+    AST_NEW,              /* type=type being allocated, list=constructor
+                              arguments (may be empty -- `new T` and
+                              `new T()` both produce an empty list; this
+                              project doesn't distinguish the two, unlike
+                              real C++'s default- vs value-initialization
+                              subtlety) */
     AST_DELETE,           /* a=expr being deleted */
     AST_POINTER_TYPE,     /* a=pointee type -- represents "T *" */
     AST_REFERENCE_TYPE    /* a=referent type -- represents "T &" */
