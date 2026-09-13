@@ -16,14 +16,21 @@
  * standard C, and getting either wrong produces code that won't compile
  * on the actual target, not just code that looks slightly off):
  *
- *   1. Every `struct Name { ... };` DEFINITION is auto-typedef'd by the
- *      Vircon32 C compiler under its own tag name -- every SUBSEQUENT
- *      REFERENCE to that type (a pointer field, a parameter, a return
- *      type, anywhere) must be the BARE name (`Name *next;`), never
- *      prefixed with `struct` (`struct Name *next;` is a Vircon32
- *      compile ERROR, not merely redundant). Definitions themselves
- *      still use the `struct Name { ... };` form -- only references drop
- *      the keyword.
+ *   1. `struct` is ONLY valid syntax in the two DECLARATION forms
+ *      themselves -- a forward declaration (`struct Name;`) or a full
+ *      definition (`struct Name { ... };`). It is NEVER valid as a
+ *      type-USE expression anywhere else -- not a pointer field
+ *      (`struct Name *next;` errors), not even an ordinary variable
+ *      declaration (`struct Name n;` errors too, "expected '{'", as if
+ *      the parser were expecting ANOTHER declaration to follow). Every
+ *      other reference to the type must be the bare name, and this is
+ *      true starting from the FIRST forward declaration, not just once
+ *      the full definition has appeared -- confirmed by testing against
+ *      the real compiler (see docs/DESIGN_NOTES.md's "forward-reference
+ *      ordering" section for the full progression of what did and
+ *      didn't compile). `print_type()` is the one function every other
+ *      part of this module funnels type output through, specifically so
+ *      this rule only has to be gotten right in one place.
  *
  *   2. Array declarators put the length in brackets BEFORE the variable
  *      name (`int [8] myarray;`), not after it the way standard C does
@@ -40,6 +47,15 @@
  *      the name, unlike every other type this module currently handles
  *      (which are all printed independently of the name being declared).
  *
+ * A THIRD QUIRK, discovered while confirming the above, not yet acted on
+ * by any codegen phase but worth remembering for whenever one generates
+ * pointer-initializing code: Vircon32 C rejects assigning the literal
+ * `0` to a pointer ("cannot assign int to ... pointer"); it requires
+ * `NULL` specifically. Nothing this module currently emits assigns a
+ * pointer at all, so this hasn't mattered yet -- but the first codegen
+ * phase that DOES generate a null-pointer initializer needs to emit the
+ * literal text `NULL`, never a bare `0`.
+ *
  * DELIBERATELY NOT YET IN SCOPE (this is the first codegen round, not
  * the whole thing): method/function BODY emission, and vtable STATIC
  * INSTANCE emission (the vtable struct TYPE is emitted -- something has
@@ -49,25 +65,23 @@
  * round, verified against real output the same way every other phase in
  * this project has been.
  *
- * AN OPEN QUESTION, FLAGGED RATHER THAN GUESSED AT: this project's
- * front end doesn't require a class to be fully declared, textually,
- * before some OTHER class references it as a pointer member (every
- * class gets registered in one pass, via collect_declarations, before
- * any type resolution happens) -- so nothing stops a class earlier in
- * source order from holding a pointer to a class declared later. This
- * module emits struct definitions in natural source-encounter order,
- * which happens to work for every existing test file, but doesn't
- * resolve the general case. Whether Vircon32 C supports a standalone
- * forward declaration (`struct Foo;`, no body) the way standard C does
- * is genuinely unknown here -- needs confirming against the real
- * compiler/docs before this ordering gap can be called solved.
+ * THE FORWARD-REFERENCE ORDERING QUESTION FROM AN EARLIER ROUND IS NOW
+ * RESOLVED: confirmed against the real compiler that a standalone
+ * forward declaration (`struct Name;`, no body) is valid on its own,
+ * doesn't conflict with a later full definition of the same tag, and is
+ * sufficient to make the bare name usable as an (incomplete) pointer
+ * type immediately, even before the full definition appears. codegen_run
+ * now emits one for every class before anything else, which resolves the
+ * general case completely -- two classes holding pointers to each other,
+ * or simply one preceding another it points to, no longer depends on
+ * source order happening to already be safe.
  */
 
 /* Emits generated Vircon32 C source for the whole program to `out`
- * (already open for writing). Currently emits: top-level typedefs, each
- * class's vtable struct type (if it has any virtual methods), and each
- * class's own struct definition -- see the scope note above for what's
- * deliberately not here yet. */
+ * (already open for writing). Currently emits: a forward declaration for
+ * every class, top-level typedefs, each class's vtable struct type (if
+ * it has any virtual methods), and each class's own struct definition --
+ * see the scope note above for what's deliberately not here yet. */
 void codegen_run(const AstNode *program, FILE *out);
 
 #endif /* CODEGEN_H */

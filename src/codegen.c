@@ -213,8 +213,39 @@ static void emit_classes(FILE *out, const AstList *decls) {
     }
 }
 
+/* ---- forward declarations ----------------------------------------------
+ *
+ * Emits `struct Name;` for every class in the program, before anything
+ * else. Confirmed against the real Vircon32 compiler (see
+ * docs/DESIGN_NOTES.md's "forward-reference ordering" section for the
+ * full test progression) that this is both valid syntax on its own and
+ * sufficient to make the BARE name usable as a pointer type from that
+ * point forward, even before the class's own full struct definition
+ * appears -- which is exactly what resolves the general case this
+ * module's struct-emission order alone couldn't: two classes holding
+ * pointers to each other, or simply one class textually preceding
+ * another it points to, no longer depends on source order being
+ * "lucky" the way every existing test file's happened to be so far.
+ *
+ * Confirmed NOT to redefine/conflict with the later full definition --
+ * forward-declaring then fully defining the same tag in the same file is
+ * fine, standard C's own rule and Vircon32's alike.
+ */
+static void emit_forward_declarations(FILE *out, const AstList *decls) {
+    for (int i = 0; i < decls->count; i++) {
+        const AstNode *n = decls->items[i];
+        if (n->kind == AST_CLASS_DECL) {
+            fprintf(out, "struct %s;\n", n->str1);
+        } else if (n->kind == AST_NAMESPACE_DECL) {
+            emit_forward_declarations(out, &n->list);
+        }
+    }
+}
+
 void codegen_run(const AstNode *program, FILE *out) {
     fprintf(out, "/* Auto-generated Vircon32 C -- do not edit by hand. */\n\n");
+    emit_forward_declarations(out, &program->list);
+    fprintf(out, "\n");
     emit_typedefs(out, &program->list);
     fprintf(out, "\n");
     emit_classes(out, &program->list);

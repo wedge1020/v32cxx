@@ -856,19 +856,43 @@ of "a count/shape differs depending on whether a mutating pass has
 already touched it" check the operator-arity bug (a few rounds back)
 should have gotten from the very start.
 
-**An open question, flagged rather than guessed at**: this project's
-front end doesn't require a class to be fully declared, textually,
-before some OTHER class references it as a pointer member -- every class
-gets registered in one pass (`collect_declarations`) before any type
-resolution happens, so nothing structurally prevents a class earlier in
-source order from holding a pointer to one declared later. This module
-emits struct definitions in natural source-encounter order, which works
-for every existing test file (none of them happen to need a genuine
-forward reference), but doesn't resolve the general case. Whether
-Vircon32 C supports a standalone forward declaration (`struct Foo;`, no
-body) the way standard C does is genuinely unknown from here -- this
-needs confirming against the real compiler or its docs before the
-ordering question can be called solved, not assumed away.
+**The forward-reference-ordering question is resolved -- tested against
+the real compiler, not guessed at.** Matthew ran a small probe file
+through the actual Vircon32 toolchain and reported back the full error
+progression, not just pass/fail, which settled several things at once:
+
+- A standalone forward declaration (`struct Node;`, no body) is valid
+  Vircon32 syntax on its own.
+- **`struct Name` is NEVER valid as a type-USE expression, in any form --
+  this is stricter than originally assumed.** `struct Node *first;`
+  (pointer field, keyword form) failed with "expected a type" even
+  though `Node` was already forward-declared. Once the keyword was
+  dropped (`Node *first;`), that same line compiled fine. And it isn't
+  only about pointers: `struct Container c;` (an ordinary variable
+  declaration, keyword form) failed with "expected '{'" -- as if the
+  parser were treating `struct Container` as the start of ANOTHER
+  declaration and choking on finding `c` next. `struct` is apparently
+  only meaningful in the two declaration forms themselves (a forward
+  declaration or a full definition); every other reference, in every
+  other context, needs the bare name -- and that's true starting from
+  the FIRST forward declaration, not only once the full definition has
+  appeared.
+- Two more real quirks surfaced along the way, neither previously known:
+  assigning the literal `0` to a pointer fails ("cannot assign int to
+  ... pointer"; Vircon32 wants `NULL` specifically), and `main()` must
+  be declared `void main()` with no return value at all -- there's no OS
+  to return to on Vircon32; the cartridge itself is the whole running
+  system. The `NULL`-vs-`0` rule matters for whenever a codegen phase
+  starts generating pointer-initializing code (nothing does yet); the
+  `main()` rule matters for whenever this project generates an actual
+  program entry point (also not yet in scope).
+
+`codegen.c` now emits a forward declaration for every class before
+anything else (`emit_forward_declarations`), which resolves the general
+case completely rather than merely working by source-order coincidence
+for every test file so far -- two classes holding pointers to each
+other, or simply one preceding another it points to, no longer depends
+on luck.
 
 ## What's deliberately not here yet
 
@@ -940,7 +964,45 @@ ordering question can be called solved, not assumed away.
   of room for more (e.g. redeclaring a class, conflicting types on a
   redeclared variable).
 
+## Future CLI/design considerations (not urgent, filed for later)
+
+Two things Matthew flagged explicitly as "eventually, not now" while
+reviewing the first codegen round -- recorded here so they're available
+when the time comes, not lost in conversation history.
+
+**A "standard C mode" command-line flag.** As codegen leans further into
+Vircon32-specific quirks (no `struct` keyword on a type reference, and
+eventually the reversed array-declarator order once array-type support
+exists), it's worth being able to switch that behavior off and emit
+plain, portable C instead -- for testing against a normal C compiler, or
+for anyone who wants to retarget this project's output elsewhere. This
+would need, at minimum: (a) emitting `struct Name` (with the keyword) on
+every type reference, not just the definition, since standard C doesn't
+auto-typedef; (b) once array-type support exists, emitting the ordinary
+`T name[N];` declarator order instead of Vircon32's `T [N] name;`. Not
+urgent -- there's exactly one target today -- but worth keeping
+`print_type()` (codegen.c) and whatever eventually handles array
+declarators structured so a mode flag can cleanly select between the two
+forms, rather than the Vircon32-specific choices being hardwired in a way
+that's painful to unwind later.
+
+**Keep every non-code dump section, permanently -- eventually behind a
+flag, not by default removing any of it.** `v32c++`'s current behavior
+(AST dump, semantic-analysis summary, struct layouts, fully-lowered
+method bodies, generated C -- all unconditional, every run) is explicitly
+valuable as-is for the course this project is teaching material for:
+seeing every stage of the pipeline is the point, not a debug-mode
+side effect to be trimmed away once codegen matures. The only thing
+worth adding later is a CLI flag to select a QUIET mode (generated C
+only, for anyone who just wants to build something) -- the full,
+verbose, every-stage-visible output should remain the default, or at
+minimum trivially available, indefinitely. Whatever flag-parsing
+eventually gets added to `main.c` (there isn't any yet -- `argv[1]` is
+just the filename) should keep this distinction in mind rather than
+accidentally making the teaching-relevant output an opt-in afterthought.
+
 ## Suggested next steps, roughly in order
+
 
 1. ~~Compile it, fix whatever bison/flex complain about.~~ Done — building
    cleanly on bison 3.8.2 with zero warnings.
