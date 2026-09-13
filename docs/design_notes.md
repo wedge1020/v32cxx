@@ -781,14 +781,94 @@ exactly the "silently skipped and successfully resolved look identical"
 failure mode that section's own doc comment warns about. Fixed in the
 same pass, before it could ship as a fourth instance of the same mistake.
 
-**Not yet verified against real build output** -- this project doesn't
-have `bison`/`flex` available in the environment these changes are being
-written in, so the grammar change (and everything downstream of it)
-needs a real `make`/`make test` run to confirm, the same as every other
-round. `tests/sample18.cpp` (valid, `new Point(3, 4)`), `sample19.cpp`
-(deliberately invalid: wrong constructor arity), and `sample20.cpp`
-(deliberately invalid: private operator called from outside its class)
-were written to exercise exactly the two new diagnostics this round adds.
+**Verified against real build output.** No `%expect` mismatch -- the new
+`NEW type_spec '(' opt_arg_list ')'` grammar alternative introduced zero
+new shift/reduce conflicts, so `%expect 22` needed no change.
+`tests/sample18.cpp` (`new Point(3, 4)`) resolves to
+`Point__Point__int_int` and lowers to `v32_new_Point(3, 4)` with both
+arguments correctly forwarded. `sample19.cpp` (wrong constructor arity)
+produces exactly `'Point' expects 2 argument(s), but 1 were given`.
+`sample20.cpp` (private operator called from outside its class) produces
+exactly `'operator+' is a private member of class 'Secret' and cannot
+be accessed here`. The full existing suite (samples 1-17) shows zero
+regressions -- every lowered body is byte-for-byte identical to before
+this round's refactor, confirming the simplified `lower.c` phase 4
+produces the same output as the old, more complex version it replaced.
+
+A genuine bonus, not just "no regression": `sample15.cpp`'s `call
+resolutions:` dump now shows all four operator resolutions AT SEMA TIME
+(previously empty for these, since resolution used to happen only during
+lowering) -- direct confirmation the architecture change works, and that
+the `dump_calls_in_node` fix (printing a resolution for BinOp/Assign/
+Subscript/Unop, not just Call) is correct. And `sample17.cpp` (written
+in an earlier round, predating constructor-argument support, using a
+bare `new Widget` with no parens) now ALSO shows a resolved constructor
+call (`Widget__Widget__void`) with zero changes to that file -- a bare
+`new Widget` has an implicitly-empty argument list, which correctly
+matches Widget's declared 0-arg constructor. Good sign the design
+generalizes rather than only handling the case it was written for.
+
+## Code generation begins: struct and vtable-struct-type emission
+
+A new `codegen.c`/`codegen.h` module -- the first piece of an actual
+Vircon32 C code generator, as opposed to lowering (which only ever
+produced a transformed AST, never generated syntax). Wired into
+`main.c`, printing straight to stdout after lowering succeeds, same
+"---- section header ----" convention every other pass uses.
+
+**Deliberately narrow scope for this first round**: top-level typedefs,
+each class's vtable struct TYPE (if it has any virtual methods), and each
+class's own struct definition. NOT yet in scope: method/function BODY
+emission, and vtable STATIC INSTANCE emission (the type exists for a
+class's `vtable` field to point at; no actual populated instance of it
+does yet). Both are substantial enough to deserve their own round,
+verified against real output the same way every phase before this one
+has been.
+
+**Two Vircon32-specific quirks this module has to get right, neither of
+them standard C:**
+1. A `struct Name { ... };` definition is auto-typedef'd by Vircon32's
+   compiler under its own tag name; every subsequent REFERENCE to that
+   type must be bare (`Name *next;`) -- `struct Name *next;` is a compile
+   ERROR there, not just redundant. Definitions still use the `struct`
+   keyword; only references drop it. `print_type()` is the one function
+   every other part of this module funnels type output through,
+   specifically so this rule only has to be gotten right in one place.
+2. Array declarators put the length before the name (`int [8] myarray;`),
+   reversed from standard C -- but there's genuinely nothing to apply this
+   to yet: this project's grammar has no array-type declarator at all
+   (only `AST_SUBSCRIPT`, the `a[i]` *expression*, exists). Recorded in
+   codegen.h's own doc comment so it isn't lost, rather than built
+   speculatively against a type shape nothing can produce yet.
+
+**A design wrinkle worth naming, because it's the same class of hazard
+this project has hit twice already**: a vtable struct type's function-
+pointer field needs `ClassName *` as its receiver parameter, but
+`canonical_method` (the slot's original declarer) might be prototype-only
+(this-injection never touches those -- see phase 2's early return for
+anything that isn't `AST_FUNC_DEF`) or might already have a `this`
+parameter injected, depending entirely on whether it happens to have a
+body. Handled by reconstructing the receiver parameter explicitly every
+time (via a new `find_declaring_class`, walking the class's own ancestry
+by pointer identity to find whichever class actually owns
+`canonical_method`) rather than assuming either shape -- exactly the kind
+of "a count/shape differs depending on whether a mutating pass has
+already touched it" check the operator-arity bug (a few rounds back)
+should have gotten from the very start.
+
+**An open question, flagged rather than guessed at**: this project's
+front end doesn't require a class to be fully declared, textually,
+before some OTHER class references it as a pointer member -- every class
+gets registered in one pass (`collect_declarations`) before any type
+resolution happens, so nothing structurally prevents a class earlier in
+source order from holding a pointer to one declared later. This module
+emits struct definitions in natural source-encounter order, which works
+for every existing test file (none of them happen to need a genuine
+forward reference), but doesn't resolve the general case. Whether
+Vircon32 C supports a standalone forward declaration (`struct Foo;`, no
+body) the way standard C does is genuinely unknown from here -- this
+needs confirming against the real compiler or its docs before the
+ordering question can be called solved, not assumed away.
 
 ## What's deliberately not here yet
 
@@ -940,17 +1020,20 @@ were written to exercise exactly the two new diagnostics this round adds.
        placeholder (no `sizeof`, no constructor invocation — the grammar
        doesn't even parse constructor arguments in `new` yet). `tests/
        sample17.cpp` exercises the placeholder calls.
-    7. **The lowering track is now complete through phase 6, and fully
-       verified against real output** — including two real bugs (phase
+    7. ~~The lowering track is complete through phase 6, and fully
+       verified against real output~~ — including two real bugs (phase
        4's operator-arity comparison, and the `dump_this_injected_methods`
        display gap) found and fixed along the way, not just plausible-
-       looking code taken on faith. Next up: the Vircon32 C code
-       generator itself.
+       looking code taken on faith. Done.
 13. Remaining natural next candidates, independent of the lowering track
     above: the preprocessor gap (see the project README — a custom
     `v32pp` is the long-term plan, with `cpp` as a stopgap in the
     meantime).
-14. Only after enough of the lowering phases above: the Vircon32 C code
-    generator itself, pretty-printing whatever the lowering passes
-    produce into actual `.c` text — the actual stated goal of this whole
-    project.
+14. ~~The Vircon32 C code generator itself~~ — STARTED, not finished.
+    `codegen.c`/`codegen.h` emit typedefs, vtable struct types, and class
+    struct definitions (see the "Code generation begins" section above
+    for the two Vircon32-specific quirks this had to get right, the
+    design wrinkle it ran into, and the open forward-reference-ordering
+    question it deliberately doesn't resolve). NOT yet done: method/
+    function body emission, and vtable static instance emission — both
+    substantial enough for their own round.

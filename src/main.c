@@ -4,6 +4,7 @@
 #include "parser.h"
 #include "sema.h"
 #include "lower.h"
+#include "codegen.h"
 
 /* Definitions for the globals declared extern in driver.h. */
 SymTab *g_symtab = NULL;
@@ -45,6 +46,17 @@ int main(int argc, char **argv) {
              * lower.h. */
             lower_run(g_program);
             lower_dump(g_program);
+            /* codegen_run() only ever reads PER-NODE annotations
+             * (sema_info/lower_info) already attached directly to the
+             * tree -- never the global class/typedef/free-function
+             * registries sema_cleanup() frees below -- so its ordering
+             * relative to that cleanup call doesn't actually matter. Runs
+             * here anyway, before cleanup, to keep the "don't free
+             * anything a later step might still need" discipline this
+             * project settled on after the vtable-dispatch registry-
+             * lifetime bug, rather than re-litigating it per call site. */
+            printf("---- generated Vircon32 C ----\n");
+            codegen_run(g_program, stdout);
         }
         /* sema_cleanup() frees the class/typedef/free-function registries
          * sema_run() built -- deliberately called HERE, after lowering
@@ -61,3 +73,5 @@ int main(int argc, char **argv) {
     symtab_destroy(g_symtab);
     return rc;
 }
+
+

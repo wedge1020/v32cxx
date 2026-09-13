@@ -59,7 +59,7 @@ $(SRC_DIR)/lexer.o: $(SRC_DIR)/lexer.c | $(OBJ_DIR)
 
 $(BIN_DIR)/v32c++: $(OBJ_DIR)/parser.o $(OBJ_DIR)/lexer.o \
                           $(OBJ_DIR)/ast.o $(OBJ_DIR)/symtab.o $(OBJ_DIR)/sema.o \
-                          $(OBJ_DIR)/lower.o $(OBJ_DIR)/main.o | $(BIN_DIR)
+                          $(OBJ_DIR)/lower.o $(OBJ_DIR)/codegen.o $(OBJ_DIR)/main.o | $(BIN_DIR)
 	$(CC) $(CFLAGS) -o $@ $^
 # If linking fails looking for yywrap/yy_flex_* symbols on your system,
 # add -lfl to this link line (some flex installs need it even with
