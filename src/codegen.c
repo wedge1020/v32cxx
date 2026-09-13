@@ -1,4 +1,5 @@
 #include <stdio.h>
+#include <string.h>
 #include "ast.h"
 #include "sema.h"
 #include "lower.h"
@@ -242,6 +243,421 @@ static void emit_forward_declarations(FILE *out, const AstList *decls) {
     }
 }
 
+/* ---- expression printing ------------------------------------------------
+ *
+ * Prints an expression in valid Vircon32 C syntax. Every AST kind this
+ * function handles is exactly the shape lower.c's phases leave behind in
+ * a FULLY LOWERED body (this-injected, calls finalized, operators
+ * resolved, references converted, new/delete already rewritten to
+ * placeholder calls) -- AST_THIS, AST_NEW, and AST_DELETE should never
+ * actually reach here (phase 2 rewrites every AST_THIS into
+ * AST_IDENT("this"); phase 6 rewrites every AST_NEW/AST_DELETE into an
+ * AST_CALL). They're handled anyway, with a loud comment instead of
+ * silently producing nothing, on the same best-effort principle
+ * print_type() already follows for AST_REFERENCE_TYPE -- seeing one of
+ * these actually fire means investigate immediately, not "huh, weird."
+ *
+ * PARENTHESIZATION STRATEGY: every binary/assignment/prefix-unary
+ * expression is wrapped in its own parentheses, unconditionally. This is
+ * deliberately the simplest possible correct strategy for a first pass --
+ * it trades slightly noisier output for a total absence of precedence
+ * bugs, rather than trying to reconstruct C's precedence table and risk
+ * getting one operator's binding wrong. A real language's compiler earns
+ * the right to skip redundant parens by construction; a from-scratch
+ * code generator hasn't earned that yet.
+ */
+static void print_expr(FILE *out, const AstNode *e);
+
+static void print_char_literal(FILE *out, int code) {
+    /* Basic, standard C escaping -- not yet exercised by any test (no
+     * current sample has a char literal reach codegen), implemented
+     * defensively rather than left to crash or silently misprint
+     * whenever one eventually does. */
+    switch (code) {
+        case '\n': fprintf(out, "'\\n'"); return;
+        case '\t': fprintf(out, "'\\t'"); return;
+        case '\r': fprintf(out, "'\\r'"); return;
+        case '\\': fprintf(out, "'\\\\'"); return;
+        case '\'': fprintf(out, "'\\''"); return;
+        case '\0': fprintf(out, "'\\0'"); return;
+        default:
+            if (code >= 32 && code < 127) {
+                fprintf(out, "'%c'", (char)code);
+            } else {
+                fprintf(out, "'\\x%02x'", (unsigned)(code & 0xFF));
+            }
+            return;
+    }
+}
+
+static void print_unop(FILE *out, const AstNode *e) {
+    const char *op = e->str1;
+    if (strcmp(op, "post++") == 0) {
+        fprintf(out, "(");
+        print_expr(out, e->a);
+        fprintf(out, "++)");
+    } else if (strcmp(op, "post--") == 0) {
+        fprintf(out, "(");
+        print_expr(out, e->a);
+        fprintf(out, "--)");
+    } else if (strcmp(op, "pre++") == 0) {
+        fprintf(out, "(++");
+        print_expr(out, e->a);
+        fprintf(out, ")");
+    } else if (strcmp(op, "pre--") == 0) {
+        fprintf(out, "(--");
+        print_expr(out, e->a);
+        fprintf(out, ")");
+    } else if (strcmp(op, "neg") == 0) {
+        fprintf(out, "(-");
+        print_expr(out, e->a);
+        fprintf(out, ")");
+    } else if (strcmp(op, "addr") == 0) {
+        fprintf(out, "(&");
+        print_expr(out, e->a);
+        fprintf(out, ")");
+    } else if (strcmp(op, "deref") == 0) {
+        fprintf(out, "(*");
+        print_expr(out, e->a);
+        fprintf(out, ")");
+    } else {
+        /* "!" and "~" are already the literal C operator text. */
+        fprintf(out, "(%s", op);
+        print_expr(out, e->a);
+        fprintf(out, ")");
+    }
+}
+
+static void print_expr(FILE *out, const AstNode *e) {
+    if (e == NULL) return;
+    switch (e->kind) {
+        case AST_INT_LIT:
+            fprintf(out, "%d", e->ival);
+            break;
+        case AST_FLOAT_LIT:
+            /* %.17g, not %g -- guarantees a double round-trips through
+             * source text exactly, at the cost of occasionally more
+             * digits than a human would write by hand. Correctness over
+             * cosmetics for generated code. */
+            fprintf(out, "%.17g", e->fval);
+            break;
+        case AST_BOOL_LIT:
+            /* Assumes Vircon32 C has `true`/`false` keywords, consistent
+             * with it having a native `bool` type (used throughout this
+             * project's own test suite already) -- not yet independently
+             * confirmed against the real compiler the way the struct/
+             * forward-declaration quirks were. Worth confirming if this
+             * is ever the line that fails to compile. */
+            fprintf(out, "%s", e->ival ? "true" : "false");
+            break;
+        case AST_CHAR_LIT:
+            print_char_literal(out, e->ival);
+            break;
+        case AST_IDENT:
+            fprintf(out, "%s", e->str1);
+            break;
+        case AST_THIS:
+            /* Shouldn't happen -- this-injection (lower.c phase 2)
+             * rewrites every AST_THIS into AST_IDENT("this") well before
+             * codegen ever runs. */
+            fprintf(out, "this" /* WARNING: unlowered AST_THIS reached codegen */);
+            break;
+        case AST_MEMBER:
+            print_expr(out, e->a);
+            fprintf(out, "%s%s", e->str1, e->str2);
+            break;
+        case AST_CALL:
+            print_expr(out, e->a);
+            fprintf(out, "(");
+            for (int i = 0; i < e->list.count; i++) {
+                if (i > 0) fprintf(out, ", ");
+                print_expr(out, e->list.items[i]);
+            }
+            fprintf(out, ")");
+            break;
+        case AST_BINOP:
+            fprintf(out, "(");
+            print_expr(out, e->a);
+            fprintf(out, " %s ", e->str1);
+            print_expr(out, e->b);
+            fprintf(out, ")");
+            break;
+        case AST_ASSIGN:
+            fprintf(out, "(");
+            print_expr(out, e->a);
+            fprintf(out, " %s ", e->str1);
+            print_expr(out, e->b);
+            fprintf(out, ")");
+            break;
+        case AST_UNOP:
+            print_unop(out, e);
+            break;
+        case AST_SUBSCRIPT:
+            print_expr(out, e->a);
+            fprintf(out, "[");
+            print_expr(out, e->b);
+            fprintf(out, "]");
+            break;
+        case AST_QUALIFIED_ID:
+            /* Not expected as a general expression (this project's
+             * grammar only ever produces one as the class-name marker on
+             * an out-of-line FuncDef's own `b`, which codegen never
+             * reads as an expression at all) -- flattened to its last
+             * component anyway, matching print_type's own convention,
+             * as a best-effort fallback rather than emitting nothing. */
+            if (e->list.count > 0) {
+                fprintf(out, "%s", e->list.items[e->list.count - 1]->str1);
+            }
+            break;
+        case AST_NEW:
+        case AST_DELETE:
+            /* Shouldn't happen -- lower.c phase 6 rewrites every one of
+             * these into an AST_CALL before codegen ever runs. */
+            fprintf(out, "0 /* WARNING: unlowered New/Delete reached codegen */");
+            break;
+        default:
+            fprintf(out, "0 /* WARNING: unhandled expression kind in codegen */");
+            break;
+    }
+}
+
+/* ---- statement printing --------------------------------------------------
+ *
+ * Prints a statement in valid Vircon32 C syntax, `indent` levels deep
+ * (4 spaces per level, matching this module's existing struct-field
+ * indentation). Every statement kind a fully-lowered body can contain is
+ * handled; anything else is a genuine gap, flagged loudly rather than
+ * silently dropped.
+ */
+static void print_stmt(FILE *out, const AstNode *s, int indent);
+
+static void indent_spaces(FILE *out, int indent) {
+    for (int i = 0; i < indent; i++) fprintf(out, "    ");
+}
+
+/* Prints "Type name" or "Type name = init", with NO trailing semicolon
+ * and NO indentation/newline of its own -- shared by an ordinary
+ * AST_VAR_DECL statement (which adds the semicolon/newline/indent
+ * itself) and a for-loop's init clause (which needs this sitting inline
+ * inside the for(...) header instead). */
+static void print_var_decl_inline(FILE *out, const AstNode *n) {
+    print_type(out, n->type);
+    fprintf(out, " %s", n->str1);
+    if (n->a != NULL) {
+        fprintf(out, " = ");
+        print_expr(out, n->a);
+    }
+}
+
+static void print_stmt(FILE *out, const AstNode *s, int indent) {
+    if (s == NULL) return;
+    switch (s->kind) {
+        case AST_BLOCK:
+            indent_spaces(out, indent);
+            fprintf(out, "{\n");
+            for (int i = 0; i < s->list.count; i++) {
+                print_stmt(out, s->list.items[i], indent + 1);
+            }
+            indent_spaces(out, indent);
+            fprintf(out, "}\n");
+            break;
+        case AST_IF:
+            indent_spaces(out, indent);
+            fprintf(out, "if (");
+            print_expr(out, s->a);
+            fprintf(out, ")\n");
+            print_stmt(out, s->b, indent); /* s->b is itself an AST_BLOCK -- prints its own braces */
+            if (s->c != NULL) {
+                indent_spaces(out, indent);
+                fprintf(out, "else\n");
+                print_stmt(out, s->c, indent);
+            }
+            break;
+        case AST_WHILE:
+            indent_spaces(out, indent);
+            fprintf(out, "while (");
+            print_expr(out, s->a);
+            fprintf(out, ")\n");
+            print_stmt(out, s->b, indent);
+            break;
+        case AST_FOR:
+            indent_spaces(out, indent);
+            fprintf(out, "for (");
+            if (s->a != NULL) {
+                if (s->a->kind == AST_VAR_DECL) {
+                    print_var_decl_inline(out, s->a);
+                } else if (s->a->kind == AST_EXPR_STMT) {
+                    print_expr(out, s->a->a);
+                }
+            }
+            fprintf(out, "; ");
+            print_expr(out, s->b); /* NULL prints nothing -- "for(;;)" is valid C */
+            fprintf(out, "; ");
+            print_expr(out, s->c);
+            fprintf(out, ")\n");
+            print_stmt(out, s->d, indent);
+            break;
+        case AST_RETURN:
+            indent_spaces(out, indent);
+            fprintf(out, "return");
+            if (s->a != NULL) {
+                fprintf(out, " ");
+                print_expr(out, s->a);
+            }
+            fprintf(out, ";\n");
+            break;
+        case AST_EXPR_STMT:
+            indent_spaces(out, indent);
+            print_expr(out, s->a);
+            fprintf(out, ";\n");
+            break;
+        case AST_VAR_DECL:
+            indent_spaces(out, indent);
+            print_var_decl_inline(out, s);
+            fprintf(out, ";\n");
+            break;
+        case AST_DELETE:
+            /* Shouldn't happen as a bare statement either -- an
+             * AST_DELETE used as an AST_EXPR_STMT's own child (the only
+             * way it appears in source, `delete p;`) is rewritten to an
+             * AST_CALL by lower.c phase 6 before codegen ever runs, so
+             * AST_EXPR_STMT's own case above prints the resulting call,
+             * never reaching this case directly. */
+            indent_spaces(out, indent);
+            fprintf(out, "/* WARNING: unlowered AST_DELETE reached codegen */;\n");
+            break;
+        default:
+            indent_spaces(out, indent);
+            fprintf(out, "/* WARNING: unhandled statement kind in codegen */;\n");
+            break;
+    }
+}
+
+/* ---- method/function prototypes and definitions --------------------------
+ *
+ * Both a prototype and a full definition print the same "ReturnType
+ * MangledName(Type1 name1, Type2 name2, ...)" header; only the
+ * terminator differs (";" vs. " { ...body... }"). Shared here so the two
+ * can never drift out of sync with each other.
+ *
+ * Only ever called with an AST_FUNC_DEF -- a genuine body to emit.
+ * Deliberately NOT called for a prototype-only AST_FUNC_DECL (a
+ * constructor/destructor/method declared but never defined anywhere,
+ * e.g. Timer's constructor in tests/sample1.cpp): this project has
+ * nothing to emit for one (no body exists, and this-injection never
+ * touches anything that isn't AST_FUNC_DEF, so its parameter list
+ * wouldn't even have the receiver in it). KNOWN, DELIBERATE LIMITATION:
+ * if a prototype-only method is ever actually CALLED somewhere, the
+ * generated C will fail to COMPILE (an undeclared-identifier error, no
+ * prototype exists for the call to resolve against) rather than fail to
+ * LINK the way a merely-unimplemented-but-declared C function normally
+ * would. Revisit once this project has any notion of an abstract/pure-
+ * virtual method that's expected to be called polymorphically without
+ * ever having its own body.
+ */
+static void emit_function_header(FILE *out, const AstNode *func) {
+    FuncSemaInfo *info = (FuncSemaInfo *)func->sema_info;
+    const char *name = (info != NULL) ? info->mangled_name : func->str1;
+
+    print_type(out, func->type);
+    fprintf(out, " %s(", name);
+    if (func->list.count == 0) {
+        fprintf(out, "void"); /* Vircon32/C: an empty parameter list needs
+            an explicit "void", not bare "()" (which in C means "unspecified
+            parameters", not "no parameters") */
+    }
+    for (int p = 0; p < func->list.count; p++) {
+        if (p > 0) fprintf(out, ", ");
+        AstNode *param = func->list.items[p];
+        print_type(out, param->type);
+        fprintf(out, " %s", param->str1);
+    }
+    fprintf(out, ")");
+}
+
+static void emit_function_prototype(FILE *out, const AstNode *func) {
+    emit_function_header(out, func);
+    fprintf(out, ";\n");
+}
+
+static void emit_function_definition(FILE *out, const AstNode *func) {
+    emit_function_header(out, func);
+    fprintf(out, "\n");
+    print_stmt(out, func->a, 0); /* func->a is the body, an AST_BLOCK */
+    fprintf(out, "\n");
+}
+
+/* ---- top-level walks for functions/methods ------------------------------
+ *
+ * Mirrors the class-vs-free-function split this project has used
+ * consistently since lower.c's own phases (finalize_calls_classes/
+ * finalize_calls_free_functions, fix_references_classes/..., etc.) --
+ * same reasoning applies here: a class's methods live in its
+ * ClassLayout, a free function is walked directly off the namespace/
+ * program decl list, and `n->b == NULL` is still what distinguishes a
+ * genuine free function from an out-of-line method definition's own
+ * top-level duplicate (see attach_out_of_line).
+ */
+static void emit_function_prototypes_classes(FILE *out, const AstList *decls) {
+    for (int i = 0; i < decls->count; i++) {
+        const AstNode *n = decls->items[i];
+        if (n->kind == AST_CLASS_DECL) {
+            ClassLayout *layout = (ClassLayout *)n->sema_info;
+            if (layout != NULL) {
+                for (int j = 0; j < layout->methods.count; j++) {
+                    AstNode *m = layout->methods.items[j];
+                    if (m->kind == AST_FUNC_DEF) emit_function_prototype(out, m);
+                }
+            }
+        } else if (n->kind == AST_NAMESPACE_DECL) {
+            emit_function_prototypes_classes(out, &n->list);
+        }
+    }
+}
+
+static void emit_function_prototypes_free_functions(FILE *out, const AstList *decls) {
+    for (int i = 0; i < decls->count; i++) {
+        const AstNode *n = decls->items[i];
+        if (n->kind == AST_NAMESPACE_DECL) {
+            emit_function_prototypes_free_functions(out, &n->list);
+        } else if (n->kind == AST_FUNC_DEF && n->b == NULL) {
+            emit_function_prototype(out, n);
+        }
+    }
+}
+
+static void emit_function_definitions_classes(FILE *out, const AstList *decls) {
+    for (int i = 0; i < decls->count; i++) {
+        const AstNode *n = decls->items[i];
+        if (n->kind == AST_CLASS_DECL) {
+            ClassLayout *layout = (ClassLayout *)n->sema_info;
+            if (layout != NULL) {
+                for (int j = 0; j < layout->methods.count; j++) {
+                    AstNode *m = layout->methods.items[j];
+                    if (m->kind == AST_FUNC_DEF) {
+                        emit_function_definition(out, m);
+                        fprintf(out, "\n");
+                    }
+                }
+            }
+        } else if (n->kind == AST_NAMESPACE_DECL) {
+            emit_function_definitions_classes(out, &n->list);
+        }
+    }
+}
+
+static void emit_function_definitions_free_functions(FILE *out, const AstList *decls) {
+    for (int i = 0; i < decls->count; i++) {
+        const AstNode *n = decls->items[i];
+        if (n->kind == AST_NAMESPACE_DECL) {
+            emit_function_definitions_free_functions(out, &n->list);
+        } else if (n->kind == AST_FUNC_DEF && n->b == NULL) {
+            emit_function_definition(out, n);
+            fprintf(out, "\n");
+        }
+    }
+}
+
 void codegen_run(const AstNode *program, FILE *out) {
     fprintf(out, "/* Auto-generated Vircon32 C -- do not edit by hand. */\n\n");
     emit_forward_declarations(out, &program->list);
@@ -249,4 +665,9 @@ void codegen_run(const AstNode *program, FILE *out) {
     emit_typedefs(out, &program->list);
     fprintf(out, "\n");
     emit_classes(out, &program->list);
+    emit_function_prototypes_classes(out, &program->list);
+    emit_function_prototypes_free_functions(out, &program->list);
+    fprintf(out, "\n");
+    emit_function_definitions_classes(out, &program->list);
+    emit_function_definitions_free_functions(out, &program->list);
 }

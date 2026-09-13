@@ -894,6 +894,55 @@ for every test file so far -- two classes holding pointers to each
 other, or simply one preceding another it points to, no longer depends
 on luck.
 
+**Verified against the full 20-sample suite, zero regressions.**
+Forward declarations appear correctly ordered (before typedefs and
+struct bodies) in every sample that reaches codegen; every sample that
+should skip codegen (a parse or semantic error) correctly shows no
+generated-C section at all. `sample12` (a 3-level hierarchy) confirmed
+vtable-struct accumulation works correctly across more than one level,
+not just two; `sample14` confirmed the canonical-field-naming rule holds
+even for the simplest possible override case. No new bugs found in this
+round.
+
+## Method/function body emission
+
+`codegen.c` now emits actual C statement/expression text for every
+method and free function that has a body -- `print_stmt`/`print_expr`
+(every fully-lowered statement and expression kind, since lowering has
+already reduced the AST to something C-shaped) plus a shared
+`emit_function_header` for prototypes and definitions alike. Full
+reasoning, including two real risks found by tracing through by hand
+rather than assumed away, lives in `codegen.h`'s own doc comment (kept
+there rather than duplicated here, since that's where anyone touching
+this code will actually look first) -- summarized:
+
+- **Parenthesization**: every binary/assignment/prefix-unary expression
+  gets unconditional parens, rather than this project reconstructing
+  C's precedence table and risking getting one operator's binding wrong.
+  Noisier output, zero precedence bugs -- the right trade for a first
+  pass.
+- **Prototype-only methods** (declared, never defined) are deliberately
+  not emitted at all -- there's no body, and this-injection never
+  touches them, so they'd have no receiver parameter to work with
+  anyway. If one is ever actually called, the generated C fails to
+  *compile*, not merely to link.
+- **A real, unresolved risk**: a virtual call's `this` argument is
+  passed exactly as this-injection typed it (the calling class's own
+  receiver type), with no cast, even when the vtable field being called
+  through was declared using an ancestor's receiver type -- which it
+  always is, for an inherited-but-overridden slot. Concretely,
+  `Circle::describeTwice` (`tests/sample14.cpp`) passes a `Circle *`
+  where the vtable field's declared type is `Shape *`, no cast inserted
+  anywhere. Given how strict Vircon32 has already shown itself to be,
+  this needs a real compile to confirm whether it's tolerated or not --
+  not fixed here, deliberately, rather than guess at both whether it's a
+  problem and what the right cast syntax is.
+- **A separate, adjacent gap**: this project has no special handling for
+  a user-defined `main` at all -- it gets mangled like anything else
+  (`main__void`), so generated C has no actual `main` entry point, and
+  nothing enforces Vircon32's `void main()` requirement on the C++
+  source either. Needs an actual design decision, not a quick fix.
+
 ## What's deliberately not here yet
 
 - **Inheritance-aware name lookup at parse/lex time.** `Player : public
