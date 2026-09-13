@@ -57,12 +57,43 @@
  *   whole point of a vtable: the same field, looked up the same way,
  *   regardless of the object's actual runtime type.
  *
- * NOT done yet (later lowering phases, in order): actually emitting a
- * `struct` definition or a method's new signature/body as C text (all
- * three phases above only produce data structures / a mutated AST, not
- * generated syntax); operator-overload-to-function-call rewriting;
- * reference-to-pointer rewriting; and new/delete-to-runtime-call
- * rewriting.
+ *   Phase 4: operator-overload-to-function-call rewriting. Resolves
+ *   natural operator syntax (`a + b`, `a == b`, `v[i]`) against a class's
+ *   declared `operatorX` overloads (member first, respecting name-
+ *   hiding; a free function as a fallback) -- something sema_run() never
+ *   did (it only ever resolved explicit call syntax). On a match, builds
+ *   the equivalent AST_CALL and hands it straight to phase 3's own
+ *   finalize_call, reusing all of its dispatch logic. On no match, the
+ *   node is left as a plain built-in operation. KNOWN GAP: unlike a
+ *   regular call, an operator-overload mismatch here isn't diagnosed
+ *   (no "no matching operator" error) and isn't access-control checked
+ *   -- this resolution happens at lowering time, after sema_run() has
+ *   already finished doing both of those things for ordinary calls.
+ *
+ *   Phase 5: reference-to-pointer rewriting. Every AST_REFERENCE_TYPE in
+ *   a parameter or local variable's declared type becomes
+ *   AST_POINTER_TYPE, and every explicit `.` access through a bare
+ *   identifier naming one of those gets rewritten to `->` (a plain
+ *   by-value local's `.` access is untouched). Scope limitation: only
+ *   tracks reference-ness for a bare identifier, not through a longer
+ *   member-access chain.
+ *
+ *   Phase 6: new/delete-to-runtime-call rewriting -- DELIBERATELY A
+ *   PLACEHOLDER. `new T` becomes a call to a per-type stub allocator
+ *   (`v32_new_T`); `delete expr` becomes a call to a single generic stub
+ *   deallocator (`v32_delete`). Neither invokes a constructor or
+ *   computes a real size -- this project has no `sizeof` AST
+ *   representation, and `new`'s grammar (`unary_expr: NEW type_spec` in
+ *   parser.y) has never supported constructor arguments at all
+ *   (`new Foo(1, 2)` isn't parseable). This phase exists so the AST has
+ *   SOME concrete, C-shaped call here rather than an unlowerable
+ *   AST_NEW/AST_DELETE surviving into codegen; the real runtime library
+ *   and the grammar fix are both tracked as future work.
+ *
+ * NOT done yet: actually emitting any of the above as C text. Every
+ * phase so far only produces a data structure or a mutated AST, never
+ * generated syntax -- that's the Vircon32 C code generator's job, still
+ * ahead.
  *
  * PRECONDITION: sema_run() must have already completed successfully
  * (zero errors) before lower_run() is called -- these phases read each
@@ -122,10 +153,13 @@ typedef struct StructLayout {
 /* Runs all lowering phases implemented so far, in order, over every
  * class in the program (recursing into namespaces): phase 1 (struct
  * field layout, attached to each class's `lower_info`), phase 2
- * (this-injection), then phase 3 (call finalization/vtable dispatch) --
- * phases 2 and 3 both mutate method bodies/parameter lists in place.
- * Always succeeds (0) -- there's no new validation happening here, just
- * transformation of already-sema-validated data; a nonzero return is
+ * (this-injection), phase 3 (call finalization/vtable dispatch, with
+ * phase 4's operator-overload rewriting living inside that same walk),
+ * phase 5 (reference-to-pointer), then phase 6 (new/delete placeholder
+ * calls) -- every phase from 2 onward mutates method bodies/parameter
+ * lists in place. Always succeeds (0) -- there's no new validation
+ * happening here, just transformation of already-sema-validated data;
+ * a nonzero return is
  * reserved for a later phase that might have something to report. */
 int lower_run(AstNode *program);
 
@@ -133,7 +167,7 @@ int lower_run(AstNode *program);
  * kind, declared type rendered in ordinary C++-like syntax rather than
  * sema.c's mangling-safe form, and, for an inherited field, which
  * ancestor actually declared it), followed by every method's now-
- * fully-lowered body (phases 2 and 3's combined output, reusing
+ * fully-lowered body (phases 2 through 6's combined output, reusing
  * ast_dump() -- these are just ordinary AstNode trees, now mutated, so
  * nothing about displaying them needs to be lowering-specific). Same
  * role sema_dump() plays for semantic analysis. */

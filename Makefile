@@ -2,6 +2,7 @@ INC_DIR = inc
 SRC_DIR = src
 OBJ_DIR = obj
 BIN_DIR = bin
+OUT_DIR = out
 
 CC      = gcc
 CFLAGS  = -Wall -Wextra -g -I$(INC_DIR)
@@ -14,6 +15,26 @@ all: $(BIN_DIR)/v32c++
 
 $(BIN_DIR):
 	mkdir -p $(BIN_DIR)
+
+$(OBJ_DIR):
+	mkdir -p $(OBJ_DIR)
+
+$(OUT_DIR):
+	mkdir -p $(OUT_DIR)
+# These three rules only ever fire when something actually lists the
+# directory as a prerequisite (an order-only one, via `| $(DIR)`, is all
+# that's needed -- make doesn't care about the directory's own mtime,
+# just that it exists before the recipe runs). $(OBJ_DIR) was already
+# wired in everywhere it's needed (every object-compile rule below uses
+# `| $(OBJ_DIR)`). $(BIN_DIR) and $(OUT_DIR) weren't -- the v32c++ link
+# rule never declared `| $(BIN_DIR)`, and `test` never declared
+# `| $(OUT_DIR)`, so `mkdir -p` for either one only ever ran if the
+# directory happened to already exist from some OTHER rule needing it,
+# or from a previous round's build never having been fully cleaned. That
+# masked the gap for bin/ (it's persisted across builds since early
+# rounds) but not for out/ (brand new, so it was the first to actually
+# expose it, immediately). Both are fixed now -- see the `| $(BIN_DIR)`
+# and `| $(OUT_DIR)` prerequisites below.
 
 # Bison: -d also emits parser.tab.h (needed by lexer.l and main.c).
 # GLR output still defines yyparse()/yylval/yylloc etc. the same as a
@@ -38,27 +59,30 @@ $(SRC_DIR)/lexer.o: $(SRC_DIR)/lexer.c | $(OBJ_DIR)
 
 $(BIN_DIR)/v32c++: $(OBJ_DIR)/parser.o $(OBJ_DIR)/lexer.o \
                           $(OBJ_DIR)/ast.o $(OBJ_DIR)/symtab.o $(OBJ_DIR)/sema.o \
-                          $(OBJ_DIR)/lower.o $(OBJ_DIR)/main.o
+                          $(OBJ_DIR)/lower.o $(OBJ_DIR)/main.o | $(BIN_DIR)
 	$(CC) $(CFLAGS) -o $@ $^
 # If linking fails looking for yywrap/yy_flex_* symbols on your system,
 # add -lfl to this link line (some flex installs need it even with
 # %option noyywrap; most don't).
 
-test: all
-	./$(BIN_DIR)/v32c++ tests/sample1.cpp
-	./$(BIN_DIR)/v32c++ tests/sample2.cpp
-	./$(BIN_DIR)/v32c++ tests/sample3.cpp
-	-./$(BIN_DIR)/v32c++ tests/sample4.cpp
-	-./$(BIN_DIR)/v32c++ tests/sample5.cpp
-	./$(BIN_DIR)/v32c++ tests/sample6.cpp
-	./$(BIN_DIR)/v32c++ tests/sample7.cpp
-	./$(BIN_DIR)/v32c++ tests/sample8.cpp
-	./$(BIN_DIR)/v32c++ tests/sample9.cpp
-	-./$(BIN_DIR)/v32c++ tests/sample10.cpp
-	-./$(BIN_DIR)/v32c++ tests/sample11.cpp
-	./$(BIN_DIR)/v32c++ tests/sample12.cpp
-	./$(BIN_DIR)/v32c++ tests/sample13.cpp
-	./$(BIN_DIR)/v32c++ tests/sample14.cpp
+test: all | $(OUT_DIR)
+	./$(BIN_DIR)/v32c++  tests/sample1.cpp  2>&1 | tee out/sample1.txt
+	./$(BIN_DIR)/v32c++  tests/sample2.cpp  2>&1 | tee out/sample2.txt
+	./$(BIN_DIR)/v32c++  tests/sample3.cpp  2>&1 | tee out/sample3.txt
+	-./$(BIN_DIR)/v32c++ tests/sample4.cpp  2>&1 | tee out/sample4.txt
+	-./$(BIN_DIR)/v32c++ tests/sample5.cpp  2>&1 | tee out/sample5.txt
+	./$(BIN_DIR)/v32c++  tests/sample6.cpp  2>&1 | tee out/sample6.txt
+	./$(BIN_DIR)/v32c++  tests/sample7.cpp  2>&1 | tee out/sample7.txt
+	./$(BIN_DIR)/v32c++  tests/sample8.cpp  2>&1 | tee out/sample8.txt
+	./$(BIN_DIR)/v32c++  tests/sample9.cpp  2>&1 | tee out/sample9.txt
+	-./$(BIN_DIR)/v32c++ tests/sample10.cpp 2>&1 | tee out/sample10.txt
+	-./$(BIN_DIR)/v32c++ tests/sample11.cpp 2>&1 | tee out/sample11.txt
+	./$(BIN_DIR)/v32c++  tests/sample12.cpp 2>&1 | tee out/sample12.txt
+	./$(BIN_DIR)/v32c++  tests/sample13.cpp 2>&1 | tee out/sample13.txt
+	./$(BIN_DIR)/v32c++  tests/sample14.cpp 2>&1 | tee out/sample14.txt
+	./$(BIN_DIR)/v32c++  tests/sample15.cpp 2>&1 | tee out/sample15.txt
+	./$(BIN_DIR)/v32c++  tests/sample16.cpp 2>&1 | tee out/sample16.txt
+	./$(BIN_DIR)/v32c++  tests/sample17.cpp 2>&1 | tee out/sample17.txt
 # sample4/sample5 are deliberately-invalid inputs (see their own header
 # comments) -- they're SUPPOSED to return nonzero. The leading '-' tells
 # make to ignore their exit code and keep going, rather than aborting the
@@ -69,7 +93,7 @@ test: all
 # report it, not paper over it the same way.
 
 clean:
-	rm -f $(BIN_DIR)/* $(OBJ_DIR)/* $(SRC_DIR)/parser.output
+	rm -f $(BIN_DIR)/* $(OBJ_DIR)/* $(SRC_DIR)/parser.output $(OUT_DIR)/*
 	rm -f $(SRC_DIR)/parser.c $(SRC_DIR)/lexer.c $(INC_DIR)/parser.h
 # Removing the bison/flex-generated files here (not just objects/binary) is
 # deliberate: regenerating them relies on make's mtime comparison against

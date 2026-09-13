@@ -209,7 +209,7 @@ static void rewrite_stmt(AstNode **slot, AstNode *class_decl, LocalVarType **loc
             break;
         case AST_VAR_DECL: {
             rewrite_expr(&n->a, class_decl, *locals); /* initializer, if any */
-            LocalVarType *lv = malloc(sizeof(LocalVarType));
+            LocalVarType *lv = calloc(1, sizeof(LocalVarType)); /* calloc: zero-inits was_reference too */
             lv->name = n->str1;
             lv->type = n->type;
             lv->next = *locals;
@@ -261,7 +261,7 @@ static void this_inject_method(AstNode *method, AstNode *class_decl) {
     LocalVarType *locals = NULL;
     for (int i = 1; i < method->list.count; i++) {
         AstNode *param = method->list.items[i];
-        LocalVarType *lv = malloc(sizeof(LocalVarType));
+        LocalVarType *lv = calloc(1, sizeof(LocalVarType)); /* calloc: zero-inits was_reference too */
         lv->name = param->str1;
         lv->type = param->type;
         lv->next = locals;
@@ -399,6 +399,167 @@ static void finalize_call(AstNode *call, AstNode *class_decl, LocalVarType *loca
      * left untouched. */
 }
 
+/* ---- phase 4: operator-overload-to-function-call rewriting -------------
+ *
+ * Until now, operator-overload SUPPORT in this project has only ever
+ * covered DECLARING an operator (`Vector2D operator+(Vector2D other)`,
+ * parsed and mangled like any other method since the operator-overload-
+ * syntax round). Nothing has ever resolved USING one -- an ordinary
+ * `a + b` in source is just an AST_BINOP node, with no indication
+ * anywhere that it might mean a call to `a`'s `operator+`. This phase is
+ * the first place that gap gets closed: it looks for a matching operator
+ * overload (member first, respecting name-hiding via
+ * find_member_in_hierarchy; a free function as a fallback, matching how
+ * real C++ allows binary operators to be declared either way) and, if
+ * found, rewrites the BinOp/Assign/Unop/Subscript node into the
+ * equivalent AST_CALL -- then hands it straight to finalize_call, reusing
+ * every bit of dispatch logic (virtual/non-virtual/free) phase 3 already
+ * built, rather than duplicating any of it.
+ *
+ * KNOWN GAP, asymmetric with regular calls: a normal call gets resolved
+ * (and, on failure, diagnosed) during sema_run(), with a real "no
+ * matching overload" error and full access-control enforcement. Operator
+ * USE resolution happens here instead, at LOWERING time, after sema has
+ * already finished. That means: no error if a class-typed operand's
+ * types/arity genuinely don't match any declared operator -- the
+ * expression is just silently left as a plain built-in BinOp/Assign/
+ * Unop/Subscript, which downstream codegen would then treat as a native
+ * C operation on operands it doesn't actually support; and no access-
+ * control check for a private/protected operator invoked from somewhere
+ * that shouldn't be allowed to. Both real, and both flagged rather than
+ * silently present -- moving this resolution earlier, into sema_run()
+ * itself, is future work.
+ */
+
+static const char *binop_operator_name(const char *op) {
+    if (strcmp(op, "+") == 0) return "operator+";
+    if (strcmp(op, "-") == 0) return "operator-";
+    if (strcmp(op, "*") == 0) return "operator*";
+    if (strcmp(op, "/") == 0) return "operator/";
+    if (strcmp(op, "==") == 0) return "operator==";
+    if (strcmp(op, "!=") == 0) return "operator!=";
+    if (strcmp(op, "<") == 0) return "operator<";
+    if (strcmp(op, ">") == 0) return "operator>";
+    if (strcmp(op, "<=") == 0) return "operator<=";
+    if (strcmp(op, ">=") == 0) return "operator>=";
+    return NULL; /* &&/|| aren't in this project's supported operator_symbol
+                  * list at all (see parser.y), so they're never overloadable
+                  * here -- always a plain built-in BinOp. */
+}
+
+static const char *assign_operator_name(const char *op) {
+    if (strcmp(op, "=") == 0) return "operator=";
+    if (strcmp(op, "+=") == 0) return "operator+=";
+    if (strcmp(op, "-=") == 0) return "operator-=";
+    if (strcmp(op, "*=") == 0) return "operator*=";
+    if (strcmp(op, "/=") == 0) return "operator/=";
+    return NULL;
+}
+
+static const char *unop_operator_name(const char *op) {
+    /* Only "neg" (unary minus) and "!" correspond to operators this
+     * project's grammar actually supports overloading (see
+     * operator_symbol in parser.y) -- "~", "addr", "deref", and the
+     * pre/post ++/-- forms have no overload syntax to have matched, so
+     * they're never rewritten here, always plain built-in AST_UNOP. */
+    if (strcmp(op, "neg") == 0) return "operator-";
+    if (strcmp(op, "!") == 0) return "operator!";
+    return NULL;
+}
+
+/* Looks for a matching operator overload for `op_name` given
+ * `lhs_or_operand` (and, for a binary operator, `rhs_or_null`) and, if
+ * found, replaces *slot (currently a BinOp/Assign/Unop/Subscript node)
+ * with the equivalent AST_CALL, immediately finalized via finalize_call.
+ * If nothing matches, *slot is left completely untouched. */
+/* A method's list.count includes the injected "this" parameter ONLY if
+ * this-injection has already run on it -- which only ever happens for
+ * AST_FUNC_DEF (a body to rewrite); this_inject_method returns
+ * immediately for anything that isn't (see phase 2), so a prototype-only
+ * AST_FUNC_DECL's list.count still reflects exactly what was written,
+ * no "this" counted in it. Comparing a raw list.count against an
+ * expected EXPLICIT-parameter count is therefore off by one for any
+ * member operator that has a body and correct (by coincidence, not
+ * design) for one that doesn't -- exactly the shape of a real bug this
+ * project shipped once already (tests/sample15.cpp: operator+ and
+ * operator== both have out-of-line bodies and were silently skipped;
+ * operator[] has no body in that test and happened to work). This
+ * computes the count that's ACTUALLY comparable against a written
+ * arity, regardless of which case applies. */
+static int effective_param_count(const AstNode *method) {
+    if (method->kind == AST_FUNC_DEF) {
+        return method->list.count - 1; /* subtract the injected "this" */
+    }
+    return method->list.count;
+}
+
+static void resolve_operator_use(AstNode **slot, const char *op_name, AstNode *lhs_or_operand,
+                                  AstNode *rhs_or_null, AstNode *class_decl, LocalVarType *locals) {
+    if (op_name == NULL) return;
+
+    AstNode *obj_class = resolve_expr_class(lhs_or_operand, class_decl, locals);
+    AstNode *target = NULL;
+    int is_member = 0;
+
+    if (obj_class != NULL) {
+        AstNode *owner = NULL;
+        AstNode *member = find_member_in_hierarchy(obj_class, op_name, &owner);
+        int expected_params = (rhs_or_null != NULL) ? 1 : 0; /* member operators take
+            the OTHER operand explicitly; `this` supplies the left-hand one implicitly */
+        if (member != NULL && effective_param_count(member) == expected_params) {
+            target = member;
+            is_member = 1;
+        }
+    }
+
+    if (target == NULL) {
+        AstNode **candidates = NULL;
+        int count = 0, cap = 0;
+        collect_free_function_candidates(op_name, &candidates, &count, &cap);
+        int expected_params = (rhs_or_null != NULL) ? 2 : 1; /* a free operator takes
+            BOTH operands explicitly -- there's no implicit `this` at all */
+        for (int i = 0; i < count; i++) {
+            if (candidates[i]->list.count == expected_params) {
+                target = candidates[i];
+                break;
+            }
+        }
+        free(candidates);
+    }
+
+    if (target == NULL) {
+        return; /* no matching operator declared anywhere applicable --
+                    leave this as a plain built-in operation */
+    }
+
+    AstNode *call = ast_new(AST_CALL, (*slot)->line);
+    if (is_member) {
+        AstNode *mem = ast_new(AST_MEMBER, (*slot)->line);
+        mem->str1 = strdup("->"); /* transient -- finalize_call replaces
+            this whole callee wrapper with the real dispatch form below,
+            so the exact string here never survives into the final AST */
+        mem->str2 = strdup(op_name);
+        mem->a = lhs_or_operand;
+        call->a = mem;
+        if (rhs_or_null != NULL) {
+            ast_list_append(&call->list, rhs_or_null);
+        }
+    } else {
+        call->a = ast_ident(op_name, (*slot)->line);
+        ast_list_append(&call->list, lhs_or_operand);
+        if (rhs_or_null != NULL) {
+            ast_list_append(&call->list, rhs_or_null);
+        }
+    }
+
+    CallResolution *cr = calloc(1, sizeof(CallResolution));
+    cr->resolved_target = target;
+    call->sema_info = cr;
+
+    *slot = call;
+    finalize_call(call, class_decl, locals);
+}
+
 static void finalize_calls_expr(AstNode **slot, AstNode *class_decl, LocalVarType *locals) {
     AstNode *n = *slot;
     if (n == NULL) return;
@@ -416,12 +577,24 @@ static void finalize_calls_expr(AstNode **slot, AstNode *class_decl, LocalVarTyp
             finalize_call(n, class_decl, locals);
             break;
         case AST_BINOP:
+            finalize_calls_expr(&n->a, class_decl, locals);
+            finalize_calls_expr(&n->b, class_decl, locals);
+            resolve_operator_use(slot, binop_operator_name(n->str1), n->a, n->b, class_decl, locals);
+            break;
         case AST_ASSIGN:
+            finalize_calls_expr(&n->a, class_decl, locals);
+            finalize_calls_expr(&n->b, class_decl, locals);
+            resolve_operator_use(slot, assign_operator_name(n->str1), n->a, n->b, class_decl, locals);
+            break;
         case AST_SUBSCRIPT:
             finalize_calls_expr(&n->a, class_decl, locals);
             finalize_calls_expr(&n->b, class_decl, locals);
+            resolve_operator_use(slot, "operator[]", n->a, n->b, class_decl, locals);
             break;
         case AST_UNOP:
+            finalize_calls_expr(&n->a, class_decl, locals);
+            resolve_operator_use(slot, unop_operator_name(n->str1), n->a, NULL, class_decl, locals);
+            break;
         case AST_DELETE:
             finalize_calls_expr(&n->a, class_decl, locals);
             break;
@@ -460,7 +633,7 @@ static void finalize_calls_stmt(AstNode **slot, AstNode *class_decl, LocalVarTyp
             break;
         case AST_VAR_DECL: {
             finalize_calls_expr(&n->a, class_decl, *locals);
-            LocalVarType *lv = malloc(sizeof(LocalVarType));
+            LocalVarType *lv = calloc(1, sizeof(LocalVarType)); /* calloc: zero-inits was_reference too */
             lv->name = n->str1;
             lv->type = n->type;
             lv->next = *locals;
@@ -481,7 +654,7 @@ static LocalVarType *seed_locals_from_params(AstNode *func) {
     LocalVarType *locals = NULL;
     for (int i = 0; i < func->list.count; i++) {
         AstNode *param = func->list.items[i];
-        LocalVarType *lv = malloc(sizeof(LocalVarType));
+        LocalVarType *lv = calloc(1, sizeof(LocalVarType)); /* calloc: zero-inits was_reference too */
         lv->name = param->str1;
         lv->type = param->type;
         lv->next = locals;
@@ -528,11 +701,314 @@ static void finalize_calls_free_functions(AstList *decls) {
     }
 }
 
+/* ---- phase 5: reference-to-pointer rewriting ----------------------------
+ *
+ * C has no native reference type, so every parameter/local variable
+ * declared with an AST_REFERENCE_TYPE gets it relabeled to
+ * AST_POINTER_TYPE. But C++ reference syntax uses `.` for member access
+ * (a reference "acts like" the object it refers to), while the now-
+ * pointer C representation needs `->` -- so every EXPLICIT `.` access
+ * (str1==".") through a bare identifier naming a reference-turned-
+ * pointer local/param gets rewritten to `->` too. Compiler-GENERATED
+ * member accesses (this-injection's, phase 3's vtable-dispatch chains)
+ * are already always "->" by construction and don't need touching here.
+ *
+ * SCOPE LIMITATION: only tracks reference-ness for bare-identifier
+ * locals/parameters, not through a chain (`a.b.c` -- only `a` is checked
+ * against the reference-tracking map; whether `.b` or `.c` should ALSO
+ * be `->` isn't tracked, since that would require knowing whether `b`
+ * itself is a reference-typed MEMBER, a rarer C++ feature this project
+ * doesn't otherwise support). Covers the common case (a reference
+ * parameter's own members accessed directly) correctly; longer chains
+ * through a reference aren't specifically handled.
+ *
+ * DELIBERATELY A SEPARATE PASS/SEEDING FUNCTION from phase 3's
+ * seed_locals_from_params, not a shared one, for a real reason: if
+ * reference-detection and type-mutation happened during phase 3's
+ * (earlier) seeding, phase 5 re-seeding afterward would see the ALREADY-
+ * mutated AST_POINTER_TYPE and incorrectly conclude a parameter was
+ * NEVER a reference at all. Running this phase's own, separate
+ * detection+mutation together, in one place, after every earlier phase
+ * has run and none of them have touched AST_REFERENCE_TYPE at all,
+ * avoids that staleness trap entirely.
+ */
+
+static LocalVarType *seed_locals_with_reference_tracking(AstNode *func) {
+    LocalVarType *locals = NULL;
+    for (int i = 0; i < func->list.count; i++) {
+        AstNode *param = func->list.items[i];
+        LocalVarType *lv = calloc(1, sizeof(LocalVarType));
+        lv->name = param->str1;
+        lv->was_reference = (param->type != NULL && param->type->kind == AST_REFERENCE_TYPE);
+        if (lv->was_reference) {
+            param->type->kind = AST_POINTER_TYPE; /* same shape (a=referent), just relabeled */
+        }
+        lv->type = param->type;
+        lv->next = locals;
+        locals = lv;
+    }
+    return locals;
+}
+
+static void fix_reference_access_expr(AstNode **slot, LocalVarType *locals) {
+    AstNode *n = *slot;
+    if (n == NULL) return;
+    switch (n->kind) {
+        case AST_MEMBER: {
+            fix_reference_access_expr(&n->a, locals);
+            if (n->str1 != NULL && strcmp(n->str1, ".") == 0 && n->a->kind == AST_IDENT) {
+                LocalVarType *lv = find_local(locals, n->a->str1);
+                if (lv != NULL && lv->was_reference) {
+                    free(n->str1);
+                    n->str1 = strdup("->");
+                }
+            }
+            break;
+        }
+        case AST_CALL:
+            fix_reference_access_expr(&n->a, locals);
+            for (int i = 0; i < n->list.count; i++) {
+                fix_reference_access_expr(&n->list.items[i], locals);
+            }
+            break;
+        case AST_BINOP:
+        case AST_ASSIGN:
+        case AST_SUBSCRIPT:
+            fix_reference_access_expr(&n->a, locals);
+            fix_reference_access_expr(&n->b, locals);
+            break;
+        case AST_UNOP:
+        case AST_DELETE:
+            fix_reference_access_expr(&n->a, locals);
+            break;
+        default:
+            break;
+    }
+}
+
+static void fix_reference_access_stmt(AstNode **slot, LocalVarType **locals) {
+    AstNode *n = *slot;
+    if (n == NULL) return;
+    switch (n->kind) {
+        case AST_BLOCK:
+            for (int i = 0; i < n->list.count; i++) {
+                fix_reference_access_stmt(&n->list.items[i], locals);
+            }
+            break;
+        case AST_IF:
+            fix_reference_access_expr(&n->a, *locals);
+            fix_reference_access_stmt(&n->b, locals);
+            fix_reference_access_stmt(&n->c, locals);
+            break;
+        case AST_WHILE:
+            fix_reference_access_expr(&n->a, *locals);
+            fix_reference_access_stmt(&n->b, locals);
+            break;
+        case AST_FOR:
+            fix_reference_access_stmt(&n->a, locals);
+            fix_reference_access_expr(&n->b, *locals);
+            fix_reference_access_expr(&n->c, *locals);
+            fix_reference_access_stmt(&n->d, locals);
+            break;
+        case AST_RETURN:
+        case AST_EXPR_STMT:
+            fix_reference_access_expr(&n->a, *locals);
+            break;
+        case AST_VAR_DECL: {
+            fix_reference_access_expr(&n->a, *locals); /* initializer, if any */
+            LocalVarType *lv = calloc(1, sizeof(LocalVarType));
+            lv->name = n->str1;
+            lv->was_reference = (n->type != NULL && n->type->kind == AST_REFERENCE_TYPE);
+            if (lv->was_reference) {
+                n->type->kind = AST_POINTER_TYPE;
+            }
+            lv->type = n->type;
+            lv->next = *locals;
+            *locals = lv;
+            break;
+        }
+        default:
+            break;
+    }
+}
+
+static void fix_references_in_method(AstNode *method) {
+    if (method->kind != AST_FUNC_DEF) return;
+    LocalVarType *locals = seed_locals_with_reference_tracking(method);
+    fix_reference_access_stmt(&method->a, &locals);
+}
+
+static void fix_references_classes(AstList *decls) {
+    for (int i = 0; i < decls->count; i++) {
+        AstNode *n = decls->items[i];
+        if (n->kind == AST_CLASS_DECL) {
+            ClassLayout *layout = (ClassLayout *)n->sema_info;
+            if (layout != NULL) {
+                for (int j = 0; j < layout->methods.count; j++) {
+                    fix_references_in_method(layout->methods.items[j]);
+                }
+            }
+        } else if (n->kind == AST_NAMESPACE_DECL) {
+            fix_references_classes(&n->list);
+        }
+    }
+}
+
+static void fix_references_free_functions(AstList *decls) {
+    for (int i = 0; i < decls->count; i++) {
+        AstNode *n = decls->items[i];
+        if (n->kind == AST_NAMESPACE_DECL) {
+            fix_references_free_functions(&n->list);
+        } else if (n->kind == AST_FUNC_DEF && n->b == NULL) {
+            LocalVarType *locals = seed_locals_with_reference_tracking(n);
+            fix_reference_access_stmt(&n->a, &locals);
+        }
+    }
+}
+
+/* ---- phase 6: new/delete-to-runtime-call rewriting ----------------------
+ *
+ * Rewrites `new T` into a call to a PER-TYPE placeholder allocator
+ * (`v32_new_TypeName`), and `delete expr` into a call to a SINGLE,
+ * generic placeholder deallocator (`v32_delete`).
+ *
+ * DELIBERATELY A PLACEHOLDER, not a faithful lowering. A real `new T`
+ * needs to (a) allocate exactly sizeof(struct T) bytes and (b) invoke
+ * T's constructor with whatever arguments were written. Neither is
+ * possible here yet: (a) needs a `sizeof` AST representation this
+ * project doesn't have; (b) needs constructor ARGUMENTS to be parseable
+ * in a `new` expression at all, which they currently aren't --
+ * `unary_expr: NEW type_spec` in parser.y only ever captured a bare
+ * type name, never `(args)`. That's a genuine grammar gap that predates
+ * this phase and blocks a faithful lowering; this phase doesn't work
+ * around it, it just makes sure the AST has SOME concrete, C-shaped call
+ * expression here rather than an un-lowerable AST_NEW/AST_DELETE node
+ * surviving into codegen. The actual runtime library behind
+ * `v32_new_*`/`v32_delete`, and fixing the grammar to support
+ * constructor arguments, are both tracked as future work, not silently
+ * assumed solved.
+ */
+
+static void new_delete_rewrite_expr(AstNode **slot) {
+    AstNode *n = *slot;
+    if (n == NULL) return;
+    switch (n->kind) {
+        case AST_NEW: {
+            AstNode *cls = type_to_class(n->type);
+            const char *type_name = (cls != NULL) ? cls->str1 : "unknown";
+            size_t len = strlen("v32_new_") + strlen(type_name) + 1;
+            char *fn_name = malloc(len);
+            snprintf(fn_name, len, "v32_new_%s", type_name);
+            AstNode *call = ast_new(AST_CALL, n->line);
+            call->a = ast_ident(fn_name, n->line);
+            free(fn_name);
+            *slot = call;
+            break;
+        }
+        case AST_DELETE: {
+            new_delete_rewrite_expr(&n->a);
+            AstNode *call = ast_new(AST_CALL, n->line);
+            call->a = ast_ident("v32_delete", n->line);
+            ast_list_append(&call->list, n->a);
+            *slot = call;
+            break;
+        }
+        case AST_MEMBER:
+            new_delete_rewrite_expr(&n->a);
+            break;
+        case AST_CALL:
+            new_delete_rewrite_expr(&n->a);
+            for (int i = 0; i < n->list.count; i++) {
+                new_delete_rewrite_expr(&n->list.items[i]);
+            }
+            break;
+        case AST_BINOP:
+        case AST_ASSIGN:
+        case AST_SUBSCRIPT:
+            new_delete_rewrite_expr(&n->a);
+            new_delete_rewrite_expr(&n->b);
+            break;
+        case AST_UNOP:
+            new_delete_rewrite_expr(&n->a);
+            break;
+        default:
+            break;
+    }
+}
+
+static void new_delete_rewrite_stmt(AstNode **slot) {
+    AstNode *n = *slot;
+    if (n == NULL) return;
+    switch (n->kind) {
+        case AST_BLOCK:
+            for (int i = 0; i < n->list.count; i++) {
+                new_delete_rewrite_stmt(&n->list.items[i]);
+            }
+            break;
+        case AST_IF:
+            new_delete_rewrite_expr(&n->a);
+            new_delete_rewrite_stmt(&n->b);
+            new_delete_rewrite_stmt(&n->c);
+            break;
+        case AST_WHILE:
+            new_delete_rewrite_expr(&n->a);
+            new_delete_rewrite_stmt(&n->b);
+            break;
+        case AST_FOR:
+            new_delete_rewrite_stmt(&n->a);
+            new_delete_rewrite_expr(&n->b);
+            new_delete_rewrite_expr(&n->c);
+            new_delete_rewrite_stmt(&n->d);
+            break;
+        case AST_RETURN:
+        case AST_EXPR_STMT:
+            new_delete_rewrite_expr(&n->a);
+            break;
+        case AST_VAR_DECL:
+            new_delete_rewrite_expr(&n->a); /* initializer, e.g. `Foo *f = new Foo;` */
+            break;
+        default:
+            break;
+    }
+}
+
+static void new_delete_rewrite_classes(AstList *decls) {
+    for (int i = 0; i < decls->count; i++) {
+        AstNode *n = decls->items[i];
+        if (n->kind == AST_CLASS_DECL) {
+            ClassLayout *layout = (ClassLayout *)n->sema_info;
+            if (layout != NULL) {
+                for (int j = 0; j < layout->methods.count; j++) {
+                    AstNode *m = layout->methods.items[j];
+                    if (m->kind == AST_FUNC_DEF) new_delete_rewrite_stmt(&m->a);
+                }
+            }
+        } else if (n->kind == AST_NAMESPACE_DECL) {
+            new_delete_rewrite_classes(&n->list);
+        }
+    }
+}
+
+static void new_delete_rewrite_free_functions(AstList *decls) {
+    for (int i = 0; i < decls->count; i++) {
+        AstNode *n = decls->items[i];
+        if (n->kind == AST_NAMESPACE_DECL) {
+            new_delete_rewrite_free_functions(&n->list);
+        } else if (n->kind == AST_FUNC_DEF && n->b == NULL) {
+            new_delete_rewrite_stmt(&n->a);
+        }
+    }
+}
+
 int lower_run(AstNode *program) {
     compute_struct_layouts(&program->list);
     this_inject_classes(&program->list);
-    finalize_calls_classes(&program->list);
+    finalize_calls_classes(&program->list);       /* phase 3 + phase 4 (operator rewriting lives inside this same walk) */
     finalize_calls_free_functions(&program->list);
+    fix_references_classes(&program->list);         /* phase 5 */
+    fix_references_free_functions(&program->list);
+    new_delete_rewrite_classes(&program->list);      /* phase 6 */
+    new_delete_rewrite_free_functions(&program->list);
     return 0;
 }
 
@@ -656,6 +1132,20 @@ static void dump_this_injected_methods(const AstList *decls, int indent) {
             dump_this_injected_methods(&n->list, indent + 1);
             indent_line(indent);
             printf("}\n");
+        } else if (n->kind == AST_FUNC_DEF && n->b == NULL) {
+            /* A genuine free function (n->b == NULL excludes an out-of-
+             * line method definition's own top-level duplicate -- same
+             * guard used everywhere else in this project for the same
+             * reason, e.g. sema.c's dump_decls/access_check_free_functions
+             * and this file's finalize_calls_free_functions/
+             * fix_references_free_functions/new_delete_rewrite_free_
+             * functions). THIS BRANCH WAS MISSING ENTIRELY until now --
+             * a file with only free functions (no classes at all) showed
+             * a completely empty "fully lowered method bodies" section,
+             * even though the actual lowering had run correctly; only
+             * the DISPLAY was broken. See docs/DESIGN_NOTES.md for the
+             * postmortem. */
+            ast_dump(n, indent);
         }
     }
 }
@@ -663,6 +1153,6 @@ static void dump_this_injected_methods(const AstList *decls, int indent) {
 void lower_dump(const AstNode *program) {
     printf("---- lowering summary (struct layouts) ----\n");
     dump_struct_layouts(&program->list, 0);
-    printf("---- lowering summary (fully lowered method bodies: this-injection + call finalization) ----\n");
+    printf("---- lowering summary (fully lowered method bodies: phases 2-6) ----\n");
     dump_this_injected_methods(&program->list, 0);
 }

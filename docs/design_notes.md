@@ -511,12 +511,106 @@ override's name instead) would have generated a vtable struct with a
 DIFFERENT field per class instead of one shared field — defeating the
 entire mechanism.
 
-**What's NOT done yet, in the order upcoming phases would tackle them:**
-actually emitting a `struct` definition, or a lowered method's new
-signature/body, as C text (all three phases so far only produce data
-structures / a mutated AST, never generated syntax); operator-overload-
-to-function-call rewriting; reference-to-pointer rewriting;
-`new`/`delete`-to-runtime-call rewriting.
+**A postmortem: a real bug in this exact mechanism, caught by real test
+output.** The first version of this phase shipped with virtual calls
+silently failing to lower at all — `this->area()` stayed exactly as
+this-injection left it, no vtable indirection, no prepended argument —
+while non-virtual calls (`describe()`) worked fine. The tell was in
+`tests/sample14.cpp`'s actual output: `Circle::describeTwice`'s call to
+the virtual `area()` still showed `Member str1=-> str2=area`
+(the ORIGINAL method name) instead of the expected two-level
+`vtable`/`Shape__area__void` chain, with no `this` prepended to the
+argument list either.
+
+Root cause: `resolve_expr_class` (exposed from `sema.c` specifically so
+this phase could reuse it) depends on `find_class`, which reads a class
+registry that `sema_run()` builds during `collect_declarations` — and,
+in the version that shipped, also FREES at its own completion, before
+`lower_run()` ever runs. So `type_to_class` → `find_class("Shape")`
+silently returned NULL (the registry was already torn down), which made
+`resolve_expr_class` return NULL, which made `finalize_call`'s own
+best-effort design correctly (by its own logic) bail out on "couldn't
+determine the slot" — except the underlying reason wasn't legitimate
+ambiguity, it was a dependency that had already been deallocated.
+Non-virtual calls never hit this path at all (that branch only reads an
+already-cached `FuncSemaInfo`, no registry needed), which is exactly why
+the bug was selective rather than a hard crash or a total failure — the
+kind of shape that's easy to miss without checking real output for the
+SPECIFIC case (virtual, from an overriding class) that actually exercises
+the broken path.
+
+The fix: `sema_run()` no longer frees the class/typedef/free-function
+registries at its own end — their useful lifetime now genuinely extends
+past `sema_run()` itself, since `lower_run()` depends on them too. A new
+`sema_cleanup()` is exposed instead, and `main.c` calls it once, after
+BOTH `sema_run()` and `lower_run()` have finished, making the extended
+lifetime an explicit part of the pipeline's contract rather than an
+implicit assumption that happened to break the moment a sema-internal
+helper got reused across the sema/lowering boundary. Worth remembering
+generally: exposing a `static` helper for reuse across a pass boundary
+(as this project has now done several times — `find_member_in_hierarchy`,
+`find_local`, `resolve_expr_class`) means auditing not just what the
+function COMPUTES, but what state it silently DEPENDS ON still being
+alive at the point it gets called from its new caller. The computation
+itself was correct the whole time; the bug was entirely about lifetime.
+
+## Lowering, phases 4–6: operators, references, new/delete
+
+Rather than three separate write-ups, these are grouped here since two of
+them turned out to share the same important caveat, and the third is
+explicitly a placeholder rather than a real feature.
+
+**Phase 4 (operator overloads) closed a real, previously-unnoticed gap**:
+sema.c has supported *declaring* an operator overload since the
+operator-overload-syntax round, but nothing anywhere resolved natural
+operator syntax (`a + b`) into a call to `operator+` — `sema_run()`'s
+overload resolution only ever looked at explicit call syntax. This phase
+is where that gets resolved for the first time, by construction: it
+builds the equivalent `AST_CALL` (member-operator form checked first,
+respecting name-hiding; free-function form as a fallback) and hands it
+straight to phase 3's `finalize_call`, reusing every bit of dispatch
+logic rather than re-implementing any of it. **The asymmetry worth
+remembering**: because this resolution happens at lowering time instead
+of during `sema_run()`, it doesn't get the same treatment a regular call
+does — no "no matching operator overload" diagnostic on a genuine
+mismatch (the expression is just silently left as a plain built-in
+operation instead), and no access-control check for a private/protected
+operator invoked somewhere it shouldn't be. Both real gaps, both
+documented rather than silently present; moving this resolution earlier,
+into `sema_run()` itself, would close them properly — future work.
+
+**Phase 5 (references) has a subtle correctness trap it deliberately
+avoids**: it needs its own, separate local-tracking seed function rather
+than reusing phase 3's, specifically because if reference detection and
+the `AST_REFERENCE_TYPE` → `AST_POINTER_TYPE` mutation happened during
+phase 3's (earlier) pass, phase 5 running afterward would see the
+already-mutated pointer type and incorrectly conclude a parameter was
+never a reference at all. Keeping this phase's detection and mutation
+together, in one place, after every earlier phase has left
+`AST_REFERENCE_TYPE` untouched, avoids that staleness trap. `tests/
+sample16.cpp` exercises the actual distinction that matters: a reference
+parameter's `.` access becomes `->`, a plain by-value parameter's `.`
+access stays `.`.
+
+**Phase 6 (new/delete) is explicitly a placeholder, not a lowering**:
+`new T` becomes a call to a per-type stub (`v32_new_T`); `delete expr`
+becomes a call to a generic stub (`v32_delete`). Neither invokes a
+constructor or computes a real allocation size. Two things block a
+faithful version, discovered while scoping this phase rather than
+assumed away: there's no `sizeof` AST representation anywhere in this
+project, and — more fundamentally — `parser.y`'s `NEW type_spec`
+production has *never* supported constructor arguments; `new Foo(1, 2)`
+isn't even parseable today. This phase exists so the AST has some
+concrete, C-shaped call here rather than an unlowerable `AST_NEW`/
+`AST_DELETE` surviving into codegen; a real runtime library and the
+grammar fix for constructor arguments are both tracked as future work,
+not silently assumed solved by this phase's existence.
+
+**What's NOT done yet**: actually emitting any of the above as C text —
+every phase so far, 1 through 6, only produces a data structure or a
+mutated AST, never generated syntax. That's the Vircon32 C code
+generator's job, still ahead, and now has a genuinely complete lowered
+AST to work from.
 
 ## What's deliberately not here yet
 
@@ -656,9 +750,20 @@ to-function-call rewriting; reference-to-pointer rewriting;
        than re-resolving names independently. `tests/sample14.cpp`
        specifically exercises vtable field-name stability across an
        overriding class — the trickiest part of this phase to get right.
-    4. Next: operator-overload-to-function-call rewriting,
-       reference-to-pointer rewriting, `new`/`delete`-to-runtime-call
-       rewriting.
+    4. ~~Operator-overload-to-function-call rewriting.~~ Done — closed a
+       real gap along the way: sema_run() never resolved natural operator
+       syntax (`a + b`) at all before this, only explicit call syntax.
+       `tests/sample15.cpp` exercises member and free-function operators
+       via natural syntax.
+    5. ~~Reference-to-pointer rewriting.~~ Done — `tests/sample16.cpp`
+       confirms a reference parameter's `.` becomes `->` while a
+       by-value parameter's `.` stays untouched.
+    6. ~~`new`/`delete`-to-runtime-call rewriting.~~ Done, deliberately a
+       placeholder (no `sizeof`, no constructor invocation — the grammar
+       doesn't even parse constructor arguments in `new` yet). `tests/
+       sample17.cpp` exercises the placeholder calls.
+    7. **The lowering track is now complete through phase 6.** Next up:
+       the Vircon32 C code generator itself.
 13. Remaining natural next candidates, independent of the lowering track
     above: the preprocessor gap (see the project README — a custom
     `v32pp` is the long-term plan, with `cpp` as a stopgap in the

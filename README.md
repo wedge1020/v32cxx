@@ -94,25 +94,26 @@ A first slice of semantic analysis then runs over the parsed program and:
   guessed at, never silently assumed to be fine
 
 Lowering — transforming what semantic analysis figured out into
-something closer to what generated C needs — has started too, in three
-phases so far: computing each class's flattened field layout (base
-class fields folded in as a literal prefix, so single-inheritance
-polymorphism works the same way it would in real C++, plus correct
-vtable-pointer placement across a hierarchy); `this`-injection (a
-method's implicit receiver becomes an explicit first parameter, and
-every implicit member reference in its body — bare identifiers,
-unqualified calls to other methods — becomes explicit through it); and
-call finalization (every call becomes its final, codegen-ready form —
-virtual calls dispatch through the vtable field the first phase located,
-everything else becomes a direct call to the right mangled function
-name). All three are still just computed data / a transformed AST at
-this point, not emitted C syntax.
+something closer to what generated C needs — is now complete through six
+phases: computing each class's flattened field layout (base class fields
+folded in as a literal prefix, so single-inheritance polymorphism works
+the same way it would in real C++, plus correct vtable-pointer placement
+across a hierarchy); `this`-injection (a method's implicit receiver
+becomes an explicit first parameter, and every implicit member reference
+becomes explicit through it); call finalization (every call — including
+natural operator syntax like `a + b`, resolved against declared operator
+overloads for the first time anywhere in this project — becomes its
+final, codegen-ready form: virtual calls dispatch through the vtable,
+everything else becomes a direct call to the right mangled function);
+reference-to-pointer rewriting; and a placeholder `new`/`delete` lowering
+(explicitly not a real allocator yet — see `docs/DESIGN_NOTES.md` for
+exactly what's simplified and why). Everything above is still a
+transformed AST at this point, not emitted C syntax.
 
 **What's still missing before this is a usable transpiler:** actual
-Vircon32 C code generation — everything above is *decided*, nothing emits
-any of it into C text yet — plus a few more lowering phases first
-(operator-overload and reference-to-pointer rewriting, `new`/`delete`
-runtime calls). Templates
+Vircon32 C code generation — everything the lowering phases above decided
+is now sitting in a fully-lowered AST, but nothing emits any of it into
+real `.c` text yet. Templates
 and exceptions are intentionally not planned at all (see below). This is
 genuinely early — expect rough edges, and expect this README to need
 updating often as things change.

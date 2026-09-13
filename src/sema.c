@@ -712,7 +712,7 @@ LocalVarType *find_local(LocalVarType *locals, const char *name) {
  * and references are treated as resolving to the SAME class as their
  * pointee/referent -- accessing a member through `Foo*`/`Foo&` follows
  * the same rules as through a plain `Foo`, matching real C++. */
-static AstNode *type_to_class(const AstNode *type) {
+AstNode *type_to_class(const AstNode *type) {
     type = resolve_typedef_chain(type);
     if (type == NULL) return NULL;
     switch (type->kind) {
@@ -938,7 +938,7 @@ static void collect_method_candidates(AstNode *class_decl, const char *name,
     }
 }
 
-static void collect_free_function_candidates(const char *name, AstNode ***out, int *out_count, int *out_cap) {
+void collect_free_function_candidates(const char *name, AstNode ***out, int *out_count, int *out_cap) {
     for (FreeFuncRegEntry *e = g_free_func_registry; e != NULL; e = e->next) {
         if (strcmp(e->func->str1, name) == 0) {
             if (*out_count == *out_cap) {
@@ -1079,7 +1079,7 @@ static void check_node(AstNode *n, AstNode *current_class, LocalVarType **locals
             break;
         case AST_VAR_DECL: {
             check_node(n->a, current_class, locals); /* initializer, if any */
-            LocalVarType *lv = malloc(sizeof(LocalVarType));
+            LocalVarType *lv = calloc(1, sizeof(LocalVarType)); /* calloc: zero-inits was_reference too */
             lv->name = n->str1;
             lv->type = n->type;
             lv->next = *locals;
@@ -1149,7 +1149,7 @@ static void check_function_body(AstNode *func, AstNode *current_class) {
     LocalVarType *locals = NULL;
     for (int i = 0; i < func->list.count; i++) {
         AstNode *param = func->list.items[i];
-        LocalVarType *lv = malloc(sizeof(LocalVarType));
+        LocalVarType *lv = calloc(1, sizeof(LocalVarType)); /* calloc: zero-inits was_reference too */
         lv->name = param->str1;
         lv->type = param->type;
         lv->next = locals;

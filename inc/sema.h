@@ -203,6 +203,16 @@ void sema_cleanup(void);
 typedef struct LocalVarType {
     const char *name;
     AstNode *type;              /* the declared type, as written */
+    int was_reference;          /* 1 if `type` was originally AST_REFERENCE_TYPE
+                                  * before lower.c's reference-lowering phase
+                                  * relabeled it to AST_POINTER_TYPE -- 0
+                                  * (and harmless/unused) for any pass that
+                                  * doesn't care, i.e. everything before that
+                                  * phase runs. Lets `.` access on a
+                                  * reference-turned-pointer local/param be
+                                  * correctly rewritten to `->`, while `.`
+                                  * access on an ordinary by-value local
+                                  * stays `.`. */
     struct LocalVarType *next;
 } LocalVarType;
 
@@ -230,6 +240,22 @@ AstNode *find_member_in_hierarchy(AstNode *class_decl, const char *name, AstNode
  * answer, and reusing this rather than re-deriving it independently
  * keeps the two from ever quietly disagreeing. */
 AstNode *resolve_expr_class(const AstNode *expr, AstNode *current_class, LocalVarType *locals);
+
+/* Resolves a type AST node down to the AST_CLASS_DECL it names (chasing
+ * typedefs and unwrapping pointer/reference wrappers), or NULL if it
+ * doesn't name a registered class at all. Exposed for the same reuse
+ * reason as everything else in this section -- lower.c's new/delete
+ * lowering needs to know which class `new T` allocates. */
+AstNode *type_to_class(const AstNode *type);
+
+/* Appends every free function/prototype named `name` (ANY arity/
+ * signature -- callers filter further themselves) onto `*out`, growing
+ * it as needed (same growable-array convention as sema.c's own vtable/
+ * candidate-collection code). Exposed so lower.c's operator-overload
+ * lowering can look for a free-function `operatorX` the same way
+ * sema.c's own call resolution already looks for free functions in
+ * general. */
+void collect_free_function_candidates(const char *name, AstNode ***out, int *out_count, int *out_cap);
 
 /* Prints a human-readable summary of every class's computed layout,
  * every function's mangled name, and (in a "call resolutions:" section)
