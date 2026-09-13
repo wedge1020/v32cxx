@@ -75,6 +75,12 @@
  * would see the injected "this" parameter and misbehave. Not a concern
  * for main.c's current single-pass pipeline; worth remembering if this
  * project ever grows an incremental/re-analysis mode.
+ *
+ * ALSO: sema_cleanup() (see sema.h) must NOT be called until AFTER
+ * lower_run() has finished. Phase 3 (call finalization) depends on
+ * sema.c's class registry via resolve_expr_class -- freeing it any
+ * earlier silently breaks virtual-call lowering (a real bug this project
+ * shipped once already; see the postmortem in docs/DESIGN_NOTES.md).
  */
 
 typedef enum {

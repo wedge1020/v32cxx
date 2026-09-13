@@ -180,6 +180,17 @@ typedef struct FuncSemaInfo {
  */
 int sema_run(AstNode *program);
 
+/* Frees the class/typedef/free-function registries sema_run() builds.
+ * Call this ONLY after every pass that might need them has finished --
+ * sema_run() itself, AND lower_run() (lower.c's vtable-dispatch phase
+ * depends on find_class() via resolve_expr_class, below). Not called
+ * automatically at the end of sema_run() specifically because lowering
+ * needs these registries to still be alive after sema_run() returns --
+ * see the comment in sema_run()'s own implementation for the bug this
+ * fixed (virtual method calls silently failing to lower, no crash, no
+ * error, just quietly wrong) when that dependency wasn't yet explicit. */
+void sema_cleanup(void);
+
 /* A simple, flat, NOT-properly-block-scoped map of local variable/
  * parameter name -> declared type, built while walking a function/method
  * body. See the long comment on this same struct (moved here from

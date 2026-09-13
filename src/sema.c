@@ -1208,18 +1208,40 @@ int sema_run(AstNode *program) {
 
     /* Access-control enforcement AND call-site overload resolution (the
      * latter happens inside check_node's AST_CALL case, called from the
-     * former) both run last and BEFORE the registries are freed below --
-     * they need find_class()/resolve_typedef_chain() (via type_to_class)
-     * and the free-function registry still populated, and every class's
-     * ClassLayout (access stamps, vtable, base_class_decl) already
-     * computed by compute_layouts() above. */
+     * former) both need find_class()/resolve_typedef_chain() (via
+     * type_to_class) and the free-function registry populated, and every
+     * class's ClassLayout (access stamps, vtable, base_class_decl)
+     * already computed by compute_layouts() above. */
     access_check_methods(&program->list);
     access_check_free_functions(&program->list);
 
+    /* NOTE: the registries are deliberately NOT freed here anymore.
+     * lower.c's vtable-dispatch phase also depends on find_class() (via
+     * resolve_expr_class, exposed from this file specifically so
+     * lowering could reuse it) -- freeing the registries at the end of
+     * THIS function would tear them down before lower_run() ever gets a
+     * chance to use them, which is exactly the bug that shipped in an
+     * earlier round: virtual calls silently failed to lower (obj_class
+     * always resolved to NULL) while non-virtual ones worked fine (that
+     * path never calls resolve_expr_class at all). See sema_cleanup()
+     * below -- the caller (main.c) is now responsible for calling it
+     * once ALL passes that might need these registries, sema AND
+     * lowering alike, have finished. */
+    return g_error_count;
+}
+
+/* Frees the class/typedef/free-function registries sema_run() builds.
+ * Call this ONLY after every pass that might need them has finished --
+ * that's sema_run() itself, AND lower_run() (via resolve_expr_class,
+ * which lower.c's vtable-dispatch phase depends on). Calling this too
+ * early silently breaks class-type resolution for whoever runs after --
+ * see the long comment in sema_run() above for exactly how that failure
+ * mode looks (a best-effort function quietly resolving to NULL instead
+ * of crashing, which is what made it easy to ship once already). */
+void sema_cleanup(void) {
     free_registry();
     free_typedef_registry();
     free_free_func_registry();
-    return g_error_count;
 }
 
 /* ---- dump ---------------------------------------------------------- */

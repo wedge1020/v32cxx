@@ -46,6 +46,14 @@ int main(int argc, char **argv) {
             lower_run(g_program);
             lower_dump(g_program);
         }
+        /* sema_cleanup() frees the class/typedef/free-function registries
+         * sema_run() built -- deliberately called HERE, after lowering
+         * has had its turn, not right after sema_run() returns above.
+         * lower_run()'s vtable-dispatch phase depends on those same
+         * registries (via resolve_expr_class); freeing them any earlier
+         * silently breaks it -- see sema_cleanup()'s doc comment in
+         * sema.h for the bug that shipped once already because of this. */
+        sema_cleanup();
     } else {
         fprintf(stderr, "---- parse failed for %s ----\n", g_current_filename);
     }
