@@ -504,12 +504,13 @@ static int vtable_find_slot(const Vtable *vt, const AstNode *candidate) {
     return -1;
 }
 
-static void vtable_append_slot(Vtable *vt, AstNode *method) {
+static void vtable_append_slot(Vtable *vt, AstNode *method, AstNode *canonical_method) {
     if (vt->count == vt->capacity) {
         vt->capacity = vt->capacity ? vt->capacity * 2 : 4;
         vt->entries = realloc(vt->entries, sizeof(VtableEntry) * (size_t)vt->capacity);
     }
     vt->entries[vt->count].method = method;
+    vt->entries[vt->count].canonical_method = canonical_method;
     vt->entries[vt->count].slot_index = vt->count;
     vt->count++;
 }
@@ -530,10 +531,13 @@ static void build_vtable(ClassLayout *layout) {
 
     /* Inherit every slot from the base's vtable first, pointing at
      * whichever AstNode currently implements it there -- overwritten
-     * below wherever this class actually overrides it. */
+     * below wherever this class actually overrides it. canonical_method
+     * is propagated unchanged, since it identifies WHICH slot this is
+     * (fixed at whichever class first introduced it), not who currently
+     * implements it. */
     if (base_vtable != NULL) {
         for (int i = 0; i < base_vtable->count; i++) {
-            vtable_append_slot(vt, base_vtable->entries[i].method);
+            vtable_append_slot(vt, base_vtable->entries[i].method, base_vtable->entries[i].canonical_method);
         }
     }
 
@@ -544,13 +548,16 @@ static void build_vtable(ClassLayout *layout) {
             /* Overriding an inherited slot. Real C++ treats this as
              * virtual even if 'virtual' isn't repeated on the override --
              * match that here rather than requiring the keyword again at
-             * every level of the hierarchy. */
+             * every level of the hierarchy. canonical_method is left
+             * untouched here -- it stays pointing at whichever class
+             * first introduced this slot, not this override. */
             vt->entries[slot].method = m;
             m->ival = 1;
         } else if (m->ival == 1) {
             /* A genuinely new virtual method (or a virtual destructor
-             * introduced at this level, if the base had none). */
-            vtable_append_slot(vt, m);
+             * introduced at this level, if the base had none) -- this
+             * class IS the canonical declarer for this brand-new slot. */
+            vtable_append_slot(vt, m, m);
         }
         /* else: an ordinary, non-virtual, non-overriding method -- not
          * part of any vtable at all. */
@@ -867,7 +874,7 @@ static AstNode *infer_expr_type(const AstNode *expr, AstNode *current_class, Loc
  * wanted "is this expression's type a class, and if so which one" --
  * everything they relied on now lives in the more general
  * infer_expr_type above. */
-static AstNode *resolve_expr_class(const AstNode *expr, AstNode *current_class, LocalVarType *locals) {
+AstNode *resolve_expr_class(const AstNode *expr, AstNode *current_class, LocalVarType *locals) {
     return type_to_class(infer_expr_type(expr, current_class, locals));
 }
 

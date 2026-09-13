@@ -88,6 +88,22 @@ typedef struct VtableEntry {
                          * this class's own override, or (if not
                          * overridden here) the same node inherited
                          * unchanged from the base's vtable. */
+    AstNode *canonical_method; /* the ORIGINAL declaration that first
+                         * introduced this slot, in whichever class's
+                         * hierarchy first declared it as virtual --
+                         * stays FIXED across every derived class's copy
+                         * of this slot, even when `method` above is
+                         * overridden further down. lower.c's vtable-
+                         * dispatch phase needs this: a call site like
+                         * `obj->vtable->FIELD(obj)` must use the SAME
+                         * field name regardless of the object's actual
+                         * runtime type, since that's what the generated
+                         * vtable STRUCT TYPE names the field -- only the
+                         * function pointer VALUE stored there varies per
+                         * class, which is a separate, later concern
+                         * (initializing each class's vtable instance),
+                         * not something this field or lower.c's current
+                         * phase does. */
     int slot_index;
 } VtableEntry;
 
@@ -190,6 +206,19 @@ LocalVarType *find_local(LocalVarType *locals, const char *name);
  * legality check, this-injection's rewriting) to know whether a
  * reference is to this class's own member or an inherited one. */
 AstNode *find_member_in_hierarchy(AstNode *class_decl, const char *name, AstNode **owner_out);
+
+/* Infers which class (if any) an expression's static type resolves to --
+ * `this`, a local/parameter, a member-access/call chain through either.
+ * Returns NULL for anything outside that deliberately bounded scope
+ * (arithmetic results, unresolvable names, ...) -- NULL means "unknown",
+ * not "not a class", so callers must treat it as "nothing to resolve"
+ * rather than an error. Exposed (not `static` in sema.c) for the same
+ * reason find_member_in_hierarchy/find_local are: lower.c's vtable-
+ * dispatch phase needs to answer the exact same "what class is this
+ * call's object expression" question access control already had to
+ * answer, and reusing this rather than re-deriving it independently
+ * keeps the two from ever quietly disagreeing. */
+AstNode *resolve_expr_class(const AstNode *expr, AstNode *current_class, LocalVarType *locals);
 
 /* Prints a human-readable summary of every class's computed layout,
  * every function's mangled name, and (in a "call resolutions:" section)

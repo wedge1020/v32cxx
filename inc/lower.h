@@ -40,13 +40,29 @@
  *   subtly different copy of that logic drifting out of sync with the
  *   original over time.
  *
+ *   Phase 3: vtable dispatch codegen (call finalization). Rewrites every
+ *   call's callee into its final form: a virtual method call becomes
+ *   `obj->vtable->FIELD(obj, args...)`; a non-virtual method call
+ *   becomes a direct call to the mangled function name (with `obj`
+ *   prepended as the first argument, matching this-injection's
+ *   convention); a free-function call becomes a direct call to its own
+ *   mangled name. Driven by sema.c's CallResolution (already overload-
+ *   aware) rather than re-resolving names independently -- a call sema
+ *   couldn't resolve is left completely untouched, same best-effort
+ *   philosophy as everywhere else in this project. The vtable FIELD NAME
+ *   used at a call site always comes from a slot's `canonical_method`
+ *   (whichever class ORIGINALLY declared it virtual), never from
+ *   whichever override the call actually resolves to -- that's what
+ *   makes the field name STABLE across an entire hierarchy, which is the
+ *   whole point of a vtable: the same field, looked up the same way,
+ *   regardless of the object's actual runtime type.
+ *
  * NOT done yet (later lowering phases, in order): actually emitting a
- * `struct` definition or a method's new signature/body as C text (both
- * phases above only produce data structures / a mutated AST, not
- * generated syntax); vtable dispatch codegen (turning a virtual call
- * into an indirect call through the field phase 1 locates);
- * operator-overload-to-function-call rewriting; reference-to-pointer
- * rewriting; and new/delete-to-runtime-call rewriting.
+ * `struct` definition or a method's new signature/body as C text (all
+ * three phases above only produce data structures / a mutated AST, not
+ * generated syntax); operator-overload-to-function-call rewriting;
+ * reference-to-pointer rewriting; and new/delete-to-runtime-call
+ * rewriting.
  *
  * PRECONDITION: sema_run() must have already completed successfully
  * (zero errors) before lower_run() is called -- these phases read each
@@ -99,22 +115,22 @@ typedef struct StructLayout {
 
 /* Runs all lowering phases implemented so far, in order, over every
  * class in the program (recursing into namespaces): phase 1 (struct
- * field layout, attached to each class's `lower_info`) then phase 2
- * (this-injection, which mutates method bodies/parameter lists in
- * place). Always succeeds (0) -- there's no new validation happening
- * here, just transformation of already-sema-validated data; a nonzero
- * return is reserved for a later phase that might have something to
- * report. */
+ * field layout, attached to each class's `lower_info`), phase 2
+ * (this-injection), then phase 3 (call finalization/vtable dispatch) --
+ * phases 2 and 3 both mutate method bodies/parameter lists in place.
+ * Always succeeds (0) -- there's no new validation happening here, just
+ * transformation of already-sema-validated data; a nonzero return is
+ * reserved for a later phase that might have something to report. */
 int lower_run(AstNode *program);
 
 /* Prints each class's flattened field layout (phase 1's output -- name,
  * kind, declared type rendered in ordinary C++-like syntax rather than
  * sema.c's mangling-safe form, and, for an inherited field, which
  * ancestor actually declared it), followed by every method's now-
- * this-injected body (phase 2's output, reusing ast_dump() -- these are
- * just ordinary AstNode trees, now mutated, so nothing about displaying
- * them needs to be lowering-specific). Same role sema_dump() plays for
- * semantic analysis. */
+ * fully-lowered body (phases 2 and 3's combined output, reusing
+ * ast_dump() -- these are just ordinary AstNode trees, now mutated, so
+ * nothing about displaying them needs to be lowering-specific). Same
+ * role sema_dump() plays for semantic analysis. */
 void lower_dump(const AstNode *program);
 
 #endif /* LOWER_H */

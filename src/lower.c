@@ -287,9 +287,252 @@ static void this_inject_classes(AstList *decls) {
     }
 }
 
+/* ---- phase 3: vtable dispatch codegen (call finalization) --------------
+ *
+ * Rewrites every call's callee into its FINAL, codegen-ready form:
+ *   - A virtual method call becomes `obj->vtable->FIELD(obj, args...)`.
+ *   - A non-virtual method call becomes `MangledName(obj, args...)`.
+ *   - A free-function call becomes `MangledName(args...)`.
+ * In every case the call's own argument list is otherwise untouched;
+ * method calls additionally get the object expression PREPENDED as the
+ * first argument, matching this-injection's convention that a method's
+ * first parameter is the receiver.
+ *
+ * Driven by sema.c's CallResolution (call->sema_info), NOT by
+ * re-resolving names independently -- CallResolution is already
+ * overload-aware (arity- and argument-type-matched), where re-deriving
+ * "which method is this" via find_member_in_hierarchy alone would only
+ * be name-based, a strictly weaker answer. A call sema couldn't resolve
+ * (best-effort, per sema.c's own philosophy) is left completely
+ * untouched here too -- same reasoning: better to leave it for a human
+ * (or a future pass) to notice than to guess.
+ *
+ * FIELD NAME STABILITY: the vtable struct field name used at a call site
+ * must be the SAME regardless of the object's actual runtime type --
+ * that's the whole point of a vtable. So the field name always comes
+ * from a slot's canonical_method (whichever class ORIGINALLY declared
+ * it), never from whichever override CallResolution actually resolved
+ * the call to. tests/sample14.cpp exercises this directly: a call
+ * inside an OVERRIDING class's own method still uses the BASE class's
+ * mangled name as the field name.
+ */
+
+/* Finds the vtable slot in `class_decl`'s OWN vtable that currently
+ * holds `target` (by pointer identity -- `target`, resolved via
+ * CallResolution, IS the exact same AstNode instance stored in whatever
+ * class's vtable actually implements it, since sema.c's build_vtable and
+ * resolve_call both work over the same ClassLayout/Vtable structures).
+ * Sets *canonical_out to the slot's stable, hierarchy-wide field-name
+ * source. Returns -1 if not found (shouldn't happen for a genuinely
+ * virtual target, but handled defensively rather than assumed). */
+static int find_vtable_slot_for_method(AstNode *class_decl, AstNode *target, AstNode **canonical_out) {
+    ClassLayout *layout = (ClassLayout *)class_decl->sema_info;
+    if (layout == NULL || layout->vtable == NULL) return -1;
+    for (int i = 0; i < layout->vtable->count; i++) {
+        if (layout->vtable->entries[i].method == target) {
+            if (canonical_out != NULL) *canonical_out = layout->vtable->entries[i].canonical_method;
+            return i;
+        }
+    }
+    return -1;
+}
+
+static void prepend_arg(AstList *list, AstNode *arg) {
+    AstList new_list = ast_list_new();
+    ast_list_append(&new_list, arg);
+    for (int i = 0; i < list->count; i++) {
+        ast_list_append(&new_list, list->items[i]);
+    }
+    *list = new_list;
+}
+
+static void finalize_call(AstNode *call, AstNode *class_decl, LocalVarType *locals) {
+    CallResolution *cr = (CallResolution *)call->sema_info;
+    if (cr == NULL || cr->resolved_target == NULL) {
+        return; /* not resolved by sema -- best-effort, leave unlowered */
+    }
+    AstNode *target = cr->resolved_target;
+    AstNode *callee = call->a;
+    FuncSemaInfo *target_info = (FuncSemaInfo *)target->sema_info;
+    const char *target_mangled = (target_info != NULL) ? target_info->mangled_name : target->str1;
+
+    if (callee->kind == AST_MEMBER) {
+        /* A method call -- always explicit `obj->name(...)` by this
+         * point, since phase 2 (this-injection) already rewrote every
+         * implicit form into this same shape. */
+        AstNode *obj_expr = callee->a;
+
+        if (target->ival == 1) {
+            /* Virtual: dispatch through the vtable. */
+            AstNode *obj_class = resolve_expr_class(obj_expr, class_decl, locals);
+            AstNode *canonical = NULL;
+            int slot = (obj_class != NULL) ? find_vtable_slot_for_method(obj_class, target, &canonical) : -1;
+            if (slot < 0) {
+                return; /* couldn't determine the slot -- best-effort, leave unlowered rather than guess */
+            }
+            FuncSemaInfo *canonical_info = (canonical != NULL) ? (FuncSemaInfo *)canonical->sema_info : NULL;
+            const char *field_name = (canonical_info != NULL) ? canonical_info->mangled_name : target_mangled;
+
+            AstNode *vtable_ref = ast_new(AST_MEMBER, call->line);
+            vtable_ref->str1 = strdup("->");
+            vtable_ref->str2 = strdup("vtable");
+            vtable_ref->a = obj_expr;
+
+            AstNode *slot_ref = ast_new(AST_MEMBER, call->line);
+            slot_ref->str1 = strdup("->");
+            slot_ref->str2 = strdup(field_name);
+            slot_ref->a = vtable_ref;
+
+            call->a = slot_ref;
+        } else {
+            /* Non-virtual: direct call to the mangled function. */
+            call->a = ast_ident(target_mangled, call->line);
+        }
+
+        prepend_arg(&call->list, obj_expr);
+    } else if (callee->kind == AST_IDENT) {
+        /* A free-function call -- just finalize the callee to its
+         * mangled name; there's no receiver to thread through. */
+        call->a = ast_ident(target_mangled, call->line);
+    }
+    /* else: some other callee shape this project doesn't produce --
+     * left untouched. */
+}
+
+static void finalize_calls_expr(AstNode **slot, AstNode *class_decl, LocalVarType *locals) {
+    AstNode *n = *slot;
+    if (n == NULL) return;
+    switch (n->kind) {
+        case AST_MEMBER:
+            finalize_calls_expr(&n->a, class_decl, locals);
+            break;
+        case AST_CALL:
+            finalize_calls_expr(&n->a, class_decl, locals);
+            for (int i = 0; i < n->list.count; i++) {
+                finalize_calls_expr(&n->list.items[i], class_decl, locals);
+            }
+            /* Post-order: arguments (including any nested calls used as
+             * arguments) are finalized above before this call itself. */
+            finalize_call(n, class_decl, locals);
+            break;
+        case AST_BINOP:
+        case AST_ASSIGN:
+        case AST_SUBSCRIPT:
+            finalize_calls_expr(&n->a, class_decl, locals);
+            finalize_calls_expr(&n->b, class_decl, locals);
+            break;
+        case AST_UNOP:
+        case AST_DELETE:
+            finalize_calls_expr(&n->a, class_decl, locals);
+            break;
+        default:
+            break;
+    }
+}
+
+static void finalize_calls_stmt(AstNode **slot, AstNode *class_decl, LocalVarType **locals) {
+    AstNode *n = *slot;
+    if (n == NULL) return;
+    switch (n->kind) {
+        case AST_BLOCK:
+            for (int i = 0; i < n->list.count; i++) {
+                finalize_calls_stmt(&n->list.items[i], class_decl, locals);
+            }
+            break;
+        case AST_IF:
+            finalize_calls_expr(&n->a, class_decl, *locals);
+            finalize_calls_stmt(&n->b, class_decl, locals);
+            finalize_calls_stmt(&n->c, class_decl, locals);
+            break;
+        case AST_WHILE:
+            finalize_calls_expr(&n->a, class_decl, *locals);
+            finalize_calls_stmt(&n->b, class_decl, locals);
+            break;
+        case AST_FOR:
+            finalize_calls_stmt(&n->a, class_decl, locals);
+            finalize_calls_expr(&n->b, class_decl, *locals);
+            finalize_calls_expr(&n->c, class_decl, *locals);
+            finalize_calls_stmt(&n->d, class_decl, locals);
+            break;
+        case AST_RETURN:
+        case AST_EXPR_STMT:
+            finalize_calls_expr(&n->a, class_decl, *locals);
+            break;
+        case AST_VAR_DECL: {
+            finalize_calls_expr(&n->a, class_decl, *locals);
+            LocalVarType *lv = malloc(sizeof(LocalVarType));
+            lv->name = n->str1;
+            lv->type = n->type;
+            lv->next = *locals;
+            *locals = lv;
+            break;
+        }
+        default:
+            break;
+    }
+}
+
+/* Seeds `locals` from `func`'s CURRENT parameter list -- by the time this
+ * phase runs, that's already the POST-this-injection list for a method
+ * (so index 0 is "this" itself, mapped to its pointer-to-class type,
+ * which is exactly what lets a bare `this` reference inside a call's
+ * object-expression position resolve correctly via resolve_expr_class). */
+static LocalVarType *seed_locals_from_params(AstNode *func) {
+    LocalVarType *locals = NULL;
+    for (int i = 0; i < func->list.count; i++) {
+        AstNode *param = func->list.items[i];
+        LocalVarType *lv = malloc(sizeof(LocalVarType));
+        lv->name = param->str1;
+        lv->type = param->type;
+        lv->next = locals;
+        locals = lv;
+    }
+    return locals;
+}
+
+static void finalize_calls_in_method(AstNode *method, AstNode *class_decl) {
+    if (method->kind != AST_FUNC_DEF) return;
+    LocalVarType *locals = seed_locals_from_params(method);
+    finalize_calls_stmt(&method->a, class_decl, &locals);
+}
+
+static void finalize_calls_classes(AstList *decls) {
+    for (int i = 0; i < decls->count; i++) {
+        AstNode *n = decls->items[i];
+        if (n->kind == AST_CLASS_DECL) {
+            ClassLayout *layout = (ClassLayout *)n->sema_info;
+            if (layout != NULL) {
+                for (int j = 0; j < layout->methods.count; j++) {
+                    finalize_calls_in_method(layout->methods.items[j], n);
+                }
+            }
+        } else if (n->kind == AST_NAMESPACE_DECL) {
+            finalize_calls_classes(&n->list);
+        }
+    }
+}
+
+static void finalize_calls_free_functions(AstList *decls) {
+    for (int i = 0; i < decls->count; i++) {
+        AstNode *n = decls->items[i];
+        if (n->kind == AST_NAMESPACE_DECL) {
+            finalize_calls_free_functions(&n->list);
+        } else if (n->kind == AST_FUNC_DEF && n->b == NULL) {
+            /* n->b == NULL: a genuine free function, not an out-of-line
+             * method's top-level duplicate (see attach_out_of_line and
+             * the identical guard already used elsewhere in this
+             * project for exactly this reason). */
+            LocalVarType *locals = seed_locals_from_params(n);
+            finalize_calls_stmt(&n->a, NULL, &locals);
+        }
+    }
+}
+
 int lower_run(AstNode *program) {
     compute_struct_layouts(&program->list);
     this_inject_classes(&program->list);
+    finalize_calls_classes(&program->list);
+    finalize_calls_free_functions(&program->list);
     return 0;
 }
 
@@ -420,6 +663,6 @@ static void dump_this_injected_methods(const AstList *decls, int indent) {
 void lower_dump(const AstNode *program) {
     printf("---- lowering summary (struct layouts) ----\n");
     dump_struct_layouts(&program->list, 0);
-    printf("---- lowering summary (this-injected method bodies) ----\n");
+    printf("---- lowering summary (fully lowered method bodies: this-injection + call finalization) ----\n");
     dump_this_injected_methods(&program->list, 0);
 }

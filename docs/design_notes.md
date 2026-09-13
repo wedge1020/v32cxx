@@ -470,13 +470,53 @@ today (one parse, one `sema_run()`, one `lower_run()`, done), but exactly
 the kind of ordering invariant that's easy to violate by accident if this
 project ever grows an incremental or re-analysis mode later.
 
+## Lowering, phase 3: vtable dispatch codegen (call finalization)
+
+Rewrites every call's callee into its final, codegen-ready form: a
+virtual method call becomes `obj->vtable->FIELD(obj, args...)`; a
+non-virtual method call becomes a direct call to the mangled function
+name (with `obj` prepended as the first argument); a free-function call
+becomes a direct call to its own mangled name.
+
+**Driven by `CallResolution`, not re-derived independently:** this needs
+to know exactly which method/function a call refers to, which is exactly
+what sema.c's call-site overload resolution already computed — and did
+so more precisely (arity- and argument-type-matched) than re-deriving it
+via `find_member_in_hierarchy` alone would (name-only, first-found). So
+this phase reads `call->sema_info` (the `CallResolution` sema attached)
+as its source of truth, rather than re-resolving the callee from scratch.
+A call sema couldn't resolve is left completely untouched here too — same
+best-effort philosophy as everywhere else in this project: better to
+leave something for a human (or a future pass) to notice than to guess
+and possibly generate wrong code silently.
+
+**The one genuinely new piece of design: field-name stability.** A
+vtable's whole point is that the SAME field, at the SAME position, means
+the same thing (the same virtual method) regardless of which class's
+object you're actually holding at runtime. That means the field name
+used at a call site must come from whichever class ORIGINALLY declared
+the slot (the base-most one), never from whichever override the call
+happens to resolve to. `VtableEntry` gained a new field for this:
+`canonical_method`, alongside the existing `method` (which class
+currently implements the slot). `build_vtable` propagates
+`canonical_method` forward unchanged on every override — only `method`
+changes when a derived class overrides; `canonical_method` stays fixed to
+whoever introduced the slot in the first place. `tests/sample14.cpp`
+exercises this directly: `Circle::describeTwice()` calls the virtual
+`area()`, which resolves to `Circle::area` (its own override, correctly
+respecting real C++ name-hiding) — but the vtable field name used at that
+call site is still `Shape__area__void`, Shape's mangled name, since
+Shape is where the slot was born. Getting this wrong (using the resolved
+override's name instead) would have generated a vtable struct with a
+DIFFERENT field per class instead of one shared field — defeating the
+entire mechanism.
+
 **What's NOT done yet, in the order upcoming phases would tackle them:**
-actually emitting a `struct` definition, or a this-injected method's new
-signature/body, as C text (both phases above produce a data structure /
-a mutated AST, not generated syntax at all); vtable dispatch codegen
-(turning a virtual call into an indirect call through the field phase 1
-locates); operator-overload-to-function-call rewriting;
-reference-to-pointer rewriting; `new`/`delete`-to-runtime-call rewriting.
+actually emitting a `struct` definition, or a lowered method's new
+signature/body, as C text (all three phases so far only produce data
+structures / a mutated AST, never generated syntax); operator-overload-
+to-function-call rewriting; reference-to-pointer rewriting;
+`new`/`delete`-to-runtime-call rewriting.
 
 ## What's deliberately not here yet
 
@@ -609,9 +649,14 @@ reference-to-pointer rewriting; `new`/`delete`-to-runtime-call rewriting.
        through it. `tests/sample13.cpp` exercises explicit vs. implicit
        `this->x`, an unqualified method call, and a local variable
        correctly shadowing a same-named member instead of being rewritten.
-    3. Next: vtable dispatch codegen (a virtual call becomes an indirect
-       call through the field phase 1 locates).
-    4. Then: operator-overload-to-function-call rewriting,
+    3. ~~Vtable dispatch codegen (call finalization).~~ Done — every
+       call's callee is now rewritten to its final form (virtual dispatch
+       through `obj->vtable->FIELD`, or a direct mangled-name call),
+       driven by sema's already-overload-aware `CallResolution` rather
+       than re-resolving names independently. `tests/sample14.cpp`
+       specifically exercises vtable field-name stability across an
+       overriding class — the trickiest part of this phase to get right.
+    4. Next: operator-overload-to-function-call rewriting,
        reference-to-pointer rewriting, `new`/`delete`-to-runtime-call
        rewriting.
 13. Remaining natural next candidates, independent of the lowering track
