@@ -1240,9 +1240,80 @@ static void inject_ctor_calls_free_functions(AstList *decls) {
     }
 }
 
+/* ---- phase 8: vtable pointer initialization in constructors ------------
+ *
+ * For every class WITH a vtable, prepends `this->vtable = &ClassName_
+ * vtable_instance;` to the very START of each of its OWN constructors
+ * that has a body -- BEFORE anything the user actually wrote in that
+ * constructor's body, matching real C++'s own timing (the vtable
+ * pointer, like base/member subobject initialization, is set up before
+ * a constructor's own body runs, so that even code in the body that
+ * calls a virtual function dispatches correctly).
+ *
+ * `ClassName_vtable_instance` is codegen.c's emit_vtable_instance --
+ * this phase and that function have to agree on the exact name, the
+ * same kind of cross-module naming agreement finalize_call's allocator
+ * naming already needs with codegen.c's emit_new_delete_runtime.
+ *
+ * A constructor with NO body (prototype-only) gets nothing injected --
+ * there's no body to inject into, and nothing calls it anyway (phase 7
+ * and the `new`-lowering both already skip a bodyless constructor for
+ * the identical reason).
+ */
+static void inject_vtable_init_classes(AstList *decls) {
+    for (int i = 0; i < decls->count; i++) {
+        AstNode *n = decls->items[i];
+        if (n->kind == AST_CLASS_DECL) {
+            ClassLayout *layout = (ClassLayout *)n->sema_info;
+            if (layout != NULL && layout->vtable != NULL) {
+                for (int j = 0; j < layout->methods.count; j++) {
+                    AstNode *m = layout->methods.items[j];
+                    if (strcmp(m->str1, n->str1) != 0) continue; /* not a constructor */
+                    if (m->kind != AST_FUNC_DEF) continue; /* no body to inject into */
+
+                    AstNode *vtable_ref = ast_new(AST_MEMBER, m->line);
+                    vtable_ref->str1 = strdup("->");
+                    vtable_ref->str2 = strdup("vtable");
+                    vtable_ref->a = ast_ident("this", m->line);
+
+                    size_t len = strlen(n->str1) + strlen("_vtable_instance") + 1;
+                    char *instance_name = malloc(len);
+                    snprintf(instance_name, len, "%s_vtable_instance", n->str1);
+                    AstNode *addr = ast_new(AST_UNOP, m->line);
+                    addr->str1 = strdup("addr");
+                    addr->a = ast_ident(instance_name, m->line);
+                    free(instance_name);
+
+                    AstNode *assign = ast_new(AST_ASSIGN, m->line);
+                    assign->str1 = strdup("=");
+                    assign->a = vtable_ref;
+                    assign->b = addr;
+
+                    AstNode *expr_stmt = ast_new(AST_EXPR_STMT, m->line);
+                    expr_stmt->a = assign;
+
+                    AstNode *body = m->a; /* AST_BLOCK */
+                    AstList new_list = ast_list_new();
+                    ast_list_append(&new_list, expr_stmt);
+                    for (int k = 0; k < body->list.count; k++) {
+                        ast_list_append(&new_list, body->list.items[k]);
+                    }
+                    body->list = new_list;
+                }
+            }
+        } else if (n->kind == AST_NAMESPACE_DECL) {
+            inject_vtable_init_classes(&n->list);
+        }
+    }
+}
+
 int lower_run(AstNode *program) {
     compute_struct_layouts(&program->list);
     this_inject_classes(&program->list);
+    inject_vtable_init_classes(&program->list);       /* phase 8 -- deliberately
+        runs right after this-injection, before anything else touches a
+        constructor's body, so the injected statement is simply the FIRST
+        thing every later phase (call finalization, etc.) sees */
     finalize_calls_classes(&program->list);       /* phase 3 + phase 4 (operator rewriting lives inside this same walk) */
     finalize_calls_free_functions(&program->list);
     fix_references_classes(&program->list);         /* phase 5 */

@@ -192,6 +192,114 @@ static void emit_struct(FILE *out, const AstNode *class_decl) {
     fprintf(out, "};\n\n");
 }
 
+/* ---- vtable static instances --------------------------------------------
+ *
+ * Emits a static, populated instance of `class_decl`'s own vtable struct
+ * TYPE (emit_vtable_struct, above) -- something has existed for a
+ * class's `vtable` FIELD to point at since that phase; this is where an
+ * actual object gets a value TO put there.
+ *
+ * The key distinction that makes a vtable work at all: a slot's FIELD
+ * NAME always comes from `canonical_method` (stable across the whole
+ * hierarchy, matching lower.c's finalize_call, which already dispatches
+ * through that same stable name) -- but the VALUE stored in that field,
+ * for THIS class's own instance, comes from `entry.method`, whichever
+ * implementation actually applies at this level (an override, if one
+ * exists here or was inherited from a closer ancestor than whoever
+ * declared the slot). Confusing the two would mean every class's
+ * instance pointing at the same implementation regardless of overrides,
+ * defeating the entire point of having a vtable.
+ *
+ * Whenever `entry.method`'s own declaring class (found via
+ * find_declaring_class, same as finalize_call's receiver-cast logic)
+ * differs from `canonical_method`'s (the field's own declared receiver
+ * type), the function pointer needs an explicit cast -- assigning
+ * `&Circle__draw__void` (a function taking `Circle *`) into a field
+ * declared `void(Shape *)*` is the same category of mismatch
+ * finalize_call already casts for at call sites, just encountered here
+ * at initialization time instead. UNTESTED: Vircon32's cast syntax for
+ * ITS reversed function-pointer declarator form is genuinely unknown
+ * from here -- `(ReturnType(ParamTypes)*)expr`, matching the declarator
+ * pattern with no name inside, is this module's best-reasoned attempt,
+ * not a confirmed-working one. Needs a real compile to settle, the same
+ * as every other Vircon32-specific syntax choice in this file.
+ *
+ * A slot whose CURRENT implementation (`entry.method`) has no body at
+ * all (a virtual method declared but never defined) gets a literal `0`
+ * for that field instead of a function pointer -- there is no C
+ * function to point at. Calling that slot at runtime would call through
+ * a null pointer; this module doesn't try to prevent that, only avoids
+ * emitting a reference to something that doesn't exist. A real,
+ * documented limitation, not silently papered over.
+ *
+ * Uses positional (not C99 designated) struct initialization -- same
+ * reasoning as print_type's function-pointer choices elsewhere in this
+ * file: safer, more likely to be supported without needing to confirm
+ * a second, independent piece of Vircon32-specific syntax.
+ */
+static void emit_vtable_instance(FILE *out, const AstNode *class_decl) {
+    ClassLayout *layout = (ClassLayout *)class_decl->sema_info;
+    if (layout == NULL || layout->vtable == NULL) return;
+
+    /* No "struct" keyword here, deliberately -- this is a type
+     * REFERENCE (declaring a variable of type ClassName_VTable), not a
+     * definition, and Vircon32 requires struct references to be bare
+     * (confirmed against the real compiler several rounds back; see
+     * print_type's own doc comment for the general rule). This
+     * function's FIRST version got this wrong -- hand-wrote "struct
+     * %s_VTable" directly instead of following the rule this file
+     * already centralizes everywhere else, confirmed as a real,
+     * fatal-to-compile mistake against the actual toolchain
+     * ("expected '{'"). Fixed here rather than left as a trap for
+     * whoever next hand-writes a struct-typed declaration in this file
+     * without routing it through print_type or this same reasoning. */
+    fprintf(out, "%s_VTable %s_vtable_instance = {\n", class_decl->str1, class_decl->str1);
+    for (int i = 0; i < layout->vtable->count; i++) {
+        VtableEntry *entry = &layout->vtable->entries[i];
+        AstNode *impl = entry->method;
+        FuncSemaInfo *impl_info = (FuncSemaInfo *)impl->sema_info;
+        const char *impl_mangled = (impl_info != NULL) ? impl_info->mangled_name : impl->str1;
+
+        fprintf(out, "    ");
+        if (impl->kind != AST_FUNC_DEF) {
+            /* No body exists anywhere for this slot's current
+             * implementation -- see this function's own doc comment
+             * above for why this can't be a function pointer at all. */
+            fprintf(out, "0");
+        } else {
+            const AstNode *canonical_class = find_declaring_class(class_decl, entry->canonical_method);
+            const AstNode *impl_class = find_declaring_class(class_decl, impl);
+            if (impl_class != canonical_class) {
+                fprintf(out, "(");
+                print_type(out, entry->canonical_method->type);
+                fprintf(out, "(%s *", canonical_class->str1);
+                int start = (entry->canonical_method->kind == AST_FUNC_DEF) ? 1 : 0;
+                for (int p = start; p < entry->canonical_method->list.count; p++) {
+                    fprintf(out, ", ");
+                    print_type(out, entry->canonical_method->list.items[p]->type);
+                }
+                fprintf(out, ")*)&%s", impl_mangled);
+            } else {
+                fprintf(out, "&%s", impl_mangled);
+            }
+        }
+        if (i < layout->vtable->count - 1) fprintf(out, ",");
+        fprintf(out, "\n");
+    }
+    fprintf(out, "};\n\n\n");
+}
+
+static void emit_vtable_instances_classes(FILE *out, const AstList *decls) {
+    for (int i = 0; i < decls->count; i++) {
+        const AstNode *n = decls->items[i];
+        if (n->kind == AST_CLASS_DECL) {
+            emit_vtable_instance(out, n);
+        } else if (n->kind == AST_NAMESPACE_DECL) {
+            emit_vtable_instances_classes(out, &n->list);
+        }
+    }
+}
+
 /* ---- top-level walk ---------------------------------------------------
  *
  * Emits every class's vtable struct type (if any) immediately followed
@@ -941,6 +1049,7 @@ void codegen_run(const AstNode *program, FILE *out) {
     emit_function_prototypes_free_functions(out, &program->list, &seen);
     free(seen.names);
     fprintf(out, "\n");
+    emit_vtable_instances_classes(out, &program->list);
     if (needs_misc) {
         emit_new_delete_runtime_classes(out, &program->list);
         emit_v32_delete(out);

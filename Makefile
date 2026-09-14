@@ -89,15 +89,17 @@ test: all | $(OUT_DIR)
 	./$(BIN_DIR)/v32c++     tests/sample21.cpp 2>&1 | tee out/sample21.txt
 	./$(BIN_DIR)/v32c++     tests/sample22.cpp 2>&1 | tee out/sample22.txt
 	./$(BIN_DIR)/v32c++     tests/sample23.cpp 2>&1 | tee out/sample23.txt
+	./$(BIN_DIR)/v32c++     tests/sample24.cpp 2>&1 | tee out/sample24.txt
 # `-c` (this project's own flag now, not just a real compiler's) opts out
 # of the "must define main" default main.c added this round -- every
 # sample here is a focused unit test of one specific compiler feature,
 # not a complete, standalone-compilable program, EXCEPT sample2, 14, 21,
-# 22, and 23, which genuinely do define their own `main` (sample2's
+# 22, 23, and 24, which genuinely do define their own `main` (sample2's
 # predates this round; sample14/21 were given one specifically so they
 # could also be compiled all the way through by the real Vircon32
-# toolchain, not just transpiled; sample22/23 already had one -- both are
-# real, hand-written programs, not artificial unit tests). Without `-c`, every other sample would now fail at the
+# toolchain, not just transpiled; sample22/23/24 already had one -- all
+# are real, hand-written or hand-designed programs, not artificial unit
+# tests). Without `-c`, every other sample would now fail at the
 # "no main function found" check before ever reaching lowering/codegen --
 # not a bug in that check, just what it's supposed to do by default; this
 # project's own test suite is exactly the kind of "library/module

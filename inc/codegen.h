@@ -122,16 +122,18 @@
  * other quirk in this file -- reasoning correctly through the mechanism
  * is not the same thing as a confirmed working build.
  *
- * A SEPARATE, ADJACENT GAP NOTICED WHILE TRACING THE ABOVE: this project
- * has no special handling anywhere for a user-defined `main` -- it gets
- * mangled like any other free function (`main__void` for
- * tests/sample2.cpp's `int main()`), so the generated C has no actual
- * `main` entry point at all, and nothing enforces Vircon32's `void
- * main()`-with-no-return-value requirement on the user's source `main`
- * either. Not addressed here -- this needs an actual design decision
- * (special-case the name at mangling time? require `void main()` in the
- * C++ source and reject anything else? synthesize a wrapper?), not a
- * quick fix bundled into this round.
+ * A SEPARATE, ADJACENT GAP FROM AN EARLIER ROUND, NOW RESOLVED: this
+ * paragraph used to say `main` got no special handling and was mangled
+ * like any other free function. That's stale -- sema.c's mangling pass
+ * special-cases `main` to stay unmangled, and emit_function_definition
+ * forces its return type to `void` and applies strip_return_value
+ * regardless of what the C++ source declared (`int main()`,
+ * `void main()`, or anything else all become Vircon32's required `void
+ * main(void)` shape). See docs/VIRCON32_QUIRKS.md for this alongside
+ * every other Vircon32-specific divergence point in one place, kept
+ * deliberately separate from this file's own round-by-round narrative
+ * specifically so a future standard-C output mode has a single
+ * checklist to work from rather than a re-investigation.
  */
 
 /* Emits generated Vircon32 C source for the whole program to `out`
