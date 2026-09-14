@@ -1146,6 +1146,26 @@ static void emit_v32_delete(FILE *out) {
  * delete operand's static class can't be determined at all -- it just
  * frees, calling nothing, same as before this round.
  */
+/* Finds `class_decl`'s own vtable slot for a destructor, if its
+ * destructor is virtual at all -- returns the CANONICAL declaring
+ * method (the class whose own vtable struct type first declared this
+ * field, needed to know whether the receiver argument needs a cast the
+ * same way an ordinary virtual call already does -- see
+ * emit_vtable_instance's own doc comment for the identical reasoning),
+ * or NULL if this class has no vtable, or its vtable has no destructor
+ * slot at all (destructor not virtual, or no destructor declared). A
+ * class can only ever have one destructor (never overloaded), so
+ * there's no ambiguity to resolve if a slot is found. */
+static AstNode *find_dtor_canonical(const AstNode *class_decl) {
+    ClassLayout *layout = (ClassLayout *)class_decl->sema_info;
+    if (layout == NULL || layout->vtable == NULL) return NULL;
+    for (int i = 0; i < layout->vtable->count; i++) {
+        AstNode *canon = layout->vtable->entries[i].canonical_method;
+        if (canon->str1 != NULL && canon->str1[0] == '~') return canon;
+    }
+    return NULL;
+}
+
 static void emit_delete_runtime(FILE *out, const AstNode *class_decl) {
     ClassLayout *layout = (ClassLayout *)class_decl->sema_info;
     if (layout == NULL) return;
@@ -1160,7 +1180,36 @@ static void emit_delete_runtime(FILE *out, const AstNode *class_decl) {
     }
 
     fprintf(out, "void v32_delete_%s(%s *ptr)\n{\n", class_decl->str1, class_decl->str1);
-    if (dtor != NULL) {
+
+    /* VIRTUAL DESTRUCTOR DISPATCH: if this class's destructor is
+     * virtual (or overrides one), route through the vtable instead of
+     * calling a statically-named function -- this is what makes
+     * `delete basePtr;` correctly call the DERIVED destructor when
+     * basePtr's static type is an ancestor but it actually points at a
+     * derived object. Previously this always called the statically-
+     * resolved destructor regardless, a real, documented gap (see
+     * lower.h's phase 6 entry) -- fixed here, at the one place that
+     * actually needed to change: v32_delete_ClassName ITSELF, not
+     * lower.c's own naming logic (which already correctly names the
+     * allocator after the operand's static class; that naming was never
+     * the problem -- what that per-class function DID internally was).
+     * Same receiver-cast reasoning as an ordinary virtual method call
+     * (finalize_call, lower.c) -- the vtable access itself never needs a
+     * cast (every class's own vtable struct redeclares every canonical
+     * field name, regardless of static type), but the argument passed
+     * to the slot does, whenever this class isn't itself the canonical
+     * declarer. */
+    AstNode *dtor_canonical = find_dtor_canonical(class_decl);
+    if (dtor_canonical != NULL) {
+        FuncSemaInfo *canon_info = (FuncSemaInfo *)dtor_canonical->sema_info;
+        const char *field_name = (canon_info != NULL) ? canon_info->mangled_name : dtor_canonical->str1;
+        const AstNode *canonical_class = find_declaring_class(class_decl, dtor_canonical);
+        if (canonical_class != NULL && canonical_class != class_decl) {
+            fprintf(out, "    ptr->vtable->%s((%s *)ptr);\n", field_name, canonical_class->str1);
+        } else {
+            fprintf(out, "    ptr->vtable->%s(ptr);\n", field_name);
+        }
+    } else if (dtor != NULL) {
         FuncSemaInfo *dtor_info = (FuncSemaInfo *)dtor->sema_info;
         const char *dtor_mangled = (dtor_info != NULL) ? dtor_info->mangled_name : dtor->str1;
         fprintf(out, "    %s(ptr);\n", dtor_mangled);

@@ -106,14 +106,43 @@
  *   directly rather than computing anything itself, which works fine
  *   for this specific purpose (the C compiler evaluates it, not this
  *   one) but means there's still no general `sizeof` expression support
- *   for C++ source that might want to use one. And VIRTUAL destructor
- *   dispatch: `delete basePtr;` through an ancestor-typed pointer calls
- *   the ancestor's destructor, not the derived one, regardless of
- *   whether the destructor was declared `virtual` -- this phase doesn't
- *   even check. Real dispatch would need the AST_DELETE lowering to
- *   route through the same vtable-dispatch shape finalize_call already
- *   builds for an ordinary virtual method call -- a real, separate
- *   piece of future work.
+ *   for C++ source that might want to use one.
+ *
+ *   VIRTUAL DESTRUCTOR DISPATCH: FIXED, as of a later round still --
+ *   `delete basePtr;` through an ancestor-typed pointer now correctly
+ *   calls the DERIVED destructor, not the ancestor's own, whenever the
+ *   destructor is virtual (declared so, or overriding one). Turned out
+ *   NOT to need any new vtable machinery at all: a virtual destructor
+ *   already participated correctly in sema.c's existing vtable-slot
+ *   assignment (build_vtable doesn't special-case destructors, just
+ *   checks the generic "is this virtual" flag any method has, and
+ *   vtable_slot_key already normalizes every destructor's own name to
+ *   the literal string "~" regardless of class, so a derived override
+ *   already matched its base's inherited slot the same way an ordinary
+ *   virtual method does). The only actual gap was in codegen.c's
+ *   emit_delete_runtime -- the per-static-type deallocator
+ *   (v32_delete_ClassName) always called a statically-named function
+ *   regardless of whether the destructor was virtual. Fixed there
+ *   specifically, not in lower.c's own AST_DELETE naming logic (which
+ *   was never the problem -- naming the deallocator after the operand's
+ *   STATIC class is still exactly correct; what that per-class function
+ *   does INTERNALLY is what needed to change): a virtual destructor now
+ *   makes v32_delete_ClassName dispatch through `ptr->vtable->...`
+ *   instead, the same shape finalize_call already builds for an
+ *   ordinary virtual method call, with the same receiver-cast reasoning
+ *   (the vtable access itself never needs a cast; the argument passed
+ *   to the slot does, whenever the class isn't its own canonical
+ *   declarer). `tests/sample32.cpp` (Shape/Square, Shape's destructor
+ *   virtual, `delete` through a `Shape *` that actually points at a
+ *   `Square`) is the test -- traced by hand and confirmed correct
+ *   (`ptr->vtable->Shape__dtor__void(ptr)` correctly resolves to
+ *   `Square__dtor__void` at runtime, since a Square's own vtable
+ *   instance is what `ptr->vtable` actually points at), but NOT yet
+ *   build-confirmed at all as of this writing -- this sandbox didn't
+ *   have a working `lexer.c` available at the time (a stale one, from
+ *   several rounds back, missing even the preprocessor-pass-through
+ *   support added since), so nothing from this fix has been run through
+ *   an actual compile yet, on either side.
  *
  *   ALSO HANDLES, as of a later round: `new T[N]` (array-new) and
  *   `delete[]`. Array-new is a COMPLETELY separate shape from
@@ -240,9 +269,10 @@
  *   `continue;` outside any loop) is the matching test for sema.c's new
  *   validity check, same status.
  *
- * NOT done yet: VIRTUAL destructor dispatch still doesn't exist anywhere
- * (see phase 6's entry above) -- unrelated to this round's work, listed
- * here only because it was the other item in this exact spot before.
+ * NOT done yet: base-class constructor delegation (C++ member-
+ * initializer lists, `Derived::Derived() : Base(args) {}`) -- a
+ * derived class's constructor still has to set inherited fields
+ * directly, the way tests/sample24.cpp's Square already does.
  *
  * PRECONDITION: sema_run() must have already completed successfully
  * (zero errors) before lower_run() is called -- these phases read each
