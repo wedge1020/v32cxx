@@ -1355,6 +1355,246 @@ static void inject_vtable_init_classes(AstList *decls) {
     }
 }
 
+/* ---- phase 9: destructor invocation at scope exit -----------------------
+ *
+ * The mirror of phase 7 (constructor invocation for stack-allocated
+ * locals), for teardown instead of construction. A stack-allocated local
+ * of class type, whose class has a destructor with a body, now gets that
+ * destructor called wherever it goes out of scope -- both the "normal"
+ * path (falling off the end of the enclosing block) and an early
+ * `return`, in reverse declaration order, matching real C++.
+ *
+ * WHY THIS IS THE COMPLETE PICTURE, NOT JUST A FIRST SLICE, FOR THIS
+ * PROJECT SPECIFICALLY: real C++ RAII also has to handle `break`/
+ * `continue`/exceptions unwinding a scope early. This project's grammar
+ * has neither `break` nor `continue` at all (confirmed by checking --
+ * no BREAK/CONTINUE token, no AST_BREAK/AST_CONTINUE kind, nothing in
+ * lexer.l or parser.y), and exceptions are explicitly out of scope for
+ * this project entirely. That leaves exactly two ways control can leave
+ * a block in the language this project actually accepts: falling off
+ * the end, or `return`. Handling both IS the fully general solution
+ * here, not a scoped-down approximation of one -- worth stating
+ * explicitly rather than leaving it looking like a partial feature.
+ *
+ * ALGORITHM: walks each block maintaining a stack of per-block
+ * "destructible locals" lists (DestructScope, linked to its enclosing
+ * scope) -- NOT reusing the existing LocalVarType/`locals` threading
+ * used elsewhere in this file, deliberately: that tracking has a known,
+ * pre-existing imprecision (a nested block's own locals can leak into
+ * an enclosing scope's view when passed through `locals` by address --
+ * harmless everywhere it's currently used, since nothing there needed
+ * precise block-exit boundaries), and this phase specifically needs
+ * exact boundaries to know which destructibles belong to which block.
+ * A fresh, purpose-built structure avoids inheriting that imprecision
+ * rather than working around it.
+ *
+ * At a block's own end: appends a destructor call for each of ITS OWN
+ * destructibles (not enclosing ones -- those get handled when THEIR
+ * block ends), in reverse declaration order.
+ *
+ * At a `return`: walks the FULL scope chain (this block and every
+ * enclosing one, up to the function's top), emitting destructor calls
+ * for all of them, innermost-first. A `return expr;` needs special
+ * care -- `expr` must be evaluated before any destructor runs (a
+ * destructor could depend on or invalidate what the expression reads,
+ * and evaluation must precede cleanup regardless), so the return gets
+ * rewritten into a small nested block: a temporary holds the
+ * already-computed result, the destructor calls run, then a bare
+ * `return __v32_ret_tmpN;` uses it. A bare `return;` needs no temporary
+ * at all -- the destructor calls simply go before it unchanged.
+ *
+ * Only a genuinely stack-owned local needs any of this -- a pointer or
+ * reference to a class doesn't own what it refers to (same reasoning
+ * phase 7 already applies to construction), so only a VarDecl whose OWN
+ * type node is a bare class reference (AST_IDENT/AST_QUALIFIED_ID, not
+ * POINTER_TYPE/REFERENCE_TYPE/ARRAY_TYPE) is ever a candidate.
+ */
+
+typedef struct DestructibleLocal {
+    const char *var_name;
+    AstNode *dtor; /* the class's own destructor -- always AST_FUNC_DEF
+                       (has a body) by construction; see below */
+    struct DestructibleLocal *next;
+} DestructibleLocal;
+
+typedef struct DestructScope {
+    DestructibleLocal *locals; /* this block's own, most-recently-declared first */
+    struct DestructScope *parent;
+} DestructScope;
+
+/* Same "must have a body" reasoning as every other constructor/
+ * destructor lookup in this project -- calling one that was never
+ * emitted would repeat the exact v32_new_Player-shaped mistake. */
+static AstNode *find_destructor_with_body(AstNode *class_decl) {
+    ClassLayout *layout = (ClassLayout *)class_decl->sema_info;
+    if (layout == NULL) return NULL;
+    for (int i = 0; i < layout->methods.count; i++) {
+        AstNode *m = layout->methods.items[i];
+        if (m->str1 == NULL || m->str1[0] != '~') continue;
+        if (m->kind != AST_FUNC_DEF) continue;
+        return m;
+    }
+    return NULL;
+}
+
+static AstNode *build_dtor_call_stmt(DestructibleLocal *dl) {
+    FuncSemaInfo *dtor_info = (FuncSemaInfo *)dl->dtor->sema_info;
+    const char *dtor_mangled = (dtor_info != NULL) ? dtor_info->mangled_name : dl->dtor->str1;
+
+    AstNode *addr = ast_new(AST_UNOP, dl->dtor->line);
+    addr->str1 = strdup("addr");
+    addr->a = ast_ident(dl->var_name, dl->dtor->line);
+
+    AstNode *call = ast_new(AST_CALL, dl->dtor->line);
+    call->a = ast_ident(dtor_mangled, dl->dtor->line);
+    ast_list_append(&call->list, addr);
+
+    AstNode *expr_stmt = ast_new(AST_EXPR_STMT, dl->dtor->line);
+    expr_stmt->a = call;
+    return expr_stmt;
+}
+
+static void destruct_scope_block(AstNode *block, DestructScope *parent_scope,
+                                  AstNode *func_return_type, int *ret_tmp_counter);
+
+static void destruct_scope_stmt(AstNode **slot, DestructScope *scope,
+                                 AstNode *func_return_type, int *ret_tmp_counter) {
+    AstNode *n = *slot;
+    if (n == NULL) return;
+    switch (n->kind) {
+        case AST_BLOCK:
+            destruct_scope_block(n, scope, func_return_type, ret_tmp_counter);
+            break;
+        case AST_IF:
+            destruct_scope_stmt(&n->b, scope, func_return_type, ret_tmp_counter);
+            destruct_scope_stmt(&n->c, scope, func_return_type, ret_tmp_counter);
+            break;
+        case AST_WHILE:
+            destruct_scope_stmt(&n->b, scope, func_return_type, ret_tmp_counter);
+            break;
+        case AST_FOR:
+            destruct_scope_stmt(&n->d, scope, func_return_type, ret_tmp_counter);
+            break;
+        case AST_RETURN: {
+            int any = 0;
+            for (DestructScope *s = scope; s != NULL && !any; s = s->parent) {
+                if (s->locals != NULL) any = 1;
+            }
+            if (!any) break; /* nothing in scope needs destroying -- most
+                functions never touch this machinery at all */
+
+            AstList stmts = ast_list_new();
+            AstNode *final_return;
+
+            if (n->a != NULL) {
+                /* return EXPR; -- EXPR must be evaluated before any
+                 * destructor runs; hold its already-computed value in a
+                 * temporary rather than risk a destructor invalidating
+                 * something the expression depends on. */
+                char tmp_name[32];
+                snprintf(tmp_name, sizeof(tmp_name), "__v32_ret_tmp%d", (*ret_tmp_counter)++);
+                AstNode *tmp_decl = ast_new(AST_VAR_DECL, n->line);
+                tmp_decl->str1 = strdup(tmp_name);
+                tmp_decl->type = func_return_type; /* shared reference, not
+                    deep-copied -- consistent with how this project reuses
+                    existing type nodes elsewhere (e.g. infer_expr_type's
+                    own AST_NEW case) */
+                tmp_decl->a = n->a;
+                ast_list_append(&stmts, tmp_decl);
+
+                AstNode *new_return = ast_new(AST_RETURN, n->line);
+                new_return->a = ast_ident(tmp_name, n->line);
+                final_return = new_return;
+            } else {
+                final_return = n; /* bare `return;` -- reused as-is */
+            }
+
+            for (DestructScope *s = scope; s != NULL; s = s->parent) {
+                for (DestructibleLocal *dl = s->locals; dl != NULL; dl = dl->next) {
+                    ast_list_append(&stmts, build_dtor_call_stmt(dl));
+                }
+            }
+            ast_list_append(&stmts, final_return);
+
+            AstNode *replacement = ast_new(AST_BLOCK, n->line);
+            replacement->list = stmts;
+            *slot = replacement;
+            break;
+        }
+        default:
+            break;
+    }
+}
+
+static void destruct_scope_block(AstNode *block, DestructScope *parent_scope,
+                                  AstNode *func_return_type, int *ret_tmp_counter) {
+    DestructScope this_scope = { NULL, parent_scope };
+    AstList new_list = ast_list_new();
+
+    for (int i = 0; i < block->list.count; i++) {
+        AstNode *stmt = block->list.items[i];
+        destruct_scope_stmt(&stmt, &this_scope, func_return_type, ret_tmp_counter);
+        ast_list_append(&new_list, stmt);
+
+        if (stmt->kind == AST_VAR_DECL &&
+            (stmt->type->kind == AST_IDENT || stmt->type->kind == AST_QUALIFIED_ID)) {
+            AstNode *var_class = type_to_class(stmt->type);
+            if (var_class != NULL) {
+                AstNode *dtor = find_destructor_with_body(var_class);
+                if (dtor != NULL) {
+                    DestructibleLocal *dl = malloc(sizeof(DestructibleLocal));
+                    dl->var_name = stmt->str1;
+                    dl->dtor = dtor;
+                    dl->next = this_scope.locals;
+                    this_scope.locals = dl;
+                }
+            }
+        }
+    }
+
+    /* Fall-through exit: this block's own destructibles, reverse
+     * declaration order (already the natural order of this_scope.locals,
+     * since each was prepended as it was found). */
+    for (DestructibleLocal *dl = this_scope.locals; dl != NULL; dl = dl->next) {
+        ast_list_append(&new_list, build_dtor_call_stmt(dl));
+    }
+
+    block->list = new_list;
+}
+
+static void destruct_scope_in_method(AstNode *method) {
+    if (method->kind != AST_FUNC_DEF) return;
+    int ret_tmp_counter = 0;
+    destruct_scope_block(method->a, NULL, method->type, &ret_tmp_counter);
+}
+
+static void destruct_scope_classes(AstList *decls) {
+    for (int i = 0; i < decls->count; i++) {
+        AstNode *n = decls->items[i];
+        if (n->kind == AST_CLASS_DECL) {
+            ClassLayout *layout = (ClassLayout *)n->sema_info;
+            if (layout != NULL) {
+                for (int j = 0; j < layout->methods.count; j++) {
+                    destruct_scope_in_method(layout->methods.items[j]);
+                }
+            }
+        } else if (n->kind == AST_NAMESPACE_DECL) {
+            destruct_scope_classes(&n->list);
+        }
+    }
+}
+
+static void destruct_scope_free_functions(AstList *decls) {
+    for (int i = 0; i < decls->count; i++) {
+        AstNode *n = decls->items[i];
+        if (n->kind == AST_NAMESPACE_DECL) {
+            destruct_scope_free_functions(&n->list);
+        } else if (n->kind == AST_FUNC_DEF && n->b == NULL) {
+            destruct_scope_in_method(n);
+        }
+    }
+}
+
 int lower_run(AstNode *program) {
     compute_struct_layouts(&program->list);
     this_inject_classes(&program->list);
@@ -1370,6 +1610,8 @@ int lower_run(AstNode *program) {
     new_delete_rewrite_free_functions(&program->list);
     inject_ctor_calls_classes(&program->list);        /* phase 7 */
     inject_ctor_calls_free_functions(&program->list);
+    destruct_scope_classes(&program->list);           /* phase 9 */
+    destruct_scope_free_functions(&program->list);
     return 0;
 }
 
@@ -1514,6 +1756,6 @@ static void dump_this_injected_methods(const AstList *decls, int indent) {
 void lower_dump(const AstNode *program) {
     printf("---- lowering summary (struct layouts) ----\n");
     dump_struct_layouts(&program->list, 0);
-    printf("---- lowering summary (fully lowered method bodies: phases 2-7) ----\n");
+    printf("---- lowering summary (fully lowered method bodies: phases 2-9) ----\n");
     dump_this_injected_methods(&program->list, 0);
 }

@@ -1732,6 +1732,170 @@ nothing existing would have exercised the new code path at all
 otherwise (`sample7.cpp`'s `~Shape()` is prototype-only, same gap
 `sample24.cpp` closed for vtable instances last round).
 
+## Array support: grammar work, and a genuinely unverified piece
+
+First round to touch `parser.y` since the project's core grammar was
+established -- everything before this was AST/sema/lower/codegen work
+on an already-fixed grammar. Standard C++ array declaration syntax
+(`int scores[8];`) is now supported, translated to Vircon32's own
+required reversed declarator (`int [8] scores;`) on output.
+
+**Matthew's specific ask**: accept BOTH standard array syntax and
+Vircon32's own native-style syntax as valid C++-side INPUT, so someone
+already fluent in Vircon32 C (or transitioning from it) never has to
+learn a second declarator convention, while someone from ordinary C++
+just writes what they already know -- with an explicit fallback to
+"standard-C only" if dual acceptance turned out to create real grammar
+conflicts. Implemented as asked: `parser.y`'s `var_decl` now has three
+alternatives -- the original bare declarator, a standard-C array form
+(`type_spec pointer_opt IDENTIFIER '[' INT_LITERAL ']'`), and a
+Vircon32-native-style form (`type_spec '[' INT_LITERAL ']' IDENTIFIER`,
+deliberately without `pointer_opt` -- this form exists to match
+Vircon32's own convention exactly, not to become its own general
+declarator sublanguage). Both produce an identical `AST_ARRAY_TYPE`
+(ast.h) -- the AST carries no memory of which spelling was used, and
+`print_type` always emits Vircon32's required form regardless.
+
+**A genuine, upfront limitation: this round's grammar change is
+reasoned-through, not built-and-verified.** Bison isn't available in the
+sandbox this project has been developed in -- every other round's C
+source could be syntax-checked directly with `gcc -fsyntax-only`, but
+`parser.y` itself needs an actual bison run to confirm the new
+alternatives don't introduce a grammar conflict beyond the existing,
+already-verified `%expect 22`. The three-way `var_decl` split was
+reasoned through carefully (each alternative's own first
+distinguishing token -- `'*'`/`'&'` for a pointer, a bare `IDENTIFIER`
+for the original form, `'['` immediately after `type_spec` for the
+Vircon32-style array form, `'['` after the identifier for the
+standard-C array form -- are all distinct at the single-token-lookahead
+decision point LALR(1) needs), but "reasoned correctly" and "confirmed
+against the actual tool" are not the same claim, and this project has
+learned that distinction the hard way more than once already. Matthew's
+own build is what actually confirms this.
+
+**Found and fixed along the way, not part of the original ask but
+directly relevant once arrays exist at all**: `infer_expr_type`
+(sema.c) had never handled `AST_SUBSCRIPT` -- `arr[i]`'s type silently
+fell through to "unknown" rather than resolving to the element type.
+Harmless before this round (nothing could produce an array type to
+subscript in the first place), but a real, waiting-to-matter gap the
+moment one could. Fixed alongside the main work: unwraps either
+`AST_ARRAY_TYPE` or `AST_POINTER_TYPE` (ordinary pointer-arithmetic-
+style subscripting, `p[0]` on an `int *p`) to the element/pointee type.
+
+**Scope limits, stated plainly rather than left implicit**: array
+support is `var_decl` only -- covering local variables, class data
+members, and a for-loop's own init clause, since all three already
+share that one grammar rule. Function PARAMETERS of array type are
+explicitly NOT covered (an array parameter decaying to a pointer, and
+losing its size in the process, is a distinct C semantic this project
+hasn't addressed at all); neither are array initializer lists
+(`= {1, 2, 3}`, a different, unbuilt piece of grammar) -- a declared
+array currently has no way to be initialized inline at all, standard-C
+or Vircon32-style.
+
+`tests/sample26.cpp` exercises both accepted input forms side by side
+(a standard-C local array and a Vircon32-style one in the same
+function), subscript read/write on both, and a class data member array
+(`Scoreboard`'s `scores[4]`, constructed via phase 7's existing
+stack-allocated constructor invocation, a natural integration point
+with prior work rather than an isolated new test).
+
+**For the standard-C mode this project is still tracking toward**:
+`docs/VIRCON32_QUIRKS.md`'s array-declarator entry is updated to
+"implemented," with a new adjacent entry recording Matthew's own
+framing as a standing principle for future syntax work generally --
+"let the C++ appear normal, even if the transpile has to adjust things"
+-- specifically flagged to extend to function-pointer declarators
+whenever that work happens, rather than deciding the dual-acceptance
+question fresh each time.
+
+## Destructor invocation at scope exit -- and a genuine testing milestone
+
+The mirror of phase 7, for teardown instead of construction: a
+stack-allocated local of class type, whose class has a destructor with a
+body, now gets that destructor called wherever it goes out of scope.
+
+**Scoped correctly on the first attempt, not narrowed after the fact.**
+Real C++ RAII also has to handle `break`/`continue`/exceptions unwinding
+a scope early. Before designing anything, checked directly whether this
+project's grammar even has `break`/`continue` at all -- it doesn't (no
+token, no AST kind, nothing in `lexer.l` or `parser.y`), and exceptions
+are out of scope for this project entirely. That leaves exactly two ways
+control can leave a block in the language this project actually accepts:
+falling off the end, or `return`. Handling both IS the complete, general
+solution here, not a scoped-down first slice of one -- worth stating
+plainly rather than let it read like a partial feature the way phase 7
+(constructor invocation) and the `delete`-invocation round both
+genuinely were partial slices of their own larger problems.
+
+**The algorithm**: walks each block maintaining a stack of per-block
+"destructible locals" lists, each linked to its enclosing block's own
+list. At a block's own end, appends destructor calls for THAT block's
+own destructibles, reverse declaration order. At a `return`, walks the
+full scope chain -- this block and every enclosing one, up to the
+function's top -- emitting destructor calls for all of them,
+innermost-first. A non-void `return expr;` needs a small rewrite:
+`expr` must be evaluated before any destructor runs (a destructor could
+depend on or invalidate something the expression reads), so it becomes
+a small nested block -- a temporary holds the already-computed result,
+the destructor calls run, then a bare `return` of the temporary. A bare
+`return;` needs no temporary at all.
+
+Deliberately built as a fresh, purpose-built structure rather than
+reusing the existing `LocalVarType`/`locals` threading used everywhere
+else in this file -- that tracking has a known, pre-existing
+imprecision (a nested block's own locals can leak into an enclosing
+scope's view, since several call sites pass `locals` through by address
+rather than by value), harmless everywhere it's currently used, but this
+phase specifically needs exact block-exit boundaries. A fresh structure
+avoids inheriting that imprecision rather than working around it.
+
+**A known, minor inefficiency, not a correctness issue**: a block whose
+own last statement is always a `return` (like `compute()` in the new
+test) still gets a fall-through destructor sequence appended after it,
+which is then simply unreachable dead code. Detecting that would need
+real reachability analysis; not attempted here, and harmless either way
+-- unreachable code doesn't change behavior, just adds a few unused
+lines to the generated output.
+
+**A real testing milestone, not just another confirmed-working round.**
+This is the first feature of real complexity in this project verified
+directly, before ever reaching Matthew, rather than reasoned through and
+handed off unverified: with the bison/flex-generated `parser.c`/
+`lexer.c`/`parser.h` Matthew provided a couple of rounds back, a full
+local `v32c++` build now exists and stayed current (only `lower.c`
+changed this round -- no grammar involved, so no new generated files were
+needed). Used it to actually transpile a purpose-built test
+(`tests/sample27.cpp` -- an early `return` from inside a nested block,
+with locals live at two scope levels simultaneously, plus a non-void
+`return expr;` exercising the temporary-variable rewrite) and trace the
+output by hand before writing it up. Went further than that: substituted
+Vircon32's `struct`-keyword quirk back in by hand to approximate
+standard C, and confirmed the new nested-block/temporary-variable output
+is genuinely sound C syntax, independent of any Vircon32-specific
+question -- `gcc -fsyntax-only` came back clean except for the one
+already-known, expected `void main` warning. Also re-ran the full
+existing 26-sample suite through the rebuilt binary to confirm zero
+regressions, and spot-checked that a class only ever used as a pointer
+(`tests/sample25.cpp`'s `Logger`, via `new`/`delete`) correctly gets NO
+new scope-exit injection at all -- confirming the new phase doesn't
+over-apply.
+
+**Still needs Matthew's own build to confirm against the real Vircon32
+compiler** -- standard-C-soundness is strong evidence, not the same
+claim as a real compile. `tests/sample27.cpp` is the one to try first.
+
+**Also found and fixed while documenting this round**: `lower.h`'s
+own top-of-file phase-by-phase documentation had gone stale in two
+places that predate this round entirely -- phase 6's entry still
+described `delete` as calling a single generic `v32_delete` with no
+destructor invocation at all (stale since the `delete`-invocation round
+several sessions back), and phase 8 (vtable pointer init) was missing
+from this documentation block entirely, never added when phase 8 itself
+was built. Both corrected here, not just phase 9's own new entry added
+on top of stale surrounding text.
+
 ## Suggested next steps, roughly in order
 
 

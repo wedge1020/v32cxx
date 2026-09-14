@@ -83,26 +83,37 @@
  *   the resolved constructor's own mangled name, or the bare type name
  *   if the class has no constructor at all -- see lower.c's own doc
  *   comment on new_delete_rewrite_expr for exactly why per-overload
- *   naming matters); `delete expr` becomes a call to a single generic
- *   deallocator (`v32_delete`). Both actually get DEFINED now, using
- *   Vircon32's real `malloc()`/`free()` (`misc.h`, confirmed against the
- *   real Vircon32 C standard library, not invented) -- see codegen.c's
- *   emit_new_delete_runtime. This closes the gap `tests/sprite.cpp` (now
- *   `tests/sample23.cpp`) found directly: `v32_new_Player` used to be an
- *   undefined stub, "identifier ... has not been declared"; it's now an
- *   actual function that allocates via `malloc(sizeof(Player))` and
- *   calls `Player::Player()` on the result.
+ *   naming matters); `delete expr` becomes a call to a per-class
+ *   deallocator (`v32_delete_ClassName`, named after the operand's own
+ *   static class -- falls back to a single, fully generic `v32_delete`
+ *   only when that class can't be determined at all). All of these
+ *   actually get DEFINED now, using Vircon32's real `malloc()`/`free()`
+ *   (`misc.h`, confirmed against the real Vircon32 C standard library,
+ *   not invented) -- see codegen.c's emit_new_delete_runtime/
+ *   emit_delete_runtime. `v32_new_*` allocates AND constructs (calls the
+ *   resolved constructor on the freshly-allocated memory); the
+ *   per-class `v32_delete_*` calls the class's own destructor (if one
+ *   exists with a body) before freeing. This closes the gap
+ *   `tests/sprite.cpp` (now `tests/sample23.cpp`) found directly:
+ *   `v32_new_Player` used to be an undefined stub, "identifier ... has
+ *   not been declared"; it's now an actual function that allocates via
+ *   `malloc(sizeof(Player))` and calls `Player::Player()` on the
+ *   result. `tests/sample25.cpp` is the equivalent confirmation for the
+ *   destructor side.
  *
  *   STILL MISSING, deliberately: `sizeof` isn't a real AST concept in
  *   this project -- codegen.c emits the literal text `sizeof(TypeName)`
  *   directly rather than computing anything itself, which works fine
  *   for this specific purpose (the C compiler evaluates it, not this
  *   one) but means there's still no general `sizeof` expression support
- *   for C++ source that might want to use one. And DESTRUCTOR
- *   invocation: `v32_delete` just calls `free()`, never a destructor --
- *   this project has no destructor-invocation machinery at all yet, a
- *   separate, still-unstarted piece of work roughly mirroring phase 7
- *   but for teardown instead of construction.
+ *   for C++ source that might want to use one. And VIRTUAL destructor
+ *   dispatch: `delete basePtr;` through an ancestor-typed pointer calls
+ *   the ancestor's destructor, not the derived one, regardless of
+ *   whether the destructor was declared `virtual` -- this phase doesn't
+ *   even check. Real dispatch would need the AST_DELETE lowering to
+ *   route through the same vtable-dispatch shape finalize_call already
+ *   builds for an ordinary virtual method call -- a real, separate
+ *   piece of future work.
  *
  *   Phase 7: constructor invocation for stack-allocated locals. A plain
  *   `ClassName var;` declaration with no explicit initializer now calls
@@ -119,17 +130,75 @@
  *   inside a for-loop's own init clause isn't handled (`for (Player p;
  *   ...)` -- inserting the call would need to land inside the loop body
  *   instead of right after the declaration, more involved for a pattern
- *   nothing currently exercises). A class WITH virtual methods still
- *   gets its constructor called by this phase, but that constructor does
- *   NOT populate `this->vtable` -- there's no static vtable INSTANCE for
- *   it to point at yet (the vtable struct TYPE exists; a populated
- *   instance of one doesn't). This phase makes non-virtual construction
- *   correct; it does not make polymorphic objects safe to use yet.
+ *   nothing currently exercises). A class WITH virtual methods gets its
+ *   constructor called by this phase same as any other -- see phase 8,
+ *   below, for how its vtable pointer actually gets populated now too.
  *
- * NOT done yet: actually emitting any of the above as C text. Every
- * phase so far only produces a data structure or a mutated AST, never
- * generated syntax -- that's the Vircon32 C code generator's job, still
- * ahead.
+ *   Phase 8: vtable pointer initialization in constructors. NOTE: this
+ *   paragraph was originally missing from this file's own documentation
+ *   entirely -- added retroactively while writing phase 9's own entry
+ *   below and noticing the gap, not at the time phase 8 itself was
+ *   built. For every class WITH a vtable, prepends
+ *   `this->vtable = &ClassName_vtable_instance;` to the very start of
+ *   each of its own constructors that has a body -- before anything the
+ *   constructor's own body does, matching real C++'s own vtable-
+ *   initialization timing. `ClassName_vtable_instance` is codegen.c's
+ *   emit_vtable_instance -- a populated, static instance of the class's
+ *   own vtable struct, with each slot holding whichever implementation
+ *   actually applies at that level (an override, if one exists),
+ *   correctly cast when that implementation's own declaring class
+ *   differs from the slot's canonically-declared one. Together with
+ *   phase 7, this makes construction of a polymorphic object -- and
+ *   virtual dispatch on the result -- fully correct: confirmed against
+ *   the real compiler end to end (`tests/sample24.cpp`, a `Shape`/
+ *   `Square` pair with a virtual `area()`, an override, and a real
+ *   constructor on each -- deliberately not reusing `tests/sample7.cpp`/
+ *   `sample12.cpp`/`sample14.cpp`, none of which declare a constructor
+ *   at all, so none of them would have exercised this at all). A class
+ *   with virtual methods but NO constructor at all (or only a bodyless
+ *   one) still has no way to get its vtable pointer populated -- there's
+ *   nowhere for this phase to inject into. Real C++ would synthesize an
+ *   implicit default constructor for such a class; this project doesn't.
+ *
+ *   Phase 9: destructor invocation at scope exit. The mirror of phase 7,
+ *   for teardown instead of construction. A stack-allocated local of
+ *   class type, whose class has a destructor with a body, now gets that
+ *   destructor called wherever it goes out of scope -- both falling off
+ *   the end of its enclosing block, and an early `return`, in reverse
+ *   declaration order. This is the COMPLETE picture for this project,
+ *   not a scoped-down first slice of one: real C++ RAII also has to
+ *   handle `break`/`continue`/exceptions unwinding a scope early, but
+ *   this project's grammar has neither `break` nor `continue` at all
+ *   (confirmed directly -- no token, no AST kind, nothing in lexer.l or
+ *   parser.y), and exceptions are out of scope for this project
+ *   entirely. Fall-through and `return` are the only two ways control
+ *   can leave a block in the language this project actually accepts, so
+ *   handling both really is the general solution here. An early
+ *   `return expr;` needs a small rewrite -- `expr` must be evaluated
+ *   before any destructor runs, so it becomes a nested block holding the
+ *   already-computed result in a temporary, the destructor calls, then a
+ *   bare `return` of the temporary. A KNOWN, minor inefficiency, not a
+ *   correctness issue: a block whose own last statement is always a
+ *   `return` still gets a fall-through destructor sequence appended
+ *   after it, which is then simply unreachable -- see lower.c's own doc
+ *   comment on this phase for why detecting that would need real
+ *   reachability analysis, not attempted here. See
+ *   `tests/sample27.cpp` for the test exercising the harder cases (an
+ *   early return from a nested block with locals live at two levels
+ *   simultaneously, and the temporary-variable rewrite) -- confirmed
+ *   directly against a locally-built `v32c++` binary for the first time
+ *   this project has had one available (Matthew provided the bison/
+ *   flex-generated `parser.c`/`lexer.c`/`parser.h` a couple of rounds
+ *   back), including a standard-C-approximated syntax check (Vircon32's
+ *   own `struct`-keyword quirk substituted back in) to confirm the new
+ *   nested-block/temporary-variable output is sound C independent of
+ *   Vircon32-specific syntax questions -- not yet confirmed against the
+ *   real Vircon32 compiler itself, which still needs Matthew's own
+ *   build.
+ *
+ * NOT done yet: destructor invocation for `break`/`continue` doesn't
+ * apply (see phase 9's own entry above for why), but VIRTUAL destructor
+ * dispatch still doesn't exist anywhere (see phase 6's entry above).
  *
  * PRECONDITION: sema_run() must have already completed successfully
  * (zero errors) before lower_run() is called -- these phases read each
@@ -189,14 +258,17 @@ typedef struct StructLayout {
 /* Runs all lowering phases implemented so far, in order, over every
  * class in the program (recursing into namespaces): phase 1 (struct
  * field layout, attached to each class's `lower_info`), phase 2
- * (this-injection), phase 3 (call finalization/vtable dispatch, with
- * phase 4's operator-overload rewriting living inside that same walk),
- * phase 5 (reference-to-pointer), phase 6 (new/delete placeholder
- * calls), then phase 7 (constructor invocation for stack-allocated
- * locals) -- every phase from 2 onward mutates method bodies/parameter
- * lists in place. Always succeeds (0) -- there's no new validation
- * happening here, just transformation of already-sema-validated data;
- * a nonzero return is
+ * (this-injection), phase 8 (vtable pointer init in constructors --
+ * runs here, right after phase 2, so every later phase sees it as
+ * simply the first statement already present), phase 3 (call
+ * finalization/vtable dispatch, with phase 4's operator-overload
+ * rewriting living inside that same walk), phase 5
+ * (reference-to-pointer), phase 6 (new/delete runtime calls), phase 7
+ * (constructor invocation for stack-allocated locals), then phase 9
+ * (destructor invocation at scope exit) -- every phase from 2 onward
+ * mutates method bodies/parameter lists in place. Always succeeds (0)
+ * -- there's no new validation happening here, just transformation of
+ * already-sema-validated data; a nonzero return is
  * reserved for a later phase that might have something to report. */
 int lower_run(AstNode *program);
 
@@ -204,7 +276,7 @@ int lower_run(AstNode *program);
  * kind, declared type rendered in ordinary C++-like syntax rather than
  * sema.c's mangling-safe form, and, for an inherited field, which
  * ancestor actually declared it), followed by every method's now-
- * fully-lowered body (phases 2 through 7's combined output, reusing
+ * fully-lowered body (phases 2 through 9's combined output, reusing
  * ast_dump() -- these are just ordinary AstNode trees, now mutated, so
  * nothing about displaying them needs to be lowering-specific). Same
  * role sema_dump() plays for semantic analysis. */
