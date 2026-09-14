@@ -1464,6 +1464,67 @@ something else entirely? Not guessed at here; asked directly instead
 (see the conversation this round, not restated here since the answer
 isn't in yet).
 
+## Constructor invocation, part 2: `new` actually allocates and constructs
+
+Matthew confirmed Vircon32's real C standard library has an actual
+`malloc()`/`free()` (`misc.h`, attached rather than assumed) -- the
+missing piece that made `new`'s placeholder allocator genuinely
+unblockable before. `v32_new_*` now actually allocates via
+`malloc(sizeof(ClassName))` and invokes the resolved constructor;
+`v32_delete` calls `free()`. `tests/sample23.cpp` is this project's own
+copy of Matthew's hand-written `sprite.cpp` -- the `new`-based sibling
+of `sample22.cpp`'s `sprite2.cpp` -- added specifically because it's the
+only existing test where the resolved constructor actually HAS a body
+(`sample17.cpp`'s `Widget` and `sample18.cpp`'s `Point` are both
+prototype-only), so it's the only one that exercises the "really
+construct" path rather than the "just allocate" one.
+
+**A real design mistake caught by tracing through existing tests before
+shipping, not after -- twice, in the same sitting.** The first version of
+this named every allocator by the resolved constructor's mangled name
+ONLY when that constructor had a body, falling back to the bare type
+name otherwise. Tracing that against `sample17.cpp`'s `Widget`
+(prototype-only, zero args) looked fine at first, but `sample18.cpp`'s
+`Point(int, int)` (prototype-only, TWO args) exposed the real problem:
+the bare-name fallback only ever gets defined as a zero-argument
+allocator, so a `new Point(3, 4)` call site would target
+`v32_new_Point(3, 4)` while the only thing actually defined was
+`v32_new_Point(void)` -- a second call/definition mismatch, not fixed by
+the first pass at all. Corrected by naming the allocator after the
+resolved constructor's own mangled name and matching its exact parameter
+signature REGARDLESS of whether that constructor has a body -- a
+bodyless one still gets a correctly-parameterized allocator, it just
+accepts and discards the arguments rather than calling anything, since
+there's nothing to call. Verified by hand against all three existing
+`new`-using cases (`Widget` zero-arg/no-body, `Point` two-arg/no-body,
+`Player` zero-arg/WITH body) before packaging, not just the one that
+happened to prompt the fix.
+
+**Scope, deliberately bounded, stated plainly rather than left
+implicit:**
+- `sizeof` still isn't a real AST concept in this project -- codegen.c
+  emits the literal text `sizeof(TypeName)` directly (the C compiler
+  evaluates it, not this one), which works fine for this specific,
+  codegen-internal purpose but doesn't mean general `sizeof` expression
+  support exists anywhere else.
+- `#include "misc.h"` is emitted only when the program has at least one
+  class (every class gets a `v32_new_*` allocator regardless of whether
+  it's ever actually `new`-ed, so "any class exists" and "malloc is
+  needed somewhere" are equivalent for now) -- specifically so a
+  class-free program (`tests/sample21.cpp`, say) doesn't pick up
+  `misc.h`'s own names (`malloc`/`free`/`rand`/`exit`/...) into scope
+  for no reason. A tighter "only if `new`/`delete` is genuinely used
+  somewhere" scan would be more precise but wasn't built this round --
+  emitting an unused allocator for a class that's never `new`-ed is
+  the accepted cost of the simpler version.
+- **Destructor invocation is still completely missing.** `v32_delete`
+  unconditionally calls `free()` and nothing else -- `delete obj;` on a
+  class with a real, meaningful destructor currently just frees the
+  memory without ever running it. A separate, still-unstarted piece of
+  work, the natural mirror of phase 7 (constructor invocation) but for
+  teardown -- both `delete obj;` and going out of scope would eventually
+  need it, and neither triggers it today.
+
 ## Suggested next steps, roughly in order
 
 

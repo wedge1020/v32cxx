@@ -790,7 +790,146 @@ static void emit_function_definitions_free_functions(FILE *out, const AstList *d
     }
 }
 
+/* ---- new/delete runtime function definitions ----------------------------
+ *
+ * lower.c's phase 6 lowers `new T(args)`/`delete expr` into calls to
+ * "v32_new_<something>"/"v32_delete" -- this is where those functions
+ * actually get DEFINED, using Vircon32's real `malloc()`/`free()`
+ * (`misc.h`, confirmed against the real Vircon32 C standard library
+ * Matthew provided -- not invented or assumed). Closes the gap
+ * tests/sprite.cpp found directly: `v32_new_Player` was an undefined
+ * stub, "identifier ... has not been declared". See
+ * docs/DESIGN_NOTES.md for the full story.
+ *
+ * NAMING, matching lower.c's new_delete_rewrite_expr exactly (the two
+ * have to agree, or a call site would target a name nothing here
+ * defines): when a specific constructor overload was resolved for a
+ * `new T(args)` (sema.c's resolve_new_expr), the allocator is named
+ * after THAT constructor's own mangled name and takes exactly its
+ * parameter signature -- REGARDLESS of whether that constructor has a
+ * body. A bodyless one (declared, never defined -- tests/sample17.cpp's
+ * Widget, sample18.cpp's Point) still gets a correctly-parameterized
+ * allocator that allocates and returns, simply never calling anything
+ * (there's nothing to call); the arguments are accepted to match the
+ * call site, then unused. Naming by the bare type name alone would be
+ * WRONG the moment a class has more than one constructor (C has no
+ * function overloading, so two overloads sharing one allocator name
+ * couldn't both be right) or the moment a bodyless constructor takes
+ * any arguments at all (Point's 2-argument case -- a bare-name fallback
+ * only makes sense for a truly argument-free allocator). Only actually
+ * falls back to the bare type name when NO constructor was resolved at
+ * all -- the class genuinely has none, which is unambiguous since
+ * there's nothing to disambiguate between.
+ *
+ * DELIBERATELY STILL MISSING: destructor invocation. `v32_delete` is a
+ * single, generic function that just calls `free()` -- it does NOT call
+ * a destructor first, because this project has no destructor-invocation
+ * machinery at all yet (a separate, still-unstarted piece of work,
+ * roughly the mirror image of phase 7's constructor invocation but for
+ * teardown instead of construction). `delete obj;` on a class with a
+ * real, meaningful destructor will currently just free the memory
+ * without running it -- a real, known gap, not silently papered over.
+ */
+
+static void emit_new_delete_runtime(FILE *out, const AstNode *class_decl) {
+    ClassLayout *layout = (ClassLayout *)class_decl->sema_info;
+    if (layout == NULL) return;
+
+    int found_ctor = 0;
+    for (int i = 0; i < layout->methods.count; i++) {
+        AstNode *m = layout->methods.items[i];
+        if (strcmp(m->str1, class_decl->str1) != 0) continue; /* not a constructor at all */
+        found_ctor = 1;
+
+        FuncSemaInfo *ctor_info = (FuncSemaInfo *)m->sema_info;
+        const char *ctor_mangled = (ctor_info != NULL) ? ctor_info->mangled_name : m->str1;
+        int has_body = (m->kind == AST_FUNC_DEF);
+        /* This-injection only ever touches a constructor WITH a body
+         * (phase 2 only ever processes AST_FUNC_DEF) -- a prototype-only
+         * one's own parameter list has no injected "this" in it at all,
+         * so where the EXPLICIT parameters start differs depending on
+         * which case this is. Same care emit_vtable_struct/other phases
+         * already need for the identical reason. */
+        int start = has_body ? 1 : 0;
+
+        fprintf(out, "%s *v32_new_%s(", class_decl->str1, ctor_mangled);
+        if (start == m->list.count) {
+            fprintf(out, "void");
+        }
+        for (int p = start; p < m->list.count; p++) {
+            if (p > start) fprintf(out, ", ");
+            AstNode *param = m->list.items[p];
+            print_type(out, param->type);
+            fprintf(out, " %s", param->str1);
+        }
+        fprintf(out, ")\n{\n");
+        fprintf(out, "    %s *self = (%s *)malloc(sizeof(%s));\n",
+                class_decl->str1, class_decl->str1, class_decl->str1);
+        if (has_body) {
+            fprintf(out, "    %s(self", ctor_mangled);
+            for (int p = start; p < m->list.count; p++) {
+                fprintf(out, ", %s", m->list.items[p]->str1);
+            }
+            fprintf(out, ");\n");
+        }
+        /* else: no body to call at all (a declared-but-never-defined
+         * constructor -- tests/sample17.cpp's Widget, sample18.cpp's
+         * Point) -- the parameters above are accepted, to match exactly
+         * what the call site forwards, but simply go unused here: there
+         * is nothing to construct with them. A real destination for
+         * that gap once this project's constructor-body-required
+         * checking (if it ever gets one) exists; not silently pretended
+         * to be handled here. */
+        fprintf(out, "    return self;\n");
+        fprintf(out, "}\n\n\n");
+    }
+
+    if (!found_ctor) {
+        fprintf(out, "%s *v32_new_%s(void)\n{\n", class_decl->str1, class_decl->str1);
+        fprintf(out, "    return (%s *)malloc(sizeof(%s));\n", class_decl->str1, class_decl->str1);
+        fprintf(out, "}\n\n\n");
+    }
+}
+
+static void emit_new_delete_runtime_classes(FILE *out, const AstList *decls) {
+    for (int i = 0; i < decls->count; i++) {
+        const AstNode *n = decls->items[i];
+        if (n->kind == AST_CLASS_DECL) {
+            emit_new_delete_runtime(out, n);
+        } else if (n->kind == AST_NAMESPACE_DECL) {
+            emit_new_delete_runtime_classes(out, &n->list);
+        }
+    }
+}
+
+static void emit_v32_delete(FILE *out) {
+    fprintf(out, "void v32_delete(void *ptr)\n{\n    free(ptr);\n}\n\n\n");
+}
+
+static int program_has_any_class(const AstList *decls) {
+    for (int i = 0; i < decls->count; i++) {
+        const AstNode *n = decls->items[i];
+        if (n->kind == AST_CLASS_DECL) return 1;
+        if (n->kind == AST_NAMESPACE_DECL && program_has_any_class(&n->list)) return 1;
+    }
+    return 0;
+}
+
 void codegen_run(const AstNode *program, FILE *out) {
+    /* misc.h (Vircon32's real malloc()/free(), among other things) is
+     * only included when the program has at least one class -- every
+     * class gets a v32_new_* allocator (even one never actually used
+     * with `new` -- see emit_new_delete_runtime's own doc comment for
+     * why this round didn't build the extra "only if actually new-ed"
+     * scan that would let this be scoped more tightly), so "any class
+     * exists" and "malloc is needed somewhere" are equivalent here.
+     * Conditional specifically so a program with no classes at all
+     * (tests/sample21.cpp, say) doesn't need to expose misc.h's own
+     * names (malloc/free/rand/exit/...) into scope for no reason. */
+    int needs_misc = program_has_any_class(&program->list);
+    if (needs_misc) {
+        fprintf(out, "#include \"misc.h\"\n");
+    }
     fprintf(out, "/* Auto-generated Vircon32 C -- do not edit by hand. */\n\n");
     emit_forward_declarations(out, &program->list);
     fprintf(out, "\n");
@@ -802,6 +941,10 @@ void codegen_run(const AstNode *program, FILE *out) {
     emit_function_prototypes_free_functions(out, &program->list, &seen);
     free(seen.names);
     fprintf(out, "\n");
+    if (needs_misc) {
+        emit_new_delete_runtime_classes(out, &program->list);
+        emit_v32_delete(out);
+    }
     emit_function_definitions_classes(out, &program->list);
     emit_function_definitions_free_functions(out, &program->list);
 }

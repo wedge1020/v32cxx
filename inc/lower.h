@@ -78,26 +78,31 @@
  *   tracks reference-ness for a bare identifier, not through a longer
  *   member-access chain.
  *
- *   Phase 6: new/delete-to-runtime-call rewriting -- STILL A
- *   PLACEHOLDER, though less of one than it used to be. `new T`/
- *   `new T(args)` becomes a call to a per-type stub allocator
- *   (`v32_new_T`, with `args` forwarded to it unchanged); `delete expr`
- *   becomes a call to a single generic stub deallocator (`v32_delete`).
- *   `new`'s grammar DOES support constructor arguments now (`NEW
- *   type_spec '(' opt_arg_list ')'` in parser.y, added a few rounds
- *   after this comment originally claimed otherwise), and sema.c's
- *   resolve_new_expr resolves which constructor overload a `new T(args)`
- *   refers to, with real arity/type diagnostics -- but this phase still
- *   doesn't actually INVOKE that constructor, or compute a real
- *   allocation size (no `sizeof` AST representation exists). `v32_new_T`
- *   remains an undefined stub; calling it fails to compile, confirmed
- *   directly (tests/sprite.cpp, a genuinely hand-written test, hit
- *   exactly this: `identifier "v32_new_Player" has not been declared`).
- *   The real runtime library backing it, and actually wiring the
- *   resolved constructor through to a real call, are both still tracked
- *   as future work -- see phase 7 below, which closes the equivalent gap
- *   for STACK-allocated construction, but deliberately does not touch
- *   this phase's own `new`-specific placeholder at all.
+ *   Phase 6: new/delete-to-runtime-call rewriting. `new T`/`new T(args)`
+ *   becomes a call to a per-constructor-overload allocator (named after
+ *   the resolved constructor's own mangled name, or the bare type name
+ *   if the class has no constructor at all -- see lower.c's own doc
+ *   comment on new_delete_rewrite_expr for exactly why per-overload
+ *   naming matters); `delete expr` becomes a call to a single generic
+ *   deallocator (`v32_delete`). Both actually get DEFINED now, using
+ *   Vircon32's real `malloc()`/`free()` (`misc.h`, confirmed against the
+ *   real Vircon32 C standard library, not invented) -- see codegen.c's
+ *   emit_new_delete_runtime. This closes the gap `tests/sprite.cpp` (now
+ *   `tests/sample23.cpp`) found directly: `v32_new_Player` used to be an
+ *   undefined stub, "identifier ... has not been declared"; it's now an
+ *   actual function that allocates via `malloc(sizeof(Player))` and
+ *   calls `Player::Player()` on the result.
+ *
+ *   STILL MISSING, deliberately: `sizeof` isn't a real AST concept in
+ *   this project -- codegen.c emits the literal text `sizeof(TypeName)`
+ *   directly rather than computing anything itself, which works fine
+ *   for this specific purpose (the C compiler evaluates it, not this
+ *   one) but means there's still no general `sizeof` expression support
+ *   for C++ source that might want to use one. And DESTRUCTOR
+ *   invocation: `v32_delete` just calls `free()`, never a destructor --
+ *   this project has no destructor-invocation machinery at all yet, a
+ *   separate, still-unstarted piece of work roughly mirroring phase 7
+ *   but for teardown instead of construction.
  *
  *   Phase 7: constructor invocation for stack-allocated locals. A plain
  *   `ClassName var;` declaration with no explicit initializer now calls

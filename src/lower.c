@@ -930,18 +930,55 @@ static void new_delete_rewrite_expr(AstNode **slot) {
             }
             AstNode *cls = type_to_class(n->type);
             const char *type_name = (cls != NULL) ? cls->str1 : "unknown";
-            size_t len = strlen("v32_new_") + strlen(type_name) + 1;
+
+            /* Naming: if sema.c's resolve_new_expr resolved a SPECIFIC
+             * constructor overload (n->sema_info, a CallResolution),
+             * the allocator is named after THAT constructor's own
+             * mangled name -- necessary once a class has more than one
+             * constructor, since C has no function overloading and a
+             * bare "v32_new_TypeName" couldn't otherwise distinguish
+             * which overload a given `new T(args)` call site means.
+             * Falls back to the bare type name only when no constructor
+             * was resolved at all (the class genuinely has none --
+             * unambiguous, since there's nothing to disambiguate
+             * between). codegen.c's emit_new_delete_runtime uses this
+             * exact same logic when deciding what to actually DEFINE --
+             * the two have to agree, or the call here would target a
+             * name codegen never emits a definition for. */
+            CallResolution *cr = (CallResolution *)n->sema_info;
+            const char *suffix = type_name; /* fallback: no constructor at all was resolved */
+            if (cr != NULL && cr->resolved_target != NULL) {
+                /* Uses the resolved constructor's own mangled name
+                 * REGARDLESS of whether it has a body -- codegen.c's
+                 * emit_new_delete_runtime emits a matching-SIGNATURE
+                 * allocator for every constructor a class declares, body
+                 * or not (one without a body just allocates, accepting
+                 * and discarding the arguments rather than calling
+                 * anything -- there's nothing to call). Falling back to
+                 * the bare type name for a bodyless constructor would be
+                 * wrong the moment that constructor takes any arguments
+                 * at all (tests/sample18.cpp's Point(int, int) is
+                 * exactly this case) -- the fallback allocator only ever
+                 * takes zero arguments, so a 2-argument call site would
+                 * target a definition that doesn't accept them. Only
+                 * truly falls back to the bare type name when NO
+                 * constructor was resolved at all (the class genuinely
+                 * has none), which is unambiguous since there's nothing
+                 * to disambiguate between. */
+                FuncSemaInfo *ctor_info = (FuncSemaInfo *)cr->resolved_target->sema_info;
+                if (ctor_info != NULL) suffix = ctor_info->mangled_name;
+            }
+
+            size_t len = strlen("v32_new_") + strlen(suffix) + 1;
             char *fn_name = malloc(len);
-            snprintf(fn_name, len, "v32_new_%s", type_name);
+            snprintf(fn_name, len, "v32_new_%s", suffix);
             AstNode *call = ast_new(AST_CALL, n->line);
             call->a = ast_ident(fn_name, n->line);
             free(fn_name);
             call->list = n->list; /* forward the (already-finalized)
-                constructor arguments to the placeholder allocator -- a
-                real runtime implementation of v32_new_TypeName would be
-                the thing that actually allocates and then invokes the
-                constructor with them; this phase still doesn't do
-                either, see the phase's own doc comment below */
+                constructor arguments -- codegen.c's emit_new_delete_runtime
+                is what actually allocates and invokes the constructor with
+                them now; this phase only decides the SHAPE of the call */
             *slot = call;
             break;
         }
