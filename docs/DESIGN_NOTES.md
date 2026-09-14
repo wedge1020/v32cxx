@@ -1372,11 +1372,14 @@ than guessing -- wrongly adding `&` to something already pointer-typed
 would produce a double pointer, a strictly worse outcome than leaving
 whatever already-known bug reaches that branch in place.
 
-**Traced by hand for `sprite2.cpp`'s exact case**: `sprite.setx(320)` --
-`infer_expr_type` finds `sprite` declared as bare `Player` (not a
-pointer) -- wraps it in `&sprite` -- `target_class == obj_class` (no
-inheritance involved) so no cast gets added on top -- final call:
-`Player__setx__int(&sprite, 320)`. Correct. Also confirmed the fix
+**Traced by hand for `sprite2.cpp`'s exact case, then confirmed against
+the real compiler**: `sprite.setx(320)` -- `infer_expr_type` finds
+`sprite` declared as bare `Player` (not a pointer) -- wraps it in
+`&sprite` -- `target_class == obj_class` (no inheritance involved) so
+no cast gets added on top -- final call:
+`Player__setx__int((&sprite), 320)`. `sprite2.c` now compiles cleanly
+on the actual Vircon32 toolchain (Matthew's report) -- reasoned through
+correctly AND verified, not just the former. Also confirmed the fix
 doesn't over-apply: every existing sample's method calls all use an
 already-pointer receiver (`this`, `new`-allocated, or reference-turned-
 pointer), so `infer_expr_type` returns `AST_POINTER_TYPE` for every one
@@ -1393,6 +1396,73 @@ immediately afterward, so THIS specific program would likely behave
 correctly at runtime even without constructor invocation -- but only by
 coincidence, not because the gap is closed). The constructor-invocation
 work is still the next real piece, not resolved by this round.
+
+**A separate, small sync issue, worth naming for the pattern rather than
+the specific incident**: the `infer_expr_type` exposure (removing
+`static` from its definition in sema.c, adding the matching prototype to
+sema.h) built and compiled cleanly here, but the person's own build
+failed with "static declaration follows non-static declaration" --
+their `sema.h` had picked up the new prototype while their `sema.c`
+still had the old `static` definition, from files having been applied
+individually across a couple of rounds rather than as a matched pair.
+Resolved by overwriting both files wholesale rather than hand-patching.
+Not a code bug -- worth remembering as a recurring category of failure
+mode this project has now hit more than once (the `AST_CAST` `-Wswitch`
+warning from an earlier round was the same root cause): a change that
+spans a `.h`/`.c` pair needs both halves applied together, and partial
+application produces a compiler error that looks like a code problem but
+isn't one.
+
+## Constructor invocation begins: stack-allocated locals
+
+Started the constructor-invocation work `sprite.cpp`/`sprite2.cpp`
+surfaced the need for. A new lowering phase 7 (lower.c/lower.h) makes a
+plain `ClassName var;` declaration -- no explicit initializer -- call a
+matching zero-argument constructor immediately afterward, if one exists
+and has a body. `tests/sample22.cpp` is this project's own copy of
+Matthew's actual hand-written `sprite2.cpp`, added as a real test rather
+than an artificial one.
+
+**Deliberately narrow scope, three specific limitations documented in
+both lower.h and the phase's own code comment, not silently absent:**
+only a zero-argument constructor is matched (the `ClassName var;` syntax
+form has no way to pass arguments at all); a prototype-only constructor
+with no body is skipped rather than called (calling one would repeat the
+exact `v32_new_Player`-shaped mistake -- a call to a C function that was
+never emitted); a VarDecl inside a for-loop's own init clause
+(`for (Player p; ...)`) isn't handled, since inserting the call would
+need to land inside the loop body instead of right after the
+declaration, meaningfully more involved for a pattern nothing currently
+exercises.
+
+**A class with virtual methods still gets its constructor called by this
+phase, but that constructor does NOT populate `this->vtable`** -- there's
+no static vtable INSTANCE for it to point at yet (the vtable struct TYPE
+exists; a populated instance of one doesn't). This phase makes
+non-virtual construction correct; it does not make polymorphic objects
+safe to use yet. Vtable instance generation remains unstarted.
+
+**A stale doc comment fixed in passing, unrelated to this phase's own
+logic but noticed while touching this exact code**: lower.h's phase 6
+documentation still claimed `new`'s grammar "has never supported
+constructor arguments at all" -- true when that comment was written, but
+wrong since the `NEW type_spec '(' opt_arg_list ')'` grammar addition and
+`resolve_new_expr` several rounds ago. Corrected to reflect that
+constructor ARGUMENTS parse and resolve correctly now; only actually
+INVOKING the resolved constructor (and computing a real allocation size)
+remains unimplemented.
+
+**What's still missing for `new` specifically, genuinely blocked on
+information this project doesn't have**: `new T(args)` still lowers to
+a call to an undefined stub (`v32_new_T`) -- confirmed directly,
+`tests/sprite.cpp` (Matthew's hand-written `new`-based version of the
+same program) hits exactly this: `identifier "v32_new_Player" has not
+been declared`. Making this work for real needs knowing how Vircon32
+actually allocates heap memory -- is there a malloc-equivalent runtime
+call, a fixed memory pool this project would need to manage itself,
+something else entirely? Not guessed at here; asked directly instead
+(see the conversation this round, not restated here since the answer
+isn't in yet).
 
 ## Suggested next steps, roughly in order
 

@@ -1044,6 +1044,165 @@ static void new_delete_rewrite_free_functions(AstList *decls) {
     }
 }
 
+/* ---- phase 7: constructor invocation for stack-allocated locals --------
+ *
+ * A plain `ClassName var;` declaration with no explicit initializer
+ * should invoke a matching constructor -- this project has never done
+ * that at all until now, which a genuinely simple hand-written test
+ * (tests/sprite2.cpp is the project's own copy of it) surfaced directly:
+ * `Player sprite;` compiled, but never called `Player::Player()`, so
+ * `sprite.x`/`sprite.y` were uninitialized stack garbage. See
+ * docs/DESIGN_NOTES.md for the full story.
+ *
+ * SCOPE, DELIBERATELY NARROW FOR THIS FIRST ROUND:
+ *
+ *   - Only a ZERO-ARGUMENT constructor is matched -- `ClassName var;`
+ *     syntax has no way to pass constructor arguments at all (that's
+ *     what `ClassName var(args);` or `= ClassName(args)` are for, which
+ *     this project doesn't parse as a var_decl initializer form yet).
+ *
+ *   - Only matched if that constructor HAS A BODY (AST_FUNC_DEF). A
+ *     prototype-only constructor (declared, never defined) is
+ *     deliberately skipped -- inserting a call to one would produce a
+ *     call to a C function that was never emitted, the exact category
+ *     of bug `new`'s placeholder allocator already demonstrated
+ *     (`v32_new_Player` undeclared). Leaving the declaration
+ *     unconstructed in that case is a real, known gap, not silently
+ *     "fixed" by calling something that doesn't exist.
+ *
+ *   - Only a VarDecl appearing directly as a BLOCK statement is
+ *     handled -- NOT one appearing as a for-loop's own init clause
+ *     (`for (Player p; ...)`). Inserting an extra statement there would
+ *     need to land inside the loop BODY instead of right after the
+ *     declaration, which is meaningfully more involved for a pattern no
+ *     current test uses. Documented gap, not silently mishandled.
+ *
+ *   - A class WITH virtual methods still gets its constructor called,
+ *     but that constructor does NOT populate `this->vtable` -- there's
+ *     no static vtable INSTANCE for it to point at yet (the vtable
+ *     struct TYPE exists; an actual populated instance of one doesn't).
+ *     Calling a virtual method on such an object would still dereference
+ *     an uninitialized vtable pointer. This phase makes non-virtual
+ *     construction correct; it does NOT make polymorphic objects safe to
+ *     use yet.
+ *
+ * Runs LAST, after every other phase -- the call this phase builds is
+ * already in its final, codegen-ready form (a direct call to the
+ * constructor's own mangled name, receiver already wrapped in &), so
+ * there's nothing for any earlier phase to do to it, and nothing this
+ * phase needs any earlier phase to have already done to the surrounding
+ * statement list first.
+ */
+
+/* Finds `class_decl`'s own zero-argument constructor, if one exists and
+ * has a body -- see this phase's own doc comment above for exactly why
+ * both conditions matter. Constructors are never inherited in C++, so
+ * this only ever needs to check `class_decl`'s OWN methods list, unlike
+ * find_declaring_class's ancestor-walking elsewhere in this file. */
+static AstNode *find_zero_arg_constructor(AstNode *class_decl) {
+    ClassLayout *layout = (ClassLayout *)class_decl->sema_info;
+    if (layout == NULL) return NULL;
+    for (int i = 0; i < layout->methods.count; i++) {
+        AstNode *m = layout->methods.items[i];
+        if (strcmp(m->str1, class_decl->str1) != 0) continue; /* not a constructor at all */
+        if (m->kind != AST_FUNC_DEF) continue; /* no body -- see doc comment */
+        if (m->list.count == 1) return m; /* just the injected "this" -- zero explicit params */
+    }
+    return NULL;
+}
+
+static void inject_ctor_calls_stmt(AstNode **slot);
+
+/* Rebuilds `block`'s own statement list, inserting a constructor call
+ * immediately after any VarDecl that needs one. Recurses into each
+ * statement FIRST (so a nested block's own VarDecls get handled too)
+ * before appending it -- and any inserted call -- to the new list. */
+static void inject_ctor_calls_block(AstNode *block) {
+    AstList new_list = ast_list_new();
+    for (int i = 0; i < block->list.count; i++) {
+        AstNode *stmt = block->list.items[i];
+        inject_ctor_calls_stmt(&stmt);
+        ast_list_append(&new_list, stmt);
+
+        if (stmt->kind == AST_VAR_DECL && stmt->a == NULL) {
+            AstNode *var_class = type_to_class(stmt->type);
+            if (var_class != NULL) {
+                AstNode *ctor = find_zero_arg_constructor(var_class);
+                if (ctor != NULL) {
+                    FuncSemaInfo *info = (FuncSemaInfo *)ctor->sema_info;
+                    const char *mangled = (info != NULL) ? info->mangled_name : ctor->str1;
+
+                    AstNode *addr = ast_new(AST_UNOP, stmt->line);
+                    addr->str1 = strdup("addr");
+                    addr->a = ast_ident(stmt->str1, stmt->line);
+
+                    AstNode *call = ast_new(AST_CALL, stmt->line);
+                    call->a = ast_ident(mangled, stmt->line);
+                    ast_list_append(&call->list, addr);
+
+                    AstNode *expr_stmt = ast_new(AST_EXPR_STMT, stmt->line);
+                    expr_stmt->a = call;
+
+                    ast_list_append(&new_list, expr_stmt);
+                }
+            }
+        }
+    }
+    block->list = new_list;
+}
+
+static void inject_ctor_calls_stmt(AstNode **slot) {
+    AstNode *s = *slot;
+    if (s == NULL) return;
+    switch (s->kind) {
+        case AST_BLOCK:
+            inject_ctor_calls_block(s);
+            break;
+        case AST_IF:
+            inject_ctor_calls_stmt(&s->b);
+            inject_ctor_calls_stmt(&s->c);
+            break;
+        case AST_WHILE:
+            inject_ctor_calls_stmt(&s->b);
+            break;
+        case AST_FOR:
+            /* Deliberately NOT recursing into s->a (the for-loop's own
+             * init clause) -- see this phase's own doc comment above. */
+            inject_ctor_calls_stmt(&s->d);
+            break;
+        default:
+            break;
+    }
+}
+
+static void inject_ctor_calls_classes(AstList *decls) {
+    for (int i = 0; i < decls->count; i++) {
+        AstNode *n = decls->items[i];
+        if (n->kind == AST_CLASS_DECL) {
+            ClassLayout *layout = (ClassLayout *)n->sema_info;
+            if (layout != NULL) {
+                for (int j = 0; j < layout->methods.count; j++) {
+                    AstNode *m = layout->methods.items[j];
+                    if (m->kind == AST_FUNC_DEF) inject_ctor_calls_stmt(&m->a);
+                }
+            }
+        } else if (n->kind == AST_NAMESPACE_DECL) {
+            inject_ctor_calls_classes(&n->list);
+        }
+    }
+}
+
+static void inject_ctor_calls_free_functions(AstList *decls) {
+    for (int i = 0; i < decls->count; i++) {
+        AstNode *n = decls->items[i];
+        if (n->kind == AST_NAMESPACE_DECL) {
+            inject_ctor_calls_free_functions(&n->list);
+        } else if (n->kind == AST_FUNC_DEF && n->b == NULL) {
+            inject_ctor_calls_stmt(&n->a);
+        }
+    }
+}
+
 int lower_run(AstNode *program) {
     compute_struct_layouts(&program->list);
     this_inject_classes(&program->list);
@@ -1053,6 +1212,8 @@ int lower_run(AstNode *program) {
     fix_references_free_functions(&program->list);
     new_delete_rewrite_classes(&program->list);      /* phase 6 */
     new_delete_rewrite_free_functions(&program->list);
+    inject_ctor_calls_classes(&program->list);        /* phase 7 */
+    inject_ctor_calls_free_functions(&program->list);
     return 0;
 }
 
@@ -1197,6 +1358,6 @@ static void dump_this_injected_methods(const AstList *decls, int indent) {
 void lower_dump(const AstNode *program) {
     printf("---- lowering summary (struct layouts) ----\n");
     dump_struct_layouts(&program->list, 0);
-    printf("---- lowering summary (fully lowered method bodies: phases 2-6) ----\n");
+    printf("---- lowering summary (fully lowered method bodies: phases 2-7) ----\n");
     dump_this_injected_methods(&program->list, 0);
 }

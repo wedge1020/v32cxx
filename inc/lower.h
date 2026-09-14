@@ -78,17 +78,48 @@
  *   tracks reference-ness for a bare identifier, not through a longer
  *   member-access chain.
  *
- *   Phase 6: new/delete-to-runtime-call rewriting -- DELIBERATELY A
- *   PLACEHOLDER. `new T` becomes a call to a per-type stub allocator
- *   (`v32_new_T`); `delete expr` becomes a call to a single generic stub
- *   deallocator (`v32_delete`). Neither invokes a constructor or
- *   computes a real size -- this project has no `sizeof` AST
- *   representation, and `new`'s grammar (`unary_expr: NEW type_spec` in
- *   parser.y) has never supported constructor arguments at all
- *   (`new Foo(1, 2)` isn't parseable). This phase exists so the AST has
- *   SOME concrete, C-shaped call here rather than an unlowerable
- *   AST_NEW/AST_DELETE surviving into codegen; the real runtime library
- *   and the grammar fix are both tracked as future work.
+ *   Phase 6: new/delete-to-runtime-call rewriting -- STILL A
+ *   PLACEHOLDER, though less of one than it used to be. `new T`/
+ *   `new T(args)` becomes a call to a per-type stub allocator
+ *   (`v32_new_T`, with `args` forwarded to it unchanged); `delete expr`
+ *   becomes a call to a single generic stub deallocator (`v32_delete`).
+ *   `new`'s grammar DOES support constructor arguments now (`NEW
+ *   type_spec '(' opt_arg_list ')'` in parser.y, added a few rounds
+ *   after this comment originally claimed otherwise), and sema.c's
+ *   resolve_new_expr resolves which constructor overload a `new T(args)`
+ *   refers to, with real arity/type diagnostics -- but this phase still
+ *   doesn't actually INVOKE that constructor, or compute a real
+ *   allocation size (no `sizeof` AST representation exists). `v32_new_T`
+ *   remains an undefined stub; calling it fails to compile, confirmed
+ *   directly (tests/sprite.cpp, a genuinely hand-written test, hit
+ *   exactly this: `identifier "v32_new_Player" has not been declared`).
+ *   The real runtime library backing it, and actually wiring the
+ *   resolved constructor through to a real call, are both still tracked
+ *   as future work -- see phase 7 below, which closes the equivalent gap
+ *   for STACK-allocated construction, but deliberately does not touch
+ *   this phase's own `new`-specific placeholder at all.
+ *
+ *   Phase 7: constructor invocation for stack-allocated locals. A plain
+ *   `ClassName var;` declaration with no explicit initializer now calls
+ *   a matching zero-argument constructor, if one exists and has a body,
+ *   immediately after the declaration -- closing the gap
+ *   tests/sample22.cpp (a real, hand-written program, not an artificial
+ *   unit test) found: `Player sprite;` used to compile cleanly but never
+ *   call `Player::Player()` at all, leaving `sprite.x`/`sprite.y` as
+ *   uninitialized stack garbage. Deliberately narrow scope for this
+ *   first round: only a zero-argument constructor is matched (this
+ *   syntax form has no way to pass arguments); a prototype-only
+ *   constructor with no body is skipped rather than called (calling one
+ *   would repeat the exact `v32_new_Player`-shaped mistake); a VarDecl
+ *   inside a for-loop's own init clause isn't handled (`for (Player p;
+ *   ...)` -- inserting the call would need to land inside the loop body
+ *   instead of right after the declaration, more involved for a pattern
+ *   nothing currently exercises). A class WITH virtual methods still
+ *   gets its constructor called by this phase, but that constructor does
+ *   NOT populate `this->vtable` -- there's no static vtable INSTANCE for
+ *   it to point at yet (the vtable struct TYPE exists; a populated
+ *   instance of one doesn't). This phase makes non-virtual construction
+ *   correct; it does not make polymorphic objects safe to use yet.
  *
  * NOT done yet: actually emitting any of the above as C text. Every
  * phase so far only produces a data structure or a mutated AST, never
@@ -155,8 +186,9 @@ typedef struct StructLayout {
  * field layout, attached to each class's `lower_info`), phase 2
  * (this-injection), phase 3 (call finalization/vtable dispatch, with
  * phase 4's operator-overload rewriting living inside that same walk),
- * phase 5 (reference-to-pointer), then phase 6 (new/delete placeholder
- * calls) -- every phase from 2 onward mutates method bodies/parameter
+ * phase 5 (reference-to-pointer), phase 6 (new/delete placeholder
+ * calls), then phase 7 (constructor invocation for stack-allocated
+ * locals) -- every phase from 2 onward mutates method bodies/parameter
  * lists in place. Always succeeds (0) -- there's no new validation
  * happening here, just transformation of already-sema-validated data;
  * a nonzero return is
@@ -167,7 +199,7 @@ int lower_run(AstNode *program);
  * kind, declared type rendered in ordinary C++-like syntax rather than
  * sema.c's mangling-safe form, and, for an inherited field, which
  * ancestor actually declared it), followed by every method's now-
- * fully-lowered body (phases 2 through 6's combined output, reusing
+ * fully-lowered body (phases 2 through 7's combined output, reusing
  * ast_dump() -- these are just ordinary AstNode trees, now mutated, so
  * nothing about displaying them needs to be lowering-specific). Same
  * role sema_dump() plays for semantic analysis. */

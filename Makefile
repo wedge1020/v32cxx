@@ -66,27 +66,41 @@ $(BIN_DIR)/v32c++: $(OBJ_DIR)/parser.o $(OBJ_DIR)/lexer.o \
 # %option noyywrap; most don't).
 
 test: all | $(OUT_DIR)
-	./$(BIN_DIR)/v32c++  tests/sample1.cpp  2>&1 | tee out/sample1.txt
-	./$(BIN_DIR)/v32c++  tests/sample2.cpp  2>&1 | tee out/sample2.txt
-	./$(BIN_DIR)/v32c++  tests/sample3.cpp  2>&1 | tee out/sample3.txt
-	-./$(BIN_DIR)/v32c++ tests/sample4.cpp  2>&1 | tee out/sample4.txt
-	-./$(BIN_DIR)/v32c++ tests/sample5.cpp  2>&1 | tee out/sample5.txt
-	./$(BIN_DIR)/v32c++  tests/sample6.cpp  2>&1 | tee out/sample6.txt
-	./$(BIN_DIR)/v32c++  tests/sample7.cpp  2>&1 | tee out/sample7.txt
-	./$(BIN_DIR)/v32c++  tests/sample8.cpp  2>&1 | tee out/sample8.txt
-	./$(BIN_DIR)/v32c++  tests/sample9.cpp  2>&1 | tee out/sample9.txt
-	-./$(BIN_DIR)/v32c++ tests/sample10.cpp 2>&1 | tee out/sample10.txt
-	-./$(BIN_DIR)/v32c++ tests/sample11.cpp 2>&1 | tee out/sample11.txt
-	./$(BIN_DIR)/v32c++  tests/sample12.cpp 2>&1 | tee out/sample12.txt
-	./$(BIN_DIR)/v32c++  tests/sample13.cpp 2>&1 | tee out/sample13.txt
-	./$(BIN_DIR)/v32c++  tests/sample14.cpp 2>&1 | tee out/sample14.txt
-	./$(BIN_DIR)/v32c++  tests/sample15.cpp 2>&1 | tee out/sample15.txt
-	./$(BIN_DIR)/v32c++  tests/sample16.cpp 2>&1 | tee out/sample16.txt
-	./$(BIN_DIR)/v32c++  tests/sample17.cpp 2>&1 | tee out/sample17.txt
-	./$(BIN_DIR)/v32c++  tests/sample18.cpp 2>&1 | tee out/sample18.txt
-	-./$(BIN_DIR)/v32c++ tests/sample19.cpp 2>&1 | tee out/sample19.txt
-	-./$(BIN_DIR)/v32c++ tests/sample20.cpp 2>&1 | tee out/sample20.txt
-	./$(BIN_DIR)/v32c++  tests/sample21.cpp 2>&1 | tee out/sample21.txt
+	./$(BIN_DIR)/v32c++  -c tests/sample1.cpp  2>&1 | tee out/sample1.txt
+	./$(BIN_DIR)/v32c++     tests/sample2.cpp  2>&1 | tee out/sample2.txt
+	./$(BIN_DIR)/v32c++  -c tests/sample3.cpp  2>&1 | tee out/sample3.txt
+	-./$(BIN_DIR)/v32c++ -c tests/sample4.cpp  2>&1 | tee out/sample4.txt
+	-./$(BIN_DIR)/v32c++ -c tests/sample5.cpp  2>&1 | tee out/sample5.txt
+	./$(BIN_DIR)/v32c++  -c tests/sample6.cpp  2>&1 | tee out/sample6.txt
+	./$(BIN_DIR)/v32c++  -c tests/sample7.cpp  2>&1 | tee out/sample7.txt
+	./$(BIN_DIR)/v32c++  -c tests/sample8.cpp  2>&1 | tee out/sample8.txt
+	./$(BIN_DIR)/v32c++  -c tests/sample9.cpp  2>&1 | tee out/sample9.txt
+	-./$(BIN_DIR)/v32c++ -c tests/sample10.cpp 2>&1 | tee out/sample10.txt
+	-./$(BIN_DIR)/v32c++ -c tests/sample11.cpp 2>&1 | tee out/sample11.txt
+	./$(BIN_DIR)/v32c++  -c tests/sample12.cpp 2>&1 | tee out/sample12.txt
+	./$(BIN_DIR)/v32c++  -c tests/sample13.cpp 2>&1 | tee out/sample13.txt
+	./$(BIN_DIR)/v32c++     tests/sample14.cpp 2>&1 | tee out/sample14.txt
+	./$(BIN_DIR)/v32c++  -c tests/sample15.cpp 2>&1 | tee out/sample15.txt
+	./$(BIN_DIR)/v32c++  -c tests/sample16.cpp 2>&1 | tee out/sample16.txt
+	./$(BIN_DIR)/v32c++  -c tests/sample17.cpp 2>&1 | tee out/sample17.txt
+	./$(BIN_DIR)/v32c++  -c tests/sample18.cpp 2>&1 | tee out/sample18.txt
+	-./$(BIN_DIR)/v32c++ -c tests/sample19.cpp 2>&1 | tee out/sample19.txt
+	-./$(BIN_DIR)/v32c++ -c tests/sample20.cpp 2>&1 | tee out/sample20.txt
+	./$(BIN_DIR)/v32c++     tests/sample21.cpp 2>&1 | tee out/sample21.txt
+	./$(BIN_DIR)/v32c++     tests/sample22.cpp 2>&1 | tee out/sample22.txt
+# `-c` (this project's own flag now, not just a real compiler's) opts out
+# of the "must define main" default main.c added this round -- every
+# sample here is a focused unit test of one specific compiler feature,
+# not a complete, standalone-compilable program, EXCEPT sample2, 14, 21,
+# and 22, which genuinely do define their own `main` (sample2's predates
+# this round; sample14/21 were given one specifically so they could also
+# be compiled all the way through by the real Vircon32 toolchain, not
+# just transpiled; sample22 already had one -- it's a real, hand-written
+# program, not an artificial unit test). Without `-c`, every other sample would now fail at the
+# "no main function found" check before ever reaching lowering/codegen --
+# not a bug in that check, just what it's supposed to do by default; this
+# project's own test suite is exactly the kind of "library/module
+# fragment, not a complete program" case `-c` exists for.
 # sample4/sample5 are deliberately-invalid inputs (see their own header
 # comments) -- they're SUPPOSED to return nonzero. The leading '-' tells
 # make to ignore their exit code and keep going, rather than aborting the
