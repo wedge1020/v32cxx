@@ -90,6 +90,7 @@ test: all | $(OUT_DIR)
 	./$(BIN_DIR)/v32c++     tests/sample22.cpp 2>&1 | tee out/sample22.txt
 	./$(BIN_DIR)/v32c++     tests/sample23.cpp 2>&1 | tee out/sample23.txt
 	./$(BIN_DIR)/v32c++     tests/sample24.cpp 2>&1 | tee out/sample24.txt
+	./$(BIN_DIR)/v32c++     tests/sample25.cpp 2>&1 | tee out/sample25.txt
 # `-c` (this project's own flag now, not just a real compiler's) opts out
 # of the "must define main" default main.c added this round -- every
 # sample here is a focused unit test of one specific compiler feature,

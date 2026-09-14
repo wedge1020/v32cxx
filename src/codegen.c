@@ -1014,6 +1014,75 @@ static void emit_v32_delete(FILE *out) {
     fprintf(out, "void v32_delete(void *ptr)\n{\n    free(ptr);\n}\n\n\n");
 }
 
+/* ---- destructor invocation via delete ------------------------------------
+ *
+ * lower.c's new_delete_rewrite_expr now names a `delete obj;` whose
+ * operand's static class is known as "v32_delete_ClassName" rather than
+ * the fully generic "v32_delete" -- this is where THAT gets defined,
+ * mirroring emit_new_delete_runtime's own shape but for teardown:
+ * `v32_delete_ClassName` calls `ClassName`'s own destructor (if one
+ * exists and has a body -- same "must have a body" reasoning as every
+ * other constructor/destructor lookup in this project) before `free()`.
+ *
+ * Unlike `new`, there's no per-overload naming question here at all --
+ * C++ never allows more than one destructor per class (they take no
+ * parameters and can't be overloaded), so "v32_delete_ClassName" is
+ * always unambiguous whenever a class has one.
+ *
+ * DELIBERATELY NOT VIRTUAL DISPATCH. `delete basePtr;` where `basePtr`
+ * statically types as an ancestor but actually points at a derived
+ * object will call the ANCESTOR's destructor, not the derived one --
+ * exactly the classic "non-virtual destructor through a base pointer"
+ * C++ footgun, except this project doesn't even check whether the
+ * destructor was declared `virtual` before deciding this; it always
+ * behaves as if it weren't. Virtual destructor dispatch would need
+ * `new_delete_rewrite_expr`'s AST_DELETE case to route through the same
+ * vtable-dispatch shape finalize_call already builds for an ordinary
+ * virtual method call -- a real, separate piece of future work, not
+ * silently assumed handled by what's here.
+ *
+ * The fully generic `v32_delete(void *ptr)` (emit_v32_delete, above)
+ * remains, unconditionally, as the fallback lower.c uses whenever a
+ * delete operand's static class can't be determined at all -- it just
+ * frees, calling nothing, same as before this round.
+ */
+static void emit_delete_runtime(FILE *out, const AstNode *class_decl) {
+    ClassLayout *layout = (ClassLayout *)class_decl->sema_info;
+    if (layout == NULL) return;
+
+    AstNode *dtor = NULL;
+    for (int i = 0; i < layout->methods.count; i++) {
+        AstNode *m = layout->methods.items[i];
+        if (m->str1 == NULL || m->str1[0] != '~') continue; /* not a destructor */
+        if (m->kind != AST_FUNC_DEF) continue; /* no body -- nothing to call */
+        dtor = m;
+        break; /* at most one can ever exist -- no ambiguity to resolve */
+    }
+
+    fprintf(out, "void v32_delete_%s(%s *ptr)\n{\n", class_decl->str1, class_decl->str1);
+    if (dtor != NULL) {
+        FuncSemaInfo *dtor_info = (FuncSemaInfo *)dtor->sema_info;
+        const char *dtor_mangled = (dtor_info != NULL) ? dtor_info->mangled_name : dtor->str1;
+        fprintf(out, "    %s(ptr);\n", dtor_mangled);
+    }
+    /* else: no destructor with a body exists for this class -- nothing
+     * to call, same as a class with no constructor gets no call from
+     * v32_new_ClassName either. */
+    fprintf(out, "    free(ptr);\n");
+    fprintf(out, "}\n\n\n");
+}
+
+static void emit_delete_runtime_classes(FILE *out, const AstList *decls) {
+    for (int i = 0; i < decls->count; i++) {
+        const AstNode *n = decls->items[i];
+        if (n->kind == AST_CLASS_DECL) {
+            emit_delete_runtime(out, n);
+        } else if (n->kind == AST_NAMESPACE_DECL) {
+            emit_delete_runtime_classes(out, &n->list);
+        }
+    }
+}
+
 static int program_has_any_class(const AstList *decls) {
     for (int i = 0; i < decls->count; i++) {
         const AstNode *n = decls->items[i];
@@ -1053,6 +1122,7 @@ void codegen_run(const AstNode *program, FILE *out) {
     if (needs_misc) {
         emit_new_delete_runtime_classes(out, &program->list);
         emit_v32_delete(out);
+        emit_delete_runtime_classes(out, &program->list);
     }
     emit_function_definitions_classes(out, &program->list);
     emit_function_definitions_free_functions(out, &program->list);

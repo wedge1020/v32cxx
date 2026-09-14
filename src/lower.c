@@ -913,7 +913,31 @@ static void fix_references_free_functions(AstList *decls) {
  * merely accepting and forwarding arguments now.
  */
 
-static void new_delete_rewrite_expr(AstNode **slot) {
+/* Finds `class_decl`'s own destructor, if one exists and has a body --
+ * same "must have a body" reasoning as find_zero_arg_constructor
+ * (phase 7) and the new-side constructor lookups above: calling one
+ * that was never emitted would repeat the exact v32_new_Player-shaped
+ * mistake. Unlike constructors, there's no ambiguity to resolve here at
+ * all -- C++ never allows more than one destructor per class (they
+ * can't be overloaded, and take no parameters), so a class either has
+ * exactly one or none; no per-overload naming question like `new`'s
+ * ever arises for `delete`. A destructor's own AST node is named
+ * "~ClassName" (parser.y), not "ClassName" the way a constructor's is
+ * -- see sema.c's mangle_free_functions for the same distinction
+ * ("dtor" as the mangled name-part rather than the class name). */
+static AstNode *find_destructor(AstNode *class_decl) {
+    ClassLayout *layout = (ClassLayout *)class_decl->sema_info;
+    if (layout == NULL) return NULL;
+    for (int i = 0; i < layout->methods.count; i++) {
+        AstNode *m = layout->methods.items[i];
+        if (m->str1 == NULL || m->str1[0] != '~') continue; /* not a destructor */
+        if (m->kind != AST_FUNC_DEF) continue; /* no body -- see doc comment above */
+        return m;
+    }
+    return NULL;
+}
+
+static void new_delete_rewrite_expr(AstNode **slot, AstNode *class_decl, LocalVarType *locals) {
     AstNode *n = *slot;
     if (n == NULL) return;
     switch (n->kind) {
@@ -926,7 +950,7 @@ static void new_delete_rewrite_expr(AstNode **slot) {
              * needing this same rewriting -- post-order, finalize them
              * before building the replacement call. */
             for (int i = 0; i < n->list.count; i++) {
-                new_delete_rewrite_expr(&n->list.items[i]);
+                new_delete_rewrite_expr(&n->list.items[i], class_decl, locals);
             }
             AstNode *cls = type_to_class(n->type);
             const char *type_name = (cls != NULL) ? cls->str1 : "unknown";
@@ -983,33 +1007,57 @@ static void new_delete_rewrite_expr(AstNode **slot) {
             break;
         }
         case AST_DELETE: {
-            new_delete_rewrite_expr(&n->a);
+            new_delete_rewrite_expr(&n->a, class_decl, locals);
+
+            /* Naming, mirroring `new`'s own reasoning above but simpler:
+             * unlike a constructor, a class can have at most ONE
+             * destructor (never overloaded), so there's no per-overload
+             * ambiguity to resolve here -- "v32_delete_ClassName" is
+             * unambiguous whenever the operand's static class is known
+             * at all. codegen.c's emit_delete_runtime uses this exact
+             * same naming when deciding what to define -- the two have
+             * to agree, same cross-module requirement as `new`'s. Falls
+             * back to the untouched, fully generic "v32_delete" (no
+             * class suffix -- accepts a bare void*, calls nothing but
+             * free()) whenever the operand's class can't be determined
+             * at all -- best-effort, matching this project's established
+             * philosophy elsewhere rather than guessing. */
+            AstNode *obj_class = resolve_expr_class(n->a, class_decl, locals);
+            const char *fn_name = "v32_delete";
+            char *built_name = NULL;
+            if (obj_class != NULL) {
+                size_t len = strlen("v32_delete_") + strlen(obj_class->str1) + 1;
+                built_name = malloc(len);
+                snprintf(built_name, len, "v32_delete_%s", obj_class->str1);
+                fn_name = built_name;
+            }
             AstNode *call = ast_new(AST_CALL, n->line);
-            call->a = ast_ident("v32_delete", n->line);
+            call->a = ast_ident(fn_name, n->line);
+            free(built_name);
             ast_list_append(&call->list, n->a);
             *slot = call;
             break;
         }
         case AST_MEMBER:
-            new_delete_rewrite_expr(&n->a);
+            new_delete_rewrite_expr(&n->a, class_decl, locals);
             break;
         case AST_CALL:
-            new_delete_rewrite_expr(&n->a);
+            new_delete_rewrite_expr(&n->a, class_decl, locals);
             for (int i = 0; i < n->list.count; i++) {
-                new_delete_rewrite_expr(&n->list.items[i]);
+                new_delete_rewrite_expr(&n->list.items[i], class_decl, locals);
             }
             break;
         case AST_BINOP:
         case AST_ASSIGN:
         case AST_SUBSCRIPT:
-            new_delete_rewrite_expr(&n->a);
-            new_delete_rewrite_expr(&n->b);
+            new_delete_rewrite_expr(&n->a, class_decl, locals);
+            new_delete_rewrite_expr(&n->b, class_decl, locals);
             break;
         case AST_UNOP:
-            new_delete_rewrite_expr(&n->a);
+            new_delete_rewrite_expr(&n->a, class_decl, locals);
             break;
         case AST_CAST:
-            new_delete_rewrite_expr(&n->a); /* same reasoning as the
+            new_delete_rewrite_expr(&n->a, class_decl, locals); /* same reasoning as the
                 AST_CAST case in fix_reference_access_expr, above */
             break;
         default:
@@ -1017,40 +1065,52 @@ static void new_delete_rewrite_expr(AstNode **slot) {
     }
 }
 
-static void new_delete_rewrite_stmt(AstNode **slot) {
+static void new_delete_rewrite_stmt(AstNode **slot, AstNode *class_decl, LocalVarType **locals) {
     AstNode *n = *slot;
     if (n == NULL) return;
     switch (n->kind) {
         case AST_BLOCK:
             for (int i = 0; i < n->list.count; i++) {
-                new_delete_rewrite_stmt(&n->list.items[i]);
+                new_delete_rewrite_stmt(&n->list.items[i], class_decl, locals);
             }
             break;
         case AST_IF:
-            new_delete_rewrite_expr(&n->a);
-            new_delete_rewrite_stmt(&n->b);
-            new_delete_rewrite_stmt(&n->c);
+            new_delete_rewrite_expr(&n->a, class_decl, *locals);
+            new_delete_rewrite_stmt(&n->b, class_decl, locals);
+            new_delete_rewrite_stmt(&n->c, class_decl, locals);
             break;
         case AST_WHILE:
-            new_delete_rewrite_expr(&n->a);
-            new_delete_rewrite_stmt(&n->b);
+            new_delete_rewrite_expr(&n->a, class_decl, *locals);
+            new_delete_rewrite_stmt(&n->b, class_decl, locals);
             break;
         case AST_FOR:
-            new_delete_rewrite_stmt(&n->a);
-            new_delete_rewrite_expr(&n->b);
-            new_delete_rewrite_expr(&n->c);
-            new_delete_rewrite_stmt(&n->d);
+            new_delete_rewrite_stmt(&n->a, class_decl, locals);
+            new_delete_rewrite_expr(&n->b, class_decl, *locals);
+            new_delete_rewrite_expr(&n->c, class_decl, *locals);
+            new_delete_rewrite_stmt(&n->d, class_decl, locals);
             break;
         case AST_RETURN:
         case AST_EXPR_STMT:
-            new_delete_rewrite_expr(&n->a);
+            new_delete_rewrite_expr(&n->a, class_decl, *locals);
             break;
-        case AST_VAR_DECL:
-            new_delete_rewrite_expr(&n->a); /* initializer, e.g. `Foo *f = new Foo;` */
+        case AST_VAR_DECL: {
+            new_delete_rewrite_expr(&n->a, class_decl, *locals); /* initializer, e.g. `Foo *f = new Foo;` */
+            LocalVarType *lv = calloc(1, sizeof(LocalVarType));
+            lv->name = n->str1;
+            lv->type = n->type;
+            lv->next = *locals;
+            *locals = lv;
             break;
+        }
         default:
             break;
     }
+}
+
+static void new_delete_rewrite_in_method(AstNode *method, AstNode *class_decl) {
+    if (method->kind != AST_FUNC_DEF) return;
+    LocalVarType *locals = seed_locals_from_params(method);
+    new_delete_rewrite_stmt(&method->a, class_decl, &locals);
 }
 
 static void new_delete_rewrite_classes(AstList *decls) {
@@ -1060,8 +1120,7 @@ static void new_delete_rewrite_classes(AstList *decls) {
             ClassLayout *layout = (ClassLayout *)n->sema_info;
             if (layout != NULL) {
                 for (int j = 0; j < layout->methods.count; j++) {
-                    AstNode *m = layout->methods.items[j];
-                    if (m->kind == AST_FUNC_DEF) new_delete_rewrite_stmt(&m->a);
+                    new_delete_rewrite_in_method(layout->methods.items[j], n);
                 }
             }
         } else if (n->kind == AST_NAMESPACE_DECL) {
@@ -1076,7 +1135,8 @@ static void new_delete_rewrite_free_functions(AstList *decls) {
         if (n->kind == AST_NAMESPACE_DECL) {
             new_delete_rewrite_free_functions(&n->list);
         } else if (n->kind == AST_FUNC_DEF && n->b == NULL) {
-            new_delete_rewrite_stmt(&n->a);
+            LocalVarType *locals = seed_locals_from_params(n);
+            new_delete_rewrite_stmt(&n->a, NULL, &locals);
         }
     }
 }

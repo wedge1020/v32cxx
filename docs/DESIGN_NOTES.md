@@ -1679,6 +1679,59 @@ stays unmangled and gets its return type forced to `void` already.
 Corrected to point at the new quirks document instead of repeating
 outdated narrative.
 
+## Destructor invocation via `delete`
+
+The mirror image of constructor invocation, for teardown instead of
+construction. `delete obj;` now actually calls `obj`'s destructor (if
+one exists and has a body) before freeing -- `v32_delete` used to just
+call `free()` unconditionally, regardless of whatever cleanup logic a
+class's destructor might contain.
+
+**A real design question, worked through rather than assumed**: unlike
+`new`, could the existing single, generic `v32_delete(void *ptr)`
+just be extended to also call a destructor? No -- a `void *` genuinely
+carries no type information at runtime (no RTTI in this C dialect), so
+there's no way for a single shared function to know WHICH destructor to
+call. This forced the same shape of change `new` already needed: `delete
+obj;` is now named after `obj`'s own STATIC class
+(`v32_delete_ClassName`), resolved in lower.c the same way a method
+call's receiver class already gets resolved (`resolve_expr_class`).
+Unlike `new`, there's no per-overload naming question at all here -- a
+destructor can never be overloaded, so "v32_delete_ClassName" is
+unambiguous whenever a class has one. The fully generic `v32_delete`
+remains as the fallback for whenever an operand's static class can't be
+determined.
+
+**Threading `class_decl`/`locals` through a phase that never carried
+them before.** `new_delete_rewrite_expr`/`_stmt`/`_classes`/
+`_free_functions` had never needed either parameter until now (naming
+`v32_new_TypeName`/`v32_delete` never depended on resolving anything
+about the surrounding scope). Resolving a delete operand's class
+needed both, so the whole chain now seeds and threads `locals` the same
+way `finalize_calls_*` already does (reusing `seed_locals_from_params`
+rather than re-deriving that logic a second time).
+
+**Deliberately, explicitly NOT virtual dispatch.** `delete basePtr;`
+where `basePtr` statically types as an ancestor but actually points at
+a derived object will call the ancestor's destructor, not the derived
+one -- the classic "non-virtual destructor through a base pointer" C++
+footgun, except this project doesn't even check whether the destructor
+was declared `virtual` before deciding this; it always behaves as if it
+weren't. Real virtual destructor dispatch would need the `AST_DELETE`
+lowering to route through the same vtable-dispatch shape
+`finalize_call` already builds for an ordinary virtual method call -- a
+real, separate piece of future work, not bundled into or silently
+assumed handled by this round.
+
+`tests/sample25.cpp` (`Logger`, a constructor and a destructor, both
+with real bodies, no virtual methods at all -- deliberately kept
+separate from `sample24.cpp`'s vtable concerns) is the first test in
+this project's suite to actually exercise a destructor being called,
+for the same reason `sample22`/`sample23`/`sample24` all needed adding:
+nothing existing would have exercised the new code path at all
+otherwise (`sample7.cpp`'s `~Shape()` is prototype-only, same gap
+`sample24.cpp` closed for vtable instances last round).
+
 ## Suggested next steps, roughly in order
 
 
