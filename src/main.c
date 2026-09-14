@@ -33,7 +33,7 @@ static void print_version(void) {
      * between the two sibling projects -- see v32cxx.h for VERSION/
      * AUTHOR/URL themselves. */
     printf("v32c++ %s\n", VERSION);
-    printf("C++ Compiler for Vircon32 (v32c++) by %s\n", AUTHOR);
+    printf("C++ Transpiler for Vircon32 (v32c++) by %s\n", AUTHOR);
     printf("  github: %s\n", URL);
 }
 

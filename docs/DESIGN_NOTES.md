@@ -1312,21 +1312,87 @@ home as a small, real demonstration of the pattern rather than leaving
 the file otherwise empty). `VERSION` follows `v32lua`'s own
 YYYYMMDD-plus-same-day-sequence-plus-`-dev` scheme for consistency
 between the two sibling projects -- there was no prior version string to
-preserve compatibility with, so `202609140-dev` is a starting point, not
+preserve compatibility with, so `20260914-dev` is a starting point, not
 a convention this project is locked into.
 
 `main.c` now parses `--version` via `getopt_long` (switched from plain
 `getopt`, which only handles short options) and prints output matching
 `v32lua --version`'s own format exactly:
 ```
-v32c++ 202609140-dev
-C++ Compiler for Vircon32 (v32c++) by Matthew Haas
+v32c++ 20260914-dev
+C++ Transpiler for Vircon32 (v32c++) by Matthew Haas
   github: https://github.com/wedge1020/v32cxx
 ```
 `--version` is deliberately long-option-only, with no `-v` short alias --
 a bare `-v` is reserved for the still-future verbosity-level flag (see
 the CLI-considerations section above), and giving `--version` a `-v`
 alias now would collide with that the moment it gets built.
+
+## A real bug found by a genuinely simple hand-written test
+
+Matthew wrote a small, deliberately simple `sprite.cpp`/`sprite2.cpp`
+pair (a `Player` class with a constructor and two setter methods,
+exercised via `new Player()` in one version and a plain stack-allocated
+`Player sprite;` in the other) specifically to see how the transpiler
+handled something outside the existing test suite's own coverage. Two
+real compile errors came back, and they turned out to be two entirely
+different kinds of problem, not one.
+
+**`sprite.c` (the `new Player()` version): `v32_new_Player` undeclared.**
+Exactly the already-documented placeholder gap -- `new` still doesn't
+invoke a constructor or link to any real allocator, and never claimed
+to. Not a new finding, not fixed here; genuinely needs the constructor-
+invocation work this round didn't attempt.
+
+**`sprite2.c` (the stack-allocated version): a real, previously-
+unexercised bug, now fixed.** `Player__setx__int(sprite, 320)` was
+passing `sprite` -- a plain `struct Player` VALUE -- where the function
+declares `Player *this`. Vircon32 correctly rejected it ("cannot assign
+struct Player to ... struct Player*"). Root cause: `finalize_call`
+(lower.c) has always assumed the object expression in a method call is
+already pointer-typed -- true for `this` itself (this-injection
+guarantees it), true for a `new`-allocated pointer, true for a
+reference-turned-pointer parameter -- but never checked, because every
+existing test's method calls happened to already satisfy that
+assumption. A method called on a genuinely stack-allocated value
+(`Player sprite; sprite.setx(320);`) was never exercised by this
+project's own test suite until this hand-written one, and nothing had
+ever needed the address-of that case actually requires.
+
+Fixed with a new `address_of_if_needed` in `finalize_call`: uses a
+newly-exposed `infer_expr_type` (sema.c/sema.h -- distinct from
+`resolve_expr_class`, which deliberately unwraps the pointer/value
+distinction away for its own purposes and so can't answer this
+question) to check whether the object expression's OWN declared type is
+already a pointer; if not, wraps it in an `AST_UNOP`/`"addr"` node
+(reusing the exact shape this-injection and codegen already handle for
+`&expr` elsewhere -- no new AST kind needed). Defaults to leaving the
+expression untouched when the type can't be determined at all, rather
+than guessing -- wrongly adding `&` to something already pointer-typed
+would produce a double pointer, a strictly worse outcome than leaving
+whatever already-known bug reaches that branch in place.
+
+**Traced by hand for `sprite2.cpp`'s exact case**: `sprite.setx(320)` --
+`infer_expr_type` finds `sprite` declared as bare `Player` (not a
+pointer) -- wraps it in `&sprite` -- `target_class == obj_class` (no
+inheritance involved) so no cast gets added on top -- final call:
+`Player__setx__int(&sprite, 320)`. Correct. Also confirmed the fix
+doesn't over-apply: every existing sample's method calls all use an
+already-pointer receiver (`this`, `new`-allocated, or reference-turned-
+pointer), so `infer_expr_type` returns `AST_POINTER_TYPE` for every one
+of them and `address_of_if_needed` returns the original expression
+completely unchanged -- generated output for the full existing suite
+should be byte-identical to before this fix.
+
+**Important: this does NOT make `sprite2.cpp` fully correct, only fixes
+the pointer-type mismatch.** `Player sprite;` still never calls
+`Player::Player()` -- `sprite.x`/`sprite.y` are still uninitialized
+stack garbage before `setx(320)`/`sety(180)` overwrite them (which,
+notably, is exactly what this particular test's own logic happens to do
+immediately afterward, so THIS specific program would likely behave
+correctly at runtime even without constructor invocation -- but only by
+coincidence, not because the gap is closed). The constructor-invocation
+work is still the next real piece, not resolved by this round.
 
 ## Suggested next steps, roughly in order
 

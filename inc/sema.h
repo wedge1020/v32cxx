@@ -264,6 +264,18 @@ AstNode *find_member_in_hierarchy(AstNode *class_decl, const char *name, AstNode
  * keeps the two from ever quietly disagreeing. */
 AstNode *resolve_expr_class(const AstNode *expr, AstNode *current_class, LocalVarType *locals);
 
+/* Infers an expression's declared TYPE (not the class it resolves to --
+ * resolve_expr_class, above, is for that) -- e.g. for a bare identifier
+ * naming a local/parameter, returns exactly the type node that local was
+ * declared with, whether that's a plain class name (a stack-allocated
+ * value) or a PointerType/ReferenceType wrapping one. Exposed so
+ * lower.c's finalize_call can tell whether an object expression is
+ * ALREADY a pointer before deciding whether it needs an explicit
+ * address-of to become the pointer a method's receiver parameter
+ * requires -- see finalize_call's own doc comment in lower.c for why
+ * that distinction matters and what happens without it. */
+AstNode *infer_expr_type(const AstNode *expr, AstNode *current_class, LocalVarType *locals);
+
 /* Walks up `class_decl`'s own ancestry (via each class's base_class_decl)
  * to find whichever class's OWN ClassLayout.methods list literally
  * contains `target_method` (a pointer-identity search, not a name match

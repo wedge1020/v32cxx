@@ -384,6 +384,44 @@ static AstNode *cast_receiver_if_needed(AstNode *obj_expr, const AstNode *actual
     return cast;
 }
 
+/* Wraps `obj_expr` in an explicit address-of (&) if its OWN declared
+ * type isn't already a pointer -- needed because a method's receiver
+ * parameter is always `ClassName *`, but the object expression a method
+ * is called ON isn't always already a pointer. `this` always is (this-
+ * injection guarantees it); a `new`-allocated or reference-turned-
+ * pointer local always is too -- but a plain, stack-allocated value
+ * local (`Player sprite; sprite.setx(320);`) is NOT, and every existing
+ * test before Matthew's own hand-written sprite2.cpp happened to only
+ * ever exercise the "already a pointer" case, so this gap went entirely
+ * unnoticed until a real, deliberately simple test found it: generated
+ * code was passing `sprite` (a `struct Player` value) directly where
+ * `Player__setx__int` declares `Player *this`, which Vircon32 correctly
+ * rejected ("cannot assign struct Player to ... struct Player*").
+ *
+ * Uses infer_expr_type directly (not resolve_expr_class, which
+ * deliberately unwraps pointer/value distinctions away for CLASS-
+ * resolution purposes and so can't answer this question at all) --
+ * exposed from sema.c specifically for this. */
+static AstNode *address_of_if_needed(AstNode *obj_expr, AstNode *class_decl, LocalVarType *locals) {
+    AstNode *t = infer_expr_type(obj_expr, class_decl, locals);
+    if (t == NULL || t->kind == AST_POINTER_TYPE) {
+        /* Already a pointer, OR we couldn't determine its type at all --
+         * best-effort, same principle as everywhere else in this file:
+         * don't insert a transformation on a guess. Wrongly adding `&`
+         * to an expression that's already a pointer would silently
+         * produce a double pointer, a strictly worse outcome than
+         * leaving the original (already-known) bug in place for
+         * whatever rare case reaches this branch. */
+        return obj_expr;
+    }
+    AstNode *addr = ast_new(AST_UNOP, obj_expr->line);
+    addr->str1 = strdup("addr"); /* same AST_UNOP shape this-injection/
+        codegen already handle elsewhere -- print_unop (codegen.c)
+        already knows "addr" means "(&expr)"; no new AST kind needed */
+    addr->a = obj_expr;
+    return addr;
+}
+
 static void finalize_call(AstNode *call, AstNode *class_decl, LocalVarType *locals) {
     CallResolution *cr = (CallResolution *)call->sema_info;
     if (cr == NULL || cr->resolved_target == NULL) {
@@ -397,9 +435,15 @@ static void finalize_call(AstNode *call, AstNode *class_decl, LocalVarType *loca
     if (callee->kind == AST_MEMBER) {
         /* A method call -- always explicit `obj->name(...)` by this
          * point, since phase 2 (this-injection) already rewrote every
-         * implicit form into this same shape. */
+         * implicit form into this same shape. Note that `obj` here may
+         * or may not ALREADY be a pointer -- this-injection only ever
+         * guarantees that for `this` itself; an ordinary object
+         * expression (a stack-allocated local, say) might not be. */
         AstNode *obj_expr = callee->a;
         AstNode *obj_class = resolve_expr_class(obj_expr, class_decl, locals);
+        /* `receiver` is what actually gets used everywhere below --
+         * guaranteed to be pointer-typed, unlike `obj_expr` itself. */
+        AstNode *receiver = address_of_if_needed(obj_expr, class_decl, locals);
 
         if (target->ival == 1) {
             /* Virtual: dispatch through the vtable. */
@@ -414,12 +458,14 @@ static void finalize_call(AstNode *call, AstNode *class_decl, LocalVarType *loca
             AstNode *vtable_ref = ast_new(AST_MEMBER, call->line);
             vtable_ref->str1 = strdup("->");
             vtable_ref->str2 = strdup("vtable");
-            vtable_ref->a = obj_expr; /* UNCAST here deliberately -- ->vtable
-                sits at the same offset regardless of static type, and every
-                class's OWN vtable struct independently redeclares every
-                canonical field name anyway (see emit_vtable_struct in
-                codegen.c), so there's no correctness reason to cast for
-                this specific access; only the CALL ARGUMENT below needs it */
+            vtable_ref->a = receiver; /* NOT cast to an ancestor type, deliberately
+                -- ->vtable sits at the same offset regardless of static type, and
+                every class's OWN vtable struct independently redeclares every
+                canonical field name anyway (see emit_vtable_struct in codegen.c),
+                so there's no correctness reason to cast for this specific access;
+                only the CALL ARGUMENT below needs it. IS, however, address-of'd
+                the same as the argument -- `->` genuinely requires a pointer,
+                unlike the cast question, which is only about WHICH pointer type */
 
             AstNode *slot_ref = ast_new(AST_MEMBER, call->line);
             slot_ref->str1 = strdup("->");
@@ -429,11 +475,11 @@ static void finalize_call(AstNode *call, AstNode *class_decl, LocalVarType *loca
             call->a = slot_ref;
 
             const AstNode *canonical_class = (obj_class != NULL) ? find_declaring_class(obj_class, canonical) : NULL;
-            prepend_arg(&call->list, cast_receiver_if_needed(obj_expr, obj_class, canonical_class));
+            prepend_arg(&call->list, cast_receiver_if_needed(receiver, obj_class, canonical_class));
         } else {
             /* Non-virtual: direct call to the mangled function. */
             const AstNode *target_class = (obj_class != NULL) ? find_declaring_class(obj_class, target) : NULL;
-            AstNode *arg = cast_receiver_if_needed(obj_expr, obj_class, target_class);
+            AstNode *arg = cast_receiver_if_needed(receiver, obj_class, target_class);
             call->a = ast_ident(target_mangled, call->line);
             prepend_arg(&call->list, arg);
         }

@@ -866,7 +866,7 @@ static void check_member_access(int line, const char *member_name, const AstNode
  * would mean this function's correctness depends on being called AFTER
  * resolution has already happened for every nested call, which the
  * single-pass tree walk doesn't guarantee in general). */
-static AstNode *infer_expr_type(const AstNode *expr, AstNode *current_class, LocalVarType *locals) {
+AstNode *infer_expr_type(const AstNode *expr, AstNode *current_class, LocalVarType *locals) {
     if (expr == NULL) return NULL;
     switch (expr->kind) {
         case AST_INT_LIT: return ast_ident("int", expr->line);
