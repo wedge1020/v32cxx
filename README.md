@@ -3,21 +3,26 @@
 **A C++-subset-to-C transpiler, targeting the [Vircon32](https://www.vircon32.com) fantasy console's C compiler.**
 
 `v32c++` lets you write games and programs for Vircon32 in a subset of
-C++ — classes, inheritance, namespaces, constructors/destructors,
-operator and function overloading — and have it translated into plain C
-that the Vircon32 toolchain already knows how to build. The approach is
-the same one Bjarne Stroustrup's original `cfront` used in the 1980s:
-rather than compiling C++ straight to machine code, translate it to C
-first and let an existing, trusted C compiler do the rest.
+C++ — classes, inheritance, constructors/destructors, virtual functions
+and dynamic dispatch, operator overloading, arrays — and have it
+translated into plain C that the Vircon32 toolchain already knows how to
+build. The approach is the same one Bjarne Stroustrup's original
+`cfront` used in the 1980s: rather than compiling C++ straight to
+machine code, translate it to C first and let an existing, trusted C
+compiler do the rest.
 
-> **Status: early work in progress.** The front end — lexer, parser, AST,
-> and a first slice of semantic analysis — is up and running. **Code
-> generation to Vircon32 C doesn't exist yet.** Right now, running
-> `v32c++` on a `.cpp` file gets you a dump of what it parsed and
-> understood, not a compilable `.c` file. See [Current status](#current-status)
-> below for the honest, detailed picture, and
-> [`docs/DESIGN_NOTES.md`](docs/DESIGN_NOTES.md) if you want the
-> deep-dive on *why* things are built the way they are.
+> **Status: functional, still growing.** The full pipeline — parsing,
+> semantic analysis, lowering, and code generation — works end to end,
+> confirmed against the real Vircon32 C compiler across dozens of test
+> programs (classes, inheritance, virtual dispatch, constructors and
+> destructors, `new`/`delete`, and arrays all compile and run). It's
+> still genuinely early, though: some pieces (notably `break`/`continue`,
+> and a real preprocessor) don't exist yet, and a few others are
+> deliberately partial for now — see [Current status](#current-status)
+> for the honest, detailed picture, and
+> [`docs/DESIGN_NOTES.md`](docs/DESIGN_NOTES.md) for the full
+> round-by-round story of how it got here, including the real bugs
+> found and fixed along the way.
 
 ## Why this exists
 
@@ -26,115 +31,84 @@ Two audiences, one project:
 1. **A teaching tool.** This started as course material for a class that
    teaches game programming on Vircon32, starting from plain C and later
    moving into C++ and object-oriented design. Being able to show
-   students *how* a C++ construct like a virtual function or an
-   out-of-line method definition actually gets parsed — and eventually,
-   how it gets lowered to plain C — is the point, as much as having a
-   working tool.
+   students *how* a C++ construct like a virtual function or a
+   constructor actually gets parsed, resolved, and lowered into plain C
+   is the point, as much as having a working tool.
 2. **A community tool.** The wider Vircon32 homebrew community writes
    games in C today; the goal is to let people opt into a small, well-
    understood subset of C++ instead, without pulling in the weight of
-   templates, exceptions, or a full STL. A small, purpose-built
-   `std::vector`-style container library is a likely eventual companion
-   to this, once code generation exists to make it useful.
+   templates, exceptions, or a full STL.
 
 This is **not** an attempt to support all of C++ — see
 [What's deliberately out of scope](#whats-deliberately-out-of-scope).
 
 ## Current status
 
-What parses and is understood today:
+**Parsing and semantic analysis** cover namespaces, classes with single
+inheritance and access sections, constructors and destructors (in-class
+or out-of-line), `virtual` functions with correctly-recognized overrides,
+function/operator overloading with call-site resolution, qualified
+names, pointers and references, arrays, and the usual statement/
+expression language. Access control is enforced (including through
+inheritance); overload resolution uses argument count and, when needed
+to disambiguate, argument type, never guessing when it can't confidently
+resolve something.
 
-- Namespaces (including reopening the same namespace across a file, e.g.
-  for hardware-access namespaces like `v32::` or `ioports::`)
-- Classes with single inheritance and `public`/`private`/`protected`
-  sections
-- Constructors and destructors, defined either inside the class body or
-  out-of-line (`Player::Player(...) { ... }`)
-- `virtual` function declarations, with overrides correctly recognized
-  even when a derived class doesn't repeat the `virtual` keyword (real
-  C++ semantics)
-- Function and operator overloading, with parameter-type-aware name
-  mangling so overloads don't collide (call-site resolution — knowing
-  which overload a given call *expression* means — isn't implemented yet)
-- Qualified names (`v32::Timer`), pointers and references (`Type*`,
-  `Type&`)
-- A conventional C-like statement/expression language: `if`/`else`,
-  `while`, `for`, the usual operators, `new`/`delete`
+**Lowering** — transforming the semantically-checked program into
+something code generation can work from directly — runs through nine
+phases: struct field layout (with correct vtable-pointer placement
+across a hierarchy), `this`-injection, call finalization (including
+virtual dispatch through the vtable, and natural operator syntax like
+`a + b` resolved against declared overloads), reference-to-pointer
+rewriting, `new`/`delete` lowering, vtable pointer initialization,
+constructor invocation (both for stack-allocated locals and via `new`),
+and destructor invocation (both via `delete` and automatically at scope
+exit, including from an early `return`).
 
-A first slice of semantic analysis then runs over the parsed program and:
+**Code generation** emits real, working Vircon32 C: struct and vtable
+struct definitions, method/function bodies, constructors that actually
+allocate and initialize, destructors that actually run, and virtual
+dispatch that actually works on a real, constructed object — all
+confirmed against the real Vircon32 compiler, not just reasoned through.
 
-- Matches out-of-line method definitions back up to their in-class
-  declaration — by name *and* parameter signature (typedef-transparent,
-  so a method declared using a typedef and defined using its underlying
-  type still matches correctly), so overloaded constructors/methods
-  attach to the right one
-- Computes each class's layout: its data members, its methods (each
-  tagged with its actual access level — `public`/`private`/`protected`,
-  correctly defaulting to private when a class body has no leading
-  access-specifier), and its **vtable** — one slot per distinct virtual
-  method in the hierarchy, with overrides correctly reusing their base's
-  slot
-- Assigns every function and method a mangled name that encodes its
-  parameter types
-- Reports errors (unknown types, mismatched out-of-line definitions)
-  without crashing, so you see everything wrong in one run
-- **Enforces access control**: walks every method/function body and flags
-  illegal `private`/`protected` member access — including through
-  inheritance (a derived class touching a base's private member, even
-  implicitly) — using a best-effort read of each expression's type. It
-  doesn't try to resolve everything (arithmetic results and free-function
-  call results aren't type-checked at all yet), but what it does resolve,
-  it checks correctly, and it never falsely flags what it can't resolve
-- **Resolves call-site overloads**: for a call like `c.add(5, 10)`, picks
-  which specific overload of `add` is actually meant, by argument count
-  and (when more than one candidate shares that count) argument type —
-  covering both method calls and free-function calls. No implicit
-  conversions are modeled, and — same honesty as the point above — a call
-  whose arguments it can't confidently type is left unresolved rather than
-  guessed at, never silently assumed to be fine
+**Arrays** are supported end to end: standard C declarator syntax
+(`int scores[8];`) *and*, as an alternate accepted spelling, Vircon32's
+own native declarator style (`int [8] scores;`) — useful if you're
+already fluent in Vircon32 C or transitioning from it and don't want to
+learn a second convention just for this tool. Initializer lists
+(`int scores[4] = {1, 2, 3, 4};`), array function parameters (decaying
+to a pointer, matching ordinary C semantics), and heap-allocated arrays
+(`new int[n]` / `delete[]`) are all supported too. Array-`new` is
+allocation-only for now — no per-element construction happens yet, since
+there's no per-element analogue of stack-array construction or any
+loop-emission machinery in the code generator yet.
 
-Lowering — transforming what semantic analysis figured out into
-something closer to what generated C needs — is now complete through six
-phases, each confirmed against real test output (including a couple of
-real bugs found and fixed along the way, not just written and assumed
-correct): computing each class's flattened field layout (base class
-fields folded in as a literal prefix, so single-inheritance polymorphism
-works the same way it would in real C++, plus correct vtable-pointer
-placement across a hierarchy); `this`-injection (a method's implicit
-receiver becomes an explicit first parameter, and every implicit member
-reference becomes explicit through it); call finalization (every call —
-including natural operator syntax like `a + b`, resolved against declared
-operator overloads for the first time anywhere in this project — becomes
-its final, codegen-ready form: virtual calls dispatch through the vtable,
-everything else becomes a direct call to the right mangled function);
-reference-to-pointer rewriting; and a placeholder `new`/`delete` lowering
-(explicitly not a real allocator yet — see `docs/DESIGN_NOTES.md` for
-exactly what's simplified and why). Everything above is still a
-transformed AST at this point, not emitted C syntax.
+**A preprocessor pass-through exists, but there's still no real
+preprocessor.** A `#include`, `#define`, or other `#`-line is no longer
+silently discarded — it's captured and re-emitted verbatim at the top of
+the generated file, so a `#include "video.h"` you actually wrote
+survives the round trip. Nothing is interpreted, though: no macro
+expansion, no `#include` resolution, no `#ifdef` evaluation. A real
+preprocessor is still future work.
 
-Code generation has started: `codegen.c` now emits real Vircon32 C for
-every class's struct definition and vtable struct type (handling two
-Vircon32-specific quirks along the way — no `struct` keyword on a type
-reference, only on its definition, and a note for when array-type
-support eventually lands, since Vircon32 reverses the usual declarator
-order for those). Function/method body emission and vtable static
-instances aren't generated yet — that's the next piece.
+**What doesn't exist yet, worth knowing before you rely on it:**
 
-**What's still missing before this is a usable transpiler:** method/
-function body code generation, and vtable static instance generation —
-both pieces of the code generator itself, not the lowering track (which
-is complete and fully verified — see `docs/DESIGN_NOTES.md`). Templates
-and exceptions are intentionally not planned at all (see below). This is
-genuinely early — expect rough edges, and expect this README to need
-updating often as things change.
+- **`break`/`continue`** aren't in the grammar at all yet — planned, not
+  forgotten.
+- **Virtual destructor dispatch.** `delete basePtr;` through an
+  ancestor-typed pointer calls the ancestor's destructor, not the
+  derived one, regardless of whether it was declared `virtual`.
+- **Base-class constructor delegation** (C++ member-initializer lists,
+  `Derived::Derived() : Base(args) {}`) isn't supported — a derived
+  class's constructor has to set inherited fields directly.
+- **Standard-C output mode.** Every Vircon32-specific output quirk this
+  project works around is tracked in
+  [`docs/VIRCON32_QUIRKS.md`](docs/VIRCON32_QUIRKS.md) toward an eventual
+  flag that targets an ordinary, portable C compiler instead — not
+  implemented yet.
 
-**A note on the preprocessor:** there isn't one yet — `#include`/`#define`
-lines are currently just discarded, not expanded (see
-`docs/DESIGN_NOTES.md` for exactly what that breaks). The plan is a
-small, purpose-built preprocessor for this project (`v32pp`), built once
-it's actually needed rather than speculatively now; in the meantime,
-piping source through a real preprocessor (GNU `cpp`) as a stopgap is a
-reasonable option if you need `#include`/`#define` before `v32pp` exists.
+This is genuinely still growing — expect rough edges, and expect this
+README to need updating again as things change.
 
 ## What's deliberately out of scope
 
@@ -145,7 +119,7 @@ planned, ever, rather than "not yet":
 - Exceptions and RTTI
 - Multiple inheritance
 - The full STL — a small, purpose-built container library instead, once
-  there's a code generator to make it useful
+  there's enough of the language surface to make it useful
 
 ## Requirements
 
@@ -165,7 +139,7 @@ make
 ```
 
 This builds `bin/v32c++`. To build and run it against the bundled sample
-program in one step:
+programs in one step:
 
 ```sh
 make test
@@ -174,19 +148,22 @@ make test
 ## Trying it out
 
 ```sh
-./bin/v32c++ path/to/yourfile.cpp
+./bin/v32c++ path/to/yourfile.cpp -o path/to/output.c
 ```
 
-Right now this prints two things: a dump of the parsed AST, and a summary
-from the semantic-analysis pass (class layouts, mangled names, any
-errors found). That's diagnostic output for following along with what
-the tool currently understands — not a `.c` file you can hand to the
-Vircon32 compiler yet.
+Without `-o`, `v32c++` prints diagnostic output — the parsed AST, a
+semantic-analysis summary, and the fully-lowered method bodies — followed
+by the generated C. That diagnostic output is genuinely useful for
+following along with what the tool understood and how it transformed
+your code; `-o` writes just the generated C to a file instead. Use `-c`
+if your input is a library/module fragment without its own `main`.
 
-A handful of example inputs live in `tests/`, including a couple that are
-*deliberately* invalid (an undeclared type, an out-of-line definition with
-no matching prototype) to show that errors are reported cleanly rather
-than crashing the tool.
+A large set of example inputs lives in `tests/`, including a couple that
+are *deliberately* invalid (an undeclared type, an out-of-line
+definition with no matching prototype) to show that errors are reported
+cleanly rather than crashing the tool, and several real, hand-written
+programs (not artificial unit tests) that found real bugs during
+development — see `docs/DESIGN_NOTES.md` for that history.
 
 ## Project layout
 
@@ -200,12 +177,18 @@ src/
   sema.h/.c     semantic-analysis pass: class layouts, out-of-line
                 definition matching, name mangling, access control,
                 call-site overload resolution
-  lower.h/.c    lowering passes, starting with class-to-struct field
-                layout (more phases to come)
+  lower.h/.c    lowering passes: struct layout, this-injection, call
+                finalization, reference-to-pointer, new/delete,
+                vtable init, constructor/destructor invocation
+  codegen.h/.c  Vircon32 C code generator
   driver.h      shared state between the lexer and parser
-  main.c        CLI entry point
-tests/          example .cpp inputs, including intentionally-invalid ones
-docs/           design notes and implementation deep-dives
+  v32cxx.h      project identity (VERSION/AUTHOR/URL) and build-time
+                configuration constants
+  main.c        CLI entry point (-o, -c, --version)
+tests/          example .cpp inputs, including intentionally-invalid
+                ones and several real, hand-written programs
+docs/           design notes, implementation deep-dives, and the
+                Vircon32-specific output-quirk catalog
 ```
 
 ## Feedback

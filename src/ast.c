@@ -88,6 +88,7 @@ static const char *kind_name(AstKind k) {
         case AST_POINTER_TYPE: return "PointerType";
         case AST_REFERENCE_TYPE: return "ReferenceType";
         case AST_ARRAY_TYPE: return "ArrayType";
+        case AST_INIT_LIST: return "InitList";
         case AST_CAST: return "Cast";
     }
     return "?";

@@ -36,16 +36,33 @@
  *      name (`int [8] myarray;`), not after it the way standard C does
  *      (`int myarray[8];`). USE, once declared, is ordinary subscript
  *      syntax (`myarray[2] = myarray[2] + 7;`) -- only the DECLARATION
- *      form is reversed. NOT YET RELEVANT: this project's grammar has no
- *      array-type declarator at all yet (AST_SUBSCRIPT exists as an
- *      expression -- `a[i]` -- but nothing in var_decl/param/typedef
- *      grammar can produce an array TYPE), so there's nothing for this
- *      module to emit an array declaration for today. Recorded here so
- *      it isn't lost: whoever adds array-type support to the grammar
- *      needs to know print_type() (in codegen.c) has to special-case an
- *      array type's declarator by printing the bracketed length BEFORE
- *      the name, unlike every other type this module currently handles
- *      (which are all printed independently of the name being declared).
+ *      form is reversed.
+ *
+ *      NOW IMPLEMENTED. parser.y's var_decl accepts BOTH declarator
+ *      spellings on the C++-side input -- standard-C length-after-name
+ *      (`int scores[8];`) and Vircon32-native-style length-before-name
+ *      (`int [8] scores;`, offered as an alternate spelling for anyone
+ *      already fluent in or transitioning from Vircon32 C directly) --
+ *      producing an identical AST_ARRAY_TYPE (ast.h) either way; the AST
+ *      carries no memory of which spelling the source used. Turned out
+ *      NOT to need the special-casing this comment originally predicted
+ *      print_type() would need for the name-vs-declarator ordering:
+ *      every print_type() call site in this file already follows the
+ *      same "print_type(type), then separately print the name" pattern
+ *      (confirmed by tracing all of them before implementing), so
+ *      print_type() emitting "ElementType [N]" for an AST_ARRAY_TYPE,
+ *      with the name appended afterward exactly as every other type
+ *      already gets, produces the correct Vircon32 form automatically,
+ *      with zero changes needed at any call site.
+ *
+ *      SCOPE LIMITS OF WHAT GOT BUILT, deliberate: only var_decl (which
+ *      covers local variables, class data members, and a for-loop's own
+ *      init clause, all three sharing that one grammar rule) -- NOT
+ *      function parameters (an array parameter decaying to a pointer,
+ *      losing its size, is a separate C semantic this project hasn't
+ *      addressed) and NOT array initializer lists (`= {1, 2, 3}`, a
+ *      different, unbuilt piece of grammar). See
+ *      docs/DESIGN_NOTES.md for the full round.
  *
  * A THIRD QUIRK, discovered while confirming the above, not yet acted on
  * by any codegen phase but worth remembering for whenever one generates

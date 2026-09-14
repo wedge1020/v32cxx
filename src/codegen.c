@@ -5,6 +5,7 @@
 #include "sema.h"
 #include "lower.h"
 #include "codegen.h"
+#include "driver.h" /* g_preprocessor_lines -- see its own doc comment there */
 
 /* ---- type printing ------------------------------------------------------
  *
@@ -461,6 +462,21 @@ static void print_expr(FILE *out, const AstNode *e) {
     switch (e->kind) {
         case AST_INT_LIT:
             fprintf(out, "%d", e->ival);
+            break;
+        case AST_INIT_LIST:
+            /* `{1, 2, 3}` -- positional, same reasoning as
+             * emit_vtable_instance's own struct-initializer choice:
+             * simpler and more likely to be accepted without needing to
+             * confirm a second, independent piece of Vircon32-specific
+             * syntax than C99 designated initializers would be. Only
+             * ever appears as a var_decl's own initializer (`a`), for an
+             * array-typed one -- not a general expression position. */
+            fprintf(out, "{");
+            for (int i = 0; i < e->list.count; i++) {
+                if (i > 0) fprintf(out, ", ");
+                print_expr(out, e->list.items[i]);
+            }
+            fprintf(out, "}");
             break;
         case AST_FLOAT_LIT:
             /* %.17g, not %g -- guarantees a double round-trips through
@@ -1031,6 +1047,34 @@ static void emit_new_delete_runtime_classes(FILE *out, const AstList *decls) {
     }
 }
 
+/* `v32_new_arr_ClassName` -- lower.c's `new_delete_rewrite_expr` names
+ * `new T[N]` this way (distinct from the "v32_new_ClassName..." family
+ * used for single-object `new`, and never ambiguous the way multiple
+ * constructor overloads can be, since there's exactly one shape of
+ * array-new per class). Allocation only -- `malloc(N * sizeof(ClassName))`,
+ * cast, return -- deliberately no per-element construction; see ast.h's
+ * own doc comment on AST_NEW for why. Emitted unconditionally for every
+ * class, same trade-off already made for `v32_new_ClassName`/
+ * `v32_delete_ClassName` (an allocator for a class never actually used
+ * with array-`new` goes unused rather than being scoped out by an
+ * "only if actually used" scan this project hasn't built). */
+static void emit_array_new_runtime(FILE *out, const AstNode *class_decl) {
+    fprintf(out, "%s *v32_new_arr_%s(int n)\n{\n", class_decl->str1, class_decl->str1);
+    fprintf(out, "    return (%s *)malloc(n * sizeof(%s));\n", class_decl->str1, class_decl->str1);
+    fprintf(out, "}\n\n\n");
+}
+
+static void emit_array_new_runtime_classes(FILE *out, const AstList *decls) {
+    for (int i = 0; i < decls->count; i++) {
+        const AstNode *n = decls->items[i];
+        if (n->kind == AST_CLASS_DECL) {
+            emit_array_new_runtime(out, n);
+        } else if (n->kind == AST_NAMESPACE_DECL) {
+            emit_array_new_runtime_classes(out, &n->list);
+        }
+    }
+}
+
 static void emit_v32_delete(FILE *out) {
     fprintf(out, "void v32_delete(void *ptr)\n{\n    free(ptr);\n}\n\n\n");
 }
@@ -1113,7 +1157,22 @@ static int program_has_any_class(const AstList *decls) {
     return 0;
 }
 
+/* Re-emits every '#'-line the lexer captured (driver.h's
+ * g_preprocessor_lines), verbatim, in original order -- see that
+ * struct's own doc comment for the full reasoning. Deliberately goes
+ * FIRST, ahead of even the conditional `#include "misc.h"` codegen_run
+ * may add on its own -- whatever the person actually wrote at the top
+ * of their own file stays at the top of the output, matching ordinary
+ * expectations for a C file, with anything this project itself needs
+ * to add coming after. */
+static void emit_preprocessor_passthrough(FILE *out) {
+    for (int i = 0; i < g_preprocessor_lines.count; i++) {
+        fprintf(out, "%s\n", g_preprocessor_lines.lines[i]);
+    }
+}
+
 void codegen_run(const AstNode *program, FILE *out) {
+    emit_preprocessor_passthrough(out);
     /* misc.h (Vircon32's real malloc()/free(), among other things) is
      * only included when the program has at least one class -- every
      * class gets a v32_new_* allocator (even one never actually used
@@ -1142,6 +1201,7 @@ void codegen_run(const AstNode *program, FILE *out) {
     emit_vtable_instances_classes(out, &program->list);
     if (needs_misc) {
         emit_new_delete_runtime_classes(out, &program->list);
+        emit_array_new_runtime_classes(out, &program->list);
         emit_v32_delete(out);
         emit_delete_runtime_classes(out, &program->list);
     }

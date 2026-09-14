@@ -109,8 +109,33 @@ typedef enum {
                               `new T()` both produce an empty list; this
                               project doesn't distinguish the two, unlike
                               real C++'s default- vs value-initialization
-                              subtlety) */
-    AST_DELETE,           /* a=expr being deleted */
+                              subtlety).
+                              a=array size expression for `new T[N]`
+                              (NULL for the ordinary, single-object
+                              form) -- unlike a stack array's own
+                              declared length (always a compile-time
+                              INT_LITERAL, ast_wrap_array's own `ival`),
+                              N here can be any runtime expression, so
+                              it's held as a full expression node rather
+                              than an int. `new T[N]` and `new T[N](args)`
+                              aren't distinguished from each other either
+                              (constructor arguments alongside an array
+                              size aren't accepted by this grammar at
+                              all -- lower.c/codegen.c's array-`new`
+                              support is allocation-only regardless; see
+                              docs/DESIGN_NOTES.md). */
+    AST_DELETE,           /* a=expr being deleted, ival=1 if this was
+                              `delete[]` rather than plain `delete` (0
+                              otherwise, via ast_new's calloc -- no
+                              alternative ever needs to set this
+                              explicitly). Both currently lower to the
+                              same shape of call regardless of this flag
+                              -- see lower.c's own doc comment on
+                              new_delete_rewrite_expr's AST_DELETE case
+                              for why array delete doesn't yet do
+                              anything array-specific (no per-element
+                              destructor invocation exists for either
+                              new[] or delete[] yet). */
     AST_POINTER_TYPE,     /* a=pointee type -- represents "T *" */
     AST_REFERENCE_TYPE,   /* a=referent type -- represents "T &" */
     AST_ARRAY_TYPE,       /* a=element type, ival=length -- represents "T[N]"
@@ -120,6 +145,13 @@ typedef enum {
                               "ElementType [N]" form on output regardless
                               of which input form was used -- codegen.c's
                               print_type is where that happens */
+    AST_INIT_LIST,        /* list=initializer values, e.g. the "{1, 2, 3}"
+                              in "int arr[3] = {1, 2, 3};" -- ONLY ever
+                              appears as a var_decl's own `a` (initializer),
+                              and only for an array-typed one; this project
+                              has no aggregate/struct initializer syntax of
+                              its own, so this is array-specific, not a
+                              general "braced initializer" concept */
     AST_CAST              /* type=target type, a=expr being cast -- an
                               explicit "(Type)expr". Never produced by the
                               parser (this project's grammar has no C-

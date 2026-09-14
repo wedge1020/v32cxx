@@ -115,6 +115,21 @@
  *   builds for an ordinary virtual method call -- a real, separate
  *   piece of future work.
  *
+ *   ALSO HANDLES, as of a later round: `new T[N]` (array-new) and
+ *   `delete[]`. Array-new is a COMPLETELY separate shape from
+ *   single-object `new`, named "v32_new_arr_ClassName" (distinct from
+ *   the per-constructor-overload family above, and never ambiguous the
+ *   same way -- there's exactly one shape of array-new per class,
+ *   regardless of what constructors it has) and deliberately
+ *   allocation-only: `malloc(N * sizeof(ClassName))`, cast, return,
+ *   nothing more -- no per-element construction happens at all, since
+ *   there's no per-element analogue of phase 7's stack-array support or
+ *   any loop-emission machinery in this project. `delete[]` currently
+ *   lowers IDENTICALLY to plain `delete` (the distinction is recorded
+ *   on the AST, AST_DELETE's own `ival`, but nothing downstream acts on
+ *   it yet) -- for the same reason: no per-element destructor
+ *   invocation exists for either new[] or delete[] yet either.
+ *
  *   Phase 7: constructor invocation for stack-allocated locals. A plain
  *   `ClassName var;` declaration with no explicit initializer now calls
  *   a matching zero-argument constructor, if one exists and has a body,
@@ -165,36 +180,56 @@
  *   class type, whose class has a destructor with a body, now gets that
  *   destructor called wherever it goes out of scope -- both falling off
  *   the end of its enclosing block, and an early `return`, in reverse
- *   declaration order. This is the COMPLETE picture for this project,
- *   not a scoped-down first slice of one: real C++ RAII also has to
- *   handle `break`/`continue`/exceptions unwinding a scope early, but
- *   this project's grammar has neither `break` nor `continue` at all
- *   (confirmed directly -- no token, no AST kind, nothing in lexer.l or
- *   parser.y), and exceptions are out of scope for this project
- *   entirely. Fall-through and `return` are the only two ways control
- *   can leave a block in the language this project actually accepts, so
- *   handling both really is the general solution here. An early
- *   `return expr;` needs a small rewrite -- `expr` must be evaluated
- *   before any destructor runs, so it becomes a nested block holding the
- *   already-computed result in a temporary, the destructor calls, then a
- *   bare `return` of the temporary. A KNOWN, minor inefficiency, not a
- *   correctness issue: a block whose own last statement is always a
- *   `return` still gets a fall-through destructor sequence appended
- *   after it, which is then simply unreachable -- see lower.c's own doc
- *   comment on this phase for why detecting that would need real
- *   reachability analysis, not attempted here. See
- *   `tests/sample27.cpp` for the test exercising the harder cases (an
- *   early return from a nested block with locals live at two levels
- *   simultaneously, and the temporary-variable rewrite) -- confirmed
- *   directly against a locally-built `v32c++` binary for the first time
- *   this project has had one available (Matthew provided the bison/
- *   flex-generated `parser.c`/`lexer.c`/`parser.h` a couple of rounds
- *   back), including a standard-C-approximated syntax check (Vircon32's
- *   own `struct`-keyword quirk substituted back in) to confirm the new
- *   nested-block/temporary-variable output is sound C independent of
- *   Vircon32-specific syntax questions -- not yet confirmed against the
- *   real Vircon32 compiler itself, which still needs Matthew's own
- *   build.
+ *   declaration order. This is the COMPLETE picture for THIS PROJECT AS
+ *   ITS GRAMMAR CURRENTLY STANDS, not a scoped-down first slice of a
+ *   bigger problem: real C++ RAII also has to handle
+ *   `break`/`continue`/exceptions unwinding a scope early, but this
+ *   project's grammar has neither `break` nor `continue` at all right
+ *   now (confirmed directly -- no token, no AST kind, nothing in
+ *   lexer.l or parser.y), and exceptions are out of scope for this
+ *   project entirely. Fall-through and `return` are the only two ways
+ *   control can leave a block in the language this project currently
+ *   accepts, so handling both really is the general solution as things
+ *   stand today.
+ *
+ *   IMPORTANT, CONFIRMED WITH MATTHEW DIRECTLY: the absence of
+ *   `break`/`continue` is temporary, not a permanent design choice --
+ *   they're planned. The moment either exists, THIS PHASE WILL NEED
+ *   REVISITING: a `break`/`continue` inside a loop body can exit a
+ *   scope exactly as early as a `return` does, with the exact same
+ *   need to destroy whatever's live at that point (though only up to
+ *   the loop being exited, not the whole function) before control
+ *   actually transfers. Nothing about that revisit is done here --
+ *   this comment exists so "phase 9 is the complete solution" doesn't
+ *   quietly go stale the way a couple of OTHER paragraphs in this same
+ *   file already did once before (see this file's own history in
+ *   docs/DESIGN_NOTES.md for phase 6's and phase 8's documentation both
+ *   having gone stale after being built, unnoticed for several rounds).
+ *
+ *   An early `return expr;` needs a small rewrite -- `expr` must be
+ *   evaluated before any destructor runs, so it becomes a nested block
+ *   holding the already-computed result in a temporary, the destructor
+ *   calls, then a bare `return` of the temporary. A KNOWN, minor
+ *   inefficiency, not a correctness issue: a block whose own last
+ *   statement is always a `return` still gets a fall-through destructor
+ *   sequence appended after it, which is then simply unreachable -- see
+ *   lower.c's own doc comment on this phase for why detecting that
+ *   would need real reachability analysis, not attempted here.
+ *
+ *   CONFIRMED against the real Vircon32 compiler (Matthew's report,
+ *   clean build/transpile/compile) -- `tests/sample27.cpp` (an early
+ *   return from a nested block with locals live at two levels
+ *   simultaneously, plus the temporary-variable rewrite) is the test
+ *   that exercised this. This was also the first feature of real
+ *   complexity in this project verified LOCALLY before ever reaching
+ *   Matthew at all: with the bison/flex-generated `parser.c`/`lexer.c`/
+ *   `parser.h` he provided, a local `v32c++` build existed for the
+ *   first time, used to transpile the test and trace the output by
+ *   hand, plus a standard-C-approximated syntax check (Vircon32's own
+ *   `struct`-keyword quirk substituted back in) confirming the new
+ *   nested-block/temporary-variable output was sound C independent of
+ *   any Vircon32-specific question -- ahead of, not instead of, the
+ *   real compile that then confirmed it for real.
  *
  * NOT done yet: destructor invocation for `break`/`continue` doesn't
  * apply (see phase 9's own entry above for why), but VIRTUAL destructor

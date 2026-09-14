@@ -1896,6 +1896,123 @@ from this documentation block entirely, never added when phase 8 itself
 was built. Both corrected here, not just phase 9's own new entry added
 on top of stale surrounding text.
 
+## A large round: preprocessor pass-through, array completion, and a clarification on break/continue
+
+Matthew clarified that `break`/`continue`'s absence from this project's
+grammar (which phase 9's own "complete picture" reasoning explicitly
+relied on) is temporary, not permanent -- they're planned. `lower.h`'s
+phase 9 documentation updated to say so directly: the moment either
+exists, phase 9 needs revisiting, since a `break`/`continue` inside a
+loop can exit a scope exactly as early as a `return` does, with the
+same destruction need. Recorded as a standing note rather than left to
+go stale silently the way two OTHER paragraphs in that same file
+already had (phase 6 and phase 8's own documentation, both caught and
+fixed a couple of rounds back) -- naming that pattern explicitly in the
+new note too, so it's harder to repeat a third time.
+
+**Preprocessor pass-through** (Matthew's specific ask): a `#`-line is no
+longer silently dropped. `lexer.l` captures it verbatim into a new
+global (`driver.h`'s `g_preprocessor_lines`); `codegen.c` re-emits every
+captured line at the very top of the generated file, ahead of even the
+conditional `#include "misc.h"` this project may add on its own. NOT
+real preprocessing -- no macro expansion, no `#include` resolution, no
+`#ifdef` evaluation, nothing interprets what was captured at all, stated
+plainly in three separate places (driver.h, lexer.l, and here) rather
+than left to be discovered the hard way. What it DOES fix directly:
+`tests/sample22.cpp` onward have all needed `#include "video.h"`
+manually re-added by hand after every transpile, specifically because
+this didn't exist yet -- `tests/sample28.cpp` is the new test confirming
+that's no longer necessary.
+
+**Array completion**, the three pieces explicitly requested to close out
+the array work before advertising it:
+
+- **Initializer lists** (`int arr[4] = {1, 2, 3, 4};`) -- new
+  `AST_INIT_LIST` node, new `opt_array_initializer` grammar rule
+  (reusing the existing `opt_arg_list` machinery rather than building a
+  parallel comma-list rule from scratch), wired into both accepted array
+  declarator forms. A real gap found and fixed in the same pass, not
+  assumed away: `sema.c`'s `check_node` isn't a fully generic walker --
+  unhandled node kinds fall through to a no-op default case -- so
+  without an explicit `AST_INIT_LIST` case, the values inside an
+  initializer list would never have been checked at all (a call or
+  operator use inside one would have silently skipped semantic
+  analysis). No length-checking against the array's own declared size
+  happens anywhere (neither "too many initializers" nor padding a short
+  list with zeros) -- a real, documented gap, not silently handled.
+- **Array function parameters** (`void foo(int arr[])`) -- decays
+  straight to an ordinary pointer type AT PARSE TIME, matching real
+  C/C++ semantics exactly (an array parameter has no size information
+  preserved at all regardless). This meant no `AST_ARRAY_TYPE` is ever
+  involved for a parameter, and so no sema/lower/codegen changes were
+  needed for this piece at all -- the simplest of the three by a wide
+  margin, once designed correctly.
+- **`new T[N]` / `delete[]`** -- allocation only, deliberately: no
+  per-element construction or destruction happens for either, since
+  there's no per-element analogue of phase 7's stack-array support or
+  any loop-emission machinery anywhere in this project. Named
+  `v32_new_arr_ClassName`, distinct from the per-constructor-overload
+  `v32_new_ClassName...` family used for single-object `new` -- never
+  ambiguous the same way, since there's exactly one shape of array-new
+  per class regardless of what constructors it declares.
+  `delete[] ptr;` currently lowers IDENTICALLY to plain `delete ptr;`
+  (the distinction is recorded on the AST, `AST_DELETE`'s `ival`, but
+  nothing downstream acts on it yet) -- for the same underlying reason.
+
+**A real correctness question investigated before committing to the
+`sum(fixed, 4)` test, not assumed safe.** Would `resolve_overload_generic`
+correctly accept an array-typed argument passed to a decayed-pointer
+parameter? Traced through it directly: when there's only ONE candidate
+for a name (true for `sum`, which isn't overloaded), resolution checks
+arity only, never types at all -- full type-checking only happens once
+there are multiple candidates needing disambiguation. Confirms the
+planned test is safe, but also surfaces a genuine, separate, pre-existing
+limitation worth naming: if a function WERE overloaded between an array
+parameter and something else, `types_equal` almost certainly doesn't
+know about array-to-pointer decay, and would likely reject a call that
+real C++ accepts. Narrow enough (overloading specifically on array vs.
+pointer) that it wasn't fixed this round, but recorded rather than
+quietly left for someone to rediscover.
+
+**Found while touching `AST_NEW` for array-new -- FOUR separate places
+in `lower.c` independently walk `AST_NEW`'s children, and every one of
+them needed the same fix**: this-injection's `rewrite_expr`, phase 3's
+`finalize_calls_expr`, phase 5's `fix_reference_access_expr`, and phase
+6's actual lowering. None of them originally knew about `AST_NEW`'s new
+`a` field (the array-size expression) -- each would have silently
+skipped processing it (a `this`-reference inside `new int[this->count]`
+never rewritten, a method call inside the size expression never
+resolved, a reference-typed local inside it never fixed up) had all
+four not been updated together. Caught by deliberately grepping for
+every `case AST_NEW:` in the file rather than trusting memory of where
+they all were.
+
+**Genuinely unverified as of this writing, same constraint as the
+original array-support round**: this entire round touches `parser.y`
+and `lexer.l` again (the array grammar extensions, the preprocessor
+capture), and bison still isn't available in this sandbox. Every `.c`
+file syntax-checks clean individually, and the design was reasoned
+through carefully at each grammar decision point, but none of it has
+been run through an actual build yet. `tests/sample28.cpp` (preprocessor
+pass-through) and `tests/sample29.cpp` (initializer lists, array
+parameters, `new[]`/`delete[]` together) are the two new tests -- both
+need Matthew's own rebuild before either is more than reasoned-through.
+
+**`README.md` rewritten, not just amended.** It had gone badly stale --
+still describing a state from before code generation existed at all
+("Code generation to Vircon32 C doesn't exist yet," still listing
+method-body emission and vtable instances as the next missing pieces),
+predating essentially everything this project has actually built.
+Rewritten to reflect the real current state -- the full nine-phase
+lowering pipeline, working code generation confirmed against the real
+compiler, arrays as a headline feature (per Matthew's specific request,
+once this round's array-completion work was done), and an honest list of
+what's still missing (`break`/`continue`, virtual destructor dispatch,
+base-class constructor delegation, standard-C mode) rather than nothing
+at all. Kept the same honest-status-callout structure the original had,
+since that framing itself was good; the content underneath it just
+hadn't kept up.
+
 ## Suggested next steps, roughly in order
 
 

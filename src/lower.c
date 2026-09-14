@@ -180,6 +180,11 @@ static void rewrite_expr(AstNode **slot, AstNode *class_decl, LocalVarType *loca
             for (int i = 0; i < n->list.count; i++) {
                 rewrite_expr(&n->list.items[i], class_decl, locals);
             }
+            rewrite_expr(&n->a, class_decl, locals); /* array-new's own
+                size expression, e.g. `new int[this->count]` -- NULL for
+                the ordinary, single-object form, in which case this is
+                a harmless no-op (rewrite_expr already returns immediately
+                on a NULL slot) */
             break;
         default:
             /* Literals, AST_QUALIFIED_ID, ... -- nothing to rewrite;
@@ -601,6 +606,10 @@ static void finalize_calls_expr(AstNode **slot, AstNode *class_decl, LocalVarTyp
             for (int i = 0; i < n->list.count; i++) {
                 finalize_calls_expr(&n->list.items[i], class_decl, locals);
             }
+            finalize_calls_expr(&n->a, class_decl, locals); /* array-new's
+                own size expression -- e.g. `new int[getCount()]` needs
+                THAT call resolved too; NULL for the ordinary,
+                single-object form, a harmless no-op in that case */
             break;
         case AST_DELETE:
             finalize_calls_expr(&n->a, class_decl, locals);
@@ -800,6 +809,8 @@ static void fix_reference_access_expr(AstNode **slot, LocalVarType *locals) {
             for (int i = 0; i < n->list.count; i++) {
                 fix_reference_access_expr(&n->list.items[i], locals);
             }
+            fix_reference_access_expr(&n->a, locals); /* array-new's own
+                size expression, if any */
             break;
         default:
             break;
@@ -930,6 +941,35 @@ static void new_delete_rewrite_expr(AstNode **slot, AstNode *class_decl, LocalVa
     if (n == NULL) return;
     switch (n->kind) {
         case AST_NEW: {
+            /* Array-new (`new T[N]`) is a COMPLETELY different shape
+             * from single-object `new`, handled entirely separately
+             * here rather than threaded through the constructor-overload
+             * naming logic below: it's allocation-only, deliberately --
+             * no per-element construction happens (there's no per-
+             * element analogue of phase 7's stack-array support, and no
+             * loop-emission machinery exists anywhere in this project
+             * yet). Named "v32_new_arr_ClassName" -- distinct from the
+             * single-object "v32_new_ClassName..." family, and never
+             * ambiguous the way multiple constructor overloads can be,
+             * since there's exactly one shape of array-new per class
+             * regardless of what constructors it has (none of them get
+             * called here at all). codegen.c's emit_array_new_runtime
+             * defines it: `malloc(N * sizeof(ClassName))`, cast to the
+             * right pointer type, nothing more. */
+            if (n->a != NULL) {
+                new_delete_rewrite_expr(&n->a, class_decl, locals); /* the size expression itself */
+                AstNode *cls = type_to_class(n->type);
+                const char *type_name = (cls != NULL) ? cls->str1 : "unknown";
+                size_t len = strlen("v32_new_arr_") + strlen(type_name) + 1;
+                char *fn_name = malloc(len);
+                snprintf(fn_name, len, "v32_new_arr_%s", type_name);
+                AstNode *call = ast_new(AST_CALL, n->line);
+                call->a = ast_ident(fn_name, n->line);
+                free(fn_name);
+                ast_list_append(&call->list, n->a);
+                *slot = call;
+                break;
+            }
             /* Constructor arguments (if any -- sema.c's resolve_new_expr
              * has already checked their arity/types against whichever
              * constructor overload they resolved to, or left this alone

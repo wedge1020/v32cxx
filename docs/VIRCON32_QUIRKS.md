@@ -48,19 +48,64 @@ conditional branch.
 
 - **Vircon32 requires**: `int [8] myarray;` -- length before the name.
 - **Standard C**: `int myarray[8];` -- length after.
-- **Status**: Confirmed via Vircon32 documentation/examples, not
-  exercised by any codegen phase yet -- this project's grammar has no
-  array-type declarator at all (`AST_SUBSCRIPT` exists as an expression,
-  `a[i]`, but nothing in `var_decl`/`param`/`typedef` grammar can
-  produce an array TYPE).
-- **Where**: not yet implemented anywhere. Whoever adds array-type
-  support to the grammar needs `print_type()` to special-case an array
-  type's declarator specifically for the DECLARATION form (use, once
-  declared, is ordinary `myarray[2]` subscript syntax in both dialects
-  -- only the declarator itself is reversed).
-- **For a standard-C mode**: `print_type` would need an
-  Vircon32-vs-standard branch specifically for this declarator shape
-  once array types exist at all.
+- **Status**: CONFIRMED against the real compiler -- clean build,
+  transpile, and compile of the array-using test (`tests/sample26.c`,
+  Matthew's report). Function parameters (decay-to-pointer) and array
+  initializer lists (`= {1, 2, 3}`), both originally scoped out here,
+  are now ALSO implemented (a later round) -- see `var_decl`'s own
+  grammar comments and ast.h's `AST_INIT_LIST`. The initializer-list
+  VALUE syntax itself (`{1, 2, 3}`) is positional, not C99 designated --
+  same reasoning as entry 4's cast-syntax choice below: fewer
+  independent pieces of unconfirmed Vircon32-specific syntax to be
+  wrong about at once. That specific piece is UNCONFIRMED as of this
+  writing (this whole later round was written without bison available,
+  same constraint as the original array-declarator work) -- needs
+  Matthew's own build, same as every grammar change in this project
+  does before being treated as settled.
+- **Where**: `print_type()` (codegen.c) emits `ElementType [N]` for an
+  `AST_ARRAY_TYPE` node; every call site already appends the variable
+  name afterward the same way it does for every other type, so no
+  caller needed to change at all once `print_type` handled the new
+  kind. `parser.y`'s `var_decl` accepts array declarators on the input
+  side in BOTH the standard-C form (length after the name) and an
+  alternate Vircon32-native-style form (length before the name) --
+  see quirk-tracking entry below, "Two accepted C++-side input forms."
+  `param` separately accepts `int arr[]`/`int arr[8]`, decaying straight
+  to an ordinary pointer type at parse time (real C/C++ semantics
+  exactly) -- no AST_ARRAY_TYPE involved for a parameter at all, so no
+  further sema/lower/codegen work was needed for that specific piece.
+- **For a standard-C mode**: `print_type` would need a Vircon32-vs-
+  standard branch for this declarator shape -- emit `ElementType` then
+  let the (already-standard-shaped) `[N]` be appended as part of the
+  name-and-brackets instead of before it. A real, if small, second
+  code path, not just a keyword toggle. The initializer-list syntax
+  itself needs no such branch -- `{1, 2, 3}` is valid, unmodified
+  standard C too.
+
+## Two accepted C++-side input forms for arrays (not a Vircon32-vs-
+standard-C quirk itself, but a related design decision worth tracking
+in the same place)
+
+Matthew asked whether the C++-side input could accept EITHER standard
+array syntax (`int scores[8];`) OR Vircon32's own native style
+(`int [8] scores;`) as valid input, specifically so someone already
+fluent in Vircon32 C -- or transitioning from it -- never has to learn
+a second, unrelated declarator convention if they don't want to, while
+someone coming from ordinary C++ can just write what they already know.
+Both produce an identical `AST_ARRAY_TYPE`; the AST carries no memory of
+which spelling was used, and output is always Vircon32's required form
+regardless. Confirmed feasible without grammar ambiguity by reasoning
+through the LALR(1) lookahead at each decision point (not yet confirmed
+by an actual bison build -- see the array-declarators entry above).
+Matthew's own framing for this, worth keeping as a standing principle
+for future syntax work rather than a one-off: "let the C++ appear
+normal, even if the transpile has to adjust things" -- extend the same
+dual-acceptance approach to function-pointer declarators whenever that
+work happens, rather than deciding it fresh each time. If dual
+acceptance for some future construct turns out to create real grammar
+conflicts, the fallback is the plain standard-C form alone, not the
+Vircon32-native one -- ordinary C++ readability was judged the more
+important default to protect.
 
 ## 3. Function-pointer declarator syntax reversed
 

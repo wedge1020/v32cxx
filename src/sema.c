@@ -1353,7 +1353,17 @@ static void check_node(AstNode *n, AstNode *current_class, LocalVarType **locals
             break;
         case AST_NEW:
             for (int i = 0; i < n->list.count; i++) check_node(n->list.items[i], current_class, locals);
+            check_node(n->a, current_class, locals); /* array-new's own size expression, if any (NULL otherwise) */
             resolve_new_expr(n, current_class, *locals);
+            break;
+        case AST_INIT_LIST:
+            /* `= {1, 2, 3}` -- each value needs the same checking any
+             * other expression gets (a value could itself be a call, an
+             * operator use, a member access, etc). No length-checking
+             * against the array's own declared size happens here or
+             * anywhere else yet -- see parser.y's own doc comment on
+             * opt_array_initializer for that gap. */
+            for (int i = 0; i < n->list.count; i++) check_node(n->list.items[i], current_class, locals);
             break;
         case AST_IDENT: {
             /* A bare name that resolves to an INHERITED member (not a

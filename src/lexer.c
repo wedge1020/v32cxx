@@ -562,14 +562,18 @@ char *yytext;
  * comment on symtab_arm_qualifier() in symtab.h for *why* this lives here
  * and not in a parser reduction action.
  *
- * SIMPLIFICATION: no preprocessor. Real C++ source needs macro expansion,
- * #include, and conditional compilation handled before this scanner ever
- * sees it. Pipe input through a preprocessor first (`cpp -E` works in a
- * pinch, or -- better, since you don't want GCC's predefined macros and
- * built-in include paths leaking in -- a minimal preprocessor of your own
- * later). For now, lines starting with '#' are just skipped so simple
- * `#include`-free test files can still use include guards etc. without
- * crashing the scanner; nothing is actually expanded.
+ * SIMPLIFICATION: no real preprocessor. Real C++ source needs macro
+ * expansion and conditional compilation handled before this scanner ever
+ * sees it -- neither happens here. As an interim measure, though, a line
+ * starting with '#' is no longer silently discarded: it's captured
+ * verbatim (see g_preprocessor_lines, driver.h) so codegen.c can re-emit
+ * it at the top of the generated file, ahead of everything else. This
+ * means a `#include "video.h"` a person actually wrote now survives the
+ * round trip instead of having to be manually re-added by hand every
+ * time -- but it is still just pass-through, not preprocessing: no
+ * macro expansion, no #include resolution, no #ifdef evaluation, and a
+ * captured #ifdef/#endif pair doesn't actually gate anything this
+ * scanner sees, since it never interprets what was captured at all.
  */
 #include <stdlib.h>
 #include <string.h>
@@ -585,9 +589,9 @@ static Symbol *g_last_ident_sym = NULL;
 
 #define YY_USER_ACTION \
     yylloc.first_line = yylloc.last_line = g_lex_lineno;
-#line 588 "src/lexer.c"
+#line 592 "src/lexer.c"
 #define YY_NO_INPUT 1
-#line 590 "src/lexer.c"
+#line 594 "src/lexer.c"
 
 #define INITIAL 0
 
@@ -805,10 +809,10 @@ YY_DECL
 		}
 
 	{
-#line 45 "src/lexer.l"
+#line 49 "src/lexer.l"
 
 
-#line 811 "src/lexer.c"
+#line 815 "src/lexer.c"
 
 	while ( /*CONSTCOND*/1 )		/* loops until end-of-file is reached */
 		{
@@ -868,149 +872,162 @@ do_action:	/* This label is used only to access EOF actions. */
 
 case 1:
 YY_RULE_SETUP
-#line 47 "src/lexer.l"
+#line 51 "src/lexer.l"
 { /* line comment, discard */ }
 	YY_BREAK
 case 2:
 /* rule 2 can match eol */
 YY_RULE_SETUP
-#line 48 "src/lexer.l"
+#line 52 "src/lexer.l"
 { /* block comment, discard */ }
 	YY_BREAK
 case 3:
 YY_RULE_SETUP
-#line 50 "src/lexer.l"
-{ /* preprocessor line: not handled yet, see file header */ }
+#line 54 "src/lexer.l"
+{
+    /* Preprocessor pass-through -- see this file's own header comment
+     * and driver.h's PreprocessorLines for the full reasoning. Grows
+     * g_preprocessor_lines by one and stores this line's text verbatim,
+     * in original order; still returns no token, so the parser's own
+     * grammar is completely unaffected by this -- codegen.c is the only
+     * thing that ever reads this list. */
+    if (g_preprocessor_lines.count == g_preprocessor_lines.capacity) {
+        g_preprocessor_lines.capacity = g_preprocessor_lines.capacity ? g_preprocessor_lines.capacity * 2 : 8;
+        g_preprocessor_lines.lines = realloc(g_preprocessor_lines.lines,
+                                              sizeof(char *) * (size_t)g_preprocessor_lines.capacity);
+    }
+    g_preprocessor_lines.lines[g_preprocessor_lines.count++] = strdup(yytext);
+}
 	YY_BREAK
 case 4:
 /* rule 4 can match eol */
 YY_RULE_SETUP
-#line 52 "src/lexer.l"
+#line 69 "src/lexer.l"
 { g_lex_lineno++; }
 	YY_BREAK
 case 5:
 YY_RULE_SETUP
-#line 53 "src/lexer.l"
+#line 70 "src/lexer.l"
 { /* whitespace */ }
 	YY_BREAK
 case 6:
 YY_RULE_SETUP
-#line 55 "src/lexer.l"
+#line 72 "src/lexer.l"
 { g_last_ident_sym = NULL; return CLASS; }
 	YY_BREAK
 case 7:
 YY_RULE_SETUP
-#line 56 "src/lexer.l"
+#line 73 "src/lexer.l"
 { g_last_ident_sym = NULL; return PUBLIC; }
 	YY_BREAK
 case 8:
 YY_RULE_SETUP
-#line 57 "src/lexer.l"
+#line 74 "src/lexer.l"
 { g_last_ident_sym = NULL; return PRIVATE; }
 	YY_BREAK
 case 9:
 YY_RULE_SETUP
-#line 58 "src/lexer.l"
+#line 75 "src/lexer.l"
 { g_last_ident_sym = NULL; return PROTECTED; }
 	YY_BREAK
 case 10:
 YY_RULE_SETUP
-#line 59 "src/lexer.l"
+#line 76 "src/lexer.l"
 { g_last_ident_sym = NULL; return NAMESPACE; }
 	YY_BREAK
 case 11:
 YY_RULE_SETUP
-#line 60 "src/lexer.l"
+#line 77 "src/lexer.l"
 { g_last_ident_sym = NULL; return TYPEDEF; }
 	YY_BREAK
 case 12:
 YY_RULE_SETUP
-#line 61 "src/lexer.l"
+#line 78 "src/lexer.l"
 { g_last_ident_sym = NULL; return RETURN; }
 	YY_BREAK
 case 13:
 YY_RULE_SETUP
-#line 62 "src/lexer.l"
+#line 79 "src/lexer.l"
 { g_last_ident_sym = NULL; return IF; }
 	YY_BREAK
 case 14:
 YY_RULE_SETUP
-#line 63 "src/lexer.l"
+#line 80 "src/lexer.l"
 { g_last_ident_sym = NULL; return ELSE; }
 	YY_BREAK
 case 15:
 YY_RULE_SETUP
-#line 64 "src/lexer.l"
+#line 81 "src/lexer.l"
 { g_last_ident_sym = NULL; return WHILE; }
 	YY_BREAK
 case 16:
 YY_RULE_SETUP
-#line 65 "src/lexer.l"
+#line 82 "src/lexer.l"
 { g_last_ident_sym = NULL; return FOR; }
 	YY_BREAK
 case 17:
 YY_RULE_SETUP
-#line 66 "src/lexer.l"
+#line 83 "src/lexer.l"
 { g_last_ident_sym = NULL; return INT_KW; }
 	YY_BREAK
 case 18:
 YY_RULE_SETUP
-#line 67 "src/lexer.l"
+#line 84 "src/lexer.l"
 { g_last_ident_sym = NULL; return FLOAT_KW; }
 	YY_BREAK
 case 19:
 YY_RULE_SETUP
-#line 68 "src/lexer.l"
+#line 85 "src/lexer.l"
 { g_last_ident_sym = NULL; return VOID_KW; }
 	YY_BREAK
 case 20:
 YY_RULE_SETUP
-#line 69 "src/lexer.l"
+#line 86 "src/lexer.l"
 { g_last_ident_sym = NULL; return BOOL_KW; }
 	YY_BREAK
 case 21:
 YY_RULE_SETUP
-#line 70 "src/lexer.l"
+#line 87 "src/lexer.l"
 { g_last_ident_sym = NULL; return CHAR_KW; }
 	YY_BREAK
 case 22:
 YY_RULE_SETUP
-#line 71 "src/lexer.l"
+#line 88 "src/lexer.l"
 { g_last_ident_sym = NULL; return NEW; }
 	YY_BREAK
 case 23:
 YY_RULE_SETUP
-#line 72 "src/lexer.l"
+#line 89 "src/lexer.l"
 { g_last_ident_sym = NULL; return DELETE; }
 	YY_BREAK
 case 24:
 YY_RULE_SETUP
-#line 73 "src/lexer.l"
+#line 90 "src/lexer.l"
 { g_last_ident_sym = NULL; return THIS; }
 	YY_BREAK
 case 25:
 YY_RULE_SETUP
-#line 74 "src/lexer.l"
+#line 91 "src/lexer.l"
 { g_last_ident_sym = NULL; return VIRTUAL; }
 	YY_BREAK
 case 26:
 YY_RULE_SETUP
-#line 75 "src/lexer.l"
+#line 92 "src/lexer.l"
 { g_last_ident_sym = NULL; return OPERATOR; }
 	YY_BREAK
 case 27:
 YY_RULE_SETUP
-#line 76 "src/lexer.l"
+#line 93 "src/lexer.l"
 { g_last_ident_sym = NULL; return TRUE_KW; }
 	YY_BREAK
 case 28:
 YY_RULE_SETUP
-#line 77 "src/lexer.l"
+#line 94 "src/lexer.l"
 { g_last_ident_sym = NULL; return FALSE_KW; }
 	YY_BREAK
 case 29:
 YY_RULE_SETUP
-#line 79 "src/lexer.l"
+#line 96 "src/lexer.l"
 {
     /* Arm (or clear) the qualifier context for the *next* token, using
      * whatever symbol the previous identifier-like token resolved to.
@@ -1023,72 +1040,72 @@ YY_RULE_SETUP
 	YY_BREAK
 case 30:
 YY_RULE_SETUP
-#line 89 "src/lexer.l"
+#line 106 "src/lexer.l"
 { g_last_ident_sym = NULL; return ARROW; }
 	YY_BREAK
 case 31:
 YY_RULE_SETUP
-#line 90 "src/lexer.l"
+#line 107 "src/lexer.l"
 { g_last_ident_sym = NULL; return EQ; }
 	YY_BREAK
 case 32:
 YY_RULE_SETUP
-#line 91 "src/lexer.l"
+#line 108 "src/lexer.l"
 { g_last_ident_sym = NULL; return NE; }
 	YY_BREAK
 case 33:
 YY_RULE_SETUP
-#line 92 "src/lexer.l"
+#line 109 "src/lexer.l"
 { g_last_ident_sym = NULL; return LE; }
 	YY_BREAK
 case 34:
 YY_RULE_SETUP
-#line 93 "src/lexer.l"
+#line 110 "src/lexer.l"
 { g_last_ident_sym = NULL; return GE; }
 	YY_BREAK
 case 35:
 YY_RULE_SETUP
-#line 94 "src/lexer.l"
+#line 111 "src/lexer.l"
 { g_last_ident_sym = NULL; return ANDAND; }
 	YY_BREAK
 case 36:
 YY_RULE_SETUP
-#line 95 "src/lexer.l"
+#line 112 "src/lexer.l"
 { g_last_ident_sym = NULL; return OROR; }
 	YY_BREAK
 case 37:
 YY_RULE_SETUP
-#line 96 "src/lexer.l"
+#line 113 "src/lexer.l"
 { g_last_ident_sym = NULL; return PLUSEQ; }
 	YY_BREAK
 case 38:
 YY_RULE_SETUP
-#line 97 "src/lexer.l"
+#line 114 "src/lexer.l"
 { g_last_ident_sym = NULL; return MINUSEQ; }
 	YY_BREAK
 case 39:
 YY_RULE_SETUP
-#line 98 "src/lexer.l"
+#line 115 "src/lexer.l"
 { g_last_ident_sym = NULL; return STAREQ; }
 	YY_BREAK
 case 40:
 YY_RULE_SETUP
-#line 99 "src/lexer.l"
+#line 116 "src/lexer.l"
 { g_last_ident_sym = NULL; return SLASHEQ; }
 	YY_BREAK
 case 41:
 YY_RULE_SETUP
-#line 100 "src/lexer.l"
+#line 117 "src/lexer.l"
 { g_last_ident_sym = NULL; return INC; }
 	YY_BREAK
 case 42:
 YY_RULE_SETUP
-#line 101 "src/lexer.l"
+#line 118 "src/lexer.l"
 { g_last_ident_sym = NULL; return DEC; }
 	YY_BREAK
 case 43:
 YY_RULE_SETUP
-#line 103 "src/lexer.l"
+#line 120 "src/lexer.l"
 {
     /* The core of the lexer hack: classify this identifier by consulting
      * the symbol table *right now*, using the qualifier context armed by
@@ -1105,7 +1122,7 @@ YY_RULE_SETUP
 	YY_BREAK
 case 44:
 YY_RULE_SETUP
-#line 117 "src/lexer.l"
+#line 134 "src/lexer.l"
 {
     g_last_ident_sym = NULL;
     yylval.fval = atof(yytext);
@@ -1114,7 +1131,7 @@ YY_RULE_SETUP
 	YY_BREAK
 case 45:
 YY_RULE_SETUP
-#line 123 "src/lexer.l"
+#line 140 "src/lexer.l"
 {
     g_last_ident_sym = NULL;
     yylval.ival = atoi(yytext);
@@ -1123,7 +1140,7 @@ YY_RULE_SETUP
 	YY_BREAK
 case 46:
 YY_RULE_SETUP
-#line 129 "src/lexer.l"
+#line 146 "src/lexer.l"
 {
     /* SIMPLIFICATION: escape sequences inside the string are kept as
      * literal backslash-letter pairs rather than being decoded (\n stays
@@ -1142,7 +1159,7 @@ YY_RULE_SETUP
 case 47:
 /* rule 47 can match eol */
 YY_RULE_SETUP
-#line 144 "src/lexer.l"
+#line 161 "src/lexer.l"
 {
     g_last_ident_sym = NULL;
     if (yytext[1] == '\\') {
@@ -1164,7 +1181,7 @@ YY_RULE_SETUP
 	YY_BREAK
 case 48:
 YY_RULE_SETUP
-#line 163 "src/lexer.l"
+#line 180 "src/lexer.l"
 {
     /* Single-character tokens: operators/punctuation not covered above
      * ('+','-','*','/','%','<','>','=','!','&','|','~','(',')','{','}',
@@ -1176,10 +1193,10 @@ YY_RULE_SETUP
 	YY_BREAK
 case 49:
 YY_RULE_SETUP
-#line 172 "src/lexer.l"
+#line 189 "src/lexer.l"
 ECHO;
 	YY_BREAK
-#line 1182 "src/lexer.c"
+#line 1199 "src/lexer.c"
 case YY_STATE_EOF(INITIAL):
 	yyterminate();
 
@@ -2150,6 +2167,6 @@ void yyfree (void * ptr )
 
 #define YYTABLES_NAME "yytables"
 
-#line 172 "src/lexer.l"
+#line 189 "src/lexer.l"
 
 

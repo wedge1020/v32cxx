@@ -14,6 +14,7 @@ AstNode *g_program = NULL;
 Symbol *g_current_class_sym = NULL;
 int g_lex_lineno = 1;
 const char *g_current_filename = "<stdin>";
+PreprocessorLines g_preprocessor_lines = {NULL, 0, 0};
 
 extern FILE *yyin;
 
@@ -153,3 +154,5 @@ int main(int argc, char **argv) {
     symtab_destroy(g_symtab);
     return rc;
 }
+
+

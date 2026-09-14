@@ -9,14 +9,18 @@
  * comment on symtab_arm_qualifier() in symtab.h for *why* this lives here
  * and not in a parser reduction action.
  *
- * SIMPLIFICATION: no preprocessor. Real C++ source needs macro expansion,
- * #include, and conditional compilation handled before this scanner ever
- * sees it. Pipe input through a preprocessor first (`cpp -E` works in a
- * pinch, or -- better, since you don't want GCC's predefined macros and
- * built-in include paths leaking in -- a minimal preprocessor of your own
- * later). For now, lines starting with '#' are just skipped so simple
- * `#include`-free test files can still use include guards etc. without
- * crashing the scanner; nothing is actually expanded.
+ * SIMPLIFICATION: no real preprocessor. Real C++ source needs macro
+ * expansion and conditional compilation handled before this scanner ever
+ * sees it -- neither happens here. As an interim measure, though, a line
+ * starting with '#' is no longer silently discarded: it's captured
+ * verbatim (see g_preprocessor_lines, driver.h) so codegen.c can re-emit
+ * it at the top of the generated file, ahead of everything else. This
+ * means a `#include "video.h"` a person actually wrote now survives the
+ * round trip instead of having to be manually re-added by hand every
+ * time -- but it is still just pass-through, not preprocessing: no
+ * macro expansion, no #include resolution, no #ifdef evaluation, and a
+ * captured #ifdef/#endif pair doesn't actually gate anything this
+ * scanner sees, since it never interprets what was captured at all.
  */
 #include <stdlib.h>
 #include <string.h>
@@ -47,7 +51,20 @@ ALNUM   [A-Za-z0-9_]
 "//"[^\n]*                     { /* line comment, discard */ }
 "/*"([^*]|\*+[^*/])*\*+"/"      { /* block comment, discard */ }
 
-^"#"[^\n]*                     { /* preprocessor line: not handled yet, see file header */ }
+^"#"[^\n]*                     {
+    /* Preprocessor pass-through -- see this file's own header comment
+     * and driver.h's PreprocessorLines for the full reasoning. Grows
+     * g_preprocessor_lines by one and stores this line's text verbatim,
+     * in original order; still returns no token, so the parser's own
+     * grammar is completely unaffected by this -- codegen.c is the only
+     * thing that ever reads this list. */
+    if (g_preprocessor_lines.count == g_preprocessor_lines.capacity) {
+        g_preprocessor_lines.capacity = g_preprocessor_lines.capacity ? g_preprocessor_lines.capacity * 2 : 8;
+        g_preprocessor_lines.lines = realloc(g_preprocessor_lines.lines,
+                                              sizeof(char *) * (size_t)g_preprocessor_lines.capacity);
+    }
+    g_preprocessor_lines.lines[g_preprocessor_lines.count++] = strdup(yytext);
+}
 
 \n                              { g_lex_lineno++; }
 [ \t\r]+                        { /* whitespace */ }

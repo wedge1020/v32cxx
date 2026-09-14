@@ -116,7 +116,7 @@
 
 %type <node> program top_decl namespace_decl class_decl member
 %type <node> func_decl func_def func_header var_decl typedef_decl out_of_line_def
-%type <node> block stmt for_init opt_initializer
+%type <node> block stmt for_init opt_initializer opt_array_initializer
 %type <node> expr expr_opt unary_expr postfix_expr primary_expr
 %type <node> qualified_id_expr qualified_type type_spec param opt_base
 
@@ -588,6 +588,43 @@ param:
                      : ($2 == 2) ? ast_wrap_reference($1, @1.first_line)
                      : $1;
         }
+    | type_spec pointer_opt IDENTIFIER '[' ']'
+        {
+            /* Array PARAMETER syntax, `void foo(int arr[])` -- matches
+             * real C/C++'s own array-to-pointer decay: a parameter
+             * declared this way is semantically IDENTICAL to a pointer
+             * parameter with no size information preserved at all, so
+             * it's represented as an ordinary AST_POINTER_TYPE directly,
+             * not AST_ARRAY_TYPE (which owns and carries its own known
+             * length -- a parameter never does). Nothing downstream
+             * needs to know this parameter was ever spelled with
+             * brackets at all; by the time sema.c or codegen.c sees it,
+             * it's just a pointer, the same as `int *arr` would produce. */
+            symtab_insert(g_symtab, g_symtab->current, $3, SYM_PARAM);
+            $$ = ast_new(AST_PARAM, @3.first_line);
+            $$->str1 = strdup($3);
+            AstNode *base = ($2 == 1) ? ast_wrap_pointer($1, @1.first_line)
+                          : ($2 == 2) ? ast_wrap_reference($1, @1.first_line)
+                          : $1;
+            $$->type = ast_wrap_pointer(base, @1.first_line);
+        }
+    | type_spec pointer_opt IDENTIFIER '[' INT_LITERAL ']'
+        {
+            /* Array parameter WITH a size written, `void foo(int
+             * arr[8])` -- real C++ accepts and silently ignores the
+             * size here too (it plays no role at all; the parameter is
+             * still just a pointer), so this project does the same:
+             * $5 (the size) is intentionally unused. Same decay
+             * reasoning as the empty-bracket alternative immediately
+             * above. */
+            symtab_insert(g_symtab, g_symtab->current, $3, SYM_PARAM);
+            $$ = ast_new(AST_PARAM, @3.first_line);
+            $$->str1 = strdup($3);
+            AstNode *base = ($2 == 1) ? ast_wrap_pointer($1, @1.first_line)
+                          : ($2 == 2) ? ast_wrap_reference($1, @1.first_line)
+                          : $1;
+            $$->type = ast_wrap_pointer(base, @1.first_line);
+        }
     ;
 
 pointer_opt:
@@ -662,12 +699,10 @@ var_decl:
                      : $1;
             $$->a = $4;
         }
-    | type_spec pointer_opt IDENTIFIER '[' INT_LITERAL ']'
+    | type_spec pointer_opt IDENTIFIER '[' INT_LITERAL ']' opt_array_initializer
         {
             /* Standard C/C++ array declarator: length AFTER the name --
-             * `int scores[8];`. No initializer support yet (an array
-             * initializer list, `= {1, 2, 3}`, is a separate, unbuilt
-             * piece of grammar -- see docs/DESIGN_NOTES.md). */
+             * `int scores[8];`, optionally `= {1, 2, 3};` alongside it. */
             symtab_insert(g_symtab, g_symtab->current, $3, SYM_VAR);
             $$ = ast_new(AST_VAR_DECL, @3.first_line);
             $$->str1 = strdup($3);
@@ -675,9 +710,9 @@ var_decl:
                           : ($2 == 2) ? ast_wrap_reference($1, @1.first_line)
                           : $1;
             $$->type = ast_wrap_array(base, $5, @1.first_line);
-            $$->a = NULL;
+            $$->a = $7;
         }
-    | type_spec '[' INT_LITERAL ']' IDENTIFIER
+    | type_spec '[' INT_LITERAL ']' IDENTIFIER opt_array_initializer
         {
             /* Vircon32-native-style array declarator, accepted as an
              * ALTERNATE valid C++-side input form -- same meaning as
@@ -698,9 +733,27 @@ var_decl:
             $$ = ast_new(AST_VAR_DECL, @5.first_line);
             $$->str1 = strdup($5);
             $$->type = ast_wrap_array($1, $3, @1.first_line);
-            $$->a = NULL;
+            $$->a = $6;
         }
     ;
+
+opt_array_initializer:
+      /* empty */                     { $$ = NULL; }
+    | '=' '{' opt_arg_list '}'         {
+            /* `= {1, 2, 3}` (or `= {}`, an empty list -- accepted
+             * syntactically, same reasoning as opt_arg_list's own empty
+             * case for an ordinary call). No length-checking against the
+             * array's own declared size happens anywhere yet (neither
+             * "too many initializers" nor padding a short list with
+             * zeros) -- sema.c doesn't currently look at this node at
+             * all beyond ordinary expression recursion. A real,
+             * documented gap, not silently handled. */
+            $$ = ast_new(AST_INIT_LIST, @1.first_line);
+            $$->list = $3;
+        }
+    ;
+
+
 
 opt_initializer:
       /* empty */    { $$ = NULL; }
@@ -883,8 +936,34 @@ unary_expr:
         { $$ = ast_new(AST_NEW, @1.first_line); $$->type = $2; }
     | NEW type_spec '(' opt_arg_list ')'
         { $$ = ast_new(AST_NEW, @1.first_line); $$->type = $2; $$->list = $4; }
+    | NEW type_spec '[' expr ']'
+        {
+            /* new T[N] -- heap-allocated array. N is any runtime
+             * expression (not restricted to a compile-time constant the
+             * way a stack array's own declared length is), held
+             * directly as an expression node in `a`. Constructor
+             * arguments alongside an array size (`new T[N](args)`)
+             * aren't accepted by this grammar at all -- see ast.h's own
+             * doc comment on AST_NEW for why, and lower.c/codegen.c for
+             * how this lowers (allocation only, no per-element
+             * construction yet). */
+            $$ = ast_new(AST_NEW, @1.first_line);
+            $$->type = $2;
+            $$->a = $4;
+        }
     | DELETE unary_expr
         { $$ = ast_new(AST_DELETE, @1.first_line); $$->a = $2; }
+    | DELETE '[' ']' unary_expr
+        {
+            /* delete[] ptr -- see ast.h's own doc comment on AST_DELETE
+             * for why this currently lowers identically to plain
+             * `delete` (no per-element destructor invocation exists for
+             * either new[] or delete[] yet); the distinction is
+             * recorded (ival=1) but not yet acted on anywhere. */
+            $$ = ast_new(AST_DELETE, @1.first_line);
+            $$->a = $4;
+            $$->ival = 1;
+        }
     ;
 
 expr:
