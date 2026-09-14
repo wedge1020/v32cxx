@@ -26,3 +26,13 @@ int useSquare(int n) {
 int square(int x) {
     return x * x;
 }
+
+void main() {
+    // Deliberately empty, same reasoning as tests/sample14.cpp's own
+    // main() -- this test is about the free-function dedup fix, not
+    // about doing anything at runtime. Forgotten in this file's first
+    // version, which is exactly why sample21.c failed to compile
+    // ("function main is not declared") even though the actual fix
+    // being tested (no ambiguous-overload error for square()) worked
+    // correctly the whole time.
+}

@@ -1105,6 +1105,19 @@ fix. Confirmed rather than assumed, the same as everything else in this
 file -- worth writing down precisely because it so easily could have
 gone the other way.
 
+**Verified, and one cosmetic follow-up.** `tests/sample21.cpp` confirmed
+the actual fix works -- `call resolutions:` showed `square__int` and
+`addOne__int` both resolving cleanly, no ambiguous-overload error -- but
+the test file itself was missing a `main()` (an oversight, fixed), which
+is what actually made `sample21.c` fail to compile, not the fix under
+test. Separately, `codegen.c`'s free-function prototype walker still
+printed an identical, duplicate prototype line for a declare-then-define
+pair (harmless in C -- confirmed, `sample14.c` compiled cleanly with the
+same duplication -- but needless clutter in a project whose generated
+output doubles as teaching material). A small `SeenNames` tracker in
+`emit_function_prototypes_free_functions` now skips a mangled name once
+its prototype has already been printed once.
+
 ## What's deliberately not here yet
 
 - **Inheritance-aware name lookup at parse/lex time.** `Player : public
@@ -1175,42 +1188,145 @@ gone the other way.
   of room for more (e.g. redeclaring a class, conflicting types on a
   redeclared variable).
 
-## Future CLI/design considerations (not urgent, filed for later)
+## Future CLI/design considerations
 
-Two things Matthew flagged explicitly as "eventually, not now" while
-reviewing the first codegen round -- recorded here so they're available
-when the time comes, not lost in conversation history.
+Started as a list of "eventually, not now" ideas from the first codegen
+round; `-o` and `-c` (see below) have since actually been implemented,
+so this section is now a mix of done and still-future -- kept together
+rather than split, since the still-future items build directly on what's
+now in place.
 
-**A "standard C mode" command-line flag.** As codegen leans further into
-Vircon32-specific quirks (no `struct` keyword on a type reference, and
-eventually the reversed array-declarator order once array-type support
-exists), it's worth being able to switch that behavior off and emit
-plain, portable C instead -- for testing against a normal C compiler, or
-for anyone who wants to retarget this project's output elsewhere. This
-would need, at minimum: (a) emitting `struct Name` (with the keyword) on
-every type reference, not just the definition, since standard C doesn't
-auto-typedef; (b) once array-type support exists, emitting the ordinary
-`T name[N];` declarator order instead of Vircon32's `T [N] name;`. Not
-urgent -- there's exactly one target today -- but worth keeping
-`print_type()` (codegen.c) and whatever eventually handles array
-declarators structured so a mode flag can cleanly select between the two
-forms, rather than the Vircon32-specific choices being hardwired in a way
-that's painful to unwind later.
+**A "standard C mode" command-line flag -- still future.** As codegen
+leans further into Vircon32-specific quirks (no `struct` keyword on a
+type reference, and eventually the reversed array-declarator order once
+array-type support exists), it's worth being able to switch that
+behavior off and emit plain, portable C instead -- for testing against a
+normal C compiler, or for anyone who wants to retarget this project's
+output elsewhere. This would need, at minimum: (a) emitting `struct Name`
+(with the keyword) on every type reference, not just the definition,
+since standard C doesn't auto-typedef; (b) once array-type support
+exists, emitting the ordinary `T name[N];` declarator order instead of
+Vircon32's `T [N] name;`. Not urgent -- there's exactly one target
+today -- but worth keeping `print_type()` (codegen.c) and whatever
+eventually handles array declarators structured so a mode flag can
+cleanly select between the two forms, rather than the Vircon32-specific
+choices being hardwired in a way that's painful to unwind later.
 
-**Keep every non-code dump section, permanently -- eventually behind a
-flag, not by default removing any of it.** `v32c++`'s current behavior
-(AST dump, semantic-analysis summary, struct layouts, fully-lowered
-method bodies, generated C -- all unconditional, every run) is explicitly
-valuable as-is for the course this project is teaching material for:
-seeing every stage of the pipeline is the point, not a debug-mode
-side effect to be trimmed away once codegen matures. The only thing
-worth adding later is a CLI flag to select a QUIET mode (generated C
-only, for anyone who just wants to build something) -- the full,
-verbose, every-stage-visible output should remain the default, or at
-minimum trivially available, indefinitely. Whatever flag-parsing
-eventually gets added to `main.c` (there isn't any yet -- `argv[1]` is
-just the filename) should keep this distinction in mind rather than
-accidentally making the teaching-relevant output an opt-in afterthought.
+**Verbosity levels (`-v`, `-vv`, `-vvv`) -- still future, deliberately
+NOT touched this round.** `v32c++`'s current behavior (AST dump,
+semantic-analysis summary, struct layouts, fully-lowered method bodies,
+generated C -- all unconditional, every run) is explicitly valuable
+as-is for the course this project is teaching material for: seeing every
+stage of the pipeline is the point, not a debug-mode side effect to be
+trimmed away once codegen matures. Matthew's own shape for this, stated
+directly: `-v` shows top-level actions only; `-v -v`/`-vv` shows more/all
+of what's unconditionally shown today; a further `-vvv` split if a clear
+enough division exists once this actually gets built. The full, verbose,
+every-stage-visible output should remain the default (or at minimum
+trivially available) regardless of how this ends up structured --
+whatever eventually implements this needs to avoid accidentally making
+the teaching-relevant output an opt-in afterthought. A genuinely bigger
+restructuring than `-o`/`-c` (touches every dump function in main.c, not
+just the two new flags added this round), which is exactly why it's
+still deliberately deferred to its own round rather than folded in here.
+
+**`-o <file>` -- IMPLEMENTED this round.** `main.c` now accepts
+`-o output.c` (via `getopt`) to write generated Vircon32 C directly to a
+file instead of interleaving it into the "generated Vircon32 C" dump
+section on stdout -- `codegen_run()` already took a `FILE *` rather than
+assuming stdout, so this needed no changes to codegen.c itself, only to
+main.c's own driving logic.
+
+**`v32c++` requiring `main()` by default, with `-c` to opt out --
+IMPLEMENTED this round, superseding the "must never require main()"
+framing from an earlier version of this section.** That earlier framing
+was importantly half right and half wrong: the underlying TRANSPILATION
+capability genuinely never has needed `main()` to exist and still
+doesn't -- `sema_run()`, `lower_run()`, and `codegen_run()` have no
+concept of "main" as anything other than an ordinary (if specially-
+mangled) free function, and passing `-c` produces byte-identical output
+to what every version of this tool has always produced. What changed is
+main.c's own DEFAULT CLI behavior: unless `-c` is passed, it now checks
+(`sema_program_has_main`, sema.c/sema.h -- a query, not a validation
+sema_run() itself performs or cares about) for an actual top-level
+`AST_FUNC_DEF` named `main`, and refuses to proceed to lowering/codegen
+if none exists, printing an error suggesting `-c` instead. Matches a
+real compiler's own `-c` ("compile only," no need for a complete,
+linkable program) closely enough that the flag name was reused directly
+rather than inventing a new one.
+
+**This existing test suite is exactly the "-c" scenario, and needed
+updating to reflect that.** Every sample file except `sample2.cpp`,
+`sample14.cpp`, and `sample21.cpp` (the only three with a genuine
+`main`) would have started failing `make test` immediately once the
+new default landed -- not a regression in those files, just the new
+default correctly recognizing what these files have always actually
+been: focused unit tests of one specific compiler feature each, never
+intended as complete, standalone-compilable programs. The Makefile's
+`test` target now passes `-c` to every sample except those three.
+
+**A future multi-file / `#include`-oriented transpile mode -- still an
+idea, not a plan, and NOT the same thing as the `-c` flag above.**
+Matthew's original framing of this (raised alongside the `-c` idea, in
+the same message) was closer to a genuine "produce output meant to be
+`#include`d into something else" mode -- which `-c` as actually
+implemented doesn't do; it only disables the main-required check, it
+doesn't change what gets emitted at all. That richer idea -- something
+that actually shapes generated output for the "assemble a whole program
+from several `#include`d pieces" workflow Vircon32's own lack of
+multi-file compilation implies -- remains genuinely unbuilt and
+undesigned. Filed as a real possibility worth having in mind for later,
+not a commitment, and not to be confused with the `-c` flag that now
+exists but does something narrower.
+
+**C++ input syntax should stay ordinary C++, regardless of what Vircon32
+itself needs on the output side.** An explicit, important principle for
+whenever array-type support and function-pointer types get added to the
+grammar: the C++ SOURCE this project accepts should use normal,
+unsurprising declarator syntax (`int arr[8];`, `ReturnType (*name)
+(ParamTypes);`) -- never Vircon32's own reversed/quirky forms. Codegen's
+job is the translation from normal C++ syntax to whatever Vircon32
+actually wants on output (the reversed array-bracket order, the
+`ReturnType(ParamTypes)* name;` function-pointer form already confirmed
+and implemented for vtable struct fields) -- never the other way around,
+and never by making the accepted C++ input itself quirky to match the
+target. This is the same principle the "standard C mode" flag idea above
+already points at from a different angle (being able to swap Vircon32's
+output quirks for portable C without touching how source gets written or
+parsed) -- worth keeping in mind together as this project's two type-
+system-adjacent fronts (arrays, function pointers) actually get built,
+not just the codegen-output side of each.
+
+## `v32cxx.h`, and `--version`
+
+A new `src/v32cxx.h` -- project-wide identifying information (`VERSION`,
+`AUTHOR`, `URL`) plus a place for build-time configuration constants,
+modeled directly on the sibling `v32lua` project's own `v32lua.h`.
+Deliberately NOT structured the same way as `v32lua.h` (which every file
+in that project includes) -- this project's headers are already more
+narrowly scoped (`ast.h`, `sema.h`, `lower.h`, `codegen.h`, `driver.h`,
+`symtab.h` each own one specific piece), so only what actually needs
+something declared here includes it: `main.c` (for `--version`) and
+`symtab.h` (for `SYMTAB_BUCKETS`, relocated there from its own previous
+home as a small, real demonstration of the pattern rather than leaving
+the file otherwise empty). `VERSION` follows `v32lua`'s own
+YYYYMMDD-plus-same-day-sequence-plus-`-dev` scheme for consistency
+between the two sibling projects -- there was no prior version string to
+preserve compatibility with, so `202609140-dev` is a starting point, not
+a convention this project is locked into.
+
+`main.c` now parses `--version` via `getopt_long` (switched from plain
+`getopt`, which only handles short options) and prints output matching
+`v32lua --version`'s own format exactly:
+```
+v32c++ 202609140-dev
+C++ Compiler for Vircon32 (v32c++) by Matthew Haas
+  github: https://github.com/wedge1020/v32cxx
+```
+`--version` is deliberately long-option-only, with no `-v` short alias --
+a bare `-v` is reserved for the still-future verbosity-level flag (see
+the CLI-considerations section above), and giving `--version` a `-v`
+alias now would collide with that the moment it gets built.
 
 ## Suggested next steps, roughly in order
 

@@ -46,7 +46,7 @@ typedef struct Symbol {
     struct Symbol *next;       /* hash bucket chain */
 } Symbol;
 
-#define SYMTAB_BUCKETS 64
+#include "v32cxx.h" /* SYMTAB_BUCKETS -- see v32cxx.h's own comment on it */
 
 typedef struct Scope {
     Symbol *buckets[SYMTAB_BUCKETS];

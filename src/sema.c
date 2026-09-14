@@ -1440,7 +1440,34 @@ static void access_check_free_functions(AstList *decls) {
     }
 }
 
+/* Checks whether the program defines an actual `main` -- specifically a
+ * top-level (never a method; see mangle()'s own class_name == NULL
+ * restriction on the same special-casing) AST_FUNC_DEF, not merely a
+ * bare prototype declaring one. Exists for main.c's own CLI-level
+ * "require a complete, standalone-compilable program by default" check
+ * (the `-c` flag disables it) -- entirely separate from anything
+ * sema_run() itself validates; this project's compiler has never
+ * required a `main` to exist to transpile something correctly, and
+ * still doesn't -- this is purely about main.c's own default behavior
+ * when the person hasn't asked for anything else. */
+static int decls_have_main(const AstList *decls) {
+    for (int i = 0; i < decls->count; i++) {
+        AstNode *n = decls->items[i];
+        if (n->kind == AST_NAMESPACE_DECL) {
+            if (decls_have_main(&n->list)) return 1;
+        } else if (n->kind == AST_FUNC_DEF && strcmp(n->str1, "main") == 0) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
+int sema_program_has_main(const AstNode *program) {
+    return decls_have_main(&program->list);
+}
+
 int sema_run(AstNode *program) {
+
     g_error_count = 0;
     free_registry();          /* defensive: in case sema_run() is ever called twice in one process */
     free_typedef_registry();  /* same */

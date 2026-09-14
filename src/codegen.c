@@ -1,4 +1,5 @@
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include "ast.h"
 #include "sema.h"
@@ -702,20 +703,57 @@ static void emit_function_prototypes_classes(FILE *out, const AstList *decls) {
     }
 }
 
-static void emit_function_prototypes_free_functions(FILE *out, const AstList *decls) {
+/* Tracks which mangled free-function names have already had a prototype
+ * printed, so an ordinary declare-then-define free function (register_
+ * free_function in sema.c dedupes these at the REGISTRY level, for
+ * overload-resolution purposes -- but this walk reads the raw AST decls
+ * directly, which still has both the separate FUNC_DECL and FUNC_DEF
+ * nodes) doesn't get an identical prototype line printed twice. Harmless
+ * either way in C (a redundant, identical redeclaration is legal, and
+ * this exact duplication compiled cleanly before this fix existed) --
+ * this is purely about not cluttering generated output with a needless
+ * duplicate line, for a project whose generated output is also meant to
+ * be read as teaching material. */
+typedef struct {
+    const char **names;
+    int count;
+    int capacity;
+} SeenNames;
+
+static int seen_names_contains(const SeenNames *seen, const char *name) {
+    for (int i = 0; i < seen->count; i++) {
+        if (strcmp(seen->names[i], name) == 0) return 1;
+    }
+    return 0;
+}
+
+static void seen_names_add(SeenNames *seen, const char *name) {
+    if (seen->count == seen->capacity) {
+        seen->capacity = seen->capacity ? seen->capacity * 2 : 8;
+        seen->names = realloc(seen->names, sizeof(char *) * (size_t)seen->capacity);
+    }
+    seen->names[seen->count++] = name;
+}
+
+static void emit_function_prototypes_free_functions(FILE *out, const AstList *decls, SeenNames *seen) {
     for (int i = 0; i < decls->count; i++) {
         const AstNode *n = decls->items[i];
         if (n->kind == AST_NAMESPACE_DECL) {
-            emit_function_prototypes_free_functions(out, &n->list);
-        } else if (n->kind == AST_FUNC_DEF && n->b == NULL) {
-            emit_function_prototype(out, n);
-        } else if (n->kind == AST_FUNC_DECL) {
-            /* A prototype-only free function (e.g. `int doubleIt(int x);`
-             * with no body anywhere in this file) -- no this-injection
-             * concern at all here (that only ever applies to methods),
-             * so its own parameter list is already exactly right;
-             * emit_function_prototype handles it unchanged. */
-            emit_function_prototype(out, n);
+            emit_function_prototypes_free_functions(out, &n->list, seen);
+        } else if ((n->kind == AST_FUNC_DEF && n->b == NULL) || n->kind == AST_FUNC_DECL) {
+            /* Covers both a genuine free function's body (n->b == NULL
+             * excludes an out-of-line method definition's own top-level
+             * duplicate) and a prototype-only free function (e.g.
+             * `int doubleIt(int x);` with no body anywhere in this file
+             * -- no this-injection concern at all here, that only ever
+             * applies to methods, so its own parameter list is already
+             * exactly right). */
+            FuncSemaInfo *info = (FuncSemaInfo *)n->sema_info;
+            const char *name = (info != NULL) ? info->mangled_name : n->str1;
+            if (!seen_names_contains(seen, name)) {
+                emit_function_prototype(out, n);
+                seen_names_add(seen, name);
+            }
         }
     }
 }
@@ -760,7 +798,9 @@ void codegen_run(const AstNode *program, FILE *out) {
     fprintf(out, "\n");
     emit_classes(out, &program->list);
     emit_function_prototypes_classes(out, &program->list);
-    emit_function_prototypes_free_functions(out, &program->list);
+    SeenNames seen = {0};
+    emit_function_prototypes_free_functions(out, &program->list, &seen);
+    free(seen.names);
     fprintf(out, "\n");
     emit_function_definitions_classes(out, &program->list);
     emit_function_definitions_free_functions(out, &program->list);

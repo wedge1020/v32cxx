@@ -194,6 +194,15 @@ typedef struct FuncSemaInfo {
  */
 int sema_run(AstNode *program);
 
+/* Checks whether the program defines an actual top-level `main` (an
+ * AST_FUNC_DEF, not merely a prototype). Call ONLY after sema_run() has
+ * completed with zero errors -- this doesn't validate anything about
+ * the AST itself, it's purely a query, and main.c uses it for its own
+ * CLI-level "require a complete program by default, `-c` disables it"
+ * behavior. See sema.c's own doc comment on this function for why it's
+ * deliberately NOT something sema_run() itself checks or cares about. */
+int sema_program_has_main(const AstNode *program);
+
 /* Frees the class/typedef/free-function registries sema_run() builds.
  * Call this ONLY after every pass that might need them has finished --
  * sema_run() itself, AND lower_run() (lower.c's vtable-dispatch phase
