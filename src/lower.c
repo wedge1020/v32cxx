@@ -913,29 +913,17 @@ static void fix_references_free_functions(AstList *decls) {
  * merely accepting and forwarding arguments now.
  */
 
-/* Finds `class_decl`'s own destructor, if one exists and has a body --
- * same "must have a body" reasoning as find_zero_arg_constructor
- * (phase 7) and the new-side constructor lookups above: calling one
- * that was never emitted would repeat the exact v32_new_Player-shaped
- * mistake. Unlike constructors, there's no ambiguity to resolve here at
- * all -- C++ never allows more than one destructor per class (they
- * can't be overloaded, and take no parameters), so a class either has
- * exactly one or none; no per-overload naming question like `new`'s
- * ever arises for `delete`. A destructor's own AST node is named
- * "~ClassName" (parser.y), not "ClassName" the way a constructor's is
- * -- see sema.c's mangle_free_functions for the same distinction
- * ("dtor" as the mangled name-part rather than the class name). */
-static AstNode *find_destructor(AstNode *class_decl) {
-    ClassLayout *layout = (ClassLayout *)class_decl->sema_info;
-    if (layout == NULL) return NULL;
-    for (int i = 0; i < layout->methods.count; i++) {
-        AstNode *m = layout->methods.items[i];
-        if (m->str1 == NULL || m->str1[0] != '~') continue; /* not a destructor */
-        if (m->kind != AST_FUNC_DEF) continue; /* no body -- see doc comment above */
-        return m;
-    }
-    return NULL;
-}
+/* NOTE: an earlier draft of this round had a find_destructor() here,
+ * mirroring find_zero_arg_constructor (phase 7) and the new-side
+ * constructor lookups above. It turned out unnecessary -- this phase's
+ * naming scheme is unconditional ("v32_delete_ClassName" regardless of
+ * whether a destructor actually exists), and codegen.c's
+ * emit_delete_runtime is the only place that actually needs to KNOW
+ * whether one exists (to decide whether to emit a call inside that
+ * function, or just free()). Left in the first version anyway,
+ * genuinely unused, and caught by a real build warning
+ * (-Wunused-function) rather than noticed by inspection -- removed
+ * here rather than left as dead code nobody asked to keep. */
 
 static void new_delete_rewrite_expr(AstNode **slot, AstNode *class_decl, LocalVarType *locals) {
     AstNode *n = *slot;
