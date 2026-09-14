@@ -1,5 +1,6 @@
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 #include <getopt.h>
 #include "driver.h"
 #include "parser.h"
@@ -20,13 +21,18 @@ int g_uses_new_or_delete = 0;
 extern FILE *yyin;
 
 static void print_usage(const char *prog_name) {
-    fprintf(stderr, "usage: %s [-o output.c] [-c] [--version] <input.cpp>\n", prog_name);
-    fprintf(stderr, "  -o output.c   write generated Vircon32 C to this file\n"
-                     "                (instead of the \"generated Vircon32 C\" dump section)\n");
+    fprintf(stderr, "usage: %s [-o output.c] [-c] [-v[v[v]]] [--version] <input.cpp>\n", prog_name);
+    fprintf(stderr, "  -o output.c   write generated Vircon32 C to this file (default:\n"
+                     "                <input> with its extension replaced by .c)\n");
     fprintf(stderr, "  -c            transpile without requiring a `main` to exist --\n"
                      "                like a real compiler's -c (\"compile only\"), for a\n"
                      "                library/module fragment rather than a complete,\n"
                      "                standalone-compilable program\n");
+    fprintf(stderr, "  -v            verbose: print progress as each stage runs.\n"
+                     "                Stackable -- -vv also prints the AST/semantic-\n"
+                     "                analysis/lowering dumps; -vvv is reserved for\n"
+                     "                future, even more detailed output. Silent by\n"
+                     "                default (no -v at all).\n");
     fprintf(stderr, "  --version     print version information and exit\n");
 }
 
@@ -39,27 +45,61 @@ static void print_version(void) {
     printf("  github: %s\n", URL);
 }
 
+/* Derives the default output filename from the input's, the same way
+ * the real Vircon32 C compiler and v32lua both do: strip the input's
+ * own extension (if it has one) and append ".c" -- "foo/bar.cpp"
+ * becomes "foo/bar.c". If the input has no extension at all, ".c" is
+ * just appended to the whole name. The '.' has to come AFTER the last
+ * '/' to count as an extension at all, not before it -- otherwise a
+ * directory component that itself contains a '.' (rare, but possible)
+ * could be mistaken for the input's own extension. Caller owns the
+ * returned buffer (malloc'd) and must free it. */
+static char *derive_output_filename(const char *input_filename) {
+    const char *dot = strrchr(input_filename, '.');
+    const char *slash = strrchr(input_filename, '/');
+    size_t base_len = (dot != NULL && (slash == NULL || dot > slash))
+                     ? (size_t)(dot - input_filename)
+                     : strlen(input_filename);
+    char *result = malloc(base_len + 3); /* base + '.' + 'c' + '\0' */
+    memcpy(result, input_filename, base_len);
+    result[base_len] = '.';
+    result[base_len + 1] = 'c';
+    result[base_len + 2] = '\0';
+    return result;
+}
+
 int main(int argc, char **argv) {
     const char *output_filename = NULL;
     int require_main = 1;
+    int verbosity = 0;
     int opt;
 
-    /* "version" is long-option-only, deliberately -- a bare `-v` is
-     * reserved for the future verbosity-level flag (see
-     * docs/DESIGN_NOTES.md's CLI-considerations section), and giving
-     * --version a short alias now would collide with that later. */
     static struct option long_options[] = {
         {"version", no_argument, 0, 'V'},
         {0, 0, 0, 0}
     };
 
-    while ((opt = getopt_long(argc, argv, "o:c", long_options, NULL)) != -1) {
+    /* No 'g' in this options string, deliberately: '-g' is reserved for
+     * a future, special debugging-file-output mode (Matthew's own
+     * request), not yet implemented at all. Left entirely out of the
+     * getopt string rather than added as a silent no-op, so using it
+     * today fails loudly ("invalid option") instead of appearing to do
+     * something it doesn't yet. */
+    while ((opt = getopt_long(argc, argv, "o:cv", long_options, NULL)) != -1) {
         switch (opt) {
             case 'o':
                 output_filename = optarg;
                 break;
             case 'c':
                 require_main = 0;
+                break;
+            case 'v':
+                /* Stackable -- getopt_long's own short-option bundling
+                 * already turns "-vvv" into three separate 'v' cases
+                 * here, one per repetition, same as it would for
+                 * "-v -v -v"; nothing extra needed to support either
+                 * spelling. */
+                verbosity++;
                 break;
             case 'V':
                 print_version();
@@ -84,16 +124,26 @@ int main(int argc, char **argv) {
     yyin = f;
     g_current_filename = input_filename;
 
+    char *derived_output = NULL;
+    if (output_filename == NULL) {
+        derived_output = derive_output_filename(input_filename);
+        output_filename = derived_output;
+    }
+
     g_symtab = symtab_create();
 
+    if (verbosity >= 1) printf("stage 1: running lexer/parser\n");
     int rc = yyparse();
 
     if (rc == 0 && g_program != NULL) {
-        printf("---- parse OK: AST for %s ----\n", g_current_filename);
-        ast_dump(g_program, 0);
+        if (verbosity >= 2) {
+            printf("---- parse OK: AST for %s ----\n", g_current_filename);
+            ast_dump(g_program, 0);
+        }
 
+        if (verbosity >= 1) printf("stage 2: running semantic analyzer\n");
         int sema_errors = sema_run(g_program);
-        sema_dump(g_program);
+        if (verbosity >= 2) sema_dump(g_program);
         if (sema_errors > 0) {
             fprintf(stderr, "---- %d semantic error(s) in %s ----\n", sema_errors, g_current_filename);
             rc = 1;
@@ -114,8 +164,9 @@ int main(int argc, char **argv) {
              * to be complete and correct, so it only runs once sema has
              * come back clean -- see lower_run()'s precondition in
              * lower.h. */
+            if (verbosity >= 1) printf("stage 3: running lowering\n");
             lower_run(g_program);
-            lower_dump(g_program);
+            if (verbosity >= 2) lower_dump(g_program);
             /* codegen_run() only ever reads PER-NODE annotations
              * (sema_info/lower_info) already attached directly to the
              * tree -- never the global class/typedef/free-function
@@ -125,19 +176,15 @@ int main(int argc, char **argv) {
              * anything a later step might still need" discipline this
              * project settled on after the vtable-dispatch registry-
              * lifetime bug, rather than re-litigating it per call site. */
-            if (output_filename != NULL) {
-                FILE *out = fopen(output_filename, "w");
-                if (out == NULL) {
-                    perror(output_filename);
-                    rc = 1;
-                } else {
-                    codegen_run(g_program, out);
-                    fclose(out);
-                    printf("---- wrote generated Vircon32 C to %s ----\n", output_filename);
-                }
+            if (verbosity >= 1) printf("stage 4: running code generator\n");
+            FILE *out = fopen(output_filename, "w");
+            if (out == NULL) {
+                perror(output_filename);
+                rc = 1;
             } else {
-                printf("---- generated Vircon32 C ----\n");
-                codegen_run(g_program, stdout);
+                codegen_run(g_program, out);
+                fclose(out);
+                if (verbosity >= 1) printf("wrote generated Vircon32 C to %s\n", output_filename);
             }
         }
         /* sema_cleanup() frees the class/typedef/free-function registries
@@ -152,8 +199,7 @@ int main(int argc, char **argv) {
         fprintf(stderr, "---- parse failed for %s ----\n", g_current_filename);
     }
 
+    free(derived_output);
     symtab_destroy(g_symtab);
     return rc;
 }
-
-

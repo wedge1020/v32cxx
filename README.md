@@ -148,15 +148,19 @@ make test
 ## Trying it out
 
 ```sh
-./bin/v32c++ path/to/yourfile.cpp -o path/to/output.c
+./bin/v32c++ path/to/yourfile.cpp
 ```
 
-Without `-o`, `v32c++` prints diagnostic output — the parsed AST, a
-semantic-analysis summary, and the fully-lowered method bodies — followed
-by the generated C. That diagnostic output is genuinely useful for
-following along with what the tool understood and how it transformed
-your code; `-o` writes just the generated C to a file instead. Use `-c`
-if your input is a library/module fragment without its own `main`.
+Silent by default, matching the real Vircon32 C compiler and v32lua —
+this writes `path/to/yourfile.c` (input filename, extension swapped for
+`.c`) and produces no output at all on success. Pass `-o` to choose a
+different output path instead. Verbosity is opt-in and stackable:
+`-v` prints progress as each stage runs (lexer/parser, semantic
+analyzer, lowering, code generator); `-vv` additionally prints the full
+AST, semantic-analysis, and lowering dumps, useful for following along
+with what the tool understood and how it transformed your code; `-vvv`
+is reserved for even more detail in a future round. Use `-c` if your
+input is a library/module fragment without its own `main`.
 
 A large set of example inputs lives in `tests/`, including a couple that
 are *deliberately* invalid (an undeclared type, an out-of-line

@@ -4,6 +4,8 @@ OBJ_DIR = obj
 BIN_DIR = bin
 OUT_DIR = out
 
+BIN     = $(BIN_DIR)/v32c++
+
 CC      = gcc
 CFLAGS  = -Wall -Wextra -g -I$(INC_DIR)
 BISON   = bison
@@ -66,50 +68,65 @@ $(BIN_DIR)/v32c++: $(OBJ_DIR)/parser.o $(OBJ_DIR)/lexer.o \
 # %option noyywrap; most don't).
 
 test: all | $(OUT_DIR)
-	./$(BIN_DIR)/v32c++  -c tests/sample1.cpp  2>&1 | tee out/sample1.txt
-	./$(BIN_DIR)/v32c++     tests/sample2.cpp  2>&1 | tee out/sample2.txt
-	./$(BIN_DIR)/v32c++  -c tests/sample3.cpp  2>&1 | tee out/sample3.txt
-	-./$(BIN_DIR)/v32c++ -c tests/sample4.cpp  2>&1 | tee out/sample4.txt
-	-./$(BIN_DIR)/v32c++ -c tests/sample5.cpp  2>&1 | tee out/sample5.txt
-	./$(BIN_DIR)/v32c++  -c tests/sample6.cpp  2>&1 | tee out/sample6.txt
-	./$(BIN_DIR)/v32c++  -c tests/sample7.cpp  2>&1 | tee out/sample7.txt
-	./$(BIN_DIR)/v32c++  -c tests/sample8.cpp  2>&1 | tee out/sample8.txt
-	./$(BIN_DIR)/v32c++  -c tests/sample9.cpp  2>&1 | tee out/sample9.txt
-	-./$(BIN_DIR)/v32c++ -c tests/sample10.cpp 2>&1 | tee out/sample10.txt
-	-./$(BIN_DIR)/v32c++ -c tests/sample11.cpp 2>&1 | tee out/sample11.txt
-	./$(BIN_DIR)/v32c++  -c tests/sample12.cpp 2>&1 | tee out/sample12.txt
-	./$(BIN_DIR)/v32c++  -c tests/sample13.cpp 2>&1 | tee out/sample13.txt
-	./$(BIN_DIR)/v32c++     tests/sample14.cpp 2>&1 | tee out/sample14.txt
-	./$(BIN_DIR)/v32c++  -c tests/sample15.cpp 2>&1 | tee out/sample15.txt
-	./$(BIN_DIR)/v32c++  -c tests/sample16.cpp 2>&1 | tee out/sample16.txt
-	./$(BIN_DIR)/v32c++  -c tests/sample17.cpp 2>&1 | tee out/sample17.txt
-	./$(BIN_DIR)/v32c++  -c tests/sample18.cpp 2>&1 | tee out/sample18.txt
-	-./$(BIN_DIR)/v32c++ -c tests/sample19.cpp 2>&1 | tee out/sample19.txt
-	-./$(BIN_DIR)/v32c++ -c tests/sample20.cpp 2>&1 | tee out/sample20.txt
-	./$(BIN_DIR)/v32c++     tests/sample21.cpp 2>&1 | tee out/sample21.txt
-	./$(BIN_DIR)/v32c++     tests/sample22.cpp 2>&1 | tee out/sample22.txt
-	./$(BIN_DIR)/v32c++     tests/sample23.cpp 2>&1 | tee out/sample23.txt
-	./$(BIN_DIR)/v32c++     tests/sample24.cpp 2>&1 | tee out/sample24.txt
-	./$(BIN_DIR)/v32c++     tests/sample25.cpp 2>&1 | tee out/sample25.txt
-	./$(BIN_DIR)/v32c++     tests/sample26.cpp 2>&1 | tee out/sample26.txt
-	./$(BIN_DIR)/v32c++     tests/sample27.cpp 2>&1 | tee out/sample27.txt
-	./$(BIN_DIR)/v32c++     tests/sample28.cpp 2>&1 | tee out/sample28.txt
-	./$(BIN_DIR)/v32c++     tests/sample29.cpp 2>&1 | tee out/sample29.txt
-	./$(BIN_DIR)/v32c++     tests/sample30.cpp 2>&1 | tee out/sample30.txt
-	-./$(BIN_DIR)/v32c++ -c tests/sample31.cpp 2>&1 | tee out/sample31.txt
-	./$(BIN_DIR)/v32c++     tests/sample32.cpp 2>&1 | tee out/sample32.txt
-# `-c` (this project's own flag now, not just a real compiler's) opts out
+	$(BIN)  -vv -c -o out/sample1.c  tests/sample1.cpp  1> out/sample1.txt  2>&1
+	$(BIN)  -vv    -o out/sample2.c  tests/sample2.cpp  1> out/sample2.txt  2>&1
+	$(BIN)  -vv -c -o out/sample3.c  tests/sample3.cpp  1> out/sample3.txt  2>&1
+	-$(BIN) -vv -c -o out/sample4.c  tests/sample4.cpp  1> out/sample4.txt  2>&1
+	-$(BIN) -vv -c -o out/sample5.c  tests/sample5.cpp  1> out/sample5.txt  2>&1
+	$(BIN)  -vv -c -o out/sample6.c  tests/sample6.cpp  1> out/sample6.txt  2>&1
+	$(BIN)  -vv -c -o out/sample7.c  tests/sample7.cpp  1> out/sample7.txt  2>&1
+	$(BIN)  -vv -c -o out/sample8.c  tests/sample8.cpp  1> out/sample8.txt  2>&1
+	$(BIN)  -vv -c -o out/sample9.c  tests/sample9.cpp  1> out/sample9.txt  2>&1
+	-$(BIN) -vv -c -o out/sample10.c tests/sample10.cpp 1> out/sample10.txt 2>&1
+	-$(BIN) -vv -c -o out/sample11.c tests/sample11.cpp 1> out/sample11.txt 2>&1
+	$(BIN)  -vv -c -o out/sample12.c tests/sample12.cpp 1> out/sample12.txt 2>&1
+	$(BIN)  -vv -c -o out/sample13.c tests/sample13.cpp 1> out/sample13.txt 2>&1
+	$(BIN)  -vv    -o out/sample14.c tests/sample14.cpp 1> out/sample14.txt 2>&1
+	$(BIN)  -vv -c -o out/sample15.c tests/sample15.cpp 1> out/sample15.txt 2>&1
+	$(BIN)  -vv -c -o out/sample16.c tests/sample16.cpp 1> out/sample16.txt 2>&1
+	$(BIN)  -vv -c -o out/sample17.c tests/sample17.cpp 1> out/sample17.txt 2>&1
+	$(BIN)  -vv -c -o out/sample18.c tests/sample18.cpp 1> out/sample18.txt 2>&1
+	-$(BIN) -vv -c -o out/sample19.c tests/sample19.cpp 1> out/sample19.txt 2>&1
+	-$(BIN) -vv -c -o out/sample20.c tests/sample20.cpp 1> out/sample20.txt 2>&1
+	$(BIN)  -vv    -o out/sample21.c tests/sample21.cpp 1> out/sample21.txt 2>&1
+	$(BIN)  -vv    -o out/sample22.c tests/sample22.cpp 1> out/sample22.txt 2>&1
+	$(BIN)  -vv    -o out/sample23.c tests/sample23.cpp 1> out/sample23.txt 2>&1
+	$(BIN)  -vv    -o out/sample24.c tests/sample24.cpp 1> out/sample24.txt 2>&1
+	$(BIN)  -vv    -o out/sample25.c tests/sample25.cpp 1> out/sample25.txt 2>&1
+	$(BIN)  -vv    -o out/sample26.c tests/sample26.cpp 1> out/sample26.txt 2>&1
+	$(BIN)  -vv    -o out/sample27.c tests/sample27.cpp 1> out/sample27.txt 2>&1
+	$(BIN)  -vv    -o out/sample28.c tests/sample28.cpp 1> out/sample28.txt 2>&1
+	$(BIN)  -vv    -o out/sample29.c tests/sample29.cpp 1> out/sample29.txt 2>&1
+	$(BIN)  -vv    -o out/sample30.c tests/sample30.cpp 1> out/sample30.txt 2>&1
+	-$(BIN) -vv -c -o out/sample31.c tests/sample31.cpp 1> out/sample31.txt 2>&1
+	$(BIN)  -vv    -o out/sample32.c tests/sample32.cpp 1> out/sample32.txt 2>&1
+# `-vv` (this project's own verbosity flag, a later round -- see main.c)
+# is passed to every sample specifically so `make test`'s own output
+# still captures the full AST/semantic-analysis/lowering dumps this
+# suite has always relied on for review -- v32c++ is silent by default
+# now (no -v at all), matching how the real Vircon32 C compiler and
+# v32lua both behave, so without -vv these dumps simply wouldn't
+# appear anywhere. `-o out/sampleN.c` is passed too, specifically so the
+# now-always-written generated C lands in `out/` alongside its own
+# `.txt` dump rather than next to the `.cpp` source in `tests/` -- v32c++
+# writes an output file by default now (derived from the input's own
+# name) even with no `-o` given at all, so leaving it unset here would
+# otherwise clutter `tests/` with 32 generated `.c` files never meant to
+# live there.
+#
+# `-c` (this project's own flag, an earlier round) opts out
 # of the "must define main" default main.c added this round -- every
 # sample here is a focused unit test of one specific compiler feature,
 # not a complete, standalone-compilable program, EXCEPT sample2, 14, 21,
-# 22, 23, 24, 25, 26, 27, 28, 29, and 30, which genuinely do define their
-# own `main` (sample2's predates this round; sample14/21 were given one
-# specifically so they could also be compiled all the way through by the
-# real Vircon32 toolchain, not just transpiled; sample22 through 30
-# already had one -- all are real, hand-written or hand-designed
-# programs, not artificial unit tests). sample31 is deliberately invalid
-# (break/continue-outside-a-loop) and gets `-c` like the other
-# unit-test samples, since it isn't trying to be a complete program at
+# 22, 23, 24, 25, 26, 27, 28, 29, 30, and 32, which genuinely do define
+# their own `main` (sample2's predates this round; sample14/21 were
+# given one specifically so they could also be compiled all the way
+# through by the real Vircon32 toolchain, not just transpiled; sample22
+# through 30 and 32 already had one -- all are real, hand-written or
+# hand-designed programs, not artificial unit tests). sample31 is
+# deliberately invalid (break/continue-outside-a-loop) and gets `-c`
+# like the other unit-test samples, since it isn't trying to be a
+# complete program at
 # all. Without `-c`, every other sample would now fail at the
 # "no main function found" check before ever reaching lowering/codegen --
 # not a bug in that check, just what it's supposed to do by default; this
@@ -126,7 +143,7 @@ test: all | $(OUT_DIR)
 
 clean:
 	rm -f $(BIN_DIR)/* $(OBJ_DIR)/* $(SRC_DIR)/parser.output $(OUT_DIR)/*
-	rm -f $(SRC_DIR)/parser.c $(SRC_DIR)/lexer.c $(INC_DIR)/parser.h
+	#rm -f $(SRC_DIR)/parser.c $(SRC_DIR)/lexer.c $(INC_DIR)/parser.h
 # Removing the bison/flex-generated files here (not just objects/binary) is
 # deliberate: regenerating them relies on make's mtime comparison against
 # parser.y/lexer.l, and if that check ever silently fails to trigger (rare,
