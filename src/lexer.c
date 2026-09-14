@@ -580,6 +580,23 @@ char *yytext;
 #include "driver.h"
 #include "parser.h"
 
+/* Suppresses a warning in flex's OWN generated scanning machinery
+ * (yy_get_next_buffer's buffer-resize check compares yy_size_t, an
+ * unsigned type, against a plain int) -- not anything this project's
+ * own code does; nothing here to fix on this project's side, since the
+ * comparison lives entirely inside code flex itself emits below this
+ * point, regenerated fresh from the flex skeleton every time and never
+ * hand-edited. Confirmed present since the very first working build of
+ * this project, mentioned in this file's own header comment as a known,
+ * pre-existing, not-our-code issue from day one -- silencing it here
+ * finally addresses the actual warning text directly, at the one place
+ * that can, rather than continuing to just document it as expected in
+ * every build report. No matching `#pragma ... pop` -- this generated
+ * file is compiled standalone, never `#include`d elsewhere, so the
+ * pragma's effect ending at end-of-file is exactly the intended scope. */
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wsign-compare"
+
 /* Remembers the Symbol* (if any) resolved for the most recently scanned
  * IDENTIFIER/TYPE_NAME token, so that if the *next* token turns out to be
  * "::", we know what to arm the qualifier context with. Reset to NULL by
@@ -589,9 +606,9 @@ static Symbol *g_last_ident_sym = NULL;
 
 #define YY_USER_ACTION \
     yylloc.first_line = yylloc.last_line = g_lex_lineno;
-#line 592 "src/lexer.c"
+#line 609 "src/lexer.c"
 #define YY_NO_INPUT 1
-#line 594 "src/lexer.c"
+#line 611 "src/lexer.c"
 
 #define INITIAL 0
 
@@ -809,10 +826,10 @@ YY_DECL
 		}
 
 	{
-#line 49 "src/lexer.l"
+#line 66 "src/lexer.l"
 
 
-#line 815 "src/lexer.c"
+#line 832 "src/lexer.c"
 
 	while ( /*CONSTCOND*/1 )		/* loops until end-of-file is reached */
 		{
@@ -872,18 +889,18 @@ do_action:	/* This label is used only to access EOF actions. */
 
 case 1:
 YY_RULE_SETUP
-#line 51 "src/lexer.l"
+#line 68 "src/lexer.l"
 { /* line comment, discard */ }
 	YY_BREAK
 case 2:
 /* rule 2 can match eol */
 YY_RULE_SETUP
-#line 52 "src/lexer.l"
+#line 69 "src/lexer.l"
 { /* block comment, discard */ }
 	YY_BREAK
 case 3:
 YY_RULE_SETUP
-#line 54 "src/lexer.l"
+#line 71 "src/lexer.l"
 {
     /* Preprocessor pass-through -- see this file's own header comment
      * and driver.h's PreprocessorLines for the full reasoning. Grows
@@ -902,132 +919,132 @@ YY_RULE_SETUP
 case 4:
 /* rule 4 can match eol */
 YY_RULE_SETUP
-#line 69 "src/lexer.l"
+#line 86 "src/lexer.l"
 { g_lex_lineno++; }
 	YY_BREAK
 case 5:
 YY_RULE_SETUP
-#line 70 "src/lexer.l"
+#line 87 "src/lexer.l"
 { /* whitespace */ }
 	YY_BREAK
 case 6:
 YY_RULE_SETUP
-#line 72 "src/lexer.l"
+#line 89 "src/lexer.l"
 { g_last_ident_sym = NULL; return CLASS; }
 	YY_BREAK
 case 7:
 YY_RULE_SETUP
-#line 73 "src/lexer.l"
+#line 90 "src/lexer.l"
 { g_last_ident_sym = NULL; return PUBLIC; }
 	YY_BREAK
 case 8:
 YY_RULE_SETUP
-#line 74 "src/lexer.l"
+#line 91 "src/lexer.l"
 { g_last_ident_sym = NULL; return PRIVATE; }
 	YY_BREAK
 case 9:
 YY_RULE_SETUP
-#line 75 "src/lexer.l"
+#line 92 "src/lexer.l"
 { g_last_ident_sym = NULL; return PROTECTED; }
 	YY_BREAK
 case 10:
 YY_RULE_SETUP
-#line 76 "src/lexer.l"
+#line 93 "src/lexer.l"
 { g_last_ident_sym = NULL; return NAMESPACE; }
 	YY_BREAK
 case 11:
 YY_RULE_SETUP
-#line 77 "src/lexer.l"
+#line 94 "src/lexer.l"
 { g_last_ident_sym = NULL; return TYPEDEF; }
 	YY_BREAK
 case 12:
 YY_RULE_SETUP
-#line 78 "src/lexer.l"
+#line 95 "src/lexer.l"
 { g_last_ident_sym = NULL; return RETURN; }
 	YY_BREAK
 case 13:
 YY_RULE_SETUP
-#line 79 "src/lexer.l"
+#line 96 "src/lexer.l"
 { g_last_ident_sym = NULL; return IF; }
 	YY_BREAK
 case 14:
 YY_RULE_SETUP
-#line 80 "src/lexer.l"
+#line 97 "src/lexer.l"
 { g_last_ident_sym = NULL; return ELSE; }
 	YY_BREAK
 case 15:
 YY_RULE_SETUP
-#line 81 "src/lexer.l"
+#line 98 "src/lexer.l"
 { g_last_ident_sym = NULL; return WHILE; }
 	YY_BREAK
 case 16:
 YY_RULE_SETUP
-#line 82 "src/lexer.l"
+#line 99 "src/lexer.l"
 { g_last_ident_sym = NULL; return FOR; }
 	YY_BREAK
 case 17:
 YY_RULE_SETUP
-#line 83 "src/lexer.l"
+#line 100 "src/lexer.l"
 { g_last_ident_sym = NULL; return INT_KW; }
 	YY_BREAK
 case 18:
 YY_RULE_SETUP
-#line 84 "src/lexer.l"
+#line 101 "src/lexer.l"
 { g_last_ident_sym = NULL; return FLOAT_KW; }
 	YY_BREAK
 case 19:
 YY_RULE_SETUP
-#line 85 "src/lexer.l"
+#line 102 "src/lexer.l"
 { g_last_ident_sym = NULL; return VOID_KW; }
 	YY_BREAK
 case 20:
 YY_RULE_SETUP
-#line 86 "src/lexer.l"
+#line 103 "src/lexer.l"
 { g_last_ident_sym = NULL; return BOOL_KW; }
 	YY_BREAK
 case 21:
 YY_RULE_SETUP
-#line 87 "src/lexer.l"
+#line 104 "src/lexer.l"
 { g_last_ident_sym = NULL; return CHAR_KW; }
 	YY_BREAK
 case 22:
 YY_RULE_SETUP
-#line 88 "src/lexer.l"
+#line 105 "src/lexer.l"
 { g_last_ident_sym = NULL; return NEW; }
 	YY_BREAK
 case 23:
 YY_RULE_SETUP
-#line 89 "src/lexer.l"
+#line 106 "src/lexer.l"
 { g_last_ident_sym = NULL; return DELETE; }
 	YY_BREAK
 case 24:
 YY_RULE_SETUP
-#line 90 "src/lexer.l"
+#line 107 "src/lexer.l"
 { g_last_ident_sym = NULL; return THIS; }
 	YY_BREAK
 case 25:
 YY_RULE_SETUP
-#line 91 "src/lexer.l"
+#line 108 "src/lexer.l"
 { g_last_ident_sym = NULL; return VIRTUAL; }
 	YY_BREAK
 case 26:
 YY_RULE_SETUP
-#line 92 "src/lexer.l"
+#line 109 "src/lexer.l"
 { g_last_ident_sym = NULL; return OPERATOR; }
 	YY_BREAK
 case 27:
 YY_RULE_SETUP
-#line 93 "src/lexer.l"
+#line 110 "src/lexer.l"
 { g_last_ident_sym = NULL; return TRUE_KW; }
 	YY_BREAK
 case 28:
 YY_RULE_SETUP
-#line 94 "src/lexer.l"
+#line 111 "src/lexer.l"
 { g_last_ident_sym = NULL; return FALSE_KW; }
 	YY_BREAK
 case 29:
 YY_RULE_SETUP
-#line 96 "src/lexer.l"
+#line 113 "src/lexer.l"
 {
     /* Arm (or clear) the qualifier context for the *next* token, using
      * whatever symbol the previous identifier-like token resolved to.
@@ -1040,72 +1057,72 @@ YY_RULE_SETUP
 	YY_BREAK
 case 30:
 YY_RULE_SETUP
-#line 106 "src/lexer.l"
+#line 123 "src/lexer.l"
 { g_last_ident_sym = NULL; return ARROW; }
 	YY_BREAK
 case 31:
 YY_RULE_SETUP
-#line 107 "src/lexer.l"
+#line 124 "src/lexer.l"
 { g_last_ident_sym = NULL; return EQ; }
 	YY_BREAK
 case 32:
 YY_RULE_SETUP
-#line 108 "src/lexer.l"
+#line 125 "src/lexer.l"
 { g_last_ident_sym = NULL; return NE; }
 	YY_BREAK
 case 33:
 YY_RULE_SETUP
-#line 109 "src/lexer.l"
+#line 126 "src/lexer.l"
 { g_last_ident_sym = NULL; return LE; }
 	YY_BREAK
 case 34:
 YY_RULE_SETUP
-#line 110 "src/lexer.l"
+#line 127 "src/lexer.l"
 { g_last_ident_sym = NULL; return GE; }
 	YY_BREAK
 case 35:
 YY_RULE_SETUP
-#line 111 "src/lexer.l"
+#line 128 "src/lexer.l"
 { g_last_ident_sym = NULL; return ANDAND; }
 	YY_BREAK
 case 36:
 YY_RULE_SETUP
-#line 112 "src/lexer.l"
+#line 129 "src/lexer.l"
 { g_last_ident_sym = NULL; return OROR; }
 	YY_BREAK
 case 37:
 YY_RULE_SETUP
-#line 113 "src/lexer.l"
+#line 130 "src/lexer.l"
 { g_last_ident_sym = NULL; return PLUSEQ; }
 	YY_BREAK
 case 38:
 YY_RULE_SETUP
-#line 114 "src/lexer.l"
+#line 131 "src/lexer.l"
 { g_last_ident_sym = NULL; return MINUSEQ; }
 	YY_BREAK
 case 39:
 YY_RULE_SETUP
-#line 115 "src/lexer.l"
+#line 132 "src/lexer.l"
 { g_last_ident_sym = NULL; return STAREQ; }
 	YY_BREAK
 case 40:
 YY_RULE_SETUP
-#line 116 "src/lexer.l"
+#line 133 "src/lexer.l"
 { g_last_ident_sym = NULL; return SLASHEQ; }
 	YY_BREAK
 case 41:
 YY_RULE_SETUP
-#line 117 "src/lexer.l"
+#line 134 "src/lexer.l"
 { g_last_ident_sym = NULL; return INC; }
 	YY_BREAK
 case 42:
 YY_RULE_SETUP
-#line 118 "src/lexer.l"
+#line 135 "src/lexer.l"
 { g_last_ident_sym = NULL; return DEC; }
 	YY_BREAK
 case 43:
 YY_RULE_SETUP
-#line 120 "src/lexer.l"
+#line 137 "src/lexer.l"
 {
     /* The core of the lexer hack: classify this identifier by consulting
      * the symbol table *right now*, using the qualifier context armed by
@@ -1122,7 +1139,7 @@ YY_RULE_SETUP
 	YY_BREAK
 case 44:
 YY_RULE_SETUP
-#line 134 "src/lexer.l"
+#line 151 "src/lexer.l"
 {
     g_last_ident_sym = NULL;
     yylval.fval = atof(yytext);
@@ -1131,7 +1148,7 @@ YY_RULE_SETUP
 	YY_BREAK
 case 45:
 YY_RULE_SETUP
-#line 140 "src/lexer.l"
+#line 157 "src/lexer.l"
 {
     g_last_ident_sym = NULL;
     yylval.ival = atoi(yytext);
@@ -1140,7 +1157,7 @@ YY_RULE_SETUP
 	YY_BREAK
 case 46:
 YY_RULE_SETUP
-#line 146 "src/lexer.l"
+#line 163 "src/lexer.l"
 {
     /* SIMPLIFICATION: escape sequences inside the string are kept as
      * literal backslash-letter pairs rather than being decoded (\n stays
@@ -1159,7 +1176,7 @@ YY_RULE_SETUP
 case 47:
 /* rule 47 can match eol */
 YY_RULE_SETUP
-#line 161 "src/lexer.l"
+#line 178 "src/lexer.l"
 {
     g_last_ident_sym = NULL;
     if (yytext[1] == '\\') {
@@ -1181,7 +1198,7 @@ YY_RULE_SETUP
 	YY_BREAK
 case 48:
 YY_RULE_SETUP
-#line 180 "src/lexer.l"
+#line 197 "src/lexer.l"
 {
     /* Single-character tokens: operators/punctuation not covered above
      * ('+','-','*','/','%','<','>','=','!','&','|','~','(',')','{','}',
@@ -1193,10 +1210,10 @@ YY_RULE_SETUP
 	YY_BREAK
 case 49:
 YY_RULE_SETUP
-#line 189 "src/lexer.l"
+#line 206 "src/lexer.l"
 ECHO;
 	YY_BREAK
-#line 1199 "src/lexer.c"
+#line 1216 "src/lexer.c"
 case YY_STATE_EOF(INITIAL):
 	yyterminate();
 
@@ -2167,6 +2184,6 @@ void yyfree (void * ptr )
 
 #define YYTABLES_NAME "yytables"
 
-#line 189 "src/lexer.l"
+#line 206 "src/lexer.l"
 
 

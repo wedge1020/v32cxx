@@ -3,6 +3,7 @@
 #include <string.h>
 #include "lower.h"
 #include "sema.h"
+#include "driver.h" /* g_uses_new_or_delete -- see its own doc comment there */
 
 /* ---- building a StructLayout ------------------------------------------- */
 
@@ -936,11 +937,34 @@ static void fix_references_free_functions(AstList *decls) {
  * (-Wunused-function) rather than noticed by inspection -- removed
  * here rather than left as dead code nobody asked to keep. */
 
+/* Resolves a type node to the name that goes into a "v32_new..."
+ * allocator's own name, for either single-object or array `new`.
+ * type_to_class only ever resolves an actual registered CLASS,
+ * correctly returning NULL for a primitive type like `int` -- a real
+ * bug this project shipped and Matthew's own test run caught directly
+ * (tests/sample29.cpp's `new int[5]` produced "v32_new_arr_unknown"
+ * instead of "v32_new_arr_int", not caught here first): falling back to
+ * the literal string "unknown" instead of the type's own name whenever
+ * it wasn't a class. Fixed by falling back to the type node's own name
+ * (AST_IDENT's str1) for a bare, non-class type -- `new int`/
+ * `new int[N]` are both genuinely legal C++, not just something this
+ * project's own classes happen to need. */
+static const char *type_name_for_new(AstNode *type) {
+    AstNode *cls = type_to_class(type);
+    if (cls != NULL) return cls->str1;
+    if (type->kind == AST_IDENT) return type->str1;
+    return "unknown"; /* some more complex, unhandled type-node shape --
+        last resort, not expected to be reached in practice */
+}
+
 static void new_delete_rewrite_expr(AstNode **slot, AstNode *class_decl, LocalVarType *locals) {
     AstNode *n = *slot;
     if (n == NULL) return;
     switch (n->kind) {
         case AST_NEW: {
+            g_uses_new_or_delete = 1; /* see driver.h's own doc comment on
+                this flag for exactly why codegen.c needs it -- a real
+                bug otherwise */
             /* Array-new (`new T[N]`) is a COMPLETELY different shape
              * from single-object `new`, handled entirely separately
              * here rather than threaded through the constructor-overload
@@ -958,8 +982,7 @@ static void new_delete_rewrite_expr(AstNode **slot, AstNode *class_decl, LocalVa
              * right pointer type, nothing more. */
             if (n->a != NULL) {
                 new_delete_rewrite_expr(&n->a, class_decl, locals); /* the size expression itself */
-                AstNode *cls = type_to_class(n->type);
-                const char *type_name = (cls != NULL) ? cls->str1 : "unknown";
+                const char *type_name = type_name_for_new(n->type);
                 size_t len = strlen("v32_new_arr_") + strlen(type_name) + 1;
                 char *fn_name = malloc(len);
                 snprintf(fn_name, len, "v32_new_arr_%s", type_name);
@@ -980,8 +1003,7 @@ static void new_delete_rewrite_expr(AstNode **slot, AstNode *class_decl, LocalVa
             for (int i = 0; i < n->list.count; i++) {
                 new_delete_rewrite_expr(&n->list.items[i], class_decl, locals);
             }
-            AstNode *cls = type_to_class(n->type);
-            const char *type_name = (cls != NULL) ? cls->str1 : "unknown";
+            const char *type_name = type_name_for_new(n->type);
 
             /* Naming: if sema.c's resolve_new_expr resolved a SPECIFIC
              * constructor overload (n->sema_info, a CallResolution),
@@ -1035,6 +1057,7 @@ static void new_delete_rewrite_expr(AstNode **slot, AstNode *class_decl, LocalVa
             break;
         }
         case AST_DELETE: {
+            g_uses_new_or_delete = 1;
             new_delete_rewrite_expr(&n->a, class_decl, locals);
 
             /* Naming, mirroring `new`'s own reasoning above but simpler:

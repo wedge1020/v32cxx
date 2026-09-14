@@ -1058,9 +1058,9 @@ static void emit_new_delete_runtime_classes(FILE *out, const AstList *decls) {
  * `v32_delete_ClassName` (an allocator for a class never actually used
  * with array-`new` goes unused rather than being scoped out by an
  * "only if actually used" scan this project hasn't built). */
-static void emit_array_new_runtime(FILE *out, const AstNode *class_decl) {
-    fprintf(out, "%s *v32_new_arr_%s(int n)\n{\n", class_decl->str1, class_decl->str1);
-    fprintf(out, "    return (%s *)malloc(n * sizeof(%s));\n", class_decl->str1, class_decl->str1);
+static void emit_array_new_runtime(FILE *out, const char *type_name) {
+    fprintf(out, "%s *v32_new_arr_%s(int n)\n{\n", type_name, type_name);
+    fprintf(out, "    return (%s *)malloc(n * sizeof(%s));\n", type_name, type_name);
     fprintf(out, "}\n\n\n");
 }
 
@@ -1068,11 +1068,34 @@ static void emit_array_new_runtime_classes(FILE *out, const AstList *decls) {
     for (int i = 0; i < decls->count; i++) {
         const AstNode *n = decls->items[i];
         if (n->kind == AST_CLASS_DECL) {
-            emit_array_new_runtime(out, n);
+            emit_array_new_runtime(out, n->str1);
         } else if (n->kind == AST_NAMESPACE_DECL) {
             emit_array_new_runtime_classes(out, &n->list);
         }
     }
+}
+
+/* v32_new_arr_int/float/char/bool -- array-new isn't only ever used on a
+ * class (`new int[5]` is genuinely legal C++, and this project's own
+ * grammar accepts it -- tests/sample29.cpp uses exactly this), so the
+ * per-CLASS emission above (emit_array_new_runtime_classes) isn't
+ * enough on its own: a class is something this project's AST walks
+ * naturally find by iterating declarations, but a primitive type isn't
+ * declared anywhere to walk over at all. Emitted unconditionally
+ * whenever misc.h is included at all, same "over-generate rather than
+ * risk under-generating" trade-off already made for every other
+ * runtime function in this file -- one of these going uncalled is
+ * harmless; a program calling one that was never defined is a fatal
+ * compile error, the exact category of bug this project has hit and
+ * fixed more than once already (v32_new_Player, early on; this,
+ * caught directly by Matthew's own test run of tests/sample29.cpp
+ * rather than here first). `void` deliberately excluded -- `new
+ * void[N]` isn't meaningful. */
+static void emit_primitive_array_new_runtime(FILE *out) {
+    emit_array_new_runtime(out, "int");
+    emit_array_new_runtime(out, "float");
+    emit_array_new_runtime(out, "char");
+    emit_array_new_runtime(out, "bool");
 }
 
 static void emit_v32_delete(FILE *out) {
@@ -1182,8 +1205,17 @@ void codegen_run(const AstNode *program, FILE *out) {
      * exists" and "malloc is needed somewhere" are equivalent here.
      * Conditional specifically so a program with no classes at all
      * (tests/sample21.cpp, say) doesn't need to expose misc.h's own
-     * names (malloc/free/rand/exit/...) into scope for no reason. */
-    int needs_misc = program_has_any_class(&program->list);
+     * names (malloc/free/rand/exit/...) into scope for no reason.
+     *
+     * ALSO true whenever the program uses `new`/`delete` in ANY form at
+     * all (g_uses_new_or_delete, driver.h), regardless of whether it
+     * has a class -- a real, confirmed bug otherwise: a program with
+     * only free functions can still write `new int[5]` (this project's
+     * primitive-typed array-new; tests/sample29.cpp is exactly this),
+     * which "any class exists" alone would never catch, silently
+     * dropping misc.h and every runtime function that depends on it
+     * from the output despite being called. */
+    int needs_misc = program_has_any_class(&program->list) || g_uses_new_or_delete;
     if (needs_misc) {
         fprintf(out, "#include \"misc.h\"\n");
     }
@@ -1202,6 +1234,7 @@ void codegen_run(const AstNode *program, FILE *out) {
     if (needs_misc) {
         emit_new_delete_runtime_classes(out, &program->list);
         emit_array_new_runtime_classes(out, &program->list);
+        emit_primitive_array_new_runtime(out);
         emit_v32_delete(out);
         emit_delete_runtime_classes(out, &program->list);
     }

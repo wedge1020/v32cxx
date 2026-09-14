@@ -15,6 +15,7 @@ Symbol *g_current_class_sym = NULL;
 int g_lex_lineno = 1;
 const char *g_current_filename = "<stdin>";
 PreprocessorLines g_preprocessor_lines = {NULL, 0, 0};
+int g_uses_new_or_delete = 0;
 
 extern FILE *yyin;
 

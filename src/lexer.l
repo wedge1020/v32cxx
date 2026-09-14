@@ -27,6 +27,23 @@
 #include "driver.h"
 #include "parser.h"
 
+/* Suppresses a warning in flex's OWN generated scanning machinery
+ * (yy_get_next_buffer's buffer-resize check compares yy_size_t, an
+ * unsigned type, against a plain int) -- not anything this project's
+ * own code does; nothing here to fix on this project's side, since the
+ * comparison lives entirely inside code flex itself emits below this
+ * point, regenerated fresh from the flex skeleton every time and never
+ * hand-edited. Confirmed present since the very first working build of
+ * this project, mentioned in this file's own header comment as a known,
+ * pre-existing, not-our-code issue from day one -- silencing it here
+ * finally addresses the actual warning text directly, at the one place
+ * that can, rather than continuing to just document it as expected in
+ * every build report. No matching `#pragma ... pop` -- this generated
+ * file is compiled standalone, never `#include`d elsewhere, so the
+ * pragma's effect ending at end-of-file is exactly the intended scope. */
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wsign-compare"
+
 /* Remembers the Symbol* (if any) resolved for the most recently scanned
  * IDENTIFIER/TYPE_NAME token, so that if the *next* token turns out to be
  * "::", we know what to arm the qualifier context with. Reset to NULL by
