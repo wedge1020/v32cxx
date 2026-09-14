@@ -64,6 +64,27 @@ static void print_type(FILE *out, const AstNode *type) {
             print_type(out, type->a);
             fprintf(out, " /* WARNING: unlowered reference type */ *");
             break;
+        case AST_ARRAY_TYPE:
+            /* Vircon32's own reversed array-declarator quirk: length in
+             * brackets BEFORE the name, not after (`int [8] scores;`,
+             * not standard C's `int scores[8];`). Every call site in
+             * this file already does "print_type(type); then print the
+             * name" -- so emitting "ElementType [N]" here, with the
+             * name appended separately by the (unmodified) caller
+             * exactly as it already does for every other type, produces
+             * the correct Vircon32 form with no caller-side changes at
+             * all. Confirmed by tracing every print_type call site in
+             * this file before implementing: all of them already follow
+             * this identical pattern. Emitted this way regardless of
+             * which of parser.y's two accepted C++-side declarator
+             * forms (standard-C length-after-name, or Vircon32-style
+             * length-before-name, offered as an alternate input
+             * spelling) produced the AST_ARRAY_TYPE node -- the AST
+             * itself carries no memory of which spelling the source
+             * used, and output is always this one form regardless. */
+            print_type(out, type->a);
+            fprintf(out, " [%d]", type->ival);
+            break;
         default:
             fprintf(out, "void" /* unrecognized type node -- best-effort */);
             break;

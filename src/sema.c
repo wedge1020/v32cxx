@@ -922,6 +922,23 @@ AstNode *infer_expr_type(const AstNode *expr, AstNode *current_class, LocalVarTy
             if (method == NULL || (method->kind != AST_FUNC_DECL && method->kind != AST_FUNC_DEF)) return NULL;
             return method->type;
         }
+        case AST_SUBSCRIPT: {
+            /* `arr[i]`'s type is arr's ELEMENT type, whether `arr`
+             * itself is an actual array (AST_ARRAY_TYPE -- unwrap to
+             * a->a) or a pointer being indexed pointer-arithmetic-style
+             * (AST_POINTER_TYPE -- same unwrap, ordinary C). Added
+             * alongside AST_ARRAY_TYPE itself, since without it every
+             * subscript expression's type silently fell through to the
+             * default "unknown" case below -- harmless today (this
+             * project doesn't yet support arrays of class objects, so
+             * nothing currently exercises this), but a real correctness
+             * gap waiting to matter the moment it does. */
+            const AstNode *base_type = resolve_typedef_chain(infer_expr_type(expr->a, current_class, locals));
+            if (base_type != NULL && (base_type->kind == AST_ARRAY_TYPE || base_type->kind == AST_POINTER_TYPE)) {
+                return base_type->a;
+            }
+            return NULL;
+        }
         default:
             return NULL;
     }

@@ -113,6 +113,13 @@ typedef enum {
     AST_DELETE,           /* a=expr being deleted */
     AST_POINTER_TYPE,     /* a=pointee type -- represents "T *" */
     AST_REFERENCE_TYPE,   /* a=referent type -- represents "T &" */
+    AST_ARRAY_TYPE,       /* a=element type, ival=length -- represents "T[N]"
+                              on the C++ input side, in either accepted
+                              declarator form (see parser.y's var_decl);
+                              always emitted as Vircon32's own required
+                              "ElementType [N]" form on output regardless
+                              of which input form was used -- codegen.c's
+                              print_type is where that happens */
     AST_CAST              /* type=target type, a=expr being cast -- an
                               explicit "(Type)expr". Never produced by the
                               parser (this project's grammar has no C-
@@ -204,6 +211,12 @@ AstNode *ast_ident(const char *name, int line);
  * ast_wrap_pointer/ast_wrap_reference once per entry, innermost first. */
 AstNode *ast_wrap_pointer(AstNode *inner, int line);
 AstNode *ast_wrap_reference(AstNode *inner, int line);
+
+/* Wraps `inner` as an array of `length` elements -- represents "T[N]"
+ * regardless of which of the two accepted C++-side declarator forms
+ * produced it (parser.y's var_decl has both); the AST itself carries no
+ * memory of which spelling the source used. */
+AstNode *ast_wrap_array(AstNode *inner, int length, int line);
 
 void ast_dump(const AstNode *node, int indent);
 

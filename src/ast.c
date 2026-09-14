@@ -45,6 +45,13 @@ AstNode *ast_wrap_reference(AstNode *inner, int line) {
     return n;
 }
 
+AstNode *ast_wrap_array(AstNode *inner, int length, int line) {
+    AstNode *n = ast_new(AST_ARRAY_TYPE, line);
+    n->a = inner;
+    n->ival = length;
+    return n;
+}
+
 static const char *kind_name(AstKind k) {
     switch (k) {
         case AST_PROGRAM: return "Program";
@@ -80,6 +87,7 @@ static const char *kind_name(AstKind k) {
         case AST_DELETE: return "Delete";
         case AST_POINTER_TYPE: return "PointerType";
         case AST_REFERENCE_TYPE: return "ReferenceType";
+        case AST_ARRAY_TYPE: return "ArrayType";
         case AST_CAST: return "Cast";
     }
     return "?";

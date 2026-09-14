@@ -662,6 +662,44 @@ var_decl:
                      : $1;
             $$->a = $4;
         }
+    | type_spec pointer_opt IDENTIFIER '[' INT_LITERAL ']'
+        {
+            /* Standard C/C++ array declarator: length AFTER the name --
+             * `int scores[8];`. No initializer support yet (an array
+             * initializer list, `= {1, 2, 3}`, is a separate, unbuilt
+             * piece of grammar -- see docs/DESIGN_NOTES.md). */
+            symtab_insert(g_symtab, g_symtab->current, $3, SYM_VAR);
+            $$ = ast_new(AST_VAR_DECL, @3.first_line);
+            $$->str1 = strdup($3);
+            AstNode *base = ($2 == 1) ? ast_wrap_pointer($1, @1.first_line)
+                          : ($2 == 2) ? ast_wrap_reference($1, @1.first_line)
+                          : $1;
+            $$->type = ast_wrap_array(base, $5, @1.first_line);
+            $$->a = NULL;
+        }
+    | type_spec '[' INT_LITERAL ']' IDENTIFIER
+        {
+            /* Vircon32-native-style array declarator, accepted as an
+             * ALTERNATE valid C++-side input form -- same meaning as
+             * the standard-C alternative above, length BEFORE the name
+             * instead of after (`int [8] scores;`), matching Vircon32 C
+             * itself. Deliberately no pointer_opt here (unlike the
+             * standard-C form) -- this form exists specifically to let
+             * someone already fluent in Vircon32 C, or transitioning
+             * from it, keep writing what's already familiar to them
+             * without having to also learn a second, unrelated
+             * declarator convention; it isn't trying to be a general
+             * C-declarator sublanguage of its own. Both forms produce
+             * an identical AST_ARRAY_TYPE -- codegen always emits
+             * Vircon32's own required form regardless of which one the
+             * source used, so this choice is purely a source-reading
+             * preference, never a behavioral one. */
+            symtab_insert(g_symtab, g_symtab->current, $5, SYM_VAR);
+            $$ = ast_new(AST_VAR_DECL, @5.first_line);
+            $$->str1 = strdup($5);
+            $$->type = ast_wrap_array($1, $3, @1.first_line);
+            $$->a = NULL;
+        }
     ;
 
 opt_initializer:
