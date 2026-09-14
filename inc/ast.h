@@ -171,19 +171,28 @@ typedef enum {
                               explicit "(Type)expr". Never produced by the
                               parser (this project's grammar has no C-
                               style cast-expression syntax) -- introduced
-                              only by lower.c's finalize_call, to make a
-                              receiver ("this") argument's pointer type
-                              match whatever the callee actually declares
-                              it as. See finalize_call's own doc comment
-                              in lower.c for exactly why that's needed:
-                              this project's single-inheritance struct
-                              layout guarantees a derived class's fields
-                              are a valid prefix of its base's, but C's
-                              type system has no way to know that on its
-                              own, so calling an inherited method with a
-                              derived-typed "this" needs an explicit cast
-                              to the base pointer type the callee was
-                              actually declared to take. */
+                              by TWO lowering phases, both for the same
+                              underlying reason: lower.c's finalize_call,
+                              to make a receiver ("this") argument's
+                              pointer type match whatever the callee
+                              actually declares it as; and lower.c's
+                              insert_pointer_cast_stmt (a later round),
+                              to make a VarDecl's own pointer-typed
+                              initializer match its declared type when
+                              the two differ (e.g. `Shape *s = new
+                              Square(4);`) -- confirmed directly that
+                              Vircon32 rejects that implicit conversion
+                              outright ("types are not compatible"),
+                              unlike real C++. Both rely on the same
+                              underlying guarantee: this project's
+                              single-inheritance struct layout ensures a
+                              derived class's fields are a valid prefix
+                              of its base's, so the conversion is
+                              genuinely SAFE either way -- C's type
+                              system (and evidently Vircon32's own,
+                              even more strictly than standard C) just
+                              has no way to know that on its own, so an
+                              explicit cast has to say so. */
 } AstKind;
 
 typedef enum { ACC_PUBLIC, ACC_PRIVATE, ACC_PROTECTED } AccessSpec;

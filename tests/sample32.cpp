@@ -5,18 +5,19 @@
 // hierarchy, but sample24's Shape had no destructor at all; this is the
 // first test exercising a virtual destructor specifically.
 //
-// A separate, genuinely uncertain question this test ALSO exercises,
-// unrelated to destructor dispatch itself: `Shape *shapePtr =
-// new Square(4);` assigns a derived pointer to a base-typed variable
-// with no explicit cast (this project's grammar has no C-style cast
-// expression at all -- confirmed directly, nothing in parser.y produces
-// one from source; AST_CAST only ever comes from lowering's own
-// receiver-cast insertion). If Vircon32 rejects this the way it's
-// already shown itself strict about other pointer-type mismatches, that
-// would be a real, separate, pre-existing gap (no cast-insertion for an
-// ordinary assignment, only for a method call's receiver) -- not a
-// problem with the virtual-destructor-dispatch fix this test is
-// actually here to confirm.
+// Also exercises a SEPARATE fix this same test surfaced, unrelated to
+// destructor dispatch itself: `Shape *shapePtr = new Square(4);`
+// assigns a derived pointer to a base-typed variable with no explicit
+// cast (this project's grammar has no C-style cast expression at all).
+// Confirmed directly that Vircon32 rejects this outright ("types are
+// not compatible: cannot assign struct Square* to struct Shape*") --
+// stricter than real C++, which allows the implicit upcast freely.
+// Fixed by a new lowering phase (lower.c's insert_pointer_cast_stmt)
+// that inserts an explicit cast to the declared type whenever a
+// VarDecl's pointer-typed initializer resolves to a different,
+// related class -- scoped narrowly to VarDecl initializers specifically
+// (not plain assignment, function arguments, or return values, which
+// could hit the identical mismatch but aren't covered here).
 
 class Shape {
     public:

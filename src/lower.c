@@ -1733,6 +1733,123 @@ static void destruct_scope_free_functions(AstList *decls) {
     }
 }
 
+/* ---- phase 6a: pointer-type cast insertion for VarDecl initializers ----
+ *
+ * A real, confirmed bug this closes: `Shape *shapePtr = new Square(4);`
+ * -- assigning a derived pointer to a base-typed variable with no
+ * explicit cast -- compiles fine in real C++ (an implicit upcast), but
+ * Vircon32 C rejects it outright: "types are not compatible: cannot
+ * assign struct Square* to struct Shape*", confirmed directly against
+ * the real compiler (tests/sample32.cpp, which is what surfaced this).
+ * Standard C is stricter than C++ about pointer-type compatibility in
+ * exactly this way, and Vircon32 evidently doesn't relax that -- this
+ * project's own single-inheritance struct layout guarantees the
+ * conversion is actually SAFE (Shape's fields are a literal prefix of
+ * Square's), the same reasoning cast_receiver_if_needed already relies
+ * on for a method call's own receiver; C's type system just has no way
+ * to know that on its own, and here neither does the C code this
+ * project emits, until this phase inserts an explicit cast to say so.
+ *
+ * MUST run BEFORE phase 6 (new/delete rewriting): infer_expr_type
+ * needs to see the ORIGINAL `AST_NEW` node to infer "pointer to Square"
+ * at all (its own AST_NEW case builds that from `expr->type` directly);
+ * once phase 6 has already turned it into a call to
+ * `v32_new_Square__Square__int`, there's no NEW node left to ask, just
+ * an ordinary function call this project's type inference has no
+ * special knowledge of.
+ *
+ * SCOPE, deliberately narrow, matching how this specific bug was
+ * actually found rather than guessing at the full extent of the
+ * problem: only a VarDecl's own initializer is covered. The identical
+ * mismatch could just as easily arise in a plain assignment
+ * (`shapePtr = new Square(4);` after the fact), a function argument, or
+ * a return value -- none of those are covered here, a real, documented
+ * gap rather than something quietly assumed handled by this phase too.
+ */
+static void insert_pointer_cast_stmt(AstNode **slot, AstNode *class_decl, LocalVarType **locals) {
+    AstNode *n = *slot;
+    if (n == NULL) return;
+    switch (n->kind) {
+        case AST_BLOCK:
+            for (int i = 0; i < n->list.count; i++) {
+                insert_pointer_cast_stmt(&n->list.items[i], class_decl, locals);
+            }
+            break;
+        case AST_IF:
+            insert_pointer_cast_stmt(&n->b, class_decl, locals);
+            insert_pointer_cast_stmt(&n->c, class_decl, locals);
+            break;
+        case AST_WHILE:
+            insert_pointer_cast_stmt(&n->b, class_decl, locals);
+            break;
+        case AST_FOR:
+            insert_pointer_cast_stmt(&n->a, class_decl, locals);
+            insert_pointer_cast_stmt(&n->d, class_decl, locals);
+            break;
+        case AST_VAR_DECL: {
+            if (n->a != NULL && n->type->kind == AST_POINTER_TYPE) {
+                AstNode *declared_class = type_to_class(n->type);
+                AstNode *init_type = infer_expr_type(n->a, class_decl, *locals);
+                if (declared_class != NULL && init_type != NULL && init_type->kind == AST_POINTER_TYPE) {
+                    AstNode *init_class = type_to_class(init_type);
+                    /* Only when both sides resolve to an actual, KNOWN
+                     * class and they genuinely differ -- best-effort,
+                     * same philosophy as everywhere else in this file:
+                     * if either side can't be resolved at all, don't
+                     * guess by inserting a cast that might be wrong. */
+                    if (init_class != NULL && init_class != declared_class) {
+                        AstNode *cast = ast_new(AST_CAST, n->a->line);
+                        cast->type = ast_wrap_pointer(ast_ident(declared_class->str1, n->a->line), n->a->line);
+                        cast->a = n->a;
+                        n->a = cast;
+                    }
+                }
+            }
+            LocalVarType *lv = calloc(1, sizeof(LocalVarType)); /* calloc: zero-inits was_reference too */
+            lv->name = n->str1;
+            lv->type = n->type;
+            lv->next = *locals;
+            *locals = lv;
+            break;
+        }
+        default:
+            break;
+    }
+}
+
+static void insert_pointer_cast_in_method(AstNode *method, AstNode *class_decl) {
+    if (method->kind != AST_FUNC_DEF) return;
+    LocalVarType *locals = seed_locals_from_params(method);
+    insert_pointer_cast_stmt(&method->a, class_decl, &locals);
+}
+
+static void insert_pointer_cast_classes(AstList *decls) {
+    for (int i = 0; i < decls->count; i++) {
+        AstNode *n = decls->items[i];
+        if (n->kind == AST_CLASS_DECL) {
+            ClassLayout *layout = (ClassLayout *)n->sema_info;
+            if (layout != NULL) {
+                for (int j = 0; j < layout->methods.count; j++) {
+                    insert_pointer_cast_in_method(layout->methods.items[j], n);
+                }
+            }
+        } else if (n->kind == AST_NAMESPACE_DECL) {
+            insert_pointer_cast_classes(&n->list);
+        }
+    }
+}
+
+static void insert_pointer_cast_free_functions(AstList *decls) {
+    for (int i = 0; i < decls->count; i++) {
+        AstNode *n = decls->items[i];
+        if (n->kind == AST_NAMESPACE_DECL) {
+            insert_pointer_cast_free_functions(&n->list);
+        } else if (n->kind == AST_FUNC_DEF && n->b == NULL) {
+            insert_pointer_cast_in_method(n, NULL);
+        }
+    }
+}
+
 int lower_run(AstNode *program) {
     compute_struct_layouts(&program->list);
     this_inject_classes(&program->list);
@@ -1744,6 +1861,10 @@ int lower_run(AstNode *program) {
     finalize_calls_free_functions(&program->list);
     fix_references_classes(&program->list);         /* phase 5 */
     fix_references_free_functions(&program->list);
+    insert_pointer_cast_classes(&program->list);      /* phase 6a -- MUST run
+        before phase 6 below, while AST_NEW nodes are still intact; see
+        this phase's own doc comment for why */
+    insert_pointer_cast_free_functions(&program->list);
     new_delete_rewrite_classes(&program->list);      /* phase 6 */
     new_delete_rewrite_free_functions(&program->list);
     inject_ctor_calls_classes(&program->list);        /* phase 7 */
