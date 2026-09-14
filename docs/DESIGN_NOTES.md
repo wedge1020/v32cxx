@@ -2013,6 +2013,161 @@ at all. Kept the same honest-status-callout structure the original had,
 since that framing itself was good; the content underneath it just
 hadn't kept up.
 
+## Two real, fatal bugs found by Matthew's own rebuild -- both fixed and re-verified before handing back
+
+Matthew's fresh build (with the new `parser.c`/`lexer.c`/`parser.h`)
+surfaced two genuine issues, one cosmetic-adjacent, one a real,
+fatal-to-compile bug -- plus confirmed the two apparent build problems
+from immediately before this were sync issues, not code bugs.
+
+**Confirmed, not just assumed, that the warnings/linker error were
+stale-file sync issues.** Rebuilt from scratch locally with Matthew's
+fresh generated files: `ast.c` produced zero `-Wswitch` warnings (the
+`AST_INIT_LIST` case was already there), and the link succeeded cleanly
+(`g_preprocessor_lines` was already correctly defined in `main.c`). Both
+match this project's own established pattern for this exact failure
+mode (the `infer_expr_type` incident several rounds back was the same
+root cause) -- not re-litigated at length here since the pattern is
+already documented, just confirmed directly rather than assumed.
+
+**A real, fatal bug, found via my own first real test run of
+`tests/sample29.cpp`**: `new int[5]` generated a call to
+`v32_new_arr_int`, but nothing in the output ever DEFINED that function
+-- the exact "identifier not declared" failure mode `v32_new_Player`
+originally had, early in this project. Two compounding causes, both
+fixed:
+
+1. Array-new's type-naming reused `type_to_class`, which only resolves
+   an actual registered class -- for `int`, correctly `NULL`, with the
+   fallback being the literal string `"unknown"`. Produced
+   `v32_new_arr_unknown` instead of `v32_new_arr_int`. Fixed with a new
+   `type_name_for_new` helper (lower.c) that falls back to the type
+   node's own name for a bare, non-class type -- `new int`/`new
+   int[N]` are both genuinely legal C++, not something only this
+   project's own classes need.
+2. Even with the name fixed, nothing would have defined it anyway:
+   `needs_misc` (codegen.c) -- whether to `#include "misc.h"` and emit
+   every runtime function that depends on it -- was gated purely on
+   "does the program have at least one class," which is false for
+   `sample29.cpp` (only free functions). Fixed two ways: a new
+   `g_uses_new_or_delete` global (driver.h), set by lower.c's
+   `new_delete_rewrite_expr` the moment it actually lowers ANY
+   `new`/`delete`/`new[]`/`delete[]`, now also gates `needs_misc`; and a
+   new `emit_primitive_array_new_runtime` (codegen.c) unconditionally
+   emits `v32_new_arr_int`/`float`/`char`/`bool` whenever `misc.h` is
+   included at all, since a primitive type has nowhere to be "found" by
+   walking declarations the way a class does.
+
+**Re-verified thoroughly before handing anything back, not just
+fixed and assumed correct**: rebuilt from scratch, confirmed
+`sample29.c` now has `#include "misc.h"` and a matching, fully-defined
+`v32_new_arr_int`; re-ran the full 29-sample suite to confirm zero
+regressions; specifically checked that every existing `new`/`delete`
+test (`sample17`/`18`/`23`/`24`/`25`) still gets `misc.h` correctly
+(now over-generating the 4 primitive allocators alongside their own
+per-class ones, an accepted, deliberate trade-off, same "over-generate
+rather than risk under-generating" reasoning already used for the
+per-class allocators); and specifically confirmed `sample21.cpp` (no
+classes, no `new`/`delete` at all) still correctly gets NEITHER
+`misc.h` nor any allocator -- confirming the gate is still a genuine
+gate, not accidentally always-true now.
+
+**Also addressed, at Matthew's request**: the pre-existing, known
+`-Wsign-compare` warning in flex's own generated `yy_get_next_buffer`
+(present since this project's very first build, previously just
+documented as expected) now has a `#pragma GCC diagnostic ignored
+"-Wsign-compare"` added to `lexer.l`'s own prologue, which flex copies
+verbatim into the generated file ahead of the code that triggers it.
+UNVERIFIED as of this writing -- needs a fresh `lexer.c` regenerated
+from the updated `lexer.l` to actually confirm the warning is gone,
+since this project still has no flex available in this sandbox to
+regenerate it directly.
+
+## `break`/`continue`, and phase 9's promised revisit
+
+Second round to touch `parser.y`/`lexer.l` (after the array-completion
+round). `break`/`continue` are now real grammar productions
+(`BREAK ';'`/`CONTINUE ';'`), each becoming its own AST node
+(`AST_BREAK`/`AST_CONTINUE` -- leaf statements, no fields at all).
+`sema.c` rejects either appearing outside a loop (a file-local
+`g_sema_loop_depth` counter, incremented/decremented around a loop
+body's own walk -- not threaded through `check_node`'s parameter list,
+since that walk is single-threaded and strictly depth-first, so a
+global serves the purpose far more simply than a new parameter at every
+existing call site would). `codegen.c` emits each as the literal C
+keyword -- no Vircon32-specific quirk here, confirmed by there simply
+being nothing unusual to reason about, unlike most of this project's
+other syntax choices.
+
+**The real work was phase 9's promised revisit, exactly the consequence
+flagged in `lower.h`'s own documentation several rounds back.** A
+`break`/`continue` can exit a scope exactly as early as `return` does,
+needing the same destruction -- but only up to the boundary of the loop
+actually being exited, not all the way to the function's own top the
+way `return` does (anything declared outside that loop stays alive,
+same as it would after the loop ends normally). Implemented by
+threading a new `loop_boundary` parameter through
+`destruct_scope_stmt`/`destruct_scope_block`: `AST_WHILE`/`AST_FOR` set
+a fresh boundary (the scope in effect right before entering their own
+body) when recursing into it; `AST_IF` passes whatever boundary it was
+already given straight through, since an `if` doesn't introduce a loop
+of its own. A shared `install_destructor_sequence` helper factors out
+the "walk from here to a stop point, destroying everything found, then
+install the (possibly rewritten) tail statement" logic now common to
+`return` (stop point: the true top, `NULL`) and `break`/`continue`
+(stop point: `loop_boundary`) -- the two only ever differed in where
+the walk stops and what the tail statement is, never in the walking or
+destroying itself, so duplicating that logic a second time would have
+been a real invitation for the two to quietly drift apart later.
+
+**A genuine subtlety `return`'s existing logic didn't have to deal
+with, kept as its own explicit branch rather than forced through the
+shared helper**: a non-void `return expr;` always needs its temporary-
+holding `VarDecl` installed, even when nothing in scope needs
+destroying at all (the shared helper's own "nothing to destroy, skip
+the wrapping block entirely" shortcut would otherwise silently drop
+it). `break`/`continue` have no such requirement -- there's no value to
+preserve -- so they route through the shared helper's short-circuit
+cleanly; `return expr;` doesn't, and stays as its own explicit path
+that always builds the full sequence.
+
+**A real mistake caught by my own regression run, not shipped
+unnoticed**: recompiling only the files I thought were affected by
+`ast.h`'s enum change (`ast.c`/`sema.c`/`lower.c`/`codegen.c`) while
+leaving `symtab.o`/`main.o` stale produced deeply confusing, garbled
+output across nearly the entire test suite -- inserting `AST_BREAK`/
+`AST_CONTINUE` into the middle of the enum shifts every subsequent
+value's number, and linking object files compiled against different
+numberings of the same enum silently misinterprets node kinds across
+the object-file boundary. Not a logic bug at all -- a full, `rm -f
+obj/*.o`-then-rebuild-everything cycle resolved it completely, and the
+suite came back to exactly the expected 6 failing samples. Worth
+recording as a standing reminder for this project specifically: any
+change to `ast.h`'s enum needs a truly full rebuild, not a targeted one
+based on which files seemed obviously affected -- the enum-numbering
+fragility touches every translation unit that includes `ast.h`, not
+just the ones with new logic in them.
+
+**Verification status, stated precisely rather than left ambiguous**:
+the C-side implementation (sema.c's check, lower.c's phase 9 extension,
+codegen.c's emission) compiles and links cleanly, and the full existing
+29-sample suite shows zero regressions -- confirming the parts of this
+round that don't depend on the grammar are sound. The grammar change
+itself (parser.y/lexer.l) is, like the array-completion round before
+it, reasoned through but not yet built -- this sandbox still has
+neither bison nor flex. Tried running `tests/sample30.cpp`/
+`sample31.cpp` against the still-stale (pre-this-round) grammar as a
+sanity check; both "succeeded," but only because the old grammar still
+treats `break`/`continue` as ordinary, undeclared identifiers rather
+than keywords -- `continue;` parses as a bare-identifier expression
+statement under the old grammar and happens to print as the literal
+text "continue;" by coincidence, not because any of this round's new
+logic actually ran. None of this round's own break/continue-specific
+code has been genuinely exercised yet; `tests/sample30.cpp` (the
+loop-with-all-three-exit-paths test) and `tests/sample31.cpp` (the
+deliberately-invalid outside-a-loop test) both need Matthew's own
+rebuild before either is more than reasoned-through.
+
 ## Suggested next steps, roughly in order
 
 

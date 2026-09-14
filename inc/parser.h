@@ -66,33 +66,35 @@ extern int yydebug;
     ELSE = 272,                    /* ELSE  */
     WHILE = 273,                   /* WHILE  */
     FOR = 274,                     /* FOR  */
-    INT_KW = 275,                  /* INT_KW  */
-    FLOAT_KW = 276,                /* FLOAT_KW  */
-    VOID_KW = 277,                 /* VOID_KW  */
-    BOOL_KW = 278,                 /* BOOL_KW  */
-    CHAR_KW = 279,                 /* CHAR_KW  */
-    NEW = 280,                     /* NEW  */
-    DELETE = 281,                  /* DELETE  */
-    THIS = 282,                    /* THIS  */
-    VIRTUAL = 283,                 /* VIRTUAL  */
-    TRUE_KW = 284,                 /* TRUE_KW  */
-    FALSE_KW = 285,                /* FALSE_KW  */
-    OPERATOR = 286,                /* OPERATOR  */
-    COLONCOLON = 287,              /* COLONCOLON  */
-    ARROW = 288,                   /* ARROW  */
-    EQ = 289,                      /* EQ  */
-    NE = 290,                      /* NE  */
-    LE = 291,                      /* LE  */
-    GE = 292,                      /* GE  */
-    ANDAND = 293,                  /* ANDAND  */
-    OROR = 294,                    /* OROR  */
-    PLUSEQ = 295,                  /* PLUSEQ  */
-    MINUSEQ = 296,                 /* MINUSEQ  */
-    STAREQ = 297,                  /* STAREQ  */
-    SLASHEQ = 298,                 /* SLASHEQ  */
-    INC = 299,                     /* INC  */
-    DEC = 300,                     /* DEC  */
-    LOWER_THAN_ELSE = 301          /* LOWER_THAN_ELSE  */
+    BREAK = 275,                   /* BREAK  */
+    CONTINUE = 276,                /* CONTINUE  */
+    INT_KW = 277,                  /* INT_KW  */
+    FLOAT_KW = 278,                /* FLOAT_KW  */
+    VOID_KW = 279,                 /* VOID_KW  */
+    BOOL_KW = 280,                 /* BOOL_KW  */
+    CHAR_KW = 281,                 /* CHAR_KW  */
+    NEW = 282,                     /* NEW  */
+    DELETE = 283,                  /* DELETE  */
+    THIS = 284,                    /* THIS  */
+    VIRTUAL = 285,                 /* VIRTUAL  */
+    TRUE_KW = 286,                 /* TRUE_KW  */
+    FALSE_KW = 287,                /* FALSE_KW  */
+    OPERATOR = 288,                /* OPERATOR  */
+    COLONCOLON = 289,              /* COLONCOLON  */
+    ARROW = 290,                   /* ARROW  */
+    EQ = 291,                      /* EQ  */
+    NE = 292,                      /* NE  */
+    LE = 293,                      /* LE  */
+    GE = 294,                      /* GE  */
+    ANDAND = 295,                  /* ANDAND  */
+    OROR = 296,                    /* OROR  */
+    PLUSEQ = 297,                  /* PLUSEQ  */
+    MINUSEQ = 298,                 /* MINUSEQ  */
+    STAREQ = 299,                  /* STAREQ  */
+    SLASHEQ = 300,                 /* SLASHEQ  */
+    INC = 301,                     /* INC  */
+    DEC = 302,                     /* DEC  */
+    LOWER_THAN_ELSE = 303          /* LOWER_THAN_ELSE  */
   };
   typedef enum yytokentype yytoken_kind_t;
 #endif
@@ -110,7 +112,7 @@ union YYSTYPE
     double fval;
     AccessSpec access;
 
-#line 114 "inc/parser.h"
+#line 116 "inc/parser.h"
 
 };
 typedef union YYSTYPE YYSTYPE;

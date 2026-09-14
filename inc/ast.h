@@ -72,6 +72,21 @@ typedef enum {
     AST_WHILE,            /* a=cond, b=body */
     AST_FOR,              /* a=init-stmt or NULL, b=cond or NULL, c=step-expr or NULL, d=body */
     AST_RETURN,           /* a=expr or NULL */
+    AST_BREAK,            /* no fields -- a leaf statement, `break;`.
+                              sema.c rejects one appearing outside a loop
+                              (real C++/C requires this too); lower.c's
+                              phase 9 destroys whatever's live inside the
+                              loop being exited (but nothing outside it)
+                              before it executes -- see that phase's own
+                              doc comment in lower.h for the full
+                              reasoning. */
+    AST_CONTINUE,         /* no fields -- `continue;`, otherwise identical
+                              treatment to AST_BREAK in both sema.c and
+                              lower.c (the two differ only in what they
+                              compile TO -- codegen.c just emits each as
+                              the literal C keyword -- not in how either
+                              is validated or what gets destroyed before
+                              one executes) */
     AST_EXPR_STMT,        /* a=expr */
     AST_BINOP,            /* str1=operator text, a=lhs, b=rhs */
     AST_UNOP,             /* str1=operator text, a=operand */

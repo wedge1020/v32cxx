@@ -97,6 +97,8 @@ ALNUM   [A-Za-z0-9_]
 "else"       { g_last_ident_sym = NULL; return ELSE; }
 "while"      { g_last_ident_sym = NULL; return WHILE; }
 "for"        { g_last_ident_sym = NULL; return FOR; }
+"break"      { g_last_ident_sym = NULL; return BREAK; }
+"continue"   { g_last_ident_sym = NULL; return CONTINUE; }
 "int"        { g_last_ident_sym = NULL; return INT_KW; }
 "float"      { g_last_ident_sym = NULL; return FLOAT_KW; }
 "void"       { g_last_ident_sym = NULL; return VOID_KW; }

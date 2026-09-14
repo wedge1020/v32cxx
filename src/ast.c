@@ -68,6 +68,8 @@ static const char *kind_name(AstKind k) {
         case AST_WHILE: return "While";
         case AST_FOR: return "For";
         case AST_RETURN: return "Return";
+        case AST_BREAK: return "Break";
+        case AST_CONTINUE: return "Continue";
         case AST_EXPR_STMT: return "ExprStmt";
         case AST_BINOP: return "BinOp";
         case AST_UNOP: return "UnOp";

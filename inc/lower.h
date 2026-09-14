@@ -192,48 +192,57 @@
  *   accepts, so handling both really is the general solution as things
  *   stand today.
  *
- *   IMPORTANT, CONFIRMED WITH MATTHEW DIRECTLY: the absence of
- *   `break`/`continue` is temporary, not a permanent design choice --
- *   they're planned. The moment either exists, THIS PHASE WILL NEED
- *   REVISITING: a `break`/`continue` inside a loop body can exit a
- *   scope exactly as early as a `return` does, with the exact same
- *   need to destroy whatever's live at that point (though only up to
- *   the loop being exited, not the whole function) before control
- *   actually transfers. Nothing about that revisit is done here --
- *   this comment exists so "phase 9 is the complete solution" doesn't
- *   quietly go stale the way a couple of OTHER paragraphs in this same
- *   file already did once before (see this file's own history in
- *   docs/DESIGN_NOTES.md for phase 6's and phase 8's documentation both
- *   having gone stale after being built, unnoticed for several rounds).
+ *   REVISITED, AS PROMISED: `break`/`continue` now exist in this
+ *   project's grammar (parser.y/lexer.l), and this phase now treats
+ *   either as a THIRD early-exit path, alongside fall-through and
+ *   `return`. Unlike `return`, which destroys everything from the
+ *   current scope all the way to the function's own top, a
+ *   `break`/`continue` only destroys what's live from the current scope
+ *   up to (but not including) the boundary of the loop actually being
+ *   exited -- anything declared in a scope enclosing that loop stays
+ *   alive, exactly as it would after the loop ends normally too. Tracked
+ *   via a new `loop_boundary` parameter threaded through
+ *   destruct_scope_stmt/destruct_scope_block (lower.c) -- AST_WHILE/
+ *   AST_FOR set a fresh boundary (the scope in effect right before
+ *   entering their own body) when recursing into their body, and
+ *   AST_IF passes whatever boundary it was already given straight
+ *   through unchanged, since an `if` doesn't introduce a loop of its
+ *   own. sema.c separately rejects a `break`/`continue` appearing
+ *   outside any loop at all (real C++/C both do too), via a simple
+ *   loop-depth counter incremented/decremented around a loop body's own
+ *   walk -- not threaded through check_node's parameter list, since
+ *   that walk is single-threaded and strictly depth-first, so a
+ *   file-local global serves the same purpose far more simply.
  *
  *   An early `return expr;` needs a small rewrite -- `expr` must be
  *   evaluated before any destructor runs, so it becomes a nested block
  *   holding the already-computed result in a temporary, the destructor
  *   calls, then a bare `return` of the temporary. A KNOWN, minor
  *   inefficiency, not a correctness issue: a block whose own last
- *   statement is always a `return` still gets a fall-through destructor
- *   sequence appended after it, which is then simply unreachable -- see
- *   lower.c's own doc comment on this phase for why detecting that
- *   would need real reachability analysis, not attempted here.
+ *   statement is always a `return`/`break`/`continue` still gets a
+ *   fall-through destructor sequence appended after it, which is then
+ *   simply unreachable -- see lower.c's own doc comment on this phase
+ *   for why detecting that would need real reachability analysis, not
+ *   attempted here.
  *
- *   CONFIRMED against the real Vircon32 compiler (Matthew's report,
- *   clean build/transpile/compile) -- `tests/sample27.cpp` (an early
- *   return from a nested block with locals live at two levels
- *   simultaneously, plus the temporary-variable rewrite) is the test
- *   that exercised this. This was also the first feature of real
- *   complexity in this project verified LOCALLY before ever reaching
- *   Matthew at all: with the bison/flex-generated `parser.c`/`lexer.c`/
- *   `parser.h` he provided, a local `v32c++` build existed for the
- *   first time, used to transpile the test and trace the output by
- *   hand, plus a standard-C-approximated syntax check (Vircon32's own
- *   `struct`-keyword quirk substituted back in) confirming the new
- *   nested-block/temporary-variable output was sound C independent of
- *   any Vircon32-specific question -- ahead of, not instead of, the
- *   real compile that then confirmed it for real.
+ *   CONFIRMED against the real Vircon32 compiler for the fall-through/
+ *   return paths (Matthew's report, `tests/sample27.cpp`). The
+ *   break/continue extension itself is NOT yet confirmed the same way
+ *   as of this writing -- `tests/sample30.cpp` (a loop constructing a
+ *   destructible local every iteration, exercising `break`, `continue`,
+ *   AND ordinary fall-through as three separate exits from the same
+ *   loop body) is the test written for it, and the C-side logic
+ *   compiles and links cleanly with zero regressions across the full
+ *   existing suite -- but the grammar itself (parser.y/lexer.l) still
+ *   needs a fresh bison/flex build from Matthew before `break`/
+ *   `continue` can even be parsed at all, let alone confirmed correct
+ *   end to end. `tests/sample31.cpp` (a deliberately invalid
+ *   `continue;` outside any loop) is the matching test for sema.c's new
+ *   validity check, same status.
  *
- * NOT done yet: destructor invocation for `break`/`continue` doesn't
- * apply (see phase 9's own entry above for why), but VIRTUAL destructor
- * dispatch still doesn't exist anywhere (see phase 6's entry above).
+ * NOT done yet: VIRTUAL destructor dispatch still doesn't exist anywhere
+ * (see phase 6's entry above) -- unrelated to this round's work, listed
+ * here only because it was the other item in this exact spot before.
  *
  * PRECONDITION: sema_run() must have already completed successfully
  * (zero errors) before lower_run() is called -- these phases read each

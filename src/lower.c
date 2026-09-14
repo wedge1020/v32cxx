@@ -1518,35 +1518,92 @@ static AstNode *build_dtor_call_stmt(DestructibleLocal *dl) {
 }
 
 static void destruct_scope_block(AstNode *block, DestructScope *parent_scope,
+                                  DestructScope *loop_boundary,
                                   AstNode *func_return_type, int *ret_tmp_counter);
 
+/* Builds and installs, in place of *slot, a small nested block that
+ * destroys everything from `scope` up to (but NOT including) `stop_at`,
+ * then executes `tail` (the break/continue/return itself, possibly
+ * already rewritten -- see the AST_RETURN case's own temporary-variable
+ * handling for why a return's `tail` isn't always the original node
+ * unchanged). Shared by AST_RETURN (stop_at = NULL, walk the WHOLE
+ * scope chain to the function's top) and AST_BREAK/AST_CONTINUE
+ * (stop_at = loop_boundary, walk only as far as the loop being exited)
+ * -- the two only differ in where the walk stops and what `tail` is,
+ * never in the walking/destroying logic itself. */
+static void install_destructor_sequence(AstNode **slot, DestructScope *scope,
+                                         DestructScope *stop_at, AstNode *tail) {
+    int any = 0;
+    for (DestructScope *s = scope; s != NULL && s != stop_at && !any; s = s->parent) {
+        if (s->locals != NULL) any = 1;
+    }
+    if (!any) {
+        *slot = tail; /* nothing to destroy -- just install the (possibly
+            rewritten) tail directly, no wrapping block needed at all */
+        return;
+    }
+
+    AstList stmts = ast_list_new();
+    for (DestructScope *s = scope; s != NULL && s != stop_at; s = s->parent) {
+        for (DestructibleLocal *dl = s->locals; dl != NULL; dl = dl->next) {
+            ast_list_append(&stmts, build_dtor_call_stmt(dl));
+        }
+    }
+    ast_list_append(&stmts, tail);
+
+    AstNode *replacement = ast_new(AST_BLOCK, tail->line);
+    replacement->list = stmts;
+    *slot = replacement;
+}
+
 static void destruct_scope_stmt(AstNode **slot, DestructScope *scope,
+                                 DestructScope *loop_boundary,
                                  AstNode *func_return_type, int *ret_tmp_counter) {
     AstNode *n = *slot;
     if (n == NULL) return;
     switch (n->kind) {
         case AST_BLOCK:
-            destruct_scope_block(n, scope, func_return_type, ret_tmp_counter);
+            destruct_scope_block(n, scope, loop_boundary, func_return_type, ret_tmp_counter);
             break;
         case AST_IF:
-            destruct_scope_stmt(&n->b, scope, func_return_type, ret_tmp_counter);
-            destruct_scope_stmt(&n->c, scope, func_return_type, ret_tmp_counter);
+            /* loop_boundary passes through UNCHANGED -- an `if` doesn't
+             * itself introduce a new loop, so a break/continue inside
+             * either branch still refers to whatever loop (if any) was
+             * already enclosing this `if`. */
+            destruct_scope_stmt(&n->b, scope, loop_boundary, func_return_type, ret_tmp_counter);
+            destruct_scope_stmt(&n->c, scope, loop_boundary, func_return_type, ret_tmp_counter);
             break;
         case AST_WHILE:
-            destruct_scope_stmt(&n->b, scope, func_return_type, ret_tmp_counter);
+            /* The body gets a NEW loop_boundary = scope -- exactly the
+             * scope in effect right before entering this loop, i.e. the
+             * boundary a break/continue anywhere inside (including
+             * nested blocks within the body) should stop at without
+             * destroying it or anything further out. */
+            destruct_scope_stmt(&n->b, scope, scope, func_return_type, ret_tmp_counter);
             break;
         case AST_FOR:
-            destruct_scope_stmt(&n->d, scope, func_return_type, ret_tmp_counter);
+            /* Same reasoning as AST_WHILE for the body. The init clause
+             * (n->a) deliberately keeps the OUTER loop_boundary
+             * unchanged, not a new one -- it runs once, before the loop
+             * body's own scope even exists, so it was never "inside"
+             * this loop's own boundary to begin with. (A VarDecl in a
+             * for-loop's own init clause isn't tracked as a
+             * destructible at all regardless -- see this phase's own
+             * doc comment in lower.h for that pre-existing, unrelated
+             * scope limit; nothing about break/continue changes it.) */
+            destruct_scope_stmt(&n->d, scope, scope, func_return_type, ret_tmp_counter);
+            break;
+        case AST_BREAK:
+        case AST_CONTINUE:
+            /* sema.c has already rejected one of these outside any loop
+             * at all, so loop_boundary should never genuinely be NULL
+             * here -- but best-effort or not, install_destructor_sequence
+             * handles a NULL stop_at the same way AST_RETURN's own walk
+             * already does (walk to the true top), so this doesn't need
+             * its own special-cased fallback. */
+            install_destructor_sequence(slot, scope, loop_boundary, n);
             break;
         case AST_RETURN: {
-            int any = 0;
-            for (DestructScope *s = scope; s != NULL && !any; s = s->parent) {
-                if (s->locals != NULL) any = 1;
-            }
-            if (!any) break; /* nothing in scope needs destroying -- most
-                functions never touch this machinery at all */
-
-            AstList stmts = ast_list_new();
             AstNode *final_return;
 
             if (n->a != NULL) {
@@ -1563,25 +1620,42 @@ static void destruct_scope_stmt(AstNode **slot, DestructScope *scope,
                     existing type nodes elsewhere (e.g. infer_expr_type's
                     own AST_NEW case) */
                 tmp_decl->a = n->a;
-                ast_list_append(&stmts, tmp_decl);
 
                 AstNode *new_return = ast_new(AST_RETURN, n->line);
                 new_return->a = ast_ident(tmp_name, n->line);
-                final_return = new_return;
-            } else {
-                final_return = n; /* bare `return;` -- reused as-is */
-            }
 
-            for (DestructScope *s = scope; s != NULL; s = s->parent) {
-                for (DestructibleLocal *dl = s->locals; dl != NULL; dl = dl->next) {
-                    ast_list_append(&stmts, build_dtor_call_stmt(dl));
+                /* Unlike AST_BREAK/AST_CONTINUE, a `return expr;` always
+                 * needs the temporary-holding VarDecl installed even
+                 * when nothing needs destroying -- install_destructor_
+                 * sequence's own "nothing to destroy" shortcut would
+                 * otherwise drop it. Build the [tmp_decl, ...dtors...,
+                 * bare-return] sequence directly here instead of
+                 * reusing that helper for this specific case. */
+                int any = 0;
+                for (DestructScope *s = scope; s != NULL && !any; s = s->parent) {
+                    if (s->locals != NULL) any = 1;
                 }
+                AstList stmts = ast_list_new();
+                ast_list_append(&stmts, tmp_decl);
+                if (any) {
+                    for (DestructScope *s = scope; s != NULL; s = s->parent) {
+                        for (DestructibleLocal *dl = s->locals; dl != NULL; dl = dl->next) {
+                            ast_list_append(&stmts, build_dtor_call_stmt(dl));
+                        }
+                    }
+                }
+                ast_list_append(&stmts, new_return);
+                AstNode *replacement = ast_new(AST_BLOCK, n->line);
+                replacement->list = stmts;
+                *slot = replacement;
+                break;
             }
-            ast_list_append(&stmts, final_return);
 
-            AstNode *replacement = ast_new(AST_BLOCK, n->line);
-            replacement->list = stmts;
-            *slot = replacement;
+            final_return = n; /* bare `return;` -- reused as-is */
+            install_destructor_sequence(slot, scope, NULL, final_return); /* NULL:
+                return always walks the FULL chain to the function's own
+                top, never stopping at a loop boundary the way
+                break/continue does */
             break;
         }
         default:
@@ -1590,13 +1664,14 @@ static void destruct_scope_stmt(AstNode **slot, DestructScope *scope,
 }
 
 static void destruct_scope_block(AstNode *block, DestructScope *parent_scope,
+                                  DestructScope *loop_boundary,
                                   AstNode *func_return_type, int *ret_tmp_counter) {
     DestructScope this_scope = { NULL, parent_scope };
     AstList new_list = ast_list_new();
 
     for (int i = 0; i < block->list.count; i++) {
         AstNode *stmt = block->list.items[i];
-        destruct_scope_stmt(&stmt, &this_scope, func_return_type, ret_tmp_counter);
+        destruct_scope_stmt(&stmt, &this_scope, loop_boundary, func_return_type, ret_tmp_counter);
         ast_list_append(&new_list, stmt);
 
         if (stmt->kind == AST_VAR_DECL &&
@@ -1628,7 +1703,7 @@ static void destruct_scope_block(AstNode *block, DestructScope *parent_scope,
 static void destruct_scope_in_method(AstNode *method) {
     if (method->kind != AST_FUNC_DEF) return;
     int ret_tmp_counter = 0;
-    destruct_scope_block(method->a, NULL, method->type, &ret_tmp_counter);
+    destruct_scope_block(method->a, NULL, NULL, method->type, &ret_tmp_counter);
 }
 
 static void destruct_scope_classes(AstList *decls) {

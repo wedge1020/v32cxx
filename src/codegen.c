@@ -679,6 +679,18 @@ static void print_stmt(FILE *out, const AstNode *s, int indent, int strip_return
             }
             fprintf(out, ";\n");
             break;
+        case AST_BREAK:
+            /* Ordinary C, no Vircon32-specific quirk here -- unlike
+             * several other statement/declarator forms in this file,
+             * this one needed no confirmation against the real compiler
+             * before being confident about it. */
+            indent_spaces(out, indent);
+            fprintf(out, "break;\n");
+            break;
+        case AST_CONTINUE:
+            indent_spaces(out, indent);
+            fprintf(out, "continue;\n");
+            break;
         case AST_EXPR_STMT:
             indent_spaces(out, indent);
             print_expr(out, s->a);

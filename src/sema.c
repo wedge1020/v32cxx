@@ -1297,6 +1297,17 @@ static void resolve_operator_use(AstNode *node, const char *op_name, AstNode *lh
     }
 }
 
+/* Tracks whether check_node's own walk is currently inside a loop body,
+ * for break/continue validity checking -- real C++/C both reject either
+ * appearing outside a loop, and the generated C would fail to compile
+ * on this exact point too if this project let one through. File-local,
+ * not threaded through check_node's own parameter list or exposed via
+ * driver.h -- this walk is single-threaded and strictly depth-first, so
+ * a global incremented/decremented around a loop body's own recursive
+ * call is sufficient and far simpler than threading a new parameter
+ * through every existing call site in this function. */
+static int g_sema_loop_depth = 0;
+
 static void check_node(AstNode *n, AstNode *current_class, LocalVarType **locals) {
     if (n == NULL) return;
     switch (n->kind) {
@@ -1310,13 +1321,24 @@ static void check_node(AstNode *n, AstNode *current_class, LocalVarType **locals
             break;
         case AST_WHILE:
             check_node(n->a, current_class, locals);
+            g_sema_loop_depth++;
             check_node(n->b, current_class, locals);
+            g_sema_loop_depth--;
             break;
         case AST_FOR:
             check_node(n->a, current_class, locals);
             check_node(n->b, current_class, locals);
             check_node(n->c, current_class, locals);
+            g_sema_loop_depth++;
             check_node(n->d, current_class, locals);
+            g_sema_loop_depth--;
+            break;
+        case AST_BREAK:
+        case AST_CONTINUE:
+            if (g_sema_loop_depth == 0) {
+                sema_error(n->line, "'%s' statement not within a loop",
+                           (n->kind == AST_BREAK) ? "break" : "continue");
+            }
             break;
         case AST_RETURN:
         case AST_EXPR_STMT:

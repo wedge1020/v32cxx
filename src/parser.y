@@ -108,7 +108,7 @@
 %token <fval> FLOAT_LITERAL
 
 %token CLASS PUBLIC PRIVATE PROTECTED NAMESPACE TYPEDEF
-%token RETURN IF ELSE WHILE FOR
+%token RETURN IF ELSE WHILE FOR BREAK CONTINUE
 %token INT_KW FLOAT_KW VOID_KW BOOL_KW CHAR_KW
 %token NEW DELETE THIS VIRTUAL TRUE_KW FALSE_KW OPERATOR
 %token COLONCOLON ARROW EQ NE LE GE ANDAND OROR
@@ -820,6 +820,10 @@ stmt:
             $$ = ast_new(AST_RETURN, @1.first_line);
             $$->a = $2;
         }
+    | BREAK ';'
+        { $$ = ast_new(AST_BREAK, @1.first_line); }
+    | CONTINUE ';'
+        { $$ = ast_new(AST_CONTINUE, @1.first_line); }
     | var_decl ';'      { $$ = $1; }
     | typedef_decl ';'  { $$ = $1; }
     | expr ';'
