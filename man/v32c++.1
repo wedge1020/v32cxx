@@ -1,4 +1,4 @@
-.TH V32C++ 1 "September 2026" "v32c++ 20260914-dev" "User Commands"
+.TH V32C++ 1 "September 2026" "v32c++ 20260915-dev" "User Commands"
 .SH NAME
 v32c++ \- transpile a subset of C++ to Vircon32 C
 .SH SYNOPSIS
@@ -101,15 +101,6 @@ lexing/parsing, semantic analysis, lowering, and code generation.
 .B "\-vv"
 Everything from a single
 .BR \-v ,
-plus a full dump of the parsed AST, a semantic-analysis summary
-(class layouts, vtables, resolved calls), and the fully-lowered form
-of every method and function body \(em genuinely useful for following
-along with what the tool understood about a given program and how it
-transformed it, not just debugging output.
-.TP
-.B "\-vvv"
-Everything from
-.BR \-vv ,
 plus explanatory comments sprinkled directly into the generated
 .I .c
 itself, at the points where this project's own C++-to-C transformation
@@ -117,6 +108,15 @@ is least obvious to someone reading the output \(em see
 .B EXPLANATORY COMMENTS
 below. Pure commentary: never changes what code is emitted, only
 whether a comment explaining it is emitted alongside it.
+.TP
+.B "\-vvv"
+Everything from
+.BR \-vv ,
+plus a full dump of the parsed AST, a semantic-analysis summary
+(class layouts, vtables, resolved calls), and the fully-lowered form
+of every method and function body \(em genuinely useful for following
+along with what the tool understood about a given program and how it
+transformed it, not just debugging output.
 .RE
 .TP
 .B \-\-version
@@ -195,7 +195,7 @@ writing an output file anywhere the caller didn't ask for:
 .PP
 .RS
 .nf
-v32c++ \-vv sprite.cpp
+v32c++ \-vvv sprite.cpp
 .fi
 .RE
 .SH LANGUAGE NOTES
@@ -446,7 +446,7 @@ mappings stay reasonably accurate even for code
 itself generated, not only for what a person directly wrote; this is
 not claimed to be exact for every synthesized line.
 .SH EXPLANATORY COMMENTS
-.B \-vvv
+.B \-vv
 (see OPTIONS, above) sprinkles explanatory comments directly into the
 generated C, at the points where this project's own C++-to-C
 transformation is least obvious to someone reading the output rather
@@ -478,8 +478,8 @@ expression's own call to its allocator \(em each explained at the
 specific call site, not just where the underlying function is defined.
 .PP
 Pure commentary: never changes what code is emitted, only whether a
-comment explaining it is emitted alongside it \(em `\-vvv`'s own output
-is otherwise identical to `\-vv`'s. Every comment is detected
+comment explaining it is emitted alongside it \(em `\-vv`'s own output
+is otherwise identical to `\-v`'s. Every comment is detected
 structurally, from naming patterns and shapes only this project's own
 lowering ever produces (a
 .I __dtor__void

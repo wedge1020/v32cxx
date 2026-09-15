@@ -69,61 +69,60 @@ $(BIN_DIR)/v32c++: $(OBJ_DIR)/parser.o $(OBJ_DIR)/lexer.o \
 # %option noyywrap; most don't).
 
 test: all | $(OUT_DIR)
-	$(BIN)  -vv -c -o out/sample1.c  tests/sample1.cpp  1> out/sample1.txt  2>&1
-	$(BIN)  -vv    -o out/sample2.c  tests/sample2.cpp  1> out/sample2.txt  2>&1
-	$(BIN)  -vv -c -o out/sample3.c  tests/sample3.cpp  1> out/sample3.txt  2>&1
-	-$(BIN) -vv -c -o out/sample4.c  tests/sample4.cpp  1> out/sample4.txt  2>&1
-	-$(BIN) -vv -c -o out/sample5.c  tests/sample5.cpp  1> out/sample5.txt  2>&1
-	$(BIN)  -vv -c -o out/sample6.c  tests/sample6.cpp  1> out/sample6.txt  2>&1
-	$(BIN)  -vv -c -o out/sample7.c  tests/sample7.cpp  1> out/sample7.txt  2>&1
-	$(BIN)  -vv -c -o out/sample8.c  tests/sample8.cpp  1> out/sample8.txt  2>&1
-	$(BIN)  -vv -c -o out/sample9.c  tests/sample9.cpp  1> out/sample9.txt  2>&1
-	-$(BIN) -vv -c -o out/sample10.c tests/sample10.cpp 1> out/sample10.txt 2>&1
-	-$(BIN) -vv -c -o out/sample11.c tests/sample11.cpp 1> out/sample11.txt 2>&1
-	$(BIN)  -vv -c -o out/sample12.c tests/sample12.cpp 1> out/sample12.txt 2>&1
-	$(BIN)  -vv -c -o out/sample13.c tests/sample13.cpp 1> out/sample13.txt 2>&1
-	$(BIN)  -vv    -o out/sample14.c tests/sample14.cpp 1> out/sample14.txt 2>&1
-	$(BIN)  -vv -c -o out/sample15.c tests/sample15.cpp 1> out/sample15.txt 2>&1
-	$(BIN)  -vv -c -o out/sample16.c tests/sample16.cpp 1> out/sample16.txt 2>&1
-	$(BIN)  -vv -c -o out/sample17.c tests/sample17.cpp 1> out/sample17.txt 2>&1
-	$(BIN)  -vv -c -o out/sample18.c tests/sample18.cpp 1> out/sample18.txt 2>&1
-	-$(BIN) -vv -c -o out/sample19.c tests/sample19.cpp 1> out/sample19.txt 2>&1
-	-$(BIN) -vv -c -o out/sample20.c tests/sample20.cpp 1> out/sample20.txt 2>&1
-	$(BIN)  -vv    -o out/sample21.c tests/sample21.cpp 1> out/sample21.txt 2>&1
-	$(BIN)  -vv    -o out/sample22.c tests/sample22.cpp 1> out/sample22.txt 2>&1
-	$(BIN)  -vv    -o out/sample23.c tests/sample23.cpp 1> out/sample23.txt 2>&1
-	$(BIN)  -vv    -o out/sample24.c tests/sample24.cpp 1> out/sample24.txt 2>&1
-	$(BIN)  -vv    -o out/sample25.c tests/sample25.cpp 1> out/sample25.txt 2>&1
-	$(BIN)  -vv    -o out/sample26.c tests/sample26.cpp 1> out/sample26.txt 2>&1
-	$(BIN)  -vv    -o out/sample27.c tests/sample27.cpp 1> out/sample27.txt 2>&1
-	$(BIN)  -vv    -o out/sample28.c tests/sample28.cpp 1> out/sample28.txt 2>&1
-	$(BIN)  -vv    -o out/sample29.c tests/sample29.cpp 1> out/sample29.txt 2>&1
-	$(BIN)  -vv    -o out/sample30.c tests/sample30.cpp 1> out/sample30.txt 2>&1
-	-$(BIN) -vv -c -o out/sample31.c tests/sample31.cpp 1> out/sample31.txt 2>&1
+	$(BIN)  -vvv -c -o out/sample1.c  tests/sample1.cpp  1> out/sample1.txt  2>&1
+	$(BIN)  -vvv    -o out/sample2.c  tests/sample2.cpp  1> out/sample2.txt  2>&1
+	$(BIN)  -vvv -c -o out/sample3.c  tests/sample3.cpp  1> out/sample3.txt  2>&1
+	-$(BIN) -vvv -c -o out/sample4.c  tests/sample4.cpp  1> out/sample4.txt  2>&1
+	-$(BIN) -vvv -c -o out/sample5.c  tests/sample5.cpp  1> out/sample5.txt  2>&1
+	$(BIN)  -vvv -c -o out/sample6.c  tests/sample6.cpp  1> out/sample6.txt  2>&1
+	$(BIN)  -vvv -c -o out/sample7.c  tests/sample7.cpp  1> out/sample7.txt  2>&1
+	$(BIN)  -vvv -c -o out/sample8.c  tests/sample8.cpp  1> out/sample8.txt  2>&1
+	$(BIN)  -vvv -c -o out/sample9.c  tests/sample9.cpp  1> out/sample9.txt  2>&1
+	-$(BIN) -vvv -c -o out/sample10.c tests/sample10.cpp 1> out/sample10.txt 2>&1
+	-$(BIN) -vvv -c -o out/sample11.c tests/sample11.cpp 1> out/sample11.txt 2>&1
+	$(BIN)  -vvv -c -o out/sample12.c tests/sample12.cpp 1> out/sample12.txt 2>&1
+	$(BIN)  -vvv -c -o out/sample13.c tests/sample13.cpp 1> out/sample13.txt 2>&1
+	$(BIN)  -vvv    -o out/sample14.c tests/sample14.cpp 1> out/sample14.txt 2>&1
+	$(BIN)  -vvv -c -o out/sample15.c tests/sample15.cpp 1> out/sample15.txt 2>&1
+	$(BIN)  -vvv -c -o out/sample16.c tests/sample16.cpp 1> out/sample16.txt 2>&1
+	$(BIN)  -vvv -c -o out/sample17.c tests/sample17.cpp 1> out/sample17.txt 2>&1
+	$(BIN)  -vvv -c -o out/sample18.c tests/sample18.cpp 1> out/sample18.txt 2>&1
+	-$(BIN) -vvv -c -o out/sample19.c tests/sample19.cpp 1> out/sample19.txt 2>&1
+	-$(BIN) -vvv -c -o out/sample20.c tests/sample20.cpp 1> out/sample20.txt 2>&1
+	$(BIN)  -vvv    -o out/sample21.c tests/sample21.cpp 1> out/sample21.txt 2>&1
+	$(BIN)  -vvv    -o out/sample22.c tests/sample22.cpp 1> out/sample22.txt 2>&1
+	$(BIN)  -vvv    -o out/sample23.c tests/sample23.cpp 1> out/sample23.txt 2>&1
+	$(BIN)  -vvv    -o out/sample24.c tests/sample24.cpp 1> out/sample24.txt 2>&1
+	$(BIN)  -vvv    -o out/sample25.c tests/sample25.cpp 1> out/sample25.txt 2>&1
+	$(BIN)  -vvv    -o out/sample26.c tests/sample26.cpp 1> out/sample26.txt 2>&1
+	$(BIN)  -vvv    -o out/sample27.c tests/sample27.cpp 1> out/sample27.txt 2>&1
+	$(BIN)  -vvv    -o out/sample28.c tests/sample28.cpp 1> out/sample28.txt 2>&1
+	$(BIN)  -vvv    -o out/sample29.c tests/sample29.cpp 1> out/sample29.txt 2>&1
+	$(BIN)  -vvv    -o out/sample30.c tests/sample30.cpp 1> out/sample30.txt 2>&1
+	-$(BIN) -vvv -c -o out/sample31.c tests/sample31.cpp 1> out/sample31.txt 2>&1
 	$(BIN)  -vvv   -o out/sample32.c tests/sample32.cpp 1> out/sample32.txt 2>&1
-	$(BIN)  -vv -g  -o out/sample33.c tests/sample33.cpp 1> out/sample33.txt 2>&1
-	$(BIN)  -vv -b -g -o out/sample34.c tests/sample34.cpp 1> out/sample34.txt 2>&1
-# `-vv` (this project's own verbosity flag, a later round -- see main.c)
-# is passed to every sample specifically so `make test`'s own output
-# still captures the full AST/semantic-analysis/lowering dumps this
-# suite has always relied on for review -- v32c++ is silent by default
-# now (no -v at all), matching how the real Vircon32 C compiler and
-# v32lua both behave, so without -vv these dumps simply wouldn't
-# appear anywhere. `-o out/sampleN.c` is passed too, specifically so the
-# now-always-written generated C lands in `out/` alongside its own
-# `.txt` dump rather than next to the `.cpp` source in `tests/` -- v32c++
-# writes an output file by default now (derived from the input's own
-# name) even with no `-o` given at all, so leaving it unset here would
-# otherwise clutter `tests/` with 32 generated `.c` files never meant to
-# live there.
-#
-# sample32 specifically gets `-vvv`, not `-vv` -- the one place in this
-# suite -vvv's own explanatory-comments feature (a later round) is
-# exercised, chosen because sample32 already has the richest feature
-# mix here (vtables, a virtual destructor, `new`/`delete`) to actually
-# trigger most of what -vvv explains. Every other sample stays at
-# `-vv`, deliberately -- -vvv's comments would otherwise clutter every
-# other sample's own `.c` output for no real review benefit.
+	$(BIN)  -vvv -g  -o out/sample33.c tests/sample33.cpp 1> out/sample33.txt 2>&1
+	$(BIN)  -vvv -b -g -o out/sample34.c tests/sample34.cpp 1> out/sample34.txt 2>&1
+# `-vvv` (this project's own verbosity flag, a later round -- see
+# main.c) is passed to every sample specifically so `make test`'s own
+# output still captures the full AST/semantic-analysis/lowering dumps
+# this suite has always relied on for review -- v32c++ is silent by
+# default now (no -v at all), matching how the real Vircon32 C compiler
+# and v32lua both behave, so without -vvv these dumps simply wouldn't
+# appear anywhere. `-vv`'s own explanatory-comments feature (a still
+# later round) is a genuine side effect of this, not something worth
+# fighting -- -vvv is cumulative, so every sample's own generated `.c`
+# now picks up whatever comments -vv would add too, sample32 (vtables,
+# a virtual destructor, `new`/`delete` -- the richest feature mix here)
+# included among them, but no longer singled out for it the way it once
+# was (see docs/DESIGN_NOTES.md for why the levels swapped, and for
+# sample32's own earlier, now-stale special case). `-o out/sampleN.c` is
+# passed too, specifically so the now-always-written generated C lands
+# in `out/` alongside its own `.txt` dump rather than next to the `.cpp`
+# source in `tests/` -- v32c++ writes an output file by default now
+# (derived from the input's own name) even with no `-o` given at all, so
+# leaving it unset here would otherwise clutter `tests/` with 32
+# generated `.c` files never meant to live there.
 #
 # `-c` (this project's own flag, an earlier round) opts out
 # of the "must define main" default main.c added this round -- every

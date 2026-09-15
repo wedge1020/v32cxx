@@ -161,7 +161,7 @@
  * method/function body itself -- see the scope notes above for what's
  * still a known gap rather than done.
  *
- * `verbose_comments`: when true (main.c's own -vvv), sprinkles
+ * `verbose_comments`: when true (main.c's own -vv), sprinkles
  * explanatory comments (C block-comment syntax) throughout the output
  * at the points where this project's own C++-to-C transformation is
  * least obvious to someone reading the generated C -- vtable
@@ -172,7 +172,7 @@
  * counterpart in the original C++ source. Pure commentary -- never
  * changes what code is emitted, only whether an explanatory comment is
  * emitted alongside it. False (the default, and every verbosity level
- * below -vvv) reproduces this project's previous output exactly,
+ * below -vv) reproduces this project's previous output exactly,
  * unchanged. */
 void codegen_run(const AstNode *program, FILE *out, int verbose_comments);
 

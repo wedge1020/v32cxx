@@ -15,12 +15,12 @@ compiler do the rest.
 > semantic analysis, lowering, and code generation — works end to end,
 > confirmed against the real Vircon32 C compiler across dozens of test
 > programs (classes, inheritance, virtual dispatch, constructors and
-> destructors, `new`/`delete`, and arrays all compile and run). It's
-> still genuinely early, though: some pieces (notably `break`/`continue`,
-> and a real preprocessor) don't exist yet, and a few others are
-> deliberately partial for now — see [Current status](#current-status)
-> for the honest, detailed picture, and
-> [`docs/DESIGN_NOTES.md`](docs/DESIGN_NOTES.md) for the full
+> destructors, `new`/`delete`, arrays, and `break`/`continue` all
+> compile and run). It's still genuinely early, though: a real
+> preprocessor doesn't exist yet (only pass-through), and a few other
+> pieces are deliberately partial for now — see
+> [Current status](#current-status) for the honest, detailed picture,
+> and [`docs/DESIGN_NOTES.md`](docs/DESIGN_NOTES.md) for the full
 > round-by-round story of how it got here, including the real bugs
 > found and fixed along the way.
 
@@ -48,7 +48,8 @@ This is **not** an attempt to support all of C++ — see
 inheritance and access sections, constructors and destructors (in-class
 or out-of-line), `virtual` functions with correctly-recognized overrides,
 function/operator overloading with call-site resolution, qualified
-names, pointers and references, arrays, and the usual statement/
+names, pointers and references, arrays, `break`/`continue` (rejected
+outside a loop, not just accepted blindly), and the usual statement/
 expression language. Access control is enforced (including through
 inheritance); overload resolution uses argument count and, when needed
 to disambiguate, argument type, never guessing when it can't confidently
@@ -62,8 +63,10 @@ virtual dispatch through the vtable, and natural operator syntax like
 `a + b` resolved against declared overloads), reference-to-pointer
 rewriting, `new`/`delete` lowering, vtable pointer initialization,
 constructor invocation (both for stack-allocated locals and via `new`),
-and destructor invocation (both via `delete` and automatically at scope
-exit, including from an early `return`).
+and destructor invocation (via `delete`, automatically at scope exit
+including from an early `return`, and correctly scoped at a `break`/
+`continue` too — only what's actually live inside the loop gets
+destroyed, not everything above it).
 
 **Code generation** emits real, working Vircon32 C: struct and vtable
 struct definitions, method/function bodies, constructors that actually
@@ -124,7 +127,7 @@ C-to-assembly debug map, recording only where the mapping actually
 changes rather than one row per output line, with an extra column
 naming the generated C function wherever one begins.
 
-**`-vvv` sprinkles explanatory comments into the generated `.c` itself**
+**`-vv` sprinkles explanatory comments into the generated `.c` itself**
 — vtable pointers/structs/instances, the explicit `this` parameter every
 method gets, the malloc-based allocator/deleter functions `new`/`delete`
 become, virtual destructor dispatch, and the automatic
@@ -138,11 +141,6 @@ emitted alongside it.
 
 **What doesn't exist yet, worth knowing before you rely on it:**
 
-- **`break`/`continue`** aren't in the grammar at all yet — planned, not
-  forgotten.
-- **Virtual destructor dispatch.** `delete basePtr;` through an
-  ancestor-typed pointer calls the ancestor's destructor, not the
-  derived one, regardless of whether it was declared `virtual`.
 - **Base-class constructor delegation** (C++ member-initializer lists,
   `Derived::Derived() : Base(args) {}`) isn't supported — a derived
   class's constructor has to set inherited fields directly.
@@ -151,6 +149,8 @@ emitted alongside it.
   [`docs/VIRCON32_QUIRKS.md`](docs/VIRCON32_QUIRKS.md) toward an eventual
   flag that targets an ordinary, portable C compiler instead — not
   implemented yet.
+- **A real preprocessor.** Only pass-through exists (see above) — no
+  macro expansion, `#include` resolution, or `#ifdef` evaluation.
 
 This is genuinely still growing — expect rough edges, and expect this
 README to need updating again as things change.
@@ -201,19 +201,20 @@ this writes `path/to/yourfile.c` (input filename, extension swapped for
 `.c`) and produces no output at all on success. Pass `-o` to choose a
 different output path instead. Verbosity is opt-in and stackable:
 `-v` prints progress as each stage runs (lexer/parser, semantic
-analyzer, lowering, code generator); `-vv` additionally prints the full
-AST, semantic-analysis, and lowering dumps, useful for following along
-with what the tool understood and how it transformed your code; `-vvv`
-additionally sprinkles explanatory comments directly into the
-generated `.c` itself (see below). Use `-c` if your input is a
-library/module fragment without its own `main`.
+analyzer, lowering, code generator); `-vv` additionally sprinkles
+explanatory comments directly into the generated `.c` itself (see
+below); `-vvv` additionally prints the full AST, semantic-analysis, and
+lowering dumps, useful for following along with what the tool
+understood and how it transformed your code. Use `-c` if your input is
+a library/module fragment without its own `main`.
 
-With `-vvv`, the generated C explains itself at the points where the
-C++-to-C transformation is least obvious — a vtable's own struct and
-instance, the explicit `this` parameter every method gets, what `new`/
-`delete` actually become, a destructor invoked automatically at scope
-exit, a virtual call dispatched through the vtable. Worth reading
-through on its own, not just a build artifact — the C generated for
+With `-vv` (or higher — `-vvv` includes everything `-vv` does), the
+generated C explains itself at the points where the C++-to-C
+transformation is least obvious — a vtable's own struct and instance,
+the explicit `this` parameter every method gets, what `new`/`delete`
+actually become, a destructor invoked automatically at scope exit, a
+virtual call dispatched through the vtable. Worth reading through on
+its own, not just a build artifact — the C generated for
 `tests/sample32.cpp` (vtables, a virtual destructor, `new`/`delete`) is
 a good one to try this on first. Pure commentary: never changes what
 code is emitted, only whether a comment explaining it comes with it.

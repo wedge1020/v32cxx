@@ -30,7 +30,7 @@
  */
 static int g_codegen_out_line = 1;
 
-/* -vvv support: sprinkles explanatory comments into the generated C at
+/* -vv support: sprinkles explanatory comments into the generated C at
  * the points where this project's own C++-to-C transformation is least
  * obvious to someone reading the output -- see codegen.h's own doc
  * comment on codegen_run's verbose_comments parameter for the full
@@ -293,7 +293,7 @@ static void emit_struct(FILE *out, const AstNode *class_decl) {
              * and a trailing newline), so the field's own "    " prefix
              * has to come AFTER it, not be replaced by it. Getting this
              * backwards was a real, confirmed bug caught by actually
-             * reading a -vvv run's output, not just by this reasoning:
+             * reading a -vv run's output, not just by this reasoning:
              * an explain() call sitting where the field's own "    "
              * used to be left the FIELD line itself with no indentation
              * at all, since explain()'s own trailing newline already
@@ -828,7 +828,7 @@ static void print_stmt(FILE *out, const AstNode *s, int indent, int strip_return
             fprintf(out, "continue;\n");
             break;
         case AST_EXPR_STMT:
-            /* -vvv support: two lowering-synthesized call PATTERNS get
+            /* -vv support: two lowering-synthesized call PATTERNS get
              * explained here, detected structurally (never by anything
              * the C++ source itself could have written) rather than by
              * a dedicated AST flag -- both naming conventions are
@@ -857,7 +857,7 @@ static void print_stmt(FILE *out, const AstNode *s, int indent, int strip_return
             fprintf(out, ";\n");
             break;
         case AST_VAR_DECL:
-            /* -vvv support: a VarDecl whose own initializer is (possibly
+            /* -vv support: a VarDecl whose own initializer is (possibly
              * through an AST_CAST -- lower.c's phase 6a implicit-upcast
              * insertion) a call to a "v32_new_"-prefixed name is exactly
              * what `new` lowers to (lower.c phase 6) -- detected the

@@ -2902,6 +2902,70 @@ review value for no real benefit.
 to match, the latter pointing at `sample32.cpp` as a first thing to try
 `-vvv` on.
 
+## Polish round: `-vv`/`-vvv` swapped, README audit, version bump to 20260915-dev
+
+Three smaller, usability-focused requests, closing out this stretch of
+CLI/output-quality work before returning to C++ language features.
+
+**`-vv` and `-vvv` swapped**: `-vv` is now the explanatory-comments
+level (was `-vvv`), `-vvv` is now the AST/semantic-analysis/lowering
+dumps level (was `-vv`) -- Matthew's own framing: `-v` progress, `-vv`
+comments, `-vvv` deep internals, each level strictly more detail than
+the last, which reads more naturally than the previous ordering. Four
+call sites in `main.c` swapped (`ast_dump`/`sema_dump`/`lower_dump`
+gated on `verbosity >= 3` now, `codegen_run`'s own `verbose_comments`
+argument on `verbosity >= 2`), `print_usage`'s own text rewritten to
+match, and every `-vvv` reference in `codegen.c`'s own comments (the
+ones describing WHY a given `explain()` call exists, not the levels
+themselves) updated to say `-vv`.
+
+**A real, inherent side effect of this swap, not a bug**: `-vvv` is
+still cumulative (includes everything `-vv` does), so `-vvv` now
+ALSO includes the explanatory comments, not just the dumps -- there is
+no longer a way to get "dumps only, no comments," since dumps moved to
+the top of the stack. Every sample in the Makefile's own `test` target
+needed `-vv` upgraded to `-vvv` to keep capturing the dumps this suite
+has always relied on for review (regenerated programmatically again,
+same approach as previous rounds needing a bulk, consistent edit across
+every sample line) -- and as a direct consequence, every sample's own
+generated `.c` in `out/` now carries explanatory comments too, not just
+sample32's (which no longer needs its own special-casing -- removed the
+now-stale Makefile comment explaining why sample32 alone got the higher
+flag). Verified directly: reran the full 34-sample suite (identical 7
+expected failures, no regressions) and confirmed `-v`/`-vv`/`-vvv`
+individually produce exactly the expected combination of stage
+messages, comments, and dumps -- not just that the build succeeded.
+
+**README audit, two confirmed-stale claims removed**: `break`/`continue`
+were still listed under "What doesn't exist yet ... aren't in the
+grammar at all yet" -- false; this has been implemented and tested
+for many rounds now (sample30/31 specifically exercise it, including
+its own destructor-at-scope-exit interaction). Virtual destructor
+dispatch was still listed as broken ("calls the ancestor's destructor,
+not the derived one") -- also false, and confirmed fixed and working
+against the real Vircon32 C compiler two rounds ago (sample32). Both
+bullets removed outright, not softened -- they were wrong, not merely
+outdated in wording. Added a positive mention of both instead, in the
+more detailed "Parsing and semantic analysis"/"Lowering" paragraphs
+where the other implemented features are already described (loop-depth
+validation for `break`/`continue`; correct destructor scoping at a
+`break`/`continue`, not just at `return`/fall-through). Also swept the
+whole file for every remaining `-vv`/`-vvv` reference to bring them in
+line with the swap above (the "Trying it out" section's own multi-
+paragraph explanation, and the feature-summary paragraph introducing
+`-vv`'s comments).
+
+**`v32cxx.h`'s `VERSION` bumped to `20260915-dev`**, per Matthew's own
+stated convention of tracking the current date. Searched the whole tree
+for every OTHER place the old string appeared, not just the obvious
+one: `man/v32c++.1`'s own `.TH` line (updated), and two mentions in
+THIS file's own history (the round that introduced `--version`,
+documenting `20260914-dev` as that round's own starting value and what
+`--version` printed at the time) -- left those alone, deliberately: this
+file is a chronological log, not a living reference, and editing a past
+entry to reflect a LATER version would misrepresent what actually
+happened in that round.
+
 ## Suggested next steps, roughly in order
 
 
