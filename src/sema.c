@@ -1499,12 +1499,12 @@ static void access_check_free_functions(AstList *decls) {
  * required a `main` to exist to transpile something correctly, and
  * still doesn't -- this is purely about main.c's own default behavior
  * when the person hasn't asked for anything else. */
-static int decls_have_main(const AstList *decls) {
+static int decls_have_function(const AstList *decls, const char *name) {
     for (int i = 0; i < decls->count; i++) {
         AstNode *n = decls->items[i];
         if (n->kind == AST_NAMESPACE_DECL) {
-            if (decls_have_main(&n->list)) return 1;
-        } else if (n->kind == AST_FUNC_DEF && strcmp(n->str1, "main") == 0) {
+            if (decls_have_function(&n->list, name)) return 1;
+        } else if (n->kind == AST_FUNC_DEF && strcmp(n->str1, name) == 0) {
             return 1;
         }
     }
@@ -1512,7 +1512,19 @@ static int decls_have_main(const AstList *decls) {
 }
 
 int sema_program_has_main(const AstNode *program) {
-    return decls_have_main(&program->list);
+    return decls_have_function(&program->list, "main");
+}
+
+/* Generalizes sema_program_has_main's own "does a function with this
+ * name exist anywhere, including inside a namespace" check to an
+ * arbitrary name -- added for main.c's own -b (BIOS) validation, which
+ * needs the same kind of check for `error_handler`, not just `main`.
+ * Same CLI-level-default framing applies: this is not something sema_run()
+ * itself enforces (a program missing `error_handler` still transpiles
+ * correctly on its own terms), purely main.c's own default behavior when
+ * `-b` was given. */
+int sema_program_has_function(const AstNode *program, const char *name) {
+    return decls_have_function(&program->list, name);
 }
 
 int sema_run(AstNode *program) {

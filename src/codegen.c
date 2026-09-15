@@ -1,4 +1,5 @@
 #include <stdio.h>
+#include <stdarg.h>
 #include <stdlib.h>
 #include <string.h>
 #include "ast.h"
@@ -6,6 +7,63 @@
 #include "lower.h"
 #include "codegen.h"
 #include "driver.h" /* g_preprocessor_lines -- see its own doc comment there */
+#include "debugmap.h"
+
+/* ---- output-line tracking, for -g's debug map ---------------------------
+ *
+ * g_codegen_out_line always reflects the line of `out` about to be
+ * written NEXT (starting at 1) -- kept accurate by counting '\n'
+ * characters in everything actually written through fprintf, via the
+ * `#define fprintf tracked_fprintf` immediately below. Every one of
+ * this file's ~155 `fprintf(out, ...)` call sites already targets `out`
+ * specifically (confirmed by grep before choosing this approach --
+ * nothing in this file ever fprintf's to stderr or anywhere else), so
+ * redefining the name itself, once, is equivalent to -- and far less
+ * error-prone than -- threading a counter through every individual call
+ * site by hand. Scoped to this translation unit only: the #define's
+ * effect ends at this file's own end (no #undef needed, since it's
+ * never #included elsewhere and no other file sees this definition).
+ *
+ * print_stmt/emit_function_definition (further down) are what actually
+ * DECIDE when a new debug_map_record() entry is worth making -- this
+ * section only keeps the line counter itself accurate for them to read.
+ */
+static int g_codegen_out_line = 1;
+
+static int tracked_fprintf(FILE *out, const char *fmt, ...) {
+    va_list args;
+    va_start(args, fmt);
+    char stack_buf[1024];
+    va_list args_copy;
+    va_copy(args_copy, args);
+    int needed = vsnprintf(stack_buf, sizeof(stack_buf), fmt, args_copy);
+    va_end(args_copy);
+
+    char *buf = stack_buf;
+    char *heap_buf = NULL;
+    if (needed >= (int)sizeof(stack_buf)) {
+        /* Practically never happens -- every format string in this file
+         * produces a single short line or fragment, nowhere close to
+         * 1KB -- but handled correctly rather than silently truncated
+         * (and miscounting newlines) on the off chance it ever does. */
+        heap_buf = malloc((size_t)needed + 1);
+        vsnprintf(heap_buf, (size_t)needed + 1, fmt, args);
+        buf = heap_buf;
+    }
+    va_end(args);
+
+    for (int i = 0; buf[i] != '\0'; i++) {
+        if (buf[i] == '\n') g_codegen_out_line++;
+    }
+    fputs(buf, out);
+    free(heap_buf);
+    return needed; /* matches fprintf's own contract (chars that would be
+                       written, excluding the null terminator) -- fputs's
+                       own return value does NOT mean the same thing, so
+                       returning it directly here would be a silent
+                       behavior change for any caller that checks it. */
+}
+#define fprintf tracked_fprintf
 
 /* ---- type printing ------------------------------------------------------
  *
@@ -614,8 +672,28 @@ static void print_var_decl_inline(FILE *out, const AstNode *n) {
  * AST_RETURN, since a return can be arbitrarily nested inside main's own
  * if/while/for/block structure and there's nothing about a RETURN
  * statement itself that says which function it belongs to. */
+static int g_debug_last_cpp_line = -1;
+
 static void print_stmt(FILE *out, const AstNode *s, int indent, int strip_return_value) {
     if (s == NULL) return;
+    /* -g support: a new debug_map entry whenever this statement's own
+     * source line differs from the last one recorded -- matches the
+     * sparse, "only where the mapping actually changes" structure of
+     * the example .asm.debug file (see debugmap.h's own doc comment),
+     * not an exhaustive per-output-line table. Fires for every
+     * statement kind, AST_BLOCK included -- a block's own opening-brace
+     * line occasionally duplicates its first child's, in which case
+     * this check simply skips the redundant second entry on its own. A
+     * lowering-synthesized node (a destructor invocation at scope exit,
+     * say) still carries SOME line -- typically the nearest real
+     * statement's own, reused -- so this stays reasonably accurate even
+     * for code this project's own lowering passes generated, not just
+     * for what the person directly wrote; it is not perfectly precise
+     * for every synthesized statement, and isn't claimed to be. */
+    if (s->line != g_debug_last_cpp_line) {
+        debug_map_record(g_codegen_out_line, s->line, NULL);
+        g_debug_last_cpp_line = s->line;
+    }
     switch (s->kind) {
         case AST_BLOCK:
             indent_spaces(out, indent);
@@ -782,6 +860,20 @@ static void emit_function_definition(FILE *out, const AstNode *func) {
     FuncSemaInfo *info = (FuncSemaInfo *)func->sema_info;
     const char *name = (info != NULL) ? info->mangled_name : func->str1;
     int is_main = (strcmp(name, "main") == 0);
+
+    /* -g support: this function's own first line of C output always
+     * gets an entry, function_name included -- unlike print_stmt's own
+     * "only if the line changed" check, a function boundary is always
+     * worth recording explicitly, even on the rare chance its own line
+     * happens to match whatever print_stmt last recorded for some
+     * earlier function. Records against `name` (the MANGLED, C-side
+     * name that actually appears in the output -- e.g. "Square__area__void",
+     * not func->str1's original "area") -- this entry describes what the
+     * .c file's own function is called, not what the .cpp called it,
+     * matching which side of the mapping the function-name column is
+     * actually documenting. */
+    debug_map_record(g_codegen_out_line, func->line, name);
+    g_debug_last_cpp_line = func->line;
 
     emit_function_header(out, func, name);
     fprintf(out, "\n");
@@ -1280,6 +1372,11 @@ static void emit_cart_hint_defines(FILE *out) {
 }
 
 void codegen_run(const AstNode *program, FILE *out) {
+    /* Reset -g's own tracking state -- main.c is single-shot per process
+     * today, so this never actually matters in practice, but costs
+     * nothing and avoids a latent bug if that ever changes. */
+    g_codegen_out_line = 1;
+    g_debug_last_cpp_line = -1;
     emit_preprocessor_passthrough(out);
     emit_cart_hint_defines(out);
     /* misc.h (Vircon32's real malloc()/free(), among other things) is

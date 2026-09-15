@@ -203,6 +203,13 @@ int sema_run(AstNode *program);
  * deliberately NOT something sema_run() itself checks or cares about. */
 int sema_program_has_main(const AstNode *program);
 
+/* Generalizes sema_program_has_main to an arbitrary function name --
+ * added for main.c's own -b (BIOS) validation, which needs the same
+ * "does a function with this name exist anywhere, including inside a
+ * namespace" check for `error_handler`. Same call-only-after-sema_run
+ * rule applies. */
+int sema_program_has_function(const AstNode *program, const char *name);
+
 /* Frees the class/typedef/free-function registries sema_run() builds.
  * Call this ONLY after every pass that might need them has finished --
  * sema_run() itself, AND lower_run() (lower.c's vtable-dispatch phase

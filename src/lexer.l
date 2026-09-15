@@ -123,6 +123,31 @@ ALNUM   [A-Za-z0-9_]
     }
 }
 
+    /* `#title "..."` / `#version ...` -- same "matched before the
+     * generic pass-through, so it's recognized instead of just carried
+     * through verbatim" reasoning as #texture/#sound above. title is
+     * quoted (may contain spaces); version is a bare token (matching
+     * v32lua's own "--#version 1.1", never quoted there either). Frees
+     * any PREVIOUS value before overwriting -- a program with more than
+     * one #title/#version simply keeps the last one seen, the same
+     * "last write wins" behavior v32lua's own title/version hints have
+     * (they just overwrite the same fixed-size buffer each time). */
+^"#title"[ \t]+\"[^"\n]*\"[^\n]* {
+    char title[256] = {0};
+    if (sscanf(yytext, "#title \"%255[^\"]\"", title) == 1) {
+        free(g_cart_title);
+        g_cart_title = strdup(title);
+    }
+}
+
+^"#version"[ \t]+[^ \t\n]+[^\n]* {
+    char version[64] = {0};
+    if (sscanf(yytext, "#version %63s", version) == 1) {
+        free(g_cart_version);
+        g_cart_version = strdup(version);
+    }
+}
+
 ^"#"[^\n]*                     {
     /* Preprocessor pass-through -- see this file's own header comment
      * and driver.h's PreprocessorLines for the full reasoning. Grows

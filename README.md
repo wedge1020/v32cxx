@@ -93,19 +93,36 @@ preprocessor is still future work.
 
 **Cart-packing XML is generated automatically**, alongside the
 generated `.c`, matching v32lua's own output — one less manual,
-repetitive step in the build process. Two cart hints are recognized
-directly in C++ source now too: `#texture NAME "file.png"` and
+repetitive step in the build process. Four cart hints are recognized
+directly in C++ source: `#texture NAME "file.png"` and
 `#sound NAME "file.wav"` (any case for `NAME`), modeled on v32lua's own
 `--#texture`/`--#sound` hints — each becomes a `#define` mapping to that
 resource's id (0, 1, 2… in declaration order, textures and sounds
 counted separately), and populates the generated XML's
-`<textures>`/`<sounds>` in that same order. A program with no hints at
-all still gets an XML, with the previous empty `<textures />`/
-`<sounds />`. See [Trying it out](#trying-it-out) for the `-x` opt-out.
-Not yet supported: `#title`/`#version` hints (the XML's title/version
-stay fixed at "Vircon32 Program"/"1.0" for now), and no check yet for
-two hints reusing the same `NAME` (caught by the C compiler itself, as
-a redefined macro, rather than by `v32c++`).
+`<textures>`/`<sounds>` in that same order. `#title "..."` and
+`#version 1.0` override the XML's `<rom>` title/version attributes
+(fixed at "Vircon32 Program"/"1.0" otherwise, matching v32lua's own
+defaults) — last one seen wins if either appears more than once. A
+program with no hints at all still gets an XML, with the previous empty
+`<textures />`/`<sounds />`. See [Trying it out](#trying-it-out) for the
+`-x` opt-out. Not yet supported: a check for two hints reusing the same
+`NAME` (caught by the C compiler itself, as a redefined macro, rather
+than by `v32c++`).
+
+**`-b` transpiles a Vircon32 BIOS** rather than an ordinary cartridge —
+the generated XML's `<rom>` gets `type="bios"`, and three constraints
+are enforced (checked only under `-b`): exactly one `#texture` hint, at
+most one `#sound` hint, and a `void error_handler()` function alongside
+`main`. Every violation found is reported at once, not just the first.
+`v32c++` itself only enforces these three things — everything else that
+makes a valid, bootable BIOS is the C compiler's and assembler's own
+concern downstream.
+
+**`-g` writes a C-line/C++-line debug map** (`<output>.c.debug`) alongside
+the generated C — a sparse table, modeled on a real Vircon32
+C-to-assembly debug map, recording only where the mapping actually
+changes rather than one row per output line, with an extra column
+naming the generated C function wherever one begins.
 
 **What doesn't exist yet, worth knowing before you rely on it:**
 
@@ -181,10 +198,12 @@ input is a library/module fragment without its own `main`.
 Alongside the generated `.c`, a Vircon32 cart-packing XML file is
 written by default too (`path/to/yourfile.xml`) — the manual,
 repetitive step of hand-writing that file for every build is
-automated now, matching v32lua's own `emit_cart_xml`. Two cart hints
+automated now, matching v32lua's own `emit_cart_xml`. Four cart hints
 are recognized directly in C++ source:
 
 ```cpp
+#title   "My Game"
+#version 1.0
 #texture Background "background.png"
 #sound   jump_sfx    "jump.wav"
 ```
@@ -194,13 +213,38 @@ id — 0, 1, 2… in declaration order, textures and sounds counted
 separately — usable anywhere an integer constant would be:
 `select_texture(Background)`. That same order determines each
 resource's position in the generated XML too, extensions swapped to
-`.vtex`/`.vsnd`. No hints at all still gets an XML, with empty
-`<textures />`/`<sounds />`. Modeled on v32lua's own
-`--#texture`/`--#sound` hints — not yet supported: `#title`/`#version`
-hints (title/version stay fixed at "Vircon32 Program"/"1.0" for now),
-and no check yet for two hints reusing the same `NAME` (the C compiler
-itself catches that, as a redefined macro, not `v32c++`). Pass `-x`
-(or `--no-xml`) to skip XML generation entirely.
+`.vtex`/`.vsnd`. `#title`/`#version` override the XML's `<rom>`
+title/version (fixed at "Vircon32 Program"/"1.0" otherwise; last one
+seen wins if given more than once) — `title` is quoted, `version` is a
+bare token, matching v32lua's own hint. No hints at all still gets an
+XML, with empty `<textures />`/`<sounds />`. Modeled throughout on
+v32lua's own `--#texture`/`--#sound`/`--#title`/`--#version` hints — not
+yet supported: a check for two hints reusing the same `NAME` (the C
+compiler itself catches that, as a redefined macro, not `v32c++`). Pass
+`-x` (or `--no-xml`) to skip XML generation entirely.
+
+`-b` transpiles a Vircon32 **BIOS** instead of an ordinary cartridge —
+the XML's `<rom>` gets `type="bios"`, and three constraints get checked
+(only under `-b`): exactly one `#texture`, at most one `#sound`, and a
+`void error_handler()` function alongside `main`. Every violation is
+reported together, not one at a time. Everything else a valid, bootable
+BIOS needs is the C compiler's and assembler's own job downstream —
+`v32c++` only enforces these three things.
+
+`-g` writes `<output>.c.debug` alongside the generated C — a sparse
+table mapping generated-C lines back to the C++ source lines
+responsible for them, modeled on a real Vircon32 C-to-assembly debug
+map:
+
+```
+c_path,c_line,cpp_path,cpp_line[,function_name]
+```
+
+`function_name` appears only where a function's own C definition
+begins, naming the generated C side (its mangled name, where this
+project mangles one). `cpp_path` is always the original `.cpp` given on
+the command line — never a preprocessed intermediate, even if a
+separate preprocessor tool exists someday.
 
 A large set of example inputs lives in `tests/`, including a couple that
 are *deliberately* invalid (an undeclared type, an out-of-line
@@ -227,10 +271,11 @@ src/
   codegen.h/.c  Vircon32 C code generator
   cartxml.h/.c  Vircon32 cart-packing XML generation
   pathutil.h/.c shared filename-extension-swapping helper
+  debugmap.h/.c C-line/C++-line debug map (-g) tracking and output
   driver.h      shared state between the lexer and parser
   v32cxx.h      project identity (VERSION/AUTHOR/URL) and build-time
                 configuration constants
-  main.c        CLI entry point (-o, -c, -v, -x, --version)
+  main.c        CLI entry point (-o, -c, -v, -x, -b, -g, --version)
 tests/          example .cpp inputs, including intentionally-invalid
                 ones and several real, hand-written programs
 docs/           design notes, implementation deep-dives, and the

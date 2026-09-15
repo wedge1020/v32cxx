@@ -105,6 +105,18 @@ typedef struct CartResourceList {
 extern CartResourceList g_cart_textures;
 extern CartResourceList g_cart_sounds;
 
+/*
+ * `#title "The BIOS/CART title"` and `#version 1.0` -- same targeted,
+ * lexer-level special-case treatment as #texture/#sound above, recognized
+ * directly by the lexer ahead of the generic pass-through. NULL until (and
+ * unless) the corresponding hint is actually seen; cartxml.c falls back to
+ * v32lua's own documented defaults ("Vircon32 Program" / "1.0") when
+ * either is still NULL at XML-emission time, exactly as if the hint had
+ * never existed for a program that doesn't use it.
+ */
+extern char *g_cart_title;
+extern char *g_cart_version;
+
 int yylex(void);
 void yyerror(const char *msg);
 

@@ -62,7 +62,7 @@ $(SRC_DIR)/lexer.o: $(SRC_DIR)/lexer.c | $(OBJ_DIR)
 $(BIN_DIR)/v32c++: $(OBJ_DIR)/parser.o $(OBJ_DIR)/lexer.o \
                           $(OBJ_DIR)/ast.o $(OBJ_DIR)/symtab.o $(OBJ_DIR)/sema.o \
                           $(OBJ_DIR)/lower.o $(OBJ_DIR)/codegen.o $(OBJ_DIR)/pathutil.o \
-                          $(OBJ_DIR)/cartxml.o $(OBJ_DIR)/main.o | $(BIN_DIR)
+                          $(OBJ_DIR)/cartxml.o $(OBJ_DIR)/debugmap.o $(OBJ_DIR)/main.o | $(BIN_DIR)
 	$(CC) $(CFLAGS) -o $@ $^
 # If linking fails looking for yywrap/yy_flex_* symbols on your system,
 # add -lfl to this link line (some flex installs need it even with
@@ -101,7 +101,8 @@ test: all | $(OUT_DIR)
 	$(BIN)  -vv    -o out/sample30.c tests/sample30.cpp 1> out/sample30.txt 2>&1
 	-$(BIN) -vv -c -o out/sample31.c tests/sample31.cpp 1> out/sample31.txt 2>&1
 	$(BIN)  -vv    -o out/sample32.c tests/sample32.cpp 1> out/sample32.txt 2>&1
-	$(BIN)  -vv    -o out/sample33.c tests/sample33.cpp 1> out/sample33.txt 2>&1
+	$(BIN)  -vv -g  -o out/sample33.c tests/sample33.cpp 1> out/sample33.txt 2>&1
+	$(BIN)  -vv -b -g -o out/sample34.c tests/sample34.cpp 1> out/sample34.txt 2>&1
 # `-vv` (this project's own verbosity flag, a later round -- see main.c)
 # is passed to every sample specifically so `make test`'s own output
 # still captures the full AST/semantic-analysis/lowering dumps this
@@ -120,12 +121,12 @@ test: all | $(OUT_DIR)
 # of the "must define main" default main.c added this round -- every
 # sample here is a focused unit test of one specific compiler feature,
 # not a complete, standalone-compilable program, EXCEPT sample2, 14, 21,
-# 22, 23, 24, 25, 26, 27, 28, 29, 30, 32, and 33, which genuinely do
+# 22, 23, 24, 25, 26, 27, 28, 29, 30, 32, 33, and 34, which genuinely do
 # define their own `main` (sample2's predates this round; sample14/21
 # were given one specifically so they could also be compiled all the way
 # through by the real Vircon32 toolchain, not just transpiled; sample22
-# through 30, 32, and 33 already had one -- all are real, hand-written or
-# hand-designed programs, not artificial unit tests). sample31 is
+# through 30, 32, 33, and 34 already had one -- all are real, hand-written
+# or hand-designed programs, not artificial unit tests). sample31 is
 # deliberately invalid (break/continue-outside-a-loop) and gets `-c`
 # like the other unit-test samples, since it isn't trying to be a
 # complete program at

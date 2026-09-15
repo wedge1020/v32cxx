@@ -36,7 +36,7 @@ static void emit_resource_list(FILE *xml, const CartResourceList *list,
     fprintf(xml, "</%ss>\n", tag);
 }
 
-void emit_cart_xml(const char *output_filename) {
+void emit_cart_xml(const char *output_filename, int is_bios) {
     char *xml_filename = replace_extension(output_filename, ".xml");
     char *vbin_path = replace_extension(output_filename, ".vbin");
 
@@ -57,8 +57,10 @@ void emit_cart_xml(const char *output_filename) {
      * matching the sibling project's own convention was the point). */
     fprintf(xml, "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"no\" ?>\n");
     fprintf(xml, "<rom-definition version=\"1.0\">\n");
-    fprintf(xml, "    <rom type=\"cartridge\" title=\"%s\" version=\"%s\" />\n",
-            "Vircon32 Program", "1.0");
+    fprintf(xml, "    <rom type=\"%s\" title=\"%s\" version=\"%s\" />\n",
+            is_bios ? "bios" : "cartridge",
+            (g_cart_title != NULL) ? g_cart_title : "Vircon32 Program",
+            (g_cart_version != NULL) ? g_cart_version : "1.0");
     fprintf(xml, "<binary path=\"%s\" />\n", vbin_path);
     emit_resource_list(xml, &g_cart_textures, "texture", ".vtex");
     emit_resource_list(xml, &g_cart_sounds, "sound", ".vsnd");

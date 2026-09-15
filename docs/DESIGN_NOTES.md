@@ -2622,6 +2622,171 @@ same gap v32lua's own texture/sound handling has, not something this
 round tried to exceed); `README.md`'s feature summary and "Trying it
 out" section both updated to match.
 
+## `#title`/`#version` hints, `-b` (BIOS mode), and `-g` (debug maps)
+
+Three requests in one round: extend the cart-hint work with two more
+hint forms, a new BIOS-specific transpile mode with its own validation,
+and a genuinely new capability -- tracking, line by line, which C++
+source line produced which line of generated C.
+
+Matthew provided a regenerated `lexer.c`/`parser.c`/`parser.h` (from
+last round's `#texture`/`#sound` additions) plus the results of running
+`sample33.cpp` through them -- confirmed, directly, the full round-trip
+this project could previously only verify by careful tracing: the AST
+dump shows `Background`/`player`/`EXPLOSION`/`jump_sfx` as plain
+`Ident` nodes (exactly the "flows through untouched" behavior the
+`infer_expr_type`/`check_node`/codegen tracing predicted), the
+generated `.c` shows the correct `#define`s in declaration order, and
+the generated `.xml` populates `<textures>`/`<sounds>` correctly. A
+real milestone -- the cart-hint design from two rounds ago is now
+confirmed working end to end, not just reasoned through.
+
+### `#title`/`#version`
+
+Same targeted, lexer-level pattern as `#texture`/`#sound` -- two new
+rules ahead of the generic pass-through, `sscanf`-parsed, stored in new
+`g_cart_title`/`g_cart_version` (`driver.h`, both `char *`, NULL until
+set). `title` is quoted (may contain spaces); `version` is a bare
+token, matching v32lua's own `--#version` (confirmed: never quoted
+there either). `cartxml.c` falls back to v32lua's own documented
+defaults when either is still NULL. Last hint seen wins if either
+appears more than once -- v32lua's own behavior too (it just overwrites
+the same fixed buffer each time).
+
+### `-b` (BIOS mode)
+
+`cartxml.c`'s `emit_cart_xml` gained an `is_bios` parameter, controlling
+only the `<rom>` element's own `type` attribute ("bios" vs
+"cartridge") -- this function itself enforces none of the three BIOS
+constraints; that's `main.c`'s own job, run BEFORE `emit_cart_xml` is
+ever reached, so by the time it runs for a `-b` build those constraints
+are already known to hold.
+
+Generalized `sema.c`'s existing `decls_have_main`/`sema_program_has_main`
+into `decls_have_function`/`sema_program_has_function(program, name)` --
+one real behavior change (an arbitrary name, not just "main"), not a
+new mechanism, so `error_handler` gets exactly the same "found anywhere,
+namespace included" search `main` already gets.
+
+New `validate_bios_constraints` in `main.c`, checked as a THIRD
+condition in the same if/else-if/else chain `require_main` already
+lives in (after sema succeeds, after the `main`-exists check, before
+lowering/codegen). Reports EVERY violation it finds, not just the
+first -- these are three independent constraints (texture count, sound
+count, `error_handler` existence), and stopping at the first one just
+means re-running to discover the second one at a time for no real
+reason.
+
+**Verified directly, not just reasoned through** -- five separate
+test invocations covering every failure mode individually (zero
+textures, two textures, two sounds, missing `error_handler`) plus one
+combined case confirming multiple violations get reported TOGETHER in
+a single run, not one at a time across repeated invocations. All five
+produced exactly the expected error message and exit code.
+
+### `-g` (debug maps)
+
+New `debugmap.h`/`.c`: a `DebugMap` (growable array of `{c_line,
+cpp_line, function_name}`), `debug_map_record` (append), `debug_map_write`
+(format: `c_path,c_line,cpp_path,cpp_line[,function_name]`, matching
+Matthew's own example `.asm.debug` file exactly -- confirmed by reading
+it directly: a SPARSE table, one entry per point the mapping actually
+changes, never a duplicate consecutive (line,line) pair, an optional
+trailing function-name column).
+
+**The real architectural question**: `codegen.c` writes through
+`fprintf` from roughly 30 different emission functions (~155
+`fprintf(out, ...)` call sites total), none of them tracking their own
+output line number. Individually instrumenting every call site would
+have been the obvious approach and also a genuinely bad one at this
+scale -- high risk of missing one, no single place to reason about
+correctness. Instead: confirmed (via `grep`, not assumption) that
+EVERY one of those 155 call sites already targets `out` specifically
+(nothing in this file ever writes to stderr or anywhere else), which
+makes a single `#define fprintf tracked_fprintf` -- scoped to this one
+translation unit, placed right after the `#include`s that declare the
+real `fprintf` -- exactly equivalent to touching every call site, without
+actually touching any of them. `tracked_fprintf` formats into a buffer
+(stack-allocated for the common case; falls back to a correctly-sized
+heap buffer on the rare chance a single call's output would exceed
+1KB, rather than silently truncating and miscounting newlines), counts
+`'\n'` occurrences in the ACTUAL formatted text (not derivable from
+`vsnprintf`'s return value alone, which is why the buffer step exists
+at all), then writes through unchanged. Returns the character count
+`fprintf` itself would (NOT `fputs`'s own return convention, which
+means something different) -- fixed after first getting this wrong,
+before it became a real bug for any future caller that checks a
+return value.
+
+`g_codegen_out_line` (module-static, starts at 1, reset at the top of
+`codegen_run` for hygiene even though this project is single-shot per
+process today) always reflects the line about to be written NEXT.
+Two hook points decide WHEN a new entry is worth recording:
+`print_stmt` (records whenever the current statement's own source line
+differs from the last one recorded -- fires for every statement kind,
+`AST_BLOCK` included, which occasionally produces a harmless redundant
+check that its own "only if changed" condition then skips) and
+`emit_function_definition` (always records its own function's first
+line, function-name column included -- a function boundary is worth
+marking explicitly even on the rare chance its own line matches
+whatever was last recorded for some earlier function). The function-name
+column records the MANGLED name (what the .c file's own function is
+actually called -- e.g. `Square__area__void`), not the C++ source's
+own name, matching which side of the mapping that column documents.
+
+`main.c`: `-g` writes `<output>.c.debug` -- APPENDED, not
+extension-swapped (Matthew's own spec: "filename.c.debug" specifically,
+not "filename.debug") -- via `debug_map_write(debug_filename,
+output_filename, input_filename)`. `cpp_path` is always
+`input_filename`, the ORIGINAL `.cpp` given on the command line, never
+anything post-processed -- deliberately, per Matthew's own note about a
+possible future, separate preprocessor tool: revisiting this becomes
+that future tool's own concern (it would be what hands `v32c++` an
+already-`#include`-resolved `.cpp`), not something this round tries to
+anticipate further than recording the plain fact that it's a decision
+worth revisiting then, not now.
+
+**Verified directly against real output, not just described**: ran
+`-g` on a `#texture`/`#sound` test file, then manually cross-checked
+every single line of the resulting `.c.debug` against the actual
+generated `.c` (with `cat -n`) line by line -- every entry correct,
+including the function-name column on the `main` entry and the correct
+skip of the redundant opening-brace line. Repeated with the BIOS test
+sample (`error_handler`'s own mangled name, `error_handler__void`,
+correctly appears) and again with `-b`/`-g`/`-x` combined together in
+one run, confirming the three flags compose cleanly (BIOS validation
+passes, XML correctly suppressed, debug map correctly written, all in
+the same invocation).
+
+### What's confirmed vs. what still needs Matthew's own lexer regeneration
+
+Built and tested everything above against the `lexer.c`/`parser.c`/
+`parser.h` Matthew provided -- but those predate THIS round's
+`#title`/`#version` lexer rules (confirmed directly: grepped that
+`lexer.c` for `cart_title`/`cart_version` before building against it --
+absent, exactly as expected). So: `-b`'s three validation checks, `-g`'s
+debug-map generation, and BIOS-mode XML's `type="bios"` are all
+confirmed working directly, against real output. `#title`/`#version`
+themselves are implemented and syntax-checked, but not yet confirmed
+running -- a test with both hints present shows the XML falling back to
+its defaults (title/version), and the raw, unrecognized `#title "..."`/
+`#version ...` lines instead surface verbatim near the top of the
+generated `.c` (harmless -- still just the existing generic pass-through
+behavior working exactly as designed for anything the lexer doesn't yet
+recognize -- but not the new feature actually firing). Needs a fresh
+`bison -d`/`flex` regeneration from the `.l`/`.y` now in the sandbox,
+the same as every round that's touched the lexer.
+
+### Test coverage
+
+`tests/sample34.cpp` added: a BIOS-shaped program exercising `#title`,
+`#version`, one `#texture`, one `#sound`, and both `main`/
+`error_handler` together -- run with `-b -g` in the Makefile's own test
+target. `sample33.cpp`'s own test command gained `-g` too, so the debug-
+map path is exercised by the standard suite go forward, not only by
+hand. Makefile's own "which samples have their own `main`" comment
+block updated to include both.
+
 ## Suggested next steps, roughly in order
 
 

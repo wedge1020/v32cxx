@@ -117,10 +117,34 @@ behaves the same as
 Print version, author, and project URL information, and exit
 immediately without processing any input.
 .TP
+.B \-b
+Transpile a Vircon32
+.B BIOS
+rather than an ordinary cartridge (see
+.B BIOS MODE
+below): the generated XML's
+.B <rom>
+element gets
+.BR type=\(dqbios\(dq ,
+and three additional constraints are enforced, checked only under
+.BR \-b :
+exactly one
+.B #texture
+hint, at most one
+.B #sound
+hint, and a
+.B "void error_handler()"
+function present alongside
+.BR main .
+.TP
 .B \-g
-Reserved for a future, separate debugging-file-output mode. Not
-implemented yet \(em using it is currently an error, rather than a
-silent no-op.
+Also write
+.IR <output>.debug ,
+a sparse C-line/C++-line mapping (see
+.B DEBUG MAPS
+below) alongside the generated C. Not written unless
+.B \-g
+is given.
 .TP
 .BR \-x ", " \-\-no\-xml
 Don't generate the Vircon32 cart-packing XML file (see
@@ -229,30 +253,192 @@ output's own is: the
 file's extension replaced with
 .IR .xml .
 .PP
-This project has no
+Two
 .I cart hint
-functionality yet (
-.BR v32lua (1),
-its sibling project, already supports
-.B \-\-#
-comment-based hints that name actual texture/sound resource files to
-package) \(em so the generated XML's
+directives are recognized directly in C++ source, each on its own line:
+.PP
+.RS
+.nf
+#texture NAME "file.png"
+#sound   NAME "file.wav"
+.fi
+.RE
+.PP
+modeled on
+.BR v32lua (1)'s
+own
+.B \-\-#texture
+/
+.B \-\-#sound
+hints. Each
+.I NAME
+(any case \(em upper, lower, or mixed, never forced to one) becomes a
+.B #define
+in the generated C, mapping to that resource's id: ids start at 0 and
+increase by one per hint, textures and sounds counted separately, in
+the order the hints appear in the source \(em the
+.I first
+.B #texture
+is always id 0, the second id 1, and so on; likewise for
+.BR #sound .
+.I NAME
+is then usable anywhere an integer constant would be, as an argument to
+whatever texture/sound-selecting function the target program calls.
+The same declaration order also determines each resource's position
+in the generated XML's
 .B <textures>
-and
+/
 .B <sounds>
-sections are always empty, and its
+sections \(em position
+.I is
+id, the same invariant
+.BR v32lua (1)
+itself relies on, so the two always agree. Each filename has its own
+extension replaced with
+.I .vtex
+(textures) or
+.I .vsnd
+(sounds) in the XML, matching Vircon32's own expected resource formats;
+the original extension given in the hint (
+.IR .png ", " .wav ,
+whatever) only matters for locating the source asset, not for what
+ships in the cart.
+.PP
+A program with no
+.B #texture
+/
+.B #sound
+hints at all still gets a generated XML, with empty, self-closing
+.B <textures />
+/
+.B <sounds />
+elements \(em the previous, hint-free behavior, unchanged for anything
+that doesn't use this.
+.PP
+Two more hints override the
+.B <rom>
+element's own
 .B title
-and
+/
 .B version
-attributes always use fixed defaults ("Vircon32 Program" and "1.0",
-matching
+attributes, each fixed at "Vircon32 Program" / "1.0" (matching
 .BR v32lua (1)'s
-own defaults). Once cart-hint support exists in
+own defaults) until overridden:
+.PP
+.RS
+.nf
+#title "The BIOS/CART title"
+#version 1.0
+.fi
+.RE
+.PP
+.I title
+is quoted (may contain spaces);
+.I version
+is a bare token, never quoted (matching
+.BR v32lua (1)'s
+own
+.B \-\-#version
+hint). If either hint appears more than once, the last one seen wins.
+.PP
+Not yet supported: a duplicate-name check across
+.B #texture
+/
+.B #sound
+hints (two
+.B #texture
+lines naming the same
+.I NAME
+currently produce two conflicting
+.B #define
+lines, caught only later, by the C compiler itself, not by
 .B v32c++
-too, the generated XML will start reflecting whatever a given program
-actually declares, the same way
-.BR v32lua (1)'s
-own output already does.
+directly).
+.SH BIOS MODE
+.B \-b
+(see OPTIONS, above) transpiles a Vircon32
+.B BIOS
+rather than an ordinary cartridge: the generated XML's
+.B <rom>
+element gets
+.BR type=\(dqbios\(dq
+instead of the ordinary
+.BR type=\(dqcartridge\(dq ,
+and three constraints \(em checked only when
+.B \-b
+is given, not otherwise \(em must all hold, or
+.B v32c++
+reports every violation found (not just the first) and exits nonzero
+without writing anything:
+.IP \(bu 3
+Exactly one
+.B #texture
+hint \(em zero or two-or-more are both errors.
+.IP \(bu 3
+At most one
+.B #sound
+hint \(em zero is fine, two-or-more is an error.
+.IP \(bu 3
+A
+.B "void error_handler()"
+function, in addition to
+.BR main .
+.PP
+.B v32c++
+itself only enforces these three constraints \(em everything else that
+makes a valid, bootable Vircon32 BIOS is the C compiler's and
+assembler's own concern, downstream of this tool.
+.SH DEBUG MAPS
+.B \-g
+(see OPTIONS, above) writes
+.I <output>.debug
+alongside the generated C \(em note the full
+.I .c.debug
+suffix, not a swapped extension (
+.I sprite.c
+produces
+.IR sprite.c.debug ,
+not
+.IR sprite.debug ).
+Each line maps one point in the generated C back to the C++ source
+line responsible for it:
+.PP
+.RS
+.nf
+c_path,c_line,cpp_path,cpp_line[,function_name]
+.fi
+.RE
+.PP
+.I function_name
+appears only on the line where a function's own C definition begins,
+and names the
+.I generated C
+side of that function (its mangled name, where this project mangles
+one \(em e.g.
+.IR Square__area__void ,
+not the C++ source's own
+.IR area ),
+matching which side of the mapping that column actually documents.
+.I cpp_path
+is always the original
+.I .cpp
+given on the command line, verbatim \(em never a preprocessed or
+otherwise-modified intermediate, regardless of what future tooling
+might sit in front of
+.B v32c++
+one day.
+.PP
+This is a
+.I sparse
+table, modeled on a real Vircon32 C-to-assembly debug map: an entry
+exists only where the C-line/C++-line association actually changes,
+not one row per line of generated C. A lowering-synthesized statement
+(a destructor invoked at scope exit, say) still carries some line
+number \(em typically the nearest real statement's own, reused \(em so
+mappings stay reasonably accurate even for code
+.B v32c++
+itself generated, not only for what a person directly wrote; this is
+not claimed to be exact for every synthesized line.
 .SH FILES
 .TP
 .I *.cpp
@@ -270,6 +456,13 @@ if
 .B \-x
 /
 .B \-\-no\-xml
+was given.
+.TP
+.I *.c.debug
+Generated C-line/C++-line debug map (see
+.B DEBUG MAPS
+above). Only written if
+.B \-g
 was given.
 .PP
 Generated output may reference Vircon32's own standard library

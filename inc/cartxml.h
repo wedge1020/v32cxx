@@ -18,19 +18,23 @@
  * derives both paths from ITS OWN output filename (confirmed directly
  * from its source), not the original .lua.
  *
- * <textures/> and <sounds/> are ALWAYS emitted empty, deliberately --
- * this project has no CART HINT functionality yet (unlike v32lua's own
- * "--#" comment-based hints, which populate these sections with real
- * resource entries -- texture/sound files, IDs, variable names), so
- * there is nothing to populate them with. Once cart-hint support
- * exists here too, this function will need real revisiting -- porting
- * v32lua's own resource-list walking and ID-consistency checking
- * alongside it, not just extending the empty-element placeholders in
- * place.
+ * <textures>/<sounds> reflect driver.h's g_cart_textures/g_cart_sounds
+ * (populated by lexer.l's own #texture/#sound recognition) -- non-empty,
+ * in declaration order, when the program used either hint; the previous
+ * always-empty <textures />/<sounds /> otherwise, unchanged for a
+ * program that doesn't use them.
  *
- * cart_title/cart_version use v32lua's own documented defaults
- * ("Vircon32 Program" / "1.0") verbatim, for the same "no hints yet"
- * reason -- there's no way to override either from C++ source yet.
+ * title/version reflect driver.h's g_cart_title/g_cart_version
+ * (#title/#version hints) when set, falling back to v32lua's own
+ * documented defaults ("Vircon32 Program" / "1.0") otherwise.
+ *
+ * `is_bios`: when true, the <rom> element's own `type` attribute is
+ * "bios" instead of "cartridge" -- main.c's own -b flag; this function
+ * itself enforces nothing about what makes a valid BIOS (exactly one
+ * texture, at most one sound, an error_handler function) -- that
+ * validation is main.c's own job, run BEFORE this is ever called, so by
+ * the time emit_cart_xml runs for a -b build, those constraints are
+ * already known to hold.
  *
  * Writes an error to stderr and returns without creating anything if
  * the XML file can't be opened for writing -- does not abort the
@@ -38,6 +42,6 @@
  * already been written successfully by this point; a failed XML write
  * is a real problem worth reporting, but not one that should undo an
  * otherwise-successful transpile). */
-void emit_cart_xml(const char *output_filename);
+void emit_cart_xml(const char *output_filename, int is_bios);
 
 #endif /* CARTXML_H */
