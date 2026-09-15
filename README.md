@@ -188,12 +188,25 @@ src/
   driver.h      shared state between the lexer and parser
   v32cxx.h      project identity (VERSION/AUTHOR/URL) and build-time
                 configuration constants
-  main.c        CLI entry point (-o, -c, --version)
+  main.c        CLI entry point (-o, -c, -v, --version)
 tests/          example .cpp inputs, including intentionally-invalid
                 ones and several real, hand-written programs
 docs/           design notes, implementation deep-dives, and the
                 Vircon32-specific output-quirk catalog
+man/            v32c++.1 -- a Unix section 1 manual page; view it
+                directly with `man ./man/v32c++.1`, or `make install`
+                to put v32c++ itself on your PATH (see below)
 ```
+
+## Installing
+
+```sh
+make install
+```
+
+Copies `bin/v32c++` to `~/bin/`. Make sure `~/bin` is on your `PATH` to
+run it as just `v32c++` from anywhere. `make uninstall` removes it
+again.
 
 ## Feedback
 

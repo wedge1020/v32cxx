@@ -1,0 +1,246 @@
+.TH V32C++ 1 "September 2026" "v32c++ 20260914-dev" "User Commands"
+.SH NAME
+v32c++ \- transpile a subset of C++ to Vircon32 C
+.SH SYNOPSIS
+.B v32c++
+.RB [ \-o
+.IR output.c ]
+.RB [ \-c ]
+.RB [ \-v ... ]
+.I input.cpp
+.br
+.B v32c++
+.B \-\-version
+.SH DESCRIPTION
+.B v32c++
+translates a purpose-built subset of C++ \(em classes, single
+inheritance, constructors and destructors, virtual functions and
+dynamic dispatch, operator overloading, arrays, and the usual
+statement/expression language \(em into plain C targeting the
+.B Vircon32
+fantasy console's own C compiler. The generated C is handed to that
+compiler exactly the way hand-written Vircon32 C would be; no other
+tool sits between
+.B v32c++
+and the target.
+.PP
+This follows the same strategy Bjarne Stroustrup's original
+.B cfront
+used for the first C++ compilers: translate to C first, and let an
+existing, trusted C compiler do everything after that.
+.PP
+Templates, exceptions, RTTI, and multiple inheritance are not part of
+the language
+.B v32c++
+accepts, and never will be \(em these are permanent design boundaries,
+not gaps awaiting a future release. See
+.B LANGUAGE NOTES
+below, and the project's own README, for what
+.I is
+supported and what else is still in progress.
+.PP
+.B v32c++
+produces no output at all on success unless a verbosity flag is given
+(see
+.BR \-v ,
+below) \(em this matches the Vircon32 C compiler's and
+.BR v32lua (1)'s
+own behavior. A non-zero exit status, and a message on standard
+error, indicate a genuine problem: a syntax error, a semantic error
+(an undeclared type, an inaccessible member, an unresolvable call,
+and so on), or a missing
+.B main
+function when one was required (see
+.BR \-c ).
+.SH OPTIONS
+.TP
+.BI \-o " output.c"
+Write the generated C to
+.IR output.c ,
+instead of the default. If
+.B \-o
+is not given at all, the output filename is derived from the input's
+own name: its extension is replaced with
+.IR .c ,
+so
+.I foo/bar.cpp
+becomes
+.IR foo/bar.c .
+This also matches the Vircon32 C compiler's and
+.BR v32lua (1)'s
+own default naming.
+.TP
+.B \-c
+Transpile without requiring a
+.B main
+function to exist in the input. Like a real C compiler's own
+.B \-c
+("compile only"): use this for a library or module fragment that
+is not, on its own, a complete, standalone-compilable program.
+Without
+.BR \-c ,
+an input with no
+.B main
+is treated as an error.
+.TP
+.B \-v
+Increase verbosity. Stackable \(em repeat for more detail, either as
+separate flags
+.RI ( "\-v \-v \-v" )
+or bundled
+.RI ( \-vvv ).
+No
+.B \-v
+at all (the default) produces no output on success at all.
+.RS
+.TP
+.B "single \-v"
+Print a one-line progress message as each internal stage begins:
+lexing/parsing, semantic analysis, lowering, and code generation.
+.TP
+.B "\-vv"
+Everything from a single
+.BR \-v ,
+plus a full dump of the parsed AST, a semantic-analysis summary
+(class layouts, vtables, resolved calls), and the fully-lowered form
+of every method and function body \(em genuinely useful for following
+along with what the tool understood about a given program and how it
+transformed it, not just debugging output.
+.TP
+.B "\-vvv"
+Reserved for even more detailed output in a future release. Currently
+behaves the same as
+.BR \-vv .
+.RE
+.TP
+.B \-\-version
+Print version, author, and project URL information, and exit
+immediately without processing any input.
+.TP
+.B \-g
+Reserved for a future, separate debugging-file-output mode. Not
+implemented yet \(em using it is currently an error, rather than a
+silent no-op.
+.SH EXIT STATUS
+.TP
+.B 0
+The input was transpiled successfully.
+.TP
+.B 1
+A syntax error, a semantic error, a missing
+.B main
+function (without
+.BR \-c ),
+or an I/O error (the input could not be opened, or the output could
+not be written) occurred. Details are printed to standard error.
+.SH EXAMPLES
+Transpile a single file, writing
+.IR sprite.c :
+.PP
+.RS
+.nf
+v32c++ sprite.cpp
+.fi
+.RE
+.PP
+Transpile a library fragment with no
+.B main
+of its own, to a specific output path, watching each stage run:
+.PP
+.RS
+.nf
+v32c++ \-c \-v \-o build/widgets.c src/widgets.cpp
+.fi
+.RE
+.PP
+Inspect exactly what the tool understood about a program, without
+writing an output file anywhere the caller didn't ask for:
+.PP
+.RS
+.nf
+v32c++ \-vv sprite.cpp
+.fi
+.RE
+.SH LANGUAGE NOTES
+This section is a brief summary, not a complete reference \(em see the
+project's own README and
+.I docs/DESIGN_NOTES.md
+for the full, current picture, including known gaps under active
+development.
+.PP
+Supported: classes with single inheritance and access control;
+constructors and destructors, including automatic invocation at
+scope exit and via
+.BR delete ;
+.B virtual
+functions and dynamic dispatch, including virtual destructors;
+operator overloading; function and constructor overload resolution;
+.B new
+and
+.BR delete ,
+including array forms; arrays, in either standard C declarator syntax
+or Vircon32's own native style, accepted interchangeably as C++-side
+input; a preprocessor
+.I pass-through
+(a
+.B #include
+or other
+.B #
+line is carried into the output verbatim, not expanded or resolved);
+.B break
+and
+.BR continue .
+.PP
+Not yet supported: base-class constructor delegation (C++
+member-initializer lists); virtual destructor dispatch through
+.B delete[]
+specifically (plain
+.B delete
+through a base pointer already dispatches correctly); a real
+preprocessor (macro expansion, conditional compilation); a
+standard-C output mode (Vircon32-specific output quirks are tracked
+in
+.I docs/VIRCON32_QUIRKS.md
+toward this).
+.PP
+Never supported, by design: templates, exceptions, RTTI, multiple
+inheritance.
+.SH FILES
+.TP
+.I *.cpp
+Input source, in the C++ subset this tool accepts.
+.TP
+.I *.c
+Generated Vircon32 C, ready to be handed to the Vircon32 C compiler
+directly.
+.PP
+Generated output may reference Vircon32's own standard library
+headers (for example
+.I misc.h
+for
+.B malloc
+and
+.BR free ,
+or a video/graphics header for console-specific routines) via
+.B #include
+lines carried through from the input by the preprocessor
+pass-through \(em these headers are provided by the Vircon32 SDK, not
+by
+.BR v32c++ ,
+and must be available wherever the generated C is actually compiled.
+.SH SEE ALSO
+.BR v32lua (1),
+the Vircon32 C compiler documentation.
+.PP
+Project repository:
+.I https://github.com/wedge1020/v32cxx
+.SH BUGS
+Report issues, including anything this tool transpiles incorrectly or
+any real C++ feature you'd like to see prioritized, via the project
+repository above. This is genuinely early, actively developed
+software \(em see
+.I docs/DESIGN_NOTES.md
+for the full history of what's been found and fixed so far, including
+real compiler bugs caught along the way.
+.SH AUTHOR
+Matthew Haas

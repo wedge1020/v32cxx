@@ -11,7 +11,7 @@ CFLAGS  = -Wall -Wextra -g -I$(INC_DIR)
 BISON   = bison
 FLEX    = flex
 
-.PHONY: all clean test
+.PHONY: all clean test install uninstall
 
 all: $(BIN_DIR)/v32c++
 
@@ -140,6 +140,15 @@ test: all | $(OUT_DIR)
 # sample1/2/3 are deliberately NOT prefixed with '-': if any of those
 # start failing, that's a real regression and `make test` should stop and
 # report it, not paper over it the same way.
+
+install: all
+	mkdir -p $(HOME)/bin
+	cp $(BIN) $(HOME)/bin/
+	@echo "Installed v32c++ to $(HOME)/bin/v32c++"
+	@echo "(make sure $(HOME)/bin is on your PATH to run it as just 'v32c++')"
+
+uninstall:
+	rm -f $(HOME)/bin/v32c++
 
 clean:
 	rm -f $(BIN_DIR)/* $(OBJ_DIR)/* $(SRC_DIR)/parser.output $(OUT_DIR)/*
