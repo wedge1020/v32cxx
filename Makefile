@@ -101,6 +101,7 @@ test: all | $(OUT_DIR)
 	$(BIN)  -vv    -o out/sample30.c tests/sample30.cpp 1> out/sample30.txt 2>&1
 	-$(BIN) -vv -c -o out/sample31.c tests/sample31.cpp 1> out/sample31.txt 2>&1
 	$(BIN)  -vv    -o out/sample32.c tests/sample32.cpp 1> out/sample32.txt 2>&1
+	$(BIN)  -vv    -o out/sample33.c tests/sample33.cpp 1> out/sample33.txt 2>&1
 # `-vv` (this project's own verbosity flag, a later round -- see main.c)
 # is passed to every sample specifically so `make test`'s own output
 # still captures the full AST/semantic-analysis/lowering dumps this
@@ -119,11 +120,11 @@ test: all | $(OUT_DIR)
 # of the "must define main" default main.c added this round -- every
 # sample here is a focused unit test of one specific compiler feature,
 # not a complete, standalone-compilable program, EXCEPT sample2, 14, 21,
-# 22, 23, 24, 25, 26, 27, 28, 29, 30, and 32, which genuinely do define
-# their own `main` (sample2's predates this round; sample14/21 were
-# given one specifically so they could also be compiled all the way
+# 22, 23, 24, 25, 26, 27, 28, 29, 30, 32, and 33, which genuinely do
+# define their own `main` (sample2's predates this round; sample14/21
+# were given one specifically so they could also be compiled all the way
 # through by the real Vircon32 toolchain, not just transpiled; sample22
-# through 30 and 32 already had one -- all are real, hand-written or
+# through 30, 32, and 33 already had one -- all are real, hand-written or
 # hand-designed programs, not artificial unit tests). sample31 is
 # deliberately invalid (break/continue-outside-a-loop) and gets `-c`
 # like the other unit-test samples, since it isn't trying to be a

@@ -1255,8 +1255,33 @@ static void emit_preprocessor_passthrough(FILE *out) {
     }
 }
 
+/* Emits one `#define NAME id` per recognized cart hint (driver.h's
+ * g_cart_textures/g_cart_sounds -- populated by lexer.l's own
+ * `#texture`/`#sound` recognition), textures first, then sounds, each
+ * group in original declaration order -- id is always just that
+ * entry's own position in its list, matching the "id == declaration
+ * order == XML position" invariant this mirrors from v32lua's own cart
+ * hints. A true compile-time constant, not a global needing runtime
+ * initialization -- C supports #define where v32lua's own Lua target
+ * doesn't, so a texture/sound name a person's C++ source goes on to
+ * use (as select_texture(BACKGROUND), say) resolves to its id entirely
+ * at the C-compiler level, not anything this project's own sema needs
+ * to know about at all. Runs right after the pass-through above,
+ * deliberately -- these came from '#'-lines too, so they belong
+ * grouped with everything else that did, ahead of anything this
+ * project itself goes on to add (misc.h, generated declarations, ...). */
+static void emit_cart_hint_defines(FILE *out) {
+    for (int i = 0; i < g_cart_textures.count; i++) {
+        fprintf(out, "#define %s %d\n", g_cart_textures.items[i].name, i);
+    }
+    for (int i = 0; i < g_cart_sounds.count; i++) {
+        fprintf(out, "#define %s %d\n", g_cart_sounds.items[i].name, i);
+    }
+}
+
 void codegen_run(const AstNode *program, FILE *out) {
     emit_preprocessor_passthrough(out);
+    emit_cart_hint_defines(out);
     /* misc.h (Vircon32's real malloc()/free(), among other things) is
      * only included when the program has at least one class -- every
      * class gets a v32_new_* allocator (even one never actually used

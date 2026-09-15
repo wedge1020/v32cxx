@@ -93,10 +93,19 @@ preprocessor is still future work.
 
 **Cart-packing XML is generated automatically**, alongside the
 generated `.c`, matching v32lua's own output — one less manual,
-repetitive step in the build process. No *cart hint* support yet
-(v32lua's own `--#` comment-based hints, naming real texture/sound
-files to package), so the generated `<textures>`/`<sounds>` are always
-empty for now. See [Trying it out](#trying-it-out) for the `-x` opt-out.
+repetitive step in the build process. Two cart hints are recognized
+directly in C++ source now too: `#texture NAME "file.png"` and
+`#sound NAME "file.wav"` (any case for `NAME`), modeled on v32lua's own
+`--#texture`/`--#sound` hints — each becomes a `#define` mapping to that
+resource's id (0, 1, 2… in declaration order, textures and sounds
+counted separately), and populates the generated XML's
+`<textures>`/`<sounds>` in that same order. A program with no hints at
+all still gets an XML, with the previous empty `<textures />`/
+`<sounds />`. See [Trying it out](#trying-it-out) for the `-x` opt-out.
+Not yet supported: `#title`/`#version` hints (the XML's title/version
+stay fixed at "Vircon32 Program"/"1.0" for now), and no check yet for
+two hints reusing the same `NAME` (caught by the C compiler itself, as
+a redefined macro, rather than by `v32c++`).
 
 **What doesn't exist yet, worth knowing before you rely on it:**
 
@@ -172,13 +181,26 @@ input is a library/module fragment without its own `main`.
 Alongside the generated `.c`, a Vircon32 cart-packing XML file is
 written by default too (`path/to/yourfile.xml`) — the manual,
 repetitive step of hand-writing that file for every build is
-automated now, matching v32lua's own `emit_cart_xml`. This project has
-no *cart hint* functionality yet (unlike v32lua's own `--#`
-comment-based hints, which name real texture/sound resources to
-package), so the generated XML's `<textures>`/`<sounds>` sections are
-always empty and its title/version always use fixed defaults
-("Vircon32 Program" / "1.0") until that exists here too. Pass `-x` (or
-`--no-xml`) to skip this.
+automated now, matching v32lua's own `emit_cart_xml`. Two cart hints
+are recognized directly in C++ source:
+
+```cpp
+#texture Background "background.png"
+#sound   jump_sfx    "jump.wav"
+```
+
+Each `NAME` (any case) becomes a `#define` mapping to its resource's
+id — 0, 1, 2… in declaration order, textures and sounds counted
+separately — usable anywhere an integer constant would be:
+`select_texture(Background)`. That same order determines each
+resource's position in the generated XML too, extensions swapped to
+`.vtex`/`.vsnd`. No hints at all still gets an XML, with empty
+`<textures />`/`<sounds />`. Modeled on v32lua's own
+`--#texture`/`--#sound` hints — not yet supported: `#title`/`#version`
+hints (title/version stay fixed at "Vircon32 Program"/"1.0" for now),
+and no check yet for two hints reusing the same `NAME` (the C compiler
+itself catches that, as a redefined macro, not `v32c++`). Pass `-x`
+(or `--no-xml`) to skip XML generation entirely.
 
 A large set of example inputs lives in `tests/`, including a couple that
 are *deliberately* invalid (an undeclared type, an out-of-line

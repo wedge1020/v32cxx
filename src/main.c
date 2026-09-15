@@ -19,6 +19,8 @@ int g_lex_lineno = 1;
 const char *g_current_filename = "<stdin>";
 PreprocessorLines g_preprocessor_lines = {NULL, 0, 0};
 int g_uses_new_or_delete = 0;
+CartResourceList g_cart_textures = {NULL, 0, 0};
+CartResourceList g_cart_sounds = {NULL, 0, 0};
 
 extern FILE *yyin;
 

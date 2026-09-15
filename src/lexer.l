@@ -21,7 +21,16 @@
  * macro expansion, no #include resolution, no #ifdef evaluation, and a
  * captured #ifdef/#endif pair doesn't actually gate anything this
  * scanner sees, since it never interprets what was captured at all.
- */
+ *
+ * ONE exception to "every `#`-line is just passed through unread": cart
+ * hints (`#texture NAME "file.png"` / `#sound NAME "file.wav"`), a
+ * targeted special-case recognized directly below, NOT the start of a
+ * general preprocessor -- these two specific forms get parsed for their
+ * NAME/filename and registered (see g_cart_textures/g_cart_sounds,
+ * driver.h), instead of falling through to the generic pass-through
+ * above. Modeled directly on v32lua's own `--#texture`/`--#sound` cart
+ * hints. */
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include "driver.h"
@@ -53,6 +62,23 @@ static Symbol *g_last_ident_sym = NULL;
 
 #define YY_USER_ACTION \
     yylloc.first_line = yylloc.last_line = g_lex_lineno;
+
+/* Appends one cart resource (a `#texture`/`#sound` hint) to `list`,
+ * keeping id == list position exactly the way v32lua's own
+ * cart_resource_append does (confirmed from its actual source) -- the
+ * resource's id is never stored explicitly anywhere; it's always just
+ * "whatever position this entry ends up at in the list," read back out
+ * at both #define-emission time (codegen.c) and XML-emission time
+ * (cartxml.c). */
+static void register_cart_resource(CartResourceList *list, const char *name, const char *filename) {
+    if (list->count == list->capacity) {
+        list->capacity = list->capacity ? list->capacity * 2 : 8;
+        list->items = realloc(list->items, sizeof(CartResource) * (size_t)list->capacity);
+    }
+    list->items[list->count].name = strdup(name);
+    list->items[list->count].filename = strdup(filename);
+    list->count++;
+}
 %}
 
 %option noyywrap
@@ -67,6 +93,35 @@ ALNUM   [A-Za-z0-9_]
 
 "//"[^\n]*                     { /* line comment, discard */ }
 "/*"([^*]|\*+[^*/])*\*+"/"      { /* block comment, discard */ }
+
+    /* Cart hints -- `#texture NAME "file.png"` / `#sound NAME "file.wav"`.
+     * Matched BEFORE the generic "#"-line pass-through rule below,
+     * deliberately: both would otherwise match the same full line (same
+     * length), and flex's own "first rule wins on a length tie" behavior
+     * means ORDER in this file is what actually decides which one a
+     * cart hint gets recognized by -- these have to come first, or every
+     * `#texture`/`#sound` line would just fall through to plain,
+     * unrecognized pass-through instead. NAME is captured exactly as
+     * written -- upper, lower, or mixed case, never forced to any
+     * particular one. Does NOT also add the line to
+     * g_preprocessor_lines -- a recognized cart hint is translated into
+     * a `#define`, not passed through verbatim; only a genuinely
+     * unrecognized `#`-line falls through to that. */
+^"#texture"[ \t]+[A-Za-z_][A-Za-z0-9_]*[ \t]+\"[^"\n]*\"[^\n]* {
+    char name[128] = {0};
+    char filename[256] = {0};
+    if (sscanf(yytext, "#texture %127s \"%255[^\"]\"", name, filename) == 2) {
+        register_cart_resource(&g_cart_textures, name, filename);
+    }
+}
+
+^"#sound"[ \t]+[A-Za-z_][A-Za-z0-9_]*[ \t]+\"[^"\n]*\"[^\n]* {
+    char name[128] = {0};
+    char filename[256] = {0};
+    if (sscanf(yytext, "#sound %127s \"%255[^\"]\"", name, filename) == 2) {
+        register_cart_resource(&g_cart_sounds, name, filename);
+    }
+}
 
 ^"#"[^\n]*                     {
     /* Preprocessor pass-through -- see this file's own header comment

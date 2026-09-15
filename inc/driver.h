@@ -68,6 +68,43 @@ extern PreprocessorLines g_preprocessor_lines;
  */
 extern int g_uses_new_or_delete;
 
+/*
+ * Cart hints: `#texture NAME "file.png"` and `#sound NAME "file.wav"`,
+ * recognized directly by the lexer (a targeted special-case, NOT the
+ * start of a general preprocessor -- every other `#`-line still just
+ * goes through the verbatim pass-through above unchanged). Modeled
+ * directly on v32lua's own `--#texture`/`--#sound` cart hints
+ * (confirmed from its actual source, not guessed at) -- same "id ==
+ * declaration order == XML position" invariant, same texture/sound
+ * separation, same "first one gets id 0" rule.
+ *
+ * Where this project's own handling deliberately diverges from
+ * v32lua's: v32lua emits runtime assembly that initializes a genuine
+ * Lua global variable to the resource's id, since Lua has no compile-
+ * time-constant concept of its own. C does -- codegen.c emits
+ * `#define NAME id` for each one instead, a true compile-time
+ * constant, not a global needing runtime initialization at all.
+ *
+ * NAME is whatever case the person wrote -- upper, lower, or mixed;
+ * never forced to any particular case.
+ */
+typedef struct CartResource {
+    char *name;     /* the C++-visible symbol, e.g. "background" */
+    char *filename; /* the resource file exactly as written in the hint,
+                        e.g. "background.png" -- extension swapped to
+                        .vtex/.vsnd only at XML-emission time (cartxml.c),
+                        not stored pre-swapped here */
+} CartResource;
+
+typedef struct CartResourceList {
+    CartResource *items;
+    int count;
+    int capacity;
+} CartResourceList;
+
+extern CartResourceList g_cart_textures;
+extern CartResourceList g_cart_sounds;
+
 int yylex(void);
 void yyerror(const char *msg);
 

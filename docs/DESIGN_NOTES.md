@@ -2508,6 +2508,120 @@ entry; `README.md`'s "Trying it out" and feature-summary sections both
 updated to mention this as a headline capability, matching how arrays
 were introduced a few rounds back once that work was complete.
 
+## Cart hints: `#texture`/`#sound`, mapped to `#define`d resource ids
+
+Matthew asked specifically to explore this, not to start on a real
+preprocessor -- a targeted, lexer-level special case for exactly two
+directive forms, kept deliberately separate from (and handled before)
+the existing generic `#`-line pass-through, not a step toward general
+macro expansion or conditional compilation.
+
+**Investigated v32lua's own `--#texture`/`--#sound` handling directly
+before designing anything**, the same discipline as last round's cart-
+XML work -- traced the full path: `make_node_cart_hint` parses a raw
+hint string with `sscanf("%63s %127s \"%255[^\"]\"", ...)`, assigns
+`next_texture_id++`/`next_sound_id++`, registers into a linked list via
+`cart_resource_append` (confirmed: id == list position == XML position,
+never stored as an independent field read back out later). The
+genuinely useful discovery: v32lua's own codegen for a cart hint
+(`node_cart_hint`) emits *runtime assembly* that initializes a real Lua
+global variable to the resource's id -- because Lua has no compile-
+time-constant concept of its own, so a runtime global is the only
+option v32lua ever had. C isn't under that constraint. Matthew's own
+phrasing ("#defines *or* variables") left the choice open; `#define`
+was the right one -- a true compile-time constant, zero runtime cost,
+more idiomatic C, and the first option he named.
+
+**`driver.h`**: new `CartResource`/`CartResourceList` (name + filename
+pairs, growable array, id implicit as position -- matching v32lua's own
+invariant exactly), plus `g_cart_textures`/`g_cart_sounds` globals,
+defined in `main.c` alongside the other driver-state definitions.
+
+**`lexer.l`**: two new rules, `^"#texture"...` and `^"#sound"...`,
+placed BEFORE the existing generic `^"#"[^\n]*` pass-through rule --
+had to be first, deliberately: both match the same full line (same
+length), and flex's own "first rule wins on a length tie" behavior
+means rule ORDER in the file is what actually decides whether a
+`#texture`/`#sound` line gets recognized or just falls through to
+plain, unrecognized pass-through. Each rule `sscanf`s out NAME and the
+quoted filename, then appends to the appropriate list via a small
+`register_cart_resource` helper (mirroring `cart_resource_append`'s own
+growable-list-append shape). Recognized hints do NOT also land in
+`g_preprocessor_lines` -- a hint gets translated into a `#define`
+instead of passed through verbatim, unlike a genuinely unrecognized
+`#`-line. Caught, and fixed, before handing off: `sscanf` needs
+`<stdio.h>`, which this file didn't explicitly include -- an easy thing
+to miss relying on flex's own generated code happening to pull it in
+transitively; added explicitly rather than left to chance.
+
+**`codegen.c`**: new `emit_cart_hint_defines`, walking
+`g_cart_textures` then `g_cart_sounds` (each in original order) and
+emitting `#define NAME i` for each -- runs immediately after the
+existing preprocessor pass-through, deliberately grouped with it (both
+came from `#`-lines), ahead of anything this project itself goes on to
+add.
+
+**`cartxml.c`**: `emit_resource_list`, shared by both `<textures>`
+and `<sounds>` (a `tag`/`ext` pair distinguishes them -- "texture"/
+".vtex" or "sound"/".vsnd"), replacing last round's always-empty
+placeholders. Falls back to the previous self-closing empty form when
+a list has nothing in it, so a hint-free program's XML is byte-
+identical to what it was before this round. Each filename's own
+extension gets swapped via the SAME shared `replace_extension`
+(`pathutil.c`) the `.xml`/`.vbin` derivation already uses -- one
+implementation serving a third caller now, not a new copy.
+
+**The critical thing verified before writing any of this**: does
+`sema.c` reject `select_texture(Background)` when `Background` is
+never declared anywhere in the C++ source itself (no local, no member,
+just a name a `#texture` hint introduced)? Traced three places
+directly, not assumed: `infer_expr_type`'s own `AST_IDENT` case returns
+NULL (not an error) for an unresolved name; `check_node`'s own
+`AST_IDENT` case only runs an access check when the name resolves to an
+actual class member, and does nothing at all otherwise; `codegen.c`'s
+own `AST_IDENT` case prints `e->str1` directly, no resolution required.
+Confirms the design end to end: a `#define`'d name flows through this
+project's own pipeline completely untouched, and resolves to its id
+entirely at the C-compiler level once `codegen.c`'s own `#define` line
+is in place -- no sema or codegen changes needed beyond what's listed
+above.
+
+**A real, honest limitation of this round**: flex still isn't
+available in this sandbox (the same constraint this project has hit
+every round that touched the grammar or lexer), so `lexer.c` could not
+actually be regenerated or run here. Verified everything that COULD be
+verified without it: full syntax-check of every OTHER changed file
+(`driver.h`, `codegen.c`, `cartxml.c`, `main.c`) -- all clean; careful
+manual review of `lexer.l`'s own new rules (regex patterns, `sscanf`
+formats, the newline-handling convention matching the file's existing
+rules exactly, confirmed against the existing `\n { g_lex_lineno++; }`
+rule); and, to verify the REST of the pipeline still builds and links
+correctly with the new globals/functions in place, temporarily touched
+the stale, already-generated `lexer.c`/`parser.c`/`parser.h` to bypass
+make's own (correctly-firing) regeneration check -- confirmed a clean
+build and a full, regression-free 32-sample suite run against the OLD
+lexer, plus the new `sample33.cpp` transpiling "successfully" but
+inertly (its `#texture`/`#sound` lines just fall through to the old,
+generic pass-through, exactly as expected, since the old lexer has no
+idea these are special yet). This confirms everything EXCEPT the lexer
+rules themselves. Matthew's own `bison -d`/`flex` regeneration (the
+project's established pattern for every grammar/lexer round) is still
+the real, only confirmation for those -- stated plainly, not glossed
+over.
+
+**`tests/sample33.cpp`** added and wired into the Makefile's `test`
+target (its own `main`, no `-c` needed) -- two textures, two sounds,
+deliberately mixed-case names (`Background`, `player`, `EXPLOSION`,
+`jump_sfx`) to exercise "never forced to any particular case" directly,
+not just claim it in a comment.
+
+Documentation updated: `man/v32c++.1`'s CART PACKAGING section rewritten
+with the full hint syntax, id-assignment rule, and what's still not
+supported (`#title`/`#version` hints; no duplicate-name check yet --
+same gap v32lua's own texture/sound handling has, not something this
+round tried to exceed); `README.md`'s feature summary and "Trying it
+out" section both updated to match.
+
 ## Suggested next steps, roughly in order
 
 
