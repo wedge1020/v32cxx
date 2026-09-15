@@ -100,7 +100,7 @@ test: all | $(OUT_DIR)
 	$(BIN)  -vv    -o out/sample29.c tests/sample29.cpp 1> out/sample29.txt 2>&1
 	$(BIN)  -vv    -o out/sample30.c tests/sample30.cpp 1> out/sample30.txt 2>&1
 	-$(BIN) -vv -c -o out/sample31.c tests/sample31.cpp 1> out/sample31.txt 2>&1
-	$(BIN)  -vv    -o out/sample32.c tests/sample32.cpp 1> out/sample32.txt 2>&1
+	$(BIN)  -vvv   -o out/sample32.c tests/sample32.cpp 1> out/sample32.txt 2>&1
 	$(BIN)  -vv -g  -o out/sample33.c tests/sample33.cpp 1> out/sample33.txt 2>&1
 	$(BIN)  -vv -b -g -o out/sample34.c tests/sample34.cpp 1> out/sample34.txt 2>&1
 # `-vv` (this project's own verbosity flag, a later round -- see main.c)
@@ -116,6 +116,14 @@ test: all | $(OUT_DIR)
 # name) even with no `-o` given at all, so leaving it unset here would
 # otherwise clutter `tests/` with 32 generated `.c` files never meant to
 # live there.
+#
+# sample32 specifically gets `-vvv`, not `-vv` -- the one place in this
+# suite -vvv's own explanatory-comments feature (a later round) is
+# exercised, chosen because sample32 already has the richest feature
+# mix here (vtables, a virtual destructor, `new`/`delete`) to actually
+# trigger most of what -vvv explains. Every other sample stays at
+# `-vv`, deliberately -- -vvv's comments would otherwise clutter every
+# other sample's own `.c` output for no real review benefit.
 #
 # `-c` (this project's own flag, an earlier round) opts out
 # of the "must define main" default main.c added this round -- every

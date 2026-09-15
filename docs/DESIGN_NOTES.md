@@ -2787,6 +2787,121 @@ map path is exercised by the standard suite go forward, not only by
 hand. Makefile's own "which samples have their own `main`" comment
 block updated to include both.
 
+## `#title`/`#version`/`-b`/`-g` confirmed working end to end, and `-vvv` explanatory comments
+
+Matthew provided a fresh `lexer.c`/`parser.c`/`parser.h` regenerated
+from this round's `#title`/`#version` lexer additions, plus the actual
+output of running both `sample33.cpp` and `sample34.cpp` through them.
+Confirmed directly, not just re-asserted: `sample34.xml` shows
+`title="Vircon32 BIOS Test" version="0.9"` and `type="bios"`, exactly
+matching the source's own `#title`/`#version` hints and `-b` flag —
+the entire cart-hint arc from the last two rounds (`#texture`/`#sound`,
+then `#title`/`#version`, then `-b`'s own validation) is now confirmed
+working end to end against a real build, not only reasoned through.
+Rebuilt and re-ran the full 34-sample suite against these files:
+identical result to every previous confirmation, exactly the 7 expected
+failures.
+
+## `-vvv`: explanatory comments in the generated C
+
+Matthew's own framing: enhance the tool's learning value by having the
+generated C explain itself, at `-vvv`, wherever the C++-to-C
+transformation is least obvious to someone reading the output rather
+than the original source. `-vvv` had been sitting as a documented,
+literal no-op (behaving identically to `-vv`) since the verbosity
+round specifically for this kind of future use -- this is that use.
+
+**Detection strategy, decided before writing any instrumentation**: by
+the time `codegen.c` runs, lowering has already baked its own
+synthesized constructs (a vtable-pointer assignment in a constructor, a
+destructor call at scope exit, a virtual dispatch through `->vtable->`)
+into ordinary-looking AST nodes with no dedicated flag marking them as
+synthesized. Two ways to recognize them at codegen time: thread a new
+"why this node exists" flag through from lower.c (robust, but touches
+ast.h and potentially every lowering phase that synthesizes anything),
+or recognize them STRUCTURALLY, by the reserved naming conventions this
+project's own lowering already uses and C++ source could never itself
+produce -- a `vtable` field name (not a declarable C++ member), a
+`v32_new_`-prefixed call, a `__dtor__void`-suffixed mangled name, a
+`->vtable->` member-access chain. Went with the second: every one of
+these patterns is 100% unambiguous (none is a valid C++-source-level
+name a person could type), so name/shape-based detection is exactly as
+reliable as a dedicated flag would have been, at a fraction of the
+footprint -- confined entirely to `codegen.c`, nothing else touched.
+
+**Threading the flag through**: `codegen_run` gained a `verbose_comments`
+parameter (main.c passes `verbosity >= 3`), stored in a module-static
+`g_verbose_comments`, reset at the top of every run -- same pattern
+`g_codegen_out_line`/`g_debug_last_cpp_line` already established last
+round for exactly this kind of "avoid threading a new parameter through
+~30 emission functions" problem. One new helper, `explain(out, indent,
+comment)`: a plain, single-line C block comment at the given
+indentation, a complete no-op when `g_verbose_comments` is false --
+every call site stays a plain, unconditional one-liner rather than
+wrapped in its own `if`. Goes through the same `tracked_fprintf` (via
+the `#define fprintf` from last round) every other emission in this
+file does, so `-g`'s own line-count tracking correctly accounts for
+comment lines shifting everything after them -- confirmed this
+matters, not just assumed, since `-g` and `-vvv` can be given together.
+
+**What actually got instrumented**, chosen for where the transformation
+is least obvious, not exhaustively everywhere a comment COULD go:
+the vtable pointer field and the "fields above this point are
+inherited" boundary in `emit_struct`; the vtable struct type and the
+shared instance in `emit_vtable_struct`/`emit_vtable_instance`; the
+explicit `this` parameter, explained once at a method's own definition
+(not also at its prototype, which is one line and gets no benefit from
+a multi-line comment) in `emit_function_definition`; the
+allocator/deleter functions themselves, and virtual destructor
+dispatch specifically, in `emit_new_delete_runtime`/
+`emit_delete_runtime`; three call-SITE explanations in `print_stmt` --
+a destructor invoked automatically at scope exit, a virtual call
+dispatched through the vtable (both in the `AST_EXPR_STMT` case), and
+a `new`-lowered allocator call (in the `AST_VAR_DECL` case, unwrapping
+an `AST_CAST` first when phase 6a's own implicit-upcast insertion put
+one there).
+
+**A real bug found by actually reading a `-vvv` run's output, not
+missed**: `emit_struct`'s own per-field `fprintf(out, "    ")` used to
+run BEFORE the `FIELD_VTABLE_PTR`/data-member branch, so inserting an
+`explain()` call inside that branch put it AFTER the indent had already
+been written -- `explain()`'s own trailing newline started a fresh
+line the old indent was no longer positioned to cover, leaving the
+FIELD line itself with zero indentation (`Shape_VTable *vtable;` at
+column 0, not 4). Caught by generating real output against
+`tests/sample32.cpp` and reading it line by line, not by inspection of
+the code alone. Fixed by moving `explain()` (and its own dedicated
+indent) BEFORE the field's own `fprintf(out, "    ")`, so each keeps
+its own line and its own correct indentation.
+
+**Verified thoroughly after the fix**: re-generated `sample32.cpp`'s
+output with `-vvv` and read the WHOLE file end to end -- 14 comments
+across every instrumented point (vtable types/instances/pointer field,
+inherited-fields boundary, `this`-injection on every method, both
+allocator functions, both deleter functions with virtual-dispatch
+explanation, the `new`-lowered call site, and the virtual-dispatch call
+site), every one at the correct location with correct indentation.
+Confirmed NO leakage at lower verbosity: grepped default-verbosity and
+`-vv` output for any `explain()`-style comment -- zero matches at
+either level, and default-verbosity output diffed byte-identical
+against the last confirmed-correct `sample32.c`, confirming this round
+changed nothing about what `v32c++` already produced for anyone not
+using `-vvv`. Re-ran the full 34-sample suite: identical 7 expected
+failures, no regressions.
+
+`tests/sample32.cpp`'s own Makefile test command upgraded from `-vv` to
+`-vvv` specifically (the one sample in the suite exercising this
+feature -- chosen for already having the richest relevant feature mix:
+vtables, a virtual destructor, `new`/`delete`). Every other sample stays
+at `-vv` deliberately -- `-vvv`'s comments would only clutter their own
+review value for no real benefit.
+
+`man/v32c++.1` gets a new EXPLANATORY COMMENTS section and an updated
+`-vvv` OPTIONS entry (no longer "reserved for a future release");
+`README.md`'s feature summary and "Trying it out" sections both updated
+to match, the latter pointing at `sample32.cpp` as a first thing to try
+`-vvv` on.
+
 ## Suggested next steps, roughly in order
 
 

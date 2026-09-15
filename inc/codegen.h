@@ -159,7 +159,21 @@
  * it has any virtual methods), each class's own struct definition, a
  * prototype for every method/function that has a body, then every
  * method/function body itself -- see the scope notes above for what's
- * still a known gap rather than done. */
-void codegen_run(const AstNode *program, FILE *out);
+ * still a known gap rather than done.
+ *
+ * `verbose_comments`: when true (main.c's own -vvv), sprinkles
+ * explanatory comments (C block-comment syntax) throughout the output
+ * at the points where this project's own C++-to-C transformation is
+ * least obvious to someone reading the generated C -- vtable
+ * pointers/structs/instances, the explicit `this` parameter every
+ * method gets, the malloc-based allocator/deleter functions `new`/
+ * `delete` become, and the automatic constructor/destructor/virtual-
+ * dispatch calls lowering inserted that have no direct textual
+ * counterpart in the original C++ source. Pure commentary -- never
+ * changes what code is emitted, only whether an explanatory comment is
+ * emitted alongside it. False (the default, and every verbosity level
+ * below -vvv) reproduces this project's previous output exactly,
+ * unchanged. */
+void codegen_run(const AstNode *program, FILE *out, int verbose_comments);
 
 #endif /* CODEGEN_H */

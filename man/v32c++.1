@@ -108,9 +108,15 @@ along with what the tool understood about a given program and how it
 transformed it, not just debugging output.
 .TP
 .B "\-vvv"
-Reserved for even more detailed output in a future release. Currently
-behaves the same as
-.BR \-vv .
+Everything from
+.BR \-vv ,
+plus explanatory comments sprinkled directly into the generated
+.I .c
+itself, at the points where this project's own C++-to-C transformation
+is least obvious to someone reading the output \(em see
+.B EXPLANATORY COMMENTS
+below. Pure commentary: never changes what code is emitted, only
+whether a comment explaining it is emitted alongside it.
 .RE
 .TP
 .B \-\-version
@@ -439,6 +445,50 @@ mappings stay reasonably accurate even for code
 .B v32c++
 itself generated, not only for what a person directly wrote; this is
 not claimed to be exact for every synthesized line.
+.SH EXPLANATORY COMMENTS
+.B \-vvv
+(see OPTIONS, above) sprinkles explanatory comments directly into the
+generated C, at the points where this project's own C++-to-C
+transformation is least obvious to someone reading the output rather
+than the original C++ \(em intended to make the generated C worth
+reading through on its own, not just a build artifact on the way to a
+cartridge. Covers:
+.IP \(bu 3
+The vtable pointer field in a class's own struct, and where a
+struct's own fields stop being its own and start being flattened in
+from a base class (C structs have no inheritance of their own).
+.IP \(bu 3
+The vtable struct type itself, and the single, shared instance every
+object of a class points its own vtable field at.
+.IP \(bu 3
+The explicit
+.B this
+parameter every method gets (C has no implicit object parameter).
+.IP \(bu 3
+The allocator/deleter functions
+.B new
+/
+.B delete
+lower to, and a virtual destructor's own dispatch through the vtable.
+.IP \(bu 3
+A destructor invoked automatically at scope exit, a virtual call
+dispatched through the vtable, and a
+.B new
+expression's own call to its allocator \(em each explained at the
+specific call site, not just where the underlying function is defined.
+.PP
+Pure commentary: never changes what code is emitted, only whether a
+comment explaining it is emitted alongside it \(em `\-vvv`'s own output
+is otherwise identical to `\-vv`'s. Every comment is detected
+structurally, from naming patterns and shapes only this project's own
+lowering ever produces (a
+.I __dtor__void
+mangled suffix; a
+.I \->vtable\->
+member-access chain; a
+.I v32_new_
+function-name prefix) \(em nothing C++ source could itself trigger by
+coincidence.
 .SH FILES
 .TP
 .I *.cpp

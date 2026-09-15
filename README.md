@@ -124,6 +124,18 @@ C-to-assembly debug map, recording only where the mapping actually
 changes rather than one row per output line, with an extra column
 naming the generated C function wherever one begins.
 
+**`-vvv` sprinkles explanatory comments into the generated `.c` itself**
+— vtable pointers/structs/instances, the explicit `this` parameter every
+method gets, the malloc-based allocator/deleter functions `new`/`delete`
+become, virtual destructor dispatch, and the automatic
+constructor/destructor/virtual-dispatch calls lowering inserted with no
+direct textual counterpart in the original C++. Intended to make the
+generated C worth reading through on its own — genuine learning value,
+not just a build artifact — for a course context where seeing *why*
+the C looks the way it does is often the point. Pure commentary: never
+changes what code is emitted, only whether a comment explaining it is
+emitted alongside it.
+
 **What doesn't exist yet, worth knowing before you rely on it:**
 
 - **`break`/`continue`** aren't in the grammar at all yet — planned, not
@@ -192,8 +204,19 @@ different output path instead. Verbosity is opt-in and stackable:
 analyzer, lowering, code generator); `-vv` additionally prints the full
 AST, semantic-analysis, and lowering dumps, useful for following along
 with what the tool understood and how it transformed your code; `-vvv`
-is reserved for even more detail in a future round. Use `-c` if your
-input is a library/module fragment without its own `main`.
+additionally sprinkles explanatory comments directly into the
+generated `.c` itself (see below). Use `-c` if your input is a
+library/module fragment without its own `main`.
+
+With `-vvv`, the generated C explains itself at the points where the
+C++-to-C transformation is least obvious — a vtable's own struct and
+instance, the explicit `this` parameter every method gets, what `new`/
+`delete` actually become, a destructor invoked automatically at scope
+exit, a virtual call dispatched through the vtable. Worth reading
+through on its own, not just a build artifact — the C generated for
+`tests/sample32.cpp` (vtables, a virtual destructor, `new`/`delete`) is
+a good one to try this on first. Pure commentary: never changes what
+code is emitted, only whether a comment explaining it comes with it.
 
 Alongside the generated `.c`, a Vircon32 cart-packing XML file is
 written by default too (`path/to/yourfile.xml`) — the manual,

@@ -30,6 +30,32 @@
  */
 static int g_codegen_out_line = 1;
 
+/* -vvv support: sprinkles explanatory comments into the generated C at
+ * the points where this project's own C++-to-C transformation is least
+ * obvious to someone reading the output -- see codegen.h's own doc
+ * comment on codegen_run's verbose_comments parameter for the full
+ * picture. `explain` is the one function every such comment goes
+ * through: a plain, single-line C block comment, at the given
+ * indentation, emitted ONLY when g_verbose_comments is set -- a no-op
+ * call everywhere else, so call sites stay unconditional and readable
+ * rather than wrapped in `if (g_verbose_comments)` at every one. Uses
+ * the SAME tracked_fprintf every other emission in this file goes
+ * through (via the `#define fprintf` below), so -g's own line-count
+ * tracking sees these lines too -- an explanatory comment shifts every
+ * SUBSEQUENT line's own number, and the debug map needs to reflect
+ * where things actually ended up, not pretend the comments aren't
+ * there. */
+static int g_verbose_comments = 0;
+
+static void indent_spaces(FILE *out, int indent); /* forward decl -- defined below, near print_stmt; explain() needs it earlier */
+
+static void explain(FILE *out, int indent, const char *comment) {
+    if (!g_verbose_comments) return;
+    indent_spaces(out, indent);
+    fprintf(out, "/* %s */\n", comment);
+}
+
+
 static int tracked_fprintf(FILE *out, const char *fmt, ...) {
     va_list args;
     va_start(args, fmt);
@@ -218,6 +244,7 @@ static void emit_vtable_struct(FILE *out, const AstNode *class_decl) {
     ClassLayout *layout = (ClassLayout *)class_decl->sema_info;
     if (layout == NULL || layout->vtable == NULL) return;
 
+    explain(out, 0, "a vtable type: one function-pointer field per virtual method, in a fixed order every class in the hierarchy agrees on");
     fprintf(out, "struct %s_VTable {\n", class_decl->str1);
     for (int i = 0; i < layout->vtable->count; i++) {
         VtableEntry *entry = &layout->vtable->entries[i];
@@ -255,16 +282,46 @@ static void emit_struct(FILE *out, const AstNode *class_decl) {
     if (layout == NULL) return; /* shouldn't happen once lower_run() has
         run over every class -- best-effort skip rather than crash */
 
+    int explained_inherited = 0;
     fprintf(out, "struct %s {\n", class_decl->str1);
     for (int i = 0; i < layout->count; i++) {
         StructField *f = &layout->fields[i];
-        fprintf(out, "    ");
         if (f->kind == FIELD_VTABLE_PTR) {
+            /* explain() BEFORE the field's own "    " prefix below,
+             * deliberately -- explain() prints a complete, self-
+             * contained line of its own (its own indent, the comment,
+             * and a trailing newline), so the field's own "    " prefix
+             * has to come AFTER it, not be replaced by it. Getting this
+             * backwards was a real, confirmed bug caught by actually
+             * reading a -vvv run's output, not just by this reasoning:
+             * an explain() call sitting where the field's own "    "
+             * used to be left the FIELD line itself with no indentation
+             * at all, since explain()'s own trailing newline already
+             * started a fresh line the old "    " fprintf below was no
+             * longer positioned to indent. */
+            explain(out, 1, "C has no built-in dynamic dispatch -- this pointer to a table of function pointers is how a virtual call finds the right override at runtime");
+            fprintf(out, "    ");
             /* Bare, no `struct` keyword -- this is a REFERENCE to the
              * vtable struct type emitted just above by
              * emit_vtable_struct(), not a definition. */
             fprintf(out, "%s_VTable *vtable;\n", class_decl->str1);
         } else {
+            if (f->declaring_class != class_decl && !explained_inherited) {
+                /* Only explain once, at the FIRST inherited field --
+                 * layout->fields is ordered base-first (see
+                 * StructLayout's own construction in lower.c), so every
+                 * inherited field from here up to the first field this
+                 * class itself declares is one contiguous run; one
+                 * comment covers the whole run, not one per field.
+                 * Tracked with its own flag rather than an index check
+                 * (i == 1, say) -- the vtable pointer, if this class has
+                 * one at all, isn't always field 0 (a class with no
+                 * virtual methods has none), so the first DATA field's
+                 * own index isn't fixed either. */
+                explain(out, 1, "fields above this point come from a base class -- C structs have no inheritance, so lower.c flattens a base class's own fields directly into every derived class's struct");
+                explained_inherited = 1;
+            }
+            fprintf(out, "    ");
             print_type(out, f->type);
             fprintf(out, " %s;\n", f->name);
         }
@@ -333,6 +390,7 @@ static void emit_vtable_instance(FILE *out, const AstNode *class_decl) {
      * ("expected '{'"). Fixed here rather than left as a trap for
      * whoever next hand-writes a struct-typed declaration in this file
      * without routing it through print_type or this same reasoning. */
+    explain(out, 0, "every object of this class points its own vtable field at THIS single, shared instance -- one copy per class, not one per object");
     fprintf(out, "%s_VTable %s_vtable_instance = {\n", class_decl->str1, class_decl->str1);
     for (int i = 0; i < layout->vtable->count; i++) {
         VtableEntry *entry = &layout->vtable->entries[i];
@@ -770,11 +828,51 @@ static void print_stmt(FILE *out, const AstNode *s, int indent, int strip_return
             fprintf(out, "continue;\n");
             break;
         case AST_EXPR_STMT:
+            /* -vvv support: two lowering-synthesized call PATTERNS get
+             * explained here, detected structurally (never by anything
+             * the C++ source itself could have written) rather than by
+             * a dedicated AST flag -- both naming conventions are
+             * reserved ones only this project's own lowering ever
+             * produces (a "__dtor__void"-suffixed mangled name; a
+             * "->vtable->" member-access chain), so recognizing them by
+             * shape is exactly as reliable as a flag would be, without
+             * needing one threaded through from lower.c. */
+            if (s->a != NULL && s->a->kind == AST_CALL && s->a->a != NULL) {
+                const AstNode *callee = s->a->a;
+                if (callee->kind == AST_IDENT && callee->str1 != NULL) {
+                    size_t len = strlen(callee->str1);
+                    const char *suffix = "__dtor__void";
+                    size_t suffix_len = strlen(suffix);
+                    if (len >= suffix_len && strcmp(callee->str1 + len - suffix_len, suffix) == 0) {
+                        explain(out, indent, "destructor invoked automatically here -- lower.c's phase 9 inserts this at scope exit, the same place C++ itself would silently run it");
+                    }
+                } else if (callee->kind == AST_MEMBER && callee->a != NULL
+                           && callee->a->kind == AST_MEMBER
+                           && callee->a->str2 != NULL && strcmp(callee->a->str2, "vtable") == 0) {
+                    explain(out, indent, "virtual call: dispatched through the vtable at runtime, not a fixed function -- which override actually runs depends on the object's real (dynamic) type, not this pointer's declared (static) type");
+                }
+            }
             indent_spaces(out, indent);
             print_expr(out, s->a);
             fprintf(out, ";\n");
             break;
         case AST_VAR_DECL:
+            /* -vvv support: a VarDecl whose own initializer is (possibly
+             * through an AST_CAST -- lower.c's phase 6a implicit-upcast
+             * insertion) a call to a "v32_new_"-prefixed name is exactly
+             * what `new` lowers to (lower.c phase 6) -- detected the
+             * same "reserved prefix only this project's own lowering
+             * ever produces" way as the destructor/vtable patterns
+             * above, not via a dedicated flag. */
+            if (s->a != NULL) {
+                const AstNode *init = s->a;
+                if (init->kind == AST_CAST) init = init->a; /* unwrap an implicit-upcast cast, if any */
+                if (init != NULL && init->kind == AST_CALL && init->a != NULL
+                    && init->a->kind == AST_IDENT && init->a->str1 != NULL
+                    && strncmp(init->a->str1, "v32_new_", 8) == 0) {
+                    explain(out, indent, "'new' lowers to a call to this project's own allocator function (defined near the top of this file) -- allocate, then construct, in one step");
+                }
+            }
             indent_spaces(out, indent);
             print_var_decl_inline(out, s);
             fprintf(out, ";\n");
@@ -875,6 +973,19 @@ static void emit_function_definition(FILE *out, const AstNode *func) {
     debug_map_record(g_codegen_out_line, func->line, name);
     g_debug_last_cpp_line = func->line;
 
+    /* this-injection (lower.c phase 2) gives every METHOD an explicit
+     * first parameter literally named "this" -- checked by name here
+     * rather than by, say, "is this func a method at all" (which would
+     * need walking back up to the owning class), since the parameter's
+     * own name is already the simplest, always-available signal that
+     * this happened. Explained once, at the definition (not also at
+     * the prototype -- emit_function_prototype shares this same
+     * emit_function_header, but a one-line prototype declaration isn't
+     * where a reader benefits from a multi-line explanation the way a
+     * function's own body is). */
+    if (func->list.count > 0 && strcmp(func->list.items[0]->str1, "this") == 0) {
+        explain(out, 0, "C has no implicit object parameter -- this-injection gives every method an explicit 'this' as its first parameter, standing in for what C++'s own 'this' would otherwise mean");
+    }
     emit_function_header(out, func, name);
     fprintf(out, "\n");
     print_stmt(out, func->a, 0, is_main); /* func->a is the body, an AST_BLOCK */
@@ -1112,6 +1223,7 @@ static void emit_new_delete_runtime(FILE *out, const AstNode *class_decl) {
             fprintf(out, " %s", param->str1);
         }
         fprintf(out, ")\n{\n");
+        explain(out, 1, "C++'s 'new' has no C equivalent -- this function does what 'new' does under the hood: allocate raw memory, then call the constructor on it explicitly");
         fprintf(out, "    %s *self = (%s *)malloc(sizeof(%s));\n",
                 class_decl->str1, class_decl->str1, class_decl->str1);
         if (has_body) {
@@ -1272,6 +1384,7 @@ static void emit_delete_runtime(FILE *out, const AstNode *class_decl) {
     }
 
     fprintf(out, "void v32_delete_%s(%s *ptr)\n{\n", class_decl->str1, class_decl->str1);
+    explain(out, 1, "C++'s 'delete' has no C equivalent -- this function does what 'delete' does under the hood: call the destructor explicitly, then free the memory");
 
     /* VIRTUAL DESTRUCTOR DISPATCH: if this class's destructor is
      * virtual (or overrides one), route through the vtable instead of
@@ -1297,8 +1410,10 @@ static void emit_delete_runtime(FILE *out, const AstNode *class_decl) {
         const char *field_name = (canon_info != NULL) ? canon_info->mangled_name : dtor_canonical->str1;
         const AstNode *canonical_class = find_declaring_class(class_decl, dtor_canonical);
         if (canonical_class != NULL && canonical_class != class_decl) {
+            explain(out, 1, "virtual destructor: dispatched through the vtable, not called by a fixed name -- this is what makes 'delete basePtr' correctly run the DERIVED class's destructor when basePtr actually points at a derived object");
             fprintf(out, "    ptr->vtable->%s((%s *)ptr);\n", field_name, canonical_class->str1);
         } else {
+            explain(out, 1, "virtual destructor: dispatched through the vtable, not called by a fixed name -- this is what makes 'delete basePtr' correctly run the DERIVED class's destructor when basePtr actually points at a derived object");
             fprintf(out, "    ptr->vtable->%s(ptr);\n", field_name);
         }
     } else if (dtor != NULL) {
@@ -1371,12 +1486,13 @@ static void emit_cart_hint_defines(FILE *out) {
     }
 }
 
-void codegen_run(const AstNode *program, FILE *out) {
+void codegen_run(const AstNode *program, FILE *out, int verbose_comments) {
     /* Reset -g's own tracking state -- main.c is single-shot per process
      * today, so this never actually matters in practice, but costs
      * nothing and avoids a latent bug if that ever changes. */
     g_codegen_out_line = 1;
     g_debug_last_cpp_line = -1;
+    g_verbose_comments = verbose_comments;
     emit_preprocessor_passthrough(out);
     emit_cart_hint_defines(out);
     /* misc.h (Vircon32's real malloc()/free(), among other things) is
