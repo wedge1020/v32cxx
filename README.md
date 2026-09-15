@@ -91,6 +91,13 @@ survives the round trip. Nothing is interpreted, though: no macro
 expansion, no `#include` resolution, no `#ifdef` evaluation. A real
 preprocessor is still future work.
 
+**Cart-packing XML is generated automatically**, alongside the
+generated `.c`, matching v32lua's own output — one less manual,
+repetitive step in the build process. No *cart hint* support yet
+(v32lua's own `--#` comment-based hints, naming real texture/sound
+files to package), so the generated `<textures>`/`<sounds>` are always
+empty for now. See [Trying it out](#trying-it-out) for the `-x` opt-out.
+
 **What doesn't exist yet, worth knowing before you rely on it:**
 
 - **`break`/`continue`** aren't in the grammar at all yet — planned, not
@@ -162,6 +169,17 @@ with what the tool understood and how it transformed your code; `-vvv`
 is reserved for even more detail in a future round. Use `-c` if your
 input is a library/module fragment without its own `main`.
 
+Alongside the generated `.c`, a Vircon32 cart-packing XML file is
+written by default too (`path/to/yourfile.xml`) — the manual,
+repetitive step of hand-writing that file for every build is
+automated now, matching v32lua's own `emit_cart_xml`. This project has
+no *cart hint* functionality yet (unlike v32lua's own `--#`
+comment-based hints, which name real texture/sound resources to
+package), so the generated XML's `<textures>`/`<sounds>` sections are
+always empty and its title/version always use fixed defaults
+("Vircon32 Program" / "1.0") until that exists here too. Pass `-x` (or
+`--no-xml`) to skip this.
+
 A large set of example inputs lives in `tests/`, including a couple that
 are *deliberately* invalid (an undeclared type, an out-of-line
 definition with no matching prototype) to show that errors are reported
@@ -185,10 +203,12 @@ src/
                 finalization, reference-to-pointer, new/delete,
                 vtable init, constructor/destructor invocation
   codegen.h/.c  Vircon32 C code generator
+  cartxml.h/.c  Vircon32 cart-packing XML generation
+  pathutil.h/.c shared filename-extension-swapping helper
   driver.h      shared state between the lexer and parser
   v32cxx.h      project identity (VERSION/AUTHOR/URL) and build-time
                 configuration constants
-  main.c        CLI entry point (-o, -c, -v, --version)
+  main.c        CLI entry point (-o, -c, -v, -x, --version)
 tests/          example .cpp inputs, including intentionally-invalid
                 ones and several real, hand-written programs
 docs/           design notes, implementation deep-dives, and the

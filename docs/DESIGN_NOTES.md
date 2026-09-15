@@ -2168,6 +2168,346 @@ loop-with-all-three-exit-paths test) and `tests/sample31.cpp` (the
 deliberately-invalid outside-a-loop test) both need Matthew's own
 rebuild before either is more than reasoned-through.
 
+## Virtual destructor dispatch -- narrower fix than expected, unverified due to a build gap
+
+Confirmed `break`/`continue` fully working end to end first -- Matthew's
+rebuild showed a clean transpile, `sample30.cpp`'s destructor-across-
+three-exit-paths logic working correctly, `sample31.cpp`'s
+outside-a-loop error firing as expected, and `sample30.c` compiling
+clean on the real compiler. Phase 9's promised revisit is now genuinely
+confirmed, not just reasoned through.
+
+Moved on to virtual destructor dispatch. Investigated before assuming a
+large new mechanism was needed, and found the actual gap was much
+narrower than expected: a virtual destructor already participates
+correctly in sema.c's existing vtable-slot machinery entirely by
+accident of how that machinery was already written -- `build_vtable`
+never special-cases destructors at all, just checks the same generic
+"is this virtual" flag any method has, and `vtable_slot_key` already
+normalizes every destructor's own name to the literal string `"~"`
+regardless of which class it belongs to, so a derived override already
+matched and correctly replaced its inherited base slot the same way an
+ordinary virtual method already does. None of that needed to change at
+all.
+
+The ONLY actual gap was in codegen.c's `emit_delete_runtime`: the per-
+static-type deallocator (`v32_delete_ClassName`) always called a
+statically-named function regardless of whether the destructor was
+virtual. Fixed there specifically -- not in lower.c's own `AST_DELETE`
+naming logic, which was never the problem (naming the deallocator after
+the operand's STATIC class remains exactly correct; what that function
+does INTERNALLY is what needed to change). A virtual destructor now
+makes `v32_delete_ClassName` dispatch through `ptr->vtable->...`
+instead of a direct call, the same shape `finalize_call` already builds
+for an ordinary virtual method call, with the identical receiver-cast
+reasoning (the vtable access itself never needs a cast; the argument
+passed to the slot does, whenever the class isn't its own canonical
+declarer).
+
+**Traced by hand in full before writing anything up**, since no working
+build was available this round (see below): for `tests/sample32.cpp`'s
+`Shape`/`Square` pair, `v32_delete_Shape`'s new
+`ptr->vtable->Shape__dtor__void(ptr)` correctly resolves to
+`Square__dtor__void` at runtime when `ptr` actually points at a
+`Square` object, because that object's own vtable instance (set during
+`Square`'s own construction, phase 8) is what `ptr->vtable` genuinely
+points at -- the field NAME is shared across every class's vtable
+struct (always the canonical one), but the VALUE stored there differs
+per actual object, which is the entire mechanism this fix now finally
+uses correctly for destruction too.
+
+**A separate, genuine uncertainty flagged directly in the test file
+itself, not hidden**: `tests/sample32.cpp`'s
+`Shape *shapePtr = new Square(4);` assigns a derived pointer to a
+base-typed variable with no explicit cast -- this project's grammar has
+no C-style cast expression at all (confirmed directly: nothing in
+`parser.y` produces one from source; `AST_CAST` only ever comes from
+lowering's own receiver-cast insertion, never from something a person
+could write). If Vircon32 rejects this the way it's already shown
+itself strict about other pointer-type mismatches, that would be a
+real, separate, pre-existing gap (no cast-insertion for an ordinary
+assignment, only for a method call's own receiver) -- not a problem
+with the destructor-dispatch fix this test actually exists to confirm.
+Worth knowing which of the two is actually at fault if `sample32.c`
+doesn't compile cleanly.
+
+**Genuinely could not build-test any of this round's own work,
+unlike most recent rounds.** The `lexer.c` attached alongside
+`sample30.txt`/`sample31.txt`'s confirmation turned out to be several
+rounds stale -- missing not just `break`/`continue` support but the
+`g_preprocessor_lines` global from an EARLIER round too, confirmed by
+attempting the build directly (`'g_preprocessor_lines' undeclared`).
+`parser.c`/`parser.h` were current (confirmed: `BREAK`/`CONTINUE` appear
+correctly in the token enum); only `lexer.c` was the wrong vintage --
+likely attached by oversight alongside the `lexer.l` that was
+genuinely used to (successfully) regenerate it on Matthew's own end.
+Every piece of this round's own C code still syntax-checks clean
+individually, and the destructor-dispatch logic was traced by hand as
+thoroughly as this project's discipline requires when a real build
+isn't available -- but "traced correctly" and "confirmed against an
+actual compile" remain two different claims, and this round is
+genuinely still the former, not the latter. Needs a fresh `lexer.c`
+before `tests/sample32.cpp` is more than reasoned-through.
+
+## Virtual destructor dispatch, confirmed -- and a second, real bug found by the same test
+
+Matthew's rebuild confirmed the vtable-dispatch fix itself is sound, but
+`sample32.c` failed with a DIFFERENT error, at the exact line the
+test's own comment had already flagged as genuinely uncertain:
+`Shape *shapePtr = new Square(4);` -- "types are not compatible: cannot
+assign struct Square* to struct Shape*". Vircon32 rejects the implicit
+derived-to-base pointer conversion outright, stricter than real C++,
+which allows it freely as an ordinary upcast.
+
+**Fixed with a new lowering phase (6a), inserted specifically before
+phase 6**, not after: `insert_pointer_cast_stmt` walks every VarDecl,
+and whenever its own pointer-typed initializer resolves (via
+`infer_expr_type`) to a DIFFERENT, related class than its declared
+type, wraps the initializer in an explicit `AST_CAST` to the declared
+type -- same underlying justification `cast_receiver_if_needed`
+already relies on for a method call's own receiver (this project's
+single-inheritance struct layout guarantees the conversion is
+genuinely safe; C's type system, and evidently Vircon32's own, just
+has no way to know that without being told explicitly). The ordering
+requirement is real, not incidental: `infer_expr_type` needs to see the
+ORIGINAL `AST_NEW` node to infer "pointer to Square" at all (its own
+`AST_NEW` case builds that type directly from the node itself) -- once
+phase 6 has already turned it into a call to
+`v32_new_Square__Square__int`, there's no `AST_NEW` left to ask, just
+an ordinary function call this project's type inference has no special
+knowledge of. Verified directly: `shapePtr`'s initializer is now
+`((Shape *)v32_new_Square__Square__int(4))`, and re-running the full
+32-sample suite confirmed zero regressions -- specifically checked that
+already-matching-type `new` assignments (`sample17`/`18`/`23`, none of
+which have this mismatch at all) get no cast inserted at all, confirming
+the fix doesn't over-apply.
+
+**Scope, stated plainly rather than left to be assumed broader than it
+is**: only a VarDecl's own initializer is covered. The identical
+mismatch could just as easily arise in a plain assignment after the
+fact, a function argument, or a return value -- none of those are
+covered by this phase, a real, documented gap rather than something
+quietly assumed handled too.
+
+`ast.h`'s own `AST_CAST` documentation updated to reflect there are now
+TWO lowering phases that produce this node kind, not one, both for the
+same underlying reason. `tests/sample32.cpp`'s own comment updated from
+"genuinely uncertain, might be a separate gap" to a plain statement of
+what was actually found and fixed, now that it's confirmed rather than
+speculated about.
+
+## Confirmed: virtual destructor dispatch + pointer-cast fix, both clean on the real compiler
+
+`sample32.c` compiles cleanly. Both pieces from the last two rounds --
+vtable-dispatched destruction through a base-typed pointer, and the new
+lowering phase inserting an explicit cast for a VarDecl's mismatched
+pointer initializer -- are now confirmed working end to end, not just
+reasoned through.
+
+## Verbosity levels, and a default-output-filename change -- main.c redesigned
+
+Matthew asked for this project to stop always dumping its full internal
+state and start behaving like an ordinary tool: silent by default,
+verbosity opt-in and stackable (`-v`/`-vv`/`-vvv`), matching how the
+real Vircon32 C compiler and v32lua both already work. Also asked for
+`-o`'s absence to mean "derive the output filename from the input" (also
+matching both sibling tools) rather than "dump to stdout instead," and
+for `-g` to be explicitly reserved, unimplemented, for a future special
+debug-output mode.
+
+**`main.c` redesigned around a `verbosity` counter**, incremented once
+per `-v` (getopt_long's own short-option bundling already turns `-vvv`
+into three separate `'v'` cases, identical to `-v -v -v`, so nothing
+extra was needed to support both spellings). Level 0 (the default, no
+`-v` at all): completely silent on success -- no stage messages, no
+dumps, nothing to stdout at all; genuine errors still go to stderr
+regardless of verbosity, since those were never "diagnostic" output in
+the first place. Level 1: four stage-progress lines
+("stage N: running ..."), adapted to this project's ACTUAL pipeline
+rather than copying v32lua's own wording verbatim -- lexer and parser
+are reported as one combined stage ("running lexer/parser"), since
+this project's flex/bison architecture genuinely interleaves them
+(`yyparse()` calls `yylex()` as needed, they were never two sequential,
+discrete passes the way a traditional lex-then-parse pipeline would
+have them), and there's no separate "preprocessor" stage either, since
+`#`-line pass-through happens inline within the lexer, not as its own
+pass. Level 2: everything from level 1, plus the full AST/semantic-
+analysis/lowering dumps this project has always produced -- exactly what
+used to happen unconditionally, now opt-in. Level 3: reserved for
+future, even-more-detailed output Matthew may want to add later; no new
+content exists for it yet, so it currently behaves identically to level
+2 -- stated plainly as a placeholder, not silently pretended to already
+do something.
+
+**Default output filename**: a new `derive_output_filename` strips the
+input's own extension (matching everything after the last `.`, but
+only when that `.` comes after the last `/` too, so a directory
+component that happens to contain its own `.` can't be mistaken for
+the input's extension) and appends `.c` -- `foo/bar.cpp` becomes
+`foo/bar.c`, matching exactly how the real Vircon32 C compiler and
+v32lua both already behave. `-o` still overrides this when given. The
+old "no `-o` means dump the generated C to stdout instead" behavior is
+gone entirely -- v32c++ now always writes an actual file, one way or
+the other.
+
+**`-g` reserved, not implemented**: deliberately left out of the
+`getopt_long` options string entirely, rather than added as a silent
+no-op -- using it today fails loudly ("invalid option") instead of
+appearing to do something it doesn't yet.
+
+**The Makefile's own `test` target needed real, not cosmetic,
+updating** -- every one of its 32 commands relied on the old
+always-verbose, dump-to-stdout-by-default behavior that no longer
+exists; without `-vv`, `make test`'s own `.txt` captures would have
+gone essentially empty. Regenerated all 32 lines programmatically
+(a small Python script, not 32 individual hand-edits -- lower risk of a
+transcription mistake at this scale) rather than hand-editing each one:
+every sample now gets `-vv` (to keep capturing the full dumps this
+suite has always relied on for review) and `-o out/sampleN.c` (so the
+now-always-written generated C lands in `out/` alongside its own
+`.txt` dump, rather than cluttering `tests/` with 32 files that don't
+belong there, now that omitting `-o` no longer means "print to stdout
+instead"). Verified directly: re-ran the full suite, confirmed exactly
+the 7 expected failures (`4`/`5`/`10`/`11`/`19`/`20`/`31`), all 32
+`.txt` dumps present, and exactly 25 `.c` files (32 minus the 7
+deliberately-invalid samples, which produce no output at all) --
+matching precisely. Spot-checked that `sample32.c`'s own content is
+byte-identical to the last confirmed-working version, confirming the
+verbosity/output-path changes didn't touch the actual generated code
+at all, only how and where it's surfaced.
+
+`README.md`'s "Trying it out" section rewritten to match -- it still
+described the old, always-verbose default.
+
+## A real milestone, a man page, and `make install`
+
+Matthew ran `sprite.cpp` -- the very first hand-written test that found
+a real bug in this project, several rounds back, before `new` even
+allocated real memory -- all the way through to a running Vircon32
+cart. Worth marking explicitly: this is the first time the full chain,
+`v32c++` through the real Vircon32 build process to an actual running
+program, has been confirmed end to end. Everything built since then
+(constructors, destructors, vtables, arrays, `break`/`continue`, the
+verbosity work) has been in service of exactly this.
+
+**Synced Matthew's own Makefile updates**: a new `$(BIN)` variable used
+throughout instead of repeating `./$(BIN_DIR)/v32c++`; `make test`'s 32
+commands switched from `2>&1 | tee out/sampleN.txt` to
+`1> out/sampleN.txt 2>&1` -- genuinely silent during the build now
+(`tee` still echoes to the terminal WHILE writing the file; a plain
+redirect doesn't), consistent with this project's own new
+silent-by-default philosophy from the verbosity round; and `clean`'s own
+removal of the bison/flex-generated files commented out, so `make clean
+&& make` no longer requires bison/flex to be available at all when
+the existing generated files are still valid for the current grammar.
+
+**`make install`/`make uninstall` added**, matching the specific
+request: `install` depends on `all` (builds first if needed), copies
+`bin/v32c++` to `~/bin/` (creating the directory if it doesn't exist
+yet), and prints a one-line reminder that `~/bin` needs to be on `PATH`
+to actually run it as `v32c++` from anywhere -- a real, common gotcha
+worth naming rather than leaving silently. `uninstall` removes it again.
+Both tested directly with a temporary `$HOME` (not the sandbox's real
+one) to confirm the actual copy/creation/removal behavior, not just
+that the Makefile syntax was valid.
+
+**A proper Unix section 1 man page** (`man/v32c++.1`), in real
+troff/groff, not plain text formatted to merely resemble one --
+NAME/SYNOPSIS/DESCRIPTION/OPTIONS/EXIT STATUS/EXAMPLES/LANGUAGE
+NOTES/FILES/SEE ALSO/BUGS/AUTHOR, the conventional section-1 structure.
+LANGUAGE NOTES is deliberately a brief summary pointing to the README
+and `docs/DESIGN_NOTES.md` for the full picture, not a duplicate of
+either -- a man page is supposed to be a quick reference, not the
+complete story. Genuinely could not render this to actually confirm it
+looks right end to end -- neither `man`, `groff`, nor `nroff` produced
+usable output in this sandbox (`man`'s own local system is a minimized
+install with `man-db` unavailable; installing `groff` directly was
+blocked by the same network restriction already hit and confirmed
+several rounds back), so this is reasoned-through, careful manual
+review, not a rendered confirmation. Specifically checked: every
+option's own dash uses the conventional `\-` escape (so it renders as a
+literal hyphen-minus a reader could safely copy into a shell, not a
+typographic en-dash) while ordinary mid-word hyphens were correctly
+left as plain `-`; and every paired block macro (`.RS`/`.RE`, `.nf`/
+`.fi`) is balanced. Stated plainly rather than assumed: this still
+needs Matthew's own `man` (or `groff -man -Tascii`, or similar) to
+actually confirm the rendering, the same category of verification gap
+this project has hit before with anything requiring a tool this sandbox
+doesn't have.
+
+## Cart-packing XML generation, modeled directly on v32lua's own `emit_cart_xml`
+
+Matthew provided v32lua's full source (`v32lua.c`, `.h`, `parser.y`,
+`lexer.l`) specifically so this round could be modeled on an existing,
+working implementation rather than designed from scratch -- investigated
+v32lua's own `emit_cart_xml` directly before writing anything, rather
+than guessing at the XML format or Vircon32's own expectations for it.
+
+**Confirmed from v32lua's own source, not assumed**: `emit_cart_xml` is
+called unconditionally (no opt-out exists in v32lua itself) right after
+its own assembly output is successfully written, using v32lua's OWN
+output filename (not the original `.lua`) to derive both the XML's own
+filename (extension swapped for `.xml`) and the `<binary path="...">`
+element it contains (extension swapped for `.vbin` -- the binary
+Vircon32's own assembler/linker will eventually produce from v32lua's
+assembly, the same role a v32c++-produced `.vbin` will eventually play
+once the Vircon32 C compiler processes v32c++'s own `.c` output).
+`<textures>`/`<sounds>` are non-empty only when v32lua's own `--#`
+comment-based cart hints populated its texture/sound linked lists during
+compilation; otherwise, self-closing empty elements. Exact format
+transcribed directly from v32lua.c's own `fprintf` calls, not
+approximated.
+
+**v32c++ has no cart-hint functionality of any kind yet** -- Matthew's
+own framing for this round -- so the new `emit_cart_xml` (`cartxml.c`)
+is a deliberately narrower slice of v32lua's own: always empty
+`<textures>`/`<sounds>`, and `title`/`version` always v32lua's own
+documented defaults ("Vircon32 Program" / "1.0"), verbatim, for
+consistency between the two sibling projects rather than inventing new
+ones. No resource-list walking, no ID-consistency checking (v32lua's own
+version warns if a resource's assigned ID doesn't match its position in
+the list -- meaningless here, since nothing populates a list at all yet).
+A real, deliberate scope boundary, not an oversight -- revisiting this
+properly once cart-hint support exists in v32c++ too is real, separate
+future work, not something silently deferred by omission.
+
+**A small refactor made along the way, not just a new addition**:
+`main.c`'s own `derive_output_filename` (from the verbosity round) does
+the identical "swap the file extension" logic the new XML generation
+also needs, for both the `.xml` path and the `.vbin` reference inside
+it -- extracted into a new, shared `pathutil.c`/`.h`
+(`replace_extension`, taking the new extension as a parameter) rather
+than let `cartxml.c` duplicate the same logic a second time that could
+quietly drift from the original. `main.c` now calls the shared version
+too, in place of its own former private copy.
+
+**`-x`/`--no-xml`**, matching the specific request: generation is
+automatic whenever a `.c` file is actually written (matching "whenever
+we output a .c file, XML generation should be activated" precisely --
+runs regardless of `-c`, since a library/module fragment still gets its
+own `.c` written the same as a complete program does), opt-out via
+either spelling. Runs strictly AFTER the `.c` write already succeeded --
+a failed XML write is reported to stderr but doesn't undo an otherwise-
+successful transpile (`emit_cart_xml`'s own error path never touches
+`rc`).
+
+**Verified directly, both the specific behavior and the full suite**:
+transpiled a real test file with `-v`, confirmed the generated
+`<binary path="...vbin">` correctly points at the `.vbin` derived from
+the ACTUAL output path used (not hardcoded), confirmed `-x` and
+`--no-xml` both correctly suppress the `.xml` write while the `.c` still
+gets written normally, and re-ran the full 32-sample suite: exactly the
+7 expected failures, 25 `.c` files, and now 25 matching `.xml` files (one
+per successfully-transpiled sample, including the ones using `-c` for
+library fragments) -- confirming the feature applies consistently
+across every successful invocation, not just the specific case tested
+by hand.
+
+`man/v32c++.1` gets a new CART PACKAGING section and a `.xml` FILES
+entry; `README.md`'s "Trying it out" and feature-summary sections both
+updated to mention this as a headline capability, matching how arrays
+were introduced a few rounds back once that work was complete.
+
 ## Suggested next steps, roughly in order
 
 
