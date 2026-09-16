@@ -39,12 +39,20 @@ jobs:
             arch: arm64
             os-runner: macos-latest
 
-          # Linux Targets
+          # Linux Core Targets
           - os: linux
             arch: x86_64
             os-runner: ubuntu-latest
           - os: linux
             arch: arm64
+            os-runner: ubuntu-latest
+
+          # Linux Raspberry Pi Targets
+          - os: linux
+            arch: armv7-rpi
+            os-runner: ubuntu-latest
+          - os: linux
+            arch: armv8-rpi
             os-runner: ubuntu-latest
 
     steps:
@@ -59,11 +67,14 @@ jobs:
           echo "C:\ProgramData\chocolatey\bin" >> $GITHUB_PATH
           echo "C:\Program Files\LLVM\bin" >> $GITHUB_PATH
 
-      - name: Setup Linux ARM64 Cross-Compiler
-        if: matrix.os == 'linux' && matrix.arch == 'arm64'
+      - name: Setup Linux ARM Cross-Compilers
+        if: matrix.os == 'linux'
         run: |
-          sudo apt-get update
-          sudo apt-get install -y gcc-aarch64-linux-gnu
+          if [ "${{ matrix.arch }}" = "arm64" ] || [ "${{ matrix.arch }}" = "armv8-rpi" ]; then
+            sudo apt-get update && sudo apt-get install -y gcc-aarch64-linux-gnu
+          elif [ "${{ matrix.arch }}" = "armv7-rpi" ]; then
+            sudo apt-get update && sudo apt-get install -y gcc-arm-linux-gnueabihf
+          fi
 
       # --- BUILD EXECUTABLES & STRIP SYMBOLS ---
       - name: Compile and Strip (Windows)
@@ -86,9 +97,12 @@ jobs:
         if: matrix.os == 'linux'
         shell: bash
         run: |
-          if [ "${{ matrix.arch }}" = "arm64" ]; then
+          if [ "${{ matrix.arch }}" = "arm64" ] || [ "${{ matrix.arch }}" = "armv8-rpi" ]; then
             make CC="aarch64-linux-gnu-gcc"
             aarch64-linux-gnu-strip bin/*
+          elif [ "${{ matrix.arch }}" = "armv7-rpi" ]; then
+            make CC="arm-linux-gnueabihf-gcc"
+            arm-linux-gnueabihf-strip bin/*
           else
             make CC="gcc"
             strip bin/*
