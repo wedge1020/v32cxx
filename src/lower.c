@@ -1418,6 +1418,121 @@ static void inject_vtable_init_classes(AstList *decls) {
     }
 }
 
+/* ---- phase 8b: base-class constructor delegation ------------------------
+ *
+ * For every constructor WITH a member-initializer list that resolved to a
+ * base-class delegation (func->c's own entries, each carrying a
+ * CallResolution* in its own sema_info once sema.c's
+ * resolve_member_init_list has run over it -- see that function's own
+ * doc comment for exactly what does and doesn't get one), prepends a
+ * direct call to the matched base constructor's own mangled name to the
+ * very START of the derived constructor's body -- BEFORE phase 8's own
+ * vtable-pointer-init statement, matching real C++'s own timing (a base
+ * subobject is fully constructed, its own vtable pointer included,
+ * before the derived class's own vtable pointer overwrites it, which in
+ * turn happens before the derived constructor's own body runs).
+ *
+ * Runs immediately AFTER phase 8 (inject_vtable_init_classes) in the
+ * pipeline, deliberately -- both phases PREPEND their own statement to
+ * the front of the same constructor body, and the phase that prepends
+ * LAST ends up FIRST. Phase 8 runs first and prepends the vtable-init;
+ * this phase runs right after and prepends the base-ctor call, so the
+ * final order is [base-ctor-call, vtable-init, ...original body], not
+ * the other way around. (Running this phase before finalize_calls,
+ * further down the pipeline, is safe regardless: finalize_call's own
+ * first check is `if (cr == NULL || cr->resolved_target == NULL)
+ * return;`, and the AST_CALL this phase builds directly never has a
+ * sema_info set on it at all -- so even if finalize_calls_classes later
+ * walked over it, it would be a guaranteed no-op, the same protection
+ * phase 7's own directly-built calls already rely on.)
+ *
+ * `this` is cast to `Base *` via cast_receiver_if_needed -- safe under
+ * this project's own struct-flattening strategy (a base class's fields
+ * are always the derived struct's own leading fields, so a `Derived *`
+ * and a `Base *` to the same object share a compatible prefix layout),
+ * the exact same cast this file already relies on for virtual dispatch
+ * through a base-typed pointer and for `delete` through one.
+ *
+ * SCOPE, deliberately narrow for this first round: only the EXPLICIT
+ * `: Base(args)` case is handled here. A derived class with a base class
+ * but NO member-initializer list at all gets nothing inserted by this
+ * phase -- exactly today's existing behavior, unchanged, not an implicit
+ * base-constructor call the way real C++ would insert one when a
+ * derived constructor doesn't delegate explicitly. Extending this to
+ * the implicit case is real, separate future work -- see
+ * docs/DESIGN_NOTES.md for the full reasoning behind leaving it out of
+ * this round specifically (chiefly: risk of silently changing already-
+ * working existing programs' behavior without being able to verify it,
+ * since this sandbox has no way to build/run this round's own grammar
+ * change at all).
+ */
+static void inject_base_ctor_calls_classes(AstList *decls) {
+    for (int i = 0; i < decls->count; i++) {
+        AstNode *n = decls->items[i];
+        if (n->kind == AST_CLASS_DECL) {
+            ClassLayout *layout = (ClassLayout *)n->sema_info;
+            if (layout != NULL) {
+                for (int j = 0; j < layout->methods.count; j++) {
+                    AstNode *m = layout->methods.items[j];
+                    if (strcmp(m->str1, n->str1) != 0) continue; /* not a constructor */
+                    if (m->kind != AST_FUNC_DEF) continue; /* no body to inject into */
+                    if (m->c == NULL) continue; /* no member-init list written at all */
+
+                    /* Find the base-class-delegation entry, if m->c has
+                     * one -- resolve_member_init_list already validated
+                     * every entry, so ANY entry that reaches here with a
+                     * non-NULL sema_info IS a successfully-resolved
+                     * base-class delegation (a member-field entry, or
+                     * one that failed to resolve, never gets a
+                     * CallResolution attached at all). At most one entry
+                     * can ever be base-class delegation -- a class has
+                     * at most one direct base, and
+                     * resolve_member_init_list only ever resolves an
+                     * entry matching THAT base's own name -- so the
+                     * first one found is the only one there could be. */
+                    AstNode *base_entry = NULL;
+                    for (int k = 0; k < m->c->list.count; k++) {
+                        if (m->c->list.items[k]->sema_info != NULL) {
+                            base_entry = m->c->list.items[k];
+                            break;
+                        }
+                    }
+                    if (base_entry == NULL) continue; /* every entry was a
+                        member-field one, or none resolved -- nothing for
+                        this phase to do */
+
+                    CallResolution *cr = (CallResolution *)base_entry->sema_info;
+                    AstNode *base_ctor = cr->resolved_target;
+                    FuncSemaInfo *base_info = (FuncSemaInfo *)base_ctor->sema_info;
+                    const char *mangled = (base_info != NULL) ? base_info->mangled_name : base_ctor->str1;
+
+                    AstNode *receiver = cast_receiver_if_needed(ast_ident("this", m->line), n, layout->base_class_decl);
+
+                    AstNode *call = ast_new(AST_CALL, m->line);
+                    call->a = ast_ident(mangled, m->line);
+                    ast_list_append(&call->list, receiver);
+                    for (int k = 0; k < base_entry->list.count; k++) {
+                        ast_list_append(&call->list, base_entry->list.items[k]);
+                    }
+
+                    AstNode *expr_stmt = ast_new(AST_EXPR_STMT, m->line);
+                    expr_stmt->a = call;
+
+                    AstNode *body = m->a; /* AST_BLOCK */
+                    AstList new_list = ast_list_new();
+                    ast_list_append(&new_list, expr_stmt);
+                    for (int k = 0; k < body->list.count; k++) {
+                        ast_list_append(&new_list, body->list.items[k]);
+                    }
+                    body->list = new_list;
+                }
+            }
+        } else if (n->kind == AST_NAMESPACE_DECL) {
+            inject_base_ctor_calls_classes(&n->list);
+        }
+    }
+}
+
 /* ---- phase 9: destructor invocation at scope exit -----------------------
  *
  * The mirror of phase 7 (constructor invocation for stack-allocated
@@ -1857,6 +1972,12 @@ int lower_run(AstNode *program) {
         runs right after this-injection, before anything else touches a
         constructor's body, so the injected statement is simply the FIRST
         thing every later phase (call finalization, etc.) sees */
+    inject_base_ctor_calls_classes(&program->list);    /* phase 8b -- MUST
+        run right after phase 8, not before it: both PREPEND to the same
+        constructor body, and the phase that prepends LAST ends up FIRST
+        -- see this phase's own doc comment for the full ordering
+        reasoning (base-ctor-call needs to end up ahead of vtable-init in
+        the final body, matching real C++'s own construction order) */
     finalize_calls_classes(&program->list);       /* phase 3 + phase 4 (operator rewriting lives inside this same walk) */
     finalize_calls_free_functions(&program->list);
     fix_references_classes(&program->list);         /* phase 5 */

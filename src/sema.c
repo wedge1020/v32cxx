@@ -509,6 +509,19 @@ static void attach_out_of_line(AstList *decls) {
 
         target->kind = AST_FUNC_DEF;
         target->a = n->a;
+        target->c = n->c;    /* the member-initializer list, if any -- a real
+            bug, found and fixed the same round this field was added: only
+            ->a (the body) used to be copied here, since ->c didn't exist
+            yet when this function was first written. Missing this meant
+            resolve_member_init_list (and later, lower.c's own phase 8b)
+            always saw c == NULL on the AUTHORITATIVE node this function
+            produces (the one actually stored in ClassLayout.methods,
+            per the comment below) for every out-of-line constructor
+            definition -- exactly this project's own established
+            constructor-definition style, so the bug wasn't a rare edge
+            case, it silently broke the feature for its own primary,
+            intended use. Caught by generating real output and reading
+            it, not by inspection alone -- see docs/DESIGN_NOTES.md. */
         target->sema_info = make_func_info(class_name, n->str1, &target->list, 0);
 
         /* Leave the top-level duplicate in the AST (codegen needs
@@ -1181,6 +1194,77 @@ static void resolve_new_expr(AstNode *new_node, AstNode *current_class, LocalVar
                               new_node->list.items, new_node->list.count, current_class, locals);
 }
 
+/* Resolves `func`'s own member-initializer list (func->c, an
+ * AST_MEMBER_INIT_LIST -- NULL if none was written at all, the ordinary
+ * case for every method that isn't a constructor written with one).
+ *
+ * A member-initializer list on anything OTHER than a constructor (an
+ * ordinary method, a destructor) is itself an error -- real C++ rejects
+ * this too, and the parser doesn't (see AST_MEMBER_INIT's own doc
+ * comment in ast.h for why that split exists).
+ *
+ * Each entry's own str1 is checked against, in order:
+ *   1. The class's own DIRECT base class's name -- base-class delegation,
+ *      the only case this round actually resolves. Resolved against the
+ *      base's own constructor overloads through the exact same
+ *      resolve_overload_generic core resolve_call/resolve_new_expr both
+ *      already go through, attaching a CallResolution* to the
+ *      AST_MEMBER_INIT node's own sema_info exactly like those two
+ *      attach one to their own site node -- lower.c reads this the same
+ *      way codegen.c eventually reads any other CallResolution.
+ *   2. An actual, declared data member's own name -- not yet acted on;
+ *      reported as a clear, explicit "not yet supported" error rather
+ *      than silently ignored.
+ *   3. Anything else -- "not a base class or member" error.
+ * A name matching BOTH (unusual, but syntactically legal C++ -- a data
+ * member that happens to share its own base class's name) is treated as
+ * base-class delegation, checked first -- matching real C++'s own rule
+ * that a member-initializer-list entry naming a direct base is ALWAYS
+ * base-class initialization, never a member with the same name. */
+static void resolve_member_init_list(AstNode *func, AstNode *current_class, LocalVarType *locals) {
+    if (func->c == NULL) return; /* no ": ..." was written -- ordinary case */
+
+    if (current_class == NULL || strcmp(func->str1, current_class->str1) != 0) {
+        sema_error(func->c->line, "a member-initializer list is only allowed on a constructor");
+        return;
+    }
+
+    ClassLayout *layout = (ClassLayout *)current_class->sema_info;
+    AstNode *base_class = (layout != NULL) ? layout->base_class_decl : NULL;
+
+    for (int i = 0; i < func->c->list.count; i++) {
+        AstNode *entry = func->c->list.items[i];
+
+        if (base_class != NULL && strcmp(entry->str1, base_class->str1) == 0) {
+            AstNode **candidates = NULL;
+            int count = 0, cap = 0;
+            collect_method_candidates(base_class, base_class->str1, &candidates, &count, &cap);
+            resolve_overload_generic(entry, base_class->str1, candidates, count,
+                                      entry->list.items, entry->list.count, current_class, locals);
+            continue;
+        }
+
+        int is_data_member = 0;
+        if (layout != NULL) {
+            for (int j = 0; j < layout->data_members.count; j++) {
+                if (strcmp(layout->data_members.items[j]->str1, entry->str1) == 0) {
+                    is_data_member = 1;
+                    break;
+                }
+            }
+        }
+
+        if (is_data_member) {
+            sema_error(entry->line,
+                       "member initializers for ordinary fields aren't supported yet -- "
+                       "initialize '%s' in the constructor body instead", entry->str1);
+        } else {
+            sema_error(entry->line, "'%s' is not a base class or member of '%s'",
+                       entry->str1, current_class->str1);
+        }
+    }
+}
+
 static const char *binop_operator_name(const char *op) {
     if (strcmp(op, "+") == 0) return "operator+";
     if (strcmp(op, "-") == 0) return "operator-";
@@ -1449,6 +1533,14 @@ static void check_function_body(AstNode *func, AstNode *current_class) {
         lv->next = locals;
         locals = lv;
     }
+    /* Resolved BEFORE walking the body -- func->c's own entries (a
+     * base-class-delegation call's own arguments) may reference this
+     * constructor's own parameters, which `locals` already has bound by
+     * this point; nothing about walking the body itself depends on
+     * func->c having been resolved first, so the ordering here is only
+     * about `locals` being ready, not about any dependency the other
+     * direction. */
+    resolve_member_init_list(func, current_class, locals);
     check_node(func->a, current_class, &locals);
     /* `locals` is deliberately never freed -- single-shot CLI tool, same
      * memory philosophy as the rest of this project (see e.g.

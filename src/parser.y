@@ -116,12 +116,14 @@
 
 %type <node> program top_decl namespace_decl class_decl member
 %type <node> func_decl func_def func_header var_decl typedef_decl out_of_line_def
+%type <node> opt_member_init_list member_init
 %type <node> block stmt for_init opt_initializer opt_array_initializer
 %type <node> expr expr_opt unary_expr postfix_expr primary_expr
 %type <node> qualified_id_expr qualified_type type_spec param opt_base
 
 %type <list> top_decl_list member_list stmt_list
 %type <list> param_list opt_param_list arg_list opt_arg_list qname_prefix
+%type <list> member_init_list
 
 %type <str> name_tok func_name operator_symbol
 %type <access> access_spec
@@ -447,12 +449,24 @@ func_decl:
     ;
 
 func_def:
-    opt_virtual func_header block
+    opt_virtual func_header opt_member_init_list block
         {
             $$ = $2;
             $$->kind = AST_FUNC_DEF;
             $$->ival = $1; /* see the comment in func_decl above */
-            $$->a = $3;
+            $$->c = $3;    /* member-initializer list, or NULL -- see
+                               opt_member_init_list's own doc comment.
+                               Grammatically reachable after ANY func_header
+                               (ordinary method, destructor, constructor
+                               alike), not just a constructor's -- sema.c's
+                               resolve_member_init_list is what actually
+                               rejects a non-constructor writing one, the
+                               same "parser accepts the shape, sema.c
+                               diagnoses the misuse" split this grammar
+                               already relies on elsewhere (e.g. `break`
+                               outside a loop is a parse-time non-issue,
+                               caught by sema.c instead). */
+            $$->a = $4;
             symtab_pop_scope(g_symtab);
         }
     ;
@@ -502,7 +516,7 @@ out_of_line_def:
             $$->b->list = $2;
             symtab_pop_scope(g_symtab);
         }
-    | qualified_type '(' { symtab_push_scope(g_symtab, NULL, 0); } opt_param_list ')' block
+    | qualified_type '(' { symtab_push_scope(g_symtab, NULL, 0); } opt_param_list ')' opt_member_init_list block
         {
             /* Constructor: Class::Class(...) {}.
              *
@@ -543,7 +557,9 @@ out_of_line_def:
             $$->str1 = strdup(parts->items[n - 1]->str1);
             $$->type = NULL;
             $$->list = $4;
-            $$->a = $6;
+            $$->c = $6;    /* member-initializer list, or NULL -- see
+                               opt_member_init_list's own doc comment */
+            $$->a = $7;
             $$->b = ast_new(AST_QUALIFIED_ID, @1.first_line);
             for (int i = 0; i < n - 1; i++) {
                 ast_list_append(&$$->b->list, parts->items[i]);
@@ -1005,6 +1021,56 @@ opt_arg_list:
 arg_list:
       expr                  { $$ = ast_list_new(); ast_list_append(&$$, $1); }
     | arg_list ',' expr      { $$ = $1; ast_list_append(&$$, $3); }
+    ;
+
+/* ---- member-initializer lists: `Derived::Derived(args) : Base(base_args)
+ * { ... }` -- base-class constructor delegation. Grammatically also
+ * accepts `: field(val)` (an ORDINARY member field's own name, lexed as
+ * IDENTIFIER rather than TYPE_NAME -- the same distinction this grammar
+ * already relies on everywhere else to tell a registered class/type name
+ * apart from an ordinary identifier), even though this round only ACTS on
+ * the base-class-delegation case -- sema.c's resolve_member_init_list
+ * reports the member-field case as a clear, explicit "not yet supported"
+ * error, rather than have the grammar reject valid C++ syntax outright
+ * with a confusing parse failure instead of a clear semantic diagnostic.
+ *
+ * opt_member_init_list produces NULL (not an empty list) when no ": ..."
+ * was written at all -- callers (func_def, out_of_line_def's constructor
+ * alternative) store this directly in AST_FUNC_DEF's own `c` slot, so
+ * `c == NULL` is exactly "no member-initializer list was written",
+ * matching how `b` on AST_FUNC_DEF is NULL for an in-class definition. */
+opt_member_init_list:
+      /* empty */                    { $$ = NULL; }
+    | ':' member_init_list            { $$ = ast_new(AST_MEMBER_INIT_LIST, @1.first_line); $$->list = $2; }
+    ;
+
+member_init_list:
+      member_init                          { $$ = ast_list_new(); ast_list_append(&$$, $1); }
+    | member_init_list ',' member_init      { $$ = $1; ast_list_append(&$$, $3); }
+    ;
+
+member_init:
+      IDENTIFIER '(' opt_arg_list ')'
+        {
+            /* An ordinary member field's own name -- see this section's
+             * own header comment above for why this is accepted
+             * syntactically despite not being acted on yet. */
+            $$ = ast_new(AST_MEMBER_INIT, @1.first_line);
+            $$->str1 = strdup($1);
+            $$->list = $3;
+        }
+    | TYPE_NAME '(' opt_arg_list ')'
+        {
+            /* A registered class name -- the base-class-delegation case
+             * this round actually implements. Whether $1 is genuinely
+             * THIS constructor's own direct base (as opposed to some
+             * other, unrelated class name that merely happens to be
+             * registered) is sema.c's job, not the parser's -- same
+             * division of labor as everywhere else in this grammar. */
+            $$ = ast_new(AST_MEMBER_INIT, @1.first_line);
+            $$->str1 = strdup($1);
+            $$->list = $3;
+        }
     ;
 
 %%

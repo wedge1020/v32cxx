@@ -65,8 +65,47 @@ typedef enum {
                               parser.y, where b=AST_QUALIFIED_ID holding
                               the Class:: (or Namespace::Class::) qualifier
                               chain the definition was written against. */
-    AST_FUNC_DEF,         /* same as AST_FUNC_DECL but a=body (AST_BLOCK) */
+    AST_FUNC_DEF,         /* same as AST_FUNC_DECL but a=body (AST_BLOCK).
+                              c=AST_MEMBER_INIT_LIST or NULL -- a constructor's
+                              own member-initializer list (`: Base(args)`),
+                              if one was written; NULL on every other kind
+                              of AST_FUNC_DEF (ordinary method, destructor,
+                              free function) and on a constructor that
+                              didn't write one. See AST_MEMBER_INIT_LIST/
+                              AST_MEMBER_INIT below for what it holds, and
+                              sema.c's resolve_member_init_list for how each
+                              entry gets validated and resolved. */
     AST_PARAM,            /* str1=name, type=param type */
+    AST_MEMBER_INIT_LIST, /* list=AST_MEMBER_INIT entries, in the order
+                              written -- only ever appears in an
+                              AST_FUNC_DEF's own `c` slot (see there); never
+                              constructed empty -- opt_member_init_list
+                              (parser.y) produces NULL, not an empty list,
+                              when no ": ..." was written at all, so `c`
+                              being non-NULL always means at least one
+                              entry. */
+    AST_MEMBER_INIT,      /* str1=name -- either a base class's own name
+                              (base-class-delegation: `: Base(args)`) or an
+                              ordinary member field's own name (`: x(val)`,
+                              not yet acted on beyond parsing -- see
+                              sema.c's resolve_member_init_list, which
+                              reports this case as a clear, explicit "not
+                              yet supported" error rather than silently
+                              ignoring it). Lexed as TYPE_NAME vs IDENTIFIER
+                              respectively (same distinction this grammar
+                              already relies on everywhere else), so the
+                              grammar itself doesn't need to know which
+                              case it's parsing -- that's sema.c's job.
+                              list=constructor-call-style argument
+                              expressions. sema_info=CallResolution* once
+                              resolve_member_init_list has successfully
+                              matched a base-class-delegation entry against
+                              one of the base class's own constructor
+                              overloads (see sema.h's CallResolution) --
+                              NULL until then, and NULL permanently for a
+                              member-field entry (not yet resolved at all)
+                              or an entry sema.c couldn't confidently
+                              resolve. */
     AST_BLOCK,            /* list=statements */
     AST_IF,               /* a=cond, b=then-stmt, c=else-stmt or NULL */
     AST_WHILE,            /* a=cond, b=body */

@@ -2966,6 +2966,231 @@ file is a chronological log, not a living reference, and editing a past
 entry to reflect a LATER version would misrepresent what actually
 happened in that round.
 
+## Base-class constructor delegation (`: Base(args)`)
+
+Back to C++ language coverage after a stretch of CLI/tooling polish.
+Matthew asked directly whether this was a worthy next target; the
+genuinely compelling reason isn't style -- if a base class's own data
+members are `private` (the properly encapsulated way to write one), a
+derived class's constructor has NO legal way to initialize them at all
+under this project's previous behavior (manually setting inherited
+fields directly in the derived constructor's own body). This is a real
+functional hole for anything written with proper encapsulation, not
+just an awkward workaround.
+
+**Scope, decided up front and stated to Matthew before writing any
+code**: base-class delegation only (`: Base(args)`), not general
+member-initializer syntax for ordinary fields (`: x(val)`). The two are
+closely related but meaningfully different pieces of work -- ordinary
+member initializers, especially for class-typed members, would need
+their own real design (when does a member's own constructor get
+invoked automatically?), not something to fold in as an afterthought.
+
+**Confirmed reachable today, checked directly rather than assumed**: an
+in-class constructor DEFINITION (a body written directly inside the
+class, not just a prototype) is already grammatically possible via
+`func_def`'s own existing `TYPE_NAME '(' ...' ')'` alternative in
+`func_header` -- no test happens to use this style (every existing
+constructor is declared in-class, defined out-of-line), but since the
+grammar already allows it, the member-initializer-list syntax was added
+to BOTH paths (`func_def` and `out_of_line_def`'s constructor
+alternative), not just the one this project's own tests happen to use.
+
+**AST**: two new kinds, `AST_MEMBER_INIT_LIST` (list=entries) and
+`AST_MEMBER_INIT` (str1=name, list=call-style arguments), stored in
+`AST_FUNC_DEF`'s previously-unused `c` slot -- `NULL` when no `: ...`
+was written at all, matching how `b` is `NULL` for an in-class
+definition (a null-means-absent convention this file already uses).
+`ast_dump` needed no changes at all -- confirmed it already walks
+`a`/`b`/`c`/`d` generically; only `kind_name`'s own switch needed the
+two new cases (this project's own `-Wswitch`-relevant style requires
+every `AstKind` listed explicitly, no `default:` to silently swallow a
+missed one).
+
+**Grammar**: `member_init` accepts BOTH `TYPE_NAME '(' args ')'` (a
+registered class name -- base-class delegation, the case actually
+acted on) and `IDENTIFIER '(' args ')'` (an ordinary field name -- not
+yet acted on) at the SYNTAX level, deliberately -- rejecting the
+member-field form as a parse error would be a confusing experience for
+someone writing perfectly valid C++ that just isn't supported yet;
+accepting it syntactically and giving a clear, explicit sema.c error
+("not yet supported... initialize in the constructor body instead") is
+a meaningfully better failure mode. A GENUINE, STATED RISK: this
+project's grammar has a `%expect 22` directive (this file's own
+documented protocol: bison ERRORS, not warns, if the actual conflict
+count no longer matches, until `%expect` is updated to the new real
+number). Adding an optional, comma-list-shaped production between a
+constructor's own `')'` and its body could plausibly change this count
+-- there's no way to check without bison itself, which this sandbox
+still doesn't have. Told Matthew directly rather than silently hoping
+it's still 22: if bison errors on the conflict count when he
+regenerates, that's expected, and the file's own comment already
+documents the recovery protocol (`bison -Wcounterexamples`, read every
+new conflict, confirm real inputs still parse, then update the number).
+
+**Semantic analysis**: new `resolve_member_init_list`, called from
+`check_function_body` (once per constructor, params already bound to
+`locals` by that point, since a delegated call's own arguments may
+reference them). Reuses `resolve_overload_generic` -- the EXACT SAME
+core `resolve_call`/`resolve_new_expr` already go through -- for
+matching a `: Base(args)` entry against the base's own constructor
+overloads, attaching a `CallResolution*` to the `AST_MEMBER_INIT`
+node's own `sema_info` exactly like those two attach one to their own
+site node. Three outcomes per entry: matches the class's own direct
+base name -> resolved via the shared core; matches an actual declared
+data member -> explicit "not yet supported" error; matches neither ->
+"not a base class or member" error. A name matching a base class AND
+(unusually) a same-named data member is treated as base-class
+delegation, checked first -- matching real C++'s own rule here exactly,
+not an arbitrary tie-break. A member-initializer list on anything other
+than a constructor (an ordinary method, a destructor) is its own
+explicit error too -- the grammar accepts the shape everywhere a
+function body can appear (the same "parser accepts, sema.c diagnoses
+misuse" split this project already relies on elsewhere, e.g. `break`
+outside a loop), so this check is genuinely load-bearing, not
+redundant with anything the parser itself already rejected.
+
+**Lowering -- phase 8b**, immediately after phase 8 (vtable pointer
+init), a real ordering dependency, not an arbitrary placement:  both
+phases PREPEND a statement to the same constructor body, and the phase
+that prepends LAST ends up FIRST in the final list -- phase 8 runs
+first (vtable-init prepended), phase 8b runs right after (base-ctor-
+call prepended), so the final order is [base-ctor-call, vtable-init,
+...original body], matching real C++'s own construction timing (a base
+subobject, vtable pointer included, is fully constructed before the
+derived class's own vtable pointer overwrites it, which happens before
+the derived constructor's own body runs). `this` is cast to `Base *`
+via the EXISTING `cast_receiver_if_needed` helper (already relied on
+for virtual dispatch and `delete` through a base-typed pointer) --
+safe under this project's own struct-flattening strategy, where a
+`Derived *` and `Base *` to the same object always share a compatible
+leading-fields layout. Confirmed SAFE for this phase to run ahead of
+`finalize_calls_classes` (further down the pipeline) even though both
+touch constructor bodies: traced `finalize_call`'s own first line --
+`if (cr == NULL || cr->resolved_target == NULL) return;` -- and the
+`AST_CALL` phase 8b builds directly never has a `sema_info` set on it
+at all, so even if `finalize_calls_classes` later walked over it,
+touching it would be a guaranteed no-op, the identical protection
+phase 7's own directly-built calls already rely on (confirmed by
+reading, not assumed by analogy).
+
+**Explicitly, deliberately NOT done this round**: no IMPLICIT
+base-constructor call. In real C++, a derived class with a base class
+but no explicit `: Base(...)` still gets the base's own default
+constructor called automatically. This project's existing behavior
+(nothing called at all) is already a deviation from real C++ semantics
+-- but introducing an implicit call now, for every existing base class
+with a zero-arg constructor, is a genuine BEHAVIOR CHANGE for already-
+working code this sandbox has no way to verify without a working build
+(the grammar change alone already blocks that). Left as a real, stated
+gap for a future round, not silently mishandled -- documented in both
+`README.md` and `man/v32c++.1`.
+
+**Tests**: `tests/sample35.cpp` -- the actual motivating case, a
+`private` base-class field a derived constructor has no other legal way
+to set, with `area()` expected to return 16 (4*4), proving the field
+was genuinely set through the base constructor rather than left as
+garbage. `tests/sample36.cpp`/`sample37.cpp` -- deliberately invalid,
+exercising the "unknown base or member" and "member-field initializer
+not yet supported" error paths respectively (the second chosen
+specifically because it's the failure mode someone is MOST likely to
+actually hit in practice -- valid C++ they'd reasonably try, not an
+obscure typo).
+
+**Verified as much as this sandbox allows, stated plainly what
+couldn't be**: full syntax-check across every changed file, and a
+build+link using the EXISTING (pre-this-round) generated
+`lexer.c`/`parser.c`/`parser.h` -- confirming `ast.c`/`sema.c`/`lower.c`
+integrate correctly and the full 34-sample suite (everything before
+this round's own new tests) still passes with zero regressions, since
+none of those use a member-initializer list at all (`func->c` is
+always `NULL` for them, and every new code path correctly no-ops on
+that). Ran the three NEW tests against that same stale grammar too,
+specifically to confirm they fail exactly and only at the new `:`
+syntax (`"syntax error, unexpected ':', expecting '{'"`, at precisely
+the line each one uses it) -- not some unrelated breakage, good
+evidence the test files themselves are valid otherwise. The grammar
+itself, and everything downstream of it (sema resolution, phase 8b's
+own insertion, the private-base-field scenario actually working end to
+end), still needs Matthew's own bison regeneration to confirm for
+real -- stated directly, not glossed over.
+
+## Base-class constructor delegation, confirmed working -- and a real bug found and fixed along the way
+
+Matthew provided a fresh `lexer.c`/`parser.c`/`parser.h` (no bison
+conflicts from last round's grammar addition -- `%expect 22` still
+held) along with real output for `sample35`/`36`/`37`. Reading
+`sample35.c` directly -- not just trusting the run succeeded -- surfaced
+a real, serious bug: `Square__Square__int`'s generated body was
+COMPLETELY EMPTY. `Shape__Shape__int(...)` was never called at all,
+despite `sample35.cpp` writing `Square::Square(int side) : Shape(side)`
+explicitly. The whole point of this feature, silently not happening.
+
+**Root cause, found by direct debugging, not guessed at**: added
+temporary `fprintf(stderr, ...)` tracing to the new lowering phase,
+confirmed `m->c` was `NULL` at the exact point the phase checks it --
+even though the parse-time AST dump (in `sample35.txt`, `-vvv`'s own
+output) clearly showed `c: MemberInitList` correctly attached to the
+constructor node right after parsing. Something was clearing it between
+parse and lowering. Traced it to `attach_out_of_line` (`sema.c`) --
+this project's existing machinery for merging an out-of-line
+definition (`Square::Square(...) { ... }`) into its in-class prototype
+node, which is what actually becomes the AUTHORITATIVE node stored in
+`ClassLayout.methods` (per that function's own comment: "the
+authoritative copy is now reachable via the class's member list").
+That merge only ever copied `target->a = n->a` (the body) -- `target->c`
+(this round's own new field) was never copied at all, since
+`attach_out_of_line` was written long before `c` existed. Every
+existing constructor in this project's own test suite is declared
+in-class and defined out-of-line -- this project's OWN established,
+exclusive style -- so this wasn't a rare edge case: it silently broke
+the feature for its own primary, intended use case, 100% of the time,
+for every out-of-line constructor that used it. `resolve_member_init_list`
+(sema.c) was ALSO silently affected the same way (it runs on the same
+authoritative node), though its own no-op-on-NULL guard meant it simply
+never ran at all for an out-of-line constructor, rather than crashing
+or misbehaving -- which is exactly why this surfaced as "nothing
+happened" instead of a crash, and why it needed real generated output
+to catch rather than code review alone.
+
+**Fix**: one line, `target->c = n->c;`, added right next to the
+existing `target->a = n->a;` in `attach_out_of_line`.
+
+**A second, unrelated problem hit along the way, worth recording**: the
+first attempt to verify the fix (a `touch src/sema.c src/lower.c` +
+`make all`, not a full clean rebuild) produced wildly garbled output --
+`void [0] this`, `while ()` -- classic stale-object-file/enum-mismatch
+symptoms this project has hit before (documented in the Makefile's own
+`clean` target comments). Not actually caused by anything new this
+round; caused by not doing a full `make clean` before re-verifying after
+swapping in the newly-regenerated grammar files earlier in the session.
+A genuinely clean rebuild (`make clean` + full `make all`) produced
+correct, sensible output immediately. Recorded here as a reminder, not
+just a one-off inconvenience: this project's own established discipline
+("any `ast.h` enum change needs a truly full rebuild") applies just as
+much when SWAPPING IN a newly-generated `lexer.c`/`parser.c` mid-session
+as it does to an enum edit itself, and skipping it produces symptoms
+easy to mistake for a NEW bug rather than a stale build.
+
+**Verified thoroughly after the real fix**: `sample35.c` (clean build)
+now shows `Square__Square__int` correctly calling
+`Shape__Shape__int(((Shape *)this), side)` as its sole statement, with
+the surrounding `main()` also correct end to end (`new Square(4)`,
+`sq->area()` called through the correctly-cast receiver, `delete sq`).
+Full 37-sample suite (34 previous + this round's 3 new ones): exactly
+the same 7 pre-existing expected failures, `sample35` now correctly
+succeeds, `sample36`/`37` correctly fail with precisely their own
+intended messages (confirmed directly: `'NotARealThing' is not a base
+class or member of 'Widget'`; `member initializers for ordinary fields
+aren't supported yet -- initialize 'value' in the constructor body
+instead`) -- a stdout/stderr buffering quirk (unbuffered stderr writes
+immediately, fully-buffered stdout only flushes at process exit, so an
+error message lands at the TOP of a combined-redirect `.txt` file, not
+the bottom) briefly looked like a missing error message on first
+`tail`-based inspection; confirmed against `sample5.txt`, an
+already-long-established error test, that this ordering is pre-existing,
+unrelated project behavior, not something new or broken.
+
 ## Suggested next steps, roughly in order
 
 

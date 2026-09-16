@@ -63,6 +63,8 @@ static const char *kind_name(AstKind k) {
         case AST_FUNC_DECL: return "FuncDecl";
         case AST_FUNC_DEF: return "FuncDef";
         case AST_PARAM: return "Param";
+        case AST_MEMBER_INIT_LIST: return "MemberInitList";
+        case AST_MEMBER_INIT: return "MemberInit";
         case AST_BLOCK: return "Block";
         case AST_IF: return "If";
         case AST_WHILE: return "While";
