@@ -82,9 +82,7 @@ jobs:
             mingw-w64-ucrt-x86_64-clang
             mingw-w64-ucrt-x86_64-lld
             mingw-w64-ucrt-x86_64-make
-			mingw-w64-ucrt-aarch64-runtime
             zip
-
       - name: Setup Linux ARM Cross-Compilers
         if: matrix.os == 'linux'
         shell: bash
@@ -94,27 +92,23 @@ jobs:
           elif [ "${{ matrix.arch }}" = "armv7-rpi" ]; then
             sudo apt-get update && sudo apt-get install -y gcc-arm-linux-gnueabihf
           fi
-
       # --- BUILD EXECUTABLES & STRIP SYMBOLS ---
       - name: Compile and Strip (Windows)
         if: matrix.os == 'windows'
         run: |
           if [ "${{ matrix.arch }}" = "arm64" ]; then
-            # -B tells Clang where to find the ARM64 startup files and native libs
-            mingw32-make CC="clang -target aarch64-w64-windows-gnu -fuse-ld=lld -B/ucrt64/aarch64-w64-mingw32/lib"
+            mingw32-make CC="clang -target aarch64-w64-windows-gnu -fuse-ld=lld"
             strip bin/*
           else
             mingw32-make CC="gcc"
             strip bin/*
           fi
-
       - name: Compile and Strip (macOS)
         if: matrix.os == 'macos'
         shell: bash
         run: |
           make CC="clang -arch ${{ matrix.arch }}"
           strip bin/*
-
       - name: Compile and Strip (Linux)
         if: matrix.os == 'linux'
         shell: bash
@@ -129,7 +123,6 @@ jobs:
             make CC="gcc"
             strip bin/*
           fi
-
       # --- MODULAR PACKAGING BLOCK (ALL OS RUNNERS) ---
       - name: Parse Version and Create Zip Archive
         run: |
@@ -158,7 +151,6 @@ jobs:
           cd ..
           
           echo "FINAL_ZIP_NAME=$ZIP_NAME" >> $GITHUB_ENV
-
       # --- STAGE ZIP INTERNALLY ---
       - name: Upload Compressed Target Release Artifact
         uses: actions/upload-artifact@v4
@@ -195,7 +187,6 @@ jobs:
           VERSION_TAG=$(cat artifacts/version_tag.txt | head -n 1)
           echo "VERSION_TAG=$VERSION_TAG" >> $GITHUB_ENV
           rm artifacts/version_tag.txt
-
       - name: Generate Draft Release on GitHub
         uses: softprops/action-gh-release@v2
         with:
@@ -204,4 +195,3 @@ jobs:
           draft: true
           prerelease: false
           files: artifacts/*.zip
-
