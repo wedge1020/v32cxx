@@ -82,6 +82,7 @@ jobs:
             mingw-w64-ucrt-x86_64-clang
             mingw-w64-ucrt-x86_64-lld
             mingw-w64-ucrt-x86_64-make
+			mingw-w64-ucrt-aarch64-runtime
             zip
 
       - name: Setup Linux ARM Cross-Compilers
