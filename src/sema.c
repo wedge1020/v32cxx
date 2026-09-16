@@ -1441,6 +1441,11 @@ static void resolve_operator_use(AstNode *node, const char *op_name, AstNode *lh
  * call is sufficient and far simpler than threading a new parameter
  * through every existing call site in this function. */
 static int g_sema_loop_depth = 0;
+static int g_sema_switch_depth = 0; /* same "global, incremented/decremented
+    around the relevant body" approach as g_sema_loop_depth, tracked
+    separately since `break` is valid inside EITHER a loop or a switch
+    (whichever is innermost) while `continue` is valid ONLY inside a
+    loop -- a single shared counter couldn't distinguish the two. */
 
 static void check_node(AstNode *n, AstNode *current_class, LocalVarType **locals) {
     if (n == NULL) return;
@@ -1467,11 +1472,41 @@ static void check_node(AstNode *n, AstNode *current_class, LocalVarType **locals
             check_node(n->d, current_class, locals);
             g_sema_loop_depth--;
             break;
+        case AST_SWITCH:
+            /* Only g_sema_switch_depth changes -- g_sema_loop_depth is
+             * deliberately left untouched, so `continue` inside this
+             * switch's own body still resolves against whatever loop
+             * (if any) already encloses the switch, exactly real C's
+             * own rule (continue always means "the nearest enclosing
+             * LOOP", never a switch, even when a switch is closer). */
+            check_node(n->a, current_class, locals); /* discriminant */
+            g_sema_switch_depth++;
+            for (int i = 0; i < n->list.count; i++) check_node(n->list.items[i], current_class, locals);
+            g_sema_switch_depth--;
+            break;
+        case AST_CASE:
+            check_node(n->a, current_class, locals); /* case value expr */
+            break;
+        case AST_DEFAULT:
+            break; /* no fields -- a bare label */
         case AST_BREAK:
+            /* Valid inside EITHER a loop or a switch, whichever is
+             * innermost -- real C's own rule. (Which one it actually
+             * exits, for the purposes of lower.c's own destructor-
+             * invocation phase, is a SEPARATE question that phase
+             * answers itself via its own break_boundary/loop_boundary
+             * distinction -- this check only needs to know "is break
+             * legal here at all", not "which construct does it target".) */
+            if (g_sema_loop_depth == 0 && g_sema_switch_depth == 0) {
+                sema_error(n->line, "'break' statement not within a loop or switch");
+            }
+            break;
         case AST_CONTINUE:
+            /* Loop-only, unlike AST_BREAK above -- a switch alone (with
+             * no enclosing loop) does NOT make continue valid, matching
+             * real C exactly. */
             if (g_sema_loop_depth == 0) {
-                sema_error(n->line, "'%s' statement not within a loop",
-                           (n->kind == AST_BREAK) ? "break" : "continue");
+                sema_error(n->line, "'continue' statement not within a loop");
             }
             break;
         case AST_RETURN:

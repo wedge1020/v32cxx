@@ -1787,6 +1787,7 @@ static AstNode *build_dtor_call_stmt(DestructibleLocal *dl) {
 
 static void destruct_scope_block(AstNode *block, DestructScope *parent_scope,
                                   DestructScope *loop_boundary,
+                                  DestructScope *break_boundary,
                                   AstNode *func_return_type, int *ret_tmp_counter);
 
 /* Builds and installs, in place of *slot, a small nested block that
@@ -1826,49 +1827,88 @@ static void install_destructor_sequence(AstNode **slot, DestructScope *scope,
 
 static void destruct_scope_stmt(AstNode **slot, DestructScope *scope,
                                  DestructScope *loop_boundary,
+                                 DestructScope *break_boundary,
                                  AstNode *func_return_type, int *ret_tmp_counter) {
     AstNode *n = *slot;
     if (n == NULL) return;
     switch (n->kind) {
         case AST_BLOCK:
-            destruct_scope_block(n, scope, loop_boundary, func_return_type, ret_tmp_counter);
+            destruct_scope_block(n, scope, loop_boundary, break_boundary, func_return_type, ret_tmp_counter);
             break;
         case AST_IF:
-            /* loop_boundary passes through UNCHANGED -- an `if` doesn't
-             * itself introduce a new loop, so a break/continue inside
-             * either branch still refers to whatever loop (if any) was
-             * already enclosing this `if`. */
-            destruct_scope_stmt(&n->b, scope, loop_boundary, func_return_type, ret_tmp_counter);
-            destruct_scope_stmt(&n->c, scope, loop_boundary, func_return_type, ret_tmp_counter);
+            /* Both boundaries pass through UNCHANGED -- an `if` doesn't
+             * itself introduce a new loop or switch, so a break/continue
+             * inside either branch still refers to whatever loop/switch
+             * (if any) was already enclosing this `if`. */
+            destruct_scope_stmt(&n->b, scope, loop_boundary, break_boundary, func_return_type, ret_tmp_counter);
+            destruct_scope_stmt(&n->c, scope, loop_boundary, break_boundary, func_return_type, ret_tmp_counter);
             break;
         case AST_WHILE:
             /* The body gets a NEW loop_boundary = scope -- exactly the
              * scope in effect right before entering this loop, i.e. the
              * boundary a break/continue anywhere inside (including
              * nested blocks within the body) should stop at without
-             * destroying it or anything further out. */
-            destruct_scope_stmt(&n->b, scope, scope, func_return_type, ret_tmp_counter);
+             * destroying it or anything further out. break_boundary
+             * becomes the SAME new boundary too -- a break directly
+             * inside a loop, with no intervening switch, exits that
+             * loop, the same target continue already has. (A `switch`
+             * nested inside this loop's own body will, in turn, give
+             * ITS OWN body a different break_boundary -- see AST_SWITCH
+             * below -- without touching loop_boundary at all, so a
+             * `continue` inside that nested switch still correctly
+             * reaches back out to THIS loop.) */
+            destruct_scope_stmt(&n->b, scope, scope, scope, func_return_type, ret_tmp_counter);
             break;
         case AST_FOR:
             /* Same reasoning as AST_WHILE for the body. The init clause
-             * (n->a) deliberately keeps the OUTER loop_boundary
-             * unchanged, not a new one -- it runs once, before the loop
-             * body's own scope even exists, so it was never "inside"
-             * this loop's own boundary to begin with. (A VarDecl in a
-             * for-loop's own init clause isn't tracked as a
-             * destructible at all regardless -- see this phase's own
-             * doc comment in lower.h for that pre-existing, unrelated
-             * scope limit; nothing about break/continue changes it.) */
-            destruct_scope_stmt(&n->d, scope, scope, func_return_type, ret_tmp_counter);
+             * (n->a) deliberately keeps the OUTER boundaries unchanged,
+             * not new ones -- it runs once, before the loop body's own
+             * scope even exists, so it was never "inside" this loop's
+             * own boundary to begin with. (A VarDecl in a for-loop's own
+             * init clause isn't tracked as a destructible at all
+             * regardless -- see this phase's own doc comment in lower.h
+             * for that pre-existing, unrelated scope limit; nothing
+             * about break/continue changes it.) */
+            destruct_scope_stmt(&n->d, scope, scope, scope, func_return_type, ret_tmp_counter);
+            break;
+        case AST_SWITCH:
+            /* Only break_boundary becomes a new boundary (= scope, the
+             * same "boundary is the scope the statement itself lives
+             * in" pattern AST_WHILE/AST_FOR already use for
+             * loop_boundary) -- loop_boundary passes through UNCHANGED.
+             * A switch doesn't itself introduce a loop, so `continue`
+             * inside one (only valid at all if sema.c already confirmed
+             * a loop ALSO encloses this switch) still targets whichever
+             * loop was already enclosing it, skipping over the switch
+             * entirely -- exactly real C's own rule (`continue` never
+             * targets a switch, only `break` does). Reuses
+             * destruct_scope_block directly on the AST_SWITCH node
+             * itself, not a dedicated walk of its own -- that function
+             * only ever reads/writes `block->list`, never anything
+             * AST_BLOCK-specific, and a switch's own body (case/default
+             * labels interleaved with ordinary statements, in one flat
+             * list -- real C's own fall-through structure, not a list
+             * of separate per-case containers) is exactly the same
+             * shape destruct_scope_block already knows how to walk,
+             * tracking destructible locals declared directly in the
+             * switch body the same way it would for any other block. */
+            destruct_scope_block(n, scope, loop_boundary, scope, func_return_type, ret_tmp_counter);
             break;
         case AST_BREAK:
+            /* Uses break_boundary, NOT loop_boundary -- the two differ
+             * exactly when a switch is the innermost enclosing
+             * construct rather than a loop (see AST_SWITCH above). */
+            install_destructor_sequence(slot, scope, break_boundary, n);
+            break;
         case AST_CONTINUE:
-            /* sema.c has already rejected one of these outside any loop
-             * at all, so loop_boundary should never genuinely be NULL
-             * here -- but best-effort or not, install_destructor_sequence
-             * handles a NULL stop_at the same way AST_RETURN's own walk
-             * already does (walk to the true top), so this doesn't need
-             * its own special-cased fallback. */
+            /* Always loop_boundary -- continue only ever targets a
+             * loop, never a switch, matching real C's own rule; sema.c
+             * has already rejected one outside any loop at all, so this
+             * should never genuinely be NULL here -- but best-effort or
+             * not, install_destructor_sequence handles a NULL stop_at
+             * the same way AST_RETURN's own walk already does (walk to
+             * the true top), so this doesn't need its own special-cased
+             * fallback either. */
             install_destructor_sequence(slot, scope, loop_boundary, n);
             break;
         case AST_RETURN: {
@@ -1933,13 +1973,14 @@ static void destruct_scope_stmt(AstNode **slot, DestructScope *scope,
 
 static void destruct_scope_block(AstNode *block, DestructScope *parent_scope,
                                   DestructScope *loop_boundary,
+                                  DestructScope *break_boundary,
                                   AstNode *func_return_type, int *ret_tmp_counter) {
     DestructScope this_scope = { NULL, parent_scope };
     AstList new_list = ast_list_new();
 
     for (int i = 0; i < block->list.count; i++) {
         AstNode *stmt = block->list.items[i];
-        destruct_scope_stmt(&stmt, &this_scope, loop_boundary, func_return_type, ret_tmp_counter);
+        destruct_scope_stmt(&stmt, &this_scope, loop_boundary, break_boundary, func_return_type, ret_tmp_counter);
         ast_list_append(&new_list, stmt);
 
         if (stmt->kind == AST_VAR_DECL &&
@@ -1960,7 +2001,13 @@ static void destruct_scope_block(AstNode *block, DestructScope *parent_scope,
 
     /* Fall-through exit: this block's own destructibles, reverse
      * declaration order (already the natural order of this_scope.locals,
-     * since each was prepended as it was found). */
+     * since each was prepended as it was found). For a switch body
+     * (this function reused directly on an AST_SWITCH node, not just an
+     * AST_BLOCK -- see that case in destruct_scope_stmt), "fall-through"
+     * correctly means "control reached the end of the switch body
+     * without an explicit break" -- the same real-C behavior whether no
+     * case matched at all or the last matching case didn't break,
+     * requiring no special handling here beyond what already exists. */
     for (DestructibleLocal *dl = this_scope.locals; dl != NULL; dl = dl->next) {
         ast_list_append(&new_list, build_dtor_call_stmt(dl));
     }
@@ -1971,7 +2018,7 @@ static void destruct_scope_block(AstNode *block, DestructScope *parent_scope,
 static void destruct_scope_in_method(AstNode *method) {
     if (method->kind != AST_FUNC_DEF) return;
     int ret_tmp_counter = 0;
-    destruct_scope_block(method->a, NULL, NULL, method->type, &ret_tmp_counter);
+    destruct_scope_block(method->a, NULL, NULL, NULL, method->type, &ret_tmp_counter);
 }
 
 static void destruct_scope_classes(AstList *decls) {

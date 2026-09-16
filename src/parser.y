@@ -109,10 +109,12 @@
 
 %token CLASS PUBLIC PRIVATE PROTECTED NAMESPACE TYPEDEF
 %token RETURN IF ELSE WHILE FOR BREAK CONTINUE
+%token SWITCH CASE DEFAULT
 %token INT_KW FLOAT_KW VOID_KW BOOL_KW CHAR_KW
 %token NEW DELETE THIS VIRTUAL TRUE_KW FALSE_KW OPERATOR
 %token COLONCOLON ARROW EQ NE LE GE ANDAND OROR
 %token PLUSEQ MINUSEQ STAREQ SLASHEQ INC DEC
+%token SHL SHR ANDEQ OREQ XOREQ SHLEQ SHREQ
 
 %type <node> program top_decl namespace_decl class_decl member
 %type <node> func_decl func_def func_header var_decl typedef_decl out_of_line_def
@@ -124,16 +126,21 @@
 %type <list> top_decl_list member_list stmt_list
 %type <list> param_list opt_param_list arg_list opt_arg_list qname_prefix
 %type <list> member_init_list
+%type <list> switch_body
 
 %type <str> name_tok func_name operator_symbol
 %type <access> access_spec
 %type <ival> pointer_opt opt_virtual
 
-%right '=' PLUSEQ MINUSEQ STAREQ SLASHEQ
+%right '=' PLUSEQ MINUSEQ STAREQ SLASHEQ ANDEQ OREQ XOREQ SHLEQ SHREQ
 %left OROR
 %left ANDAND
+%left '|'
+%left '^'
+%left '&'
 %left EQ NE
 %left '<' '>' LE GE
+%left SHL SHR
 %left '+' '-'
 %left '*' '/' '%'
 
@@ -821,6 +828,24 @@ stmt:
             $$ = ast_new(AST_WHILE, @1.first_line);
             $$->a = $3; $$->b = $5;
         }
+    | SWITCH '(' expr ')' '{' switch_body '}'
+        {
+            /* Real C's own fall-through switch, passed through to
+             * codegen.c essentially unchanged -- see AST_SWITCH's own
+             * doc comment in ast.h for why no lowering transformation
+             * happens here at all (Vircon32 C already has native
+             * switch/case). switch_body builds one FLAT list mixing
+             * CASE/DEFAULT labels with ordinary statements, in source
+             * order -- not a list of separate per-case containers --
+             * exactly matching real C's own grammar shape (a case/
+             * default is a LABEL on the statement that follows it, not
+             * a container), which is what makes fall-through "just
+             * happen" rather than needing to be specially implemented
+             * anywhere in this pipeline. */
+            $$ = ast_new(AST_SWITCH, @1.first_line);
+            $$->a = $3;
+            $$->list = $6;
+        }
     | FOR '(' { symtab_push_scope(g_symtab, NULL, 0); } for_init ';' expr_opt ';' expr_opt ')' stmt
         {
             /* Own scope so a loop-local `int i` in for_init doesn't leak
@@ -866,6 +891,37 @@ for_init:
 expr_opt:
       /* empty */  { $$ = NULL; }
     | expr          { $$ = $1; }
+    ;
+
+/* ---- switch bodies -------------------------------------------------------
+ *
+ * A flat, source-ordered list -- CASE/DEFAULT entries are LABELS
+ * appended directly alongside ordinary statements, never containers of
+ * their own. This is deliberately the SAME shape real C's own grammar
+ * gives a switch body (a labeled-statement is just a statement with a
+ * label attached, not a special container), which is exactly what
+ * makes fall-through behavior fall out for free -- nothing about
+ * "don't insert an implicit break" needs to be implemented anywhere;
+ * the list is simply walked in order, the same way an AST_BLOCK's own
+ * list already is.
+ */
+switch_body:
+      /* empty */                    { $$ = ast_list_new(); }
+    | switch_body CASE expr ':'
+        {
+            $$ = $1;
+            AstNode *c = ast_new(AST_CASE, @2.first_line);
+            c->a = $3;
+            ast_list_append(&$$, c);
+        }
+    | switch_body DEFAULT ':'
+        {
+            $$ = $1;
+            AstNode *d = ast_new(AST_DEFAULT, @2.first_line);
+            ast_list_append(&$$, d);
+        }
+    | switch_body stmt
+        { $$ = $1; ast_list_append(&$$, $2); }
     ;
 
 /* ---- expressions ---------------------------------------------------------
@@ -1001,6 +1057,22 @@ expr:
     | expr NE expr     { $$ = ast_new(AST_BINOP, @1.first_line); $$->str1 = strdup("!="); $$->a = $1; $$->b = $3; }
     | expr ANDAND expr  { $$ = ast_new(AST_BINOP, @1.first_line); $$->str1 = strdup("&&"); $$->a = $1; $$->b = $3; }
     | expr OROR expr    { $$ = ast_new(AST_BINOP, @1.first_line); $$->str1 = strdup("||"); $$->a = $1; $$->b = $3; }
+    | expr '&' expr
+        {
+            /* Binary bitwise-AND -- coexists with unary_expr's own
+             * "'&' unary_expr" (address-of) the exact same way binary
+             * '-' already coexists with unary_expr's own "'-' unary_expr"
+             * (negation): the two never conflict, since unary_expr is a
+             * different grammar POSITION (a prefix, at the start of an
+             * operand) than this rule's own infix use (between two
+             * already-reduced expr's) -- the same proven disambiguation
+             * this grammar already relies on, not a new risk. */
+            $$ = ast_new(AST_BINOP, @1.first_line); $$->str1 = strdup("&"); $$->a = $1; $$->b = $3;
+        }
+    | expr '|' expr    { $$ = ast_new(AST_BINOP, @1.first_line); $$->str1 = strdup("|"); $$->a = $1; $$->b = $3; }
+    | expr '^' expr    { $$ = ast_new(AST_BINOP, @1.first_line); $$->str1 = strdup("^"); $$->a = $1; $$->b = $3; }
+    | expr SHL expr    { $$ = ast_new(AST_BINOP, @1.first_line); $$->str1 = strdup("<<"); $$->a = $1; $$->b = $3; }
+    | expr SHR expr    { $$ = ast_new(AST_BINOP, @1.first_line); $$->str1 = strdup(">>"); $$->a = $1; $$->b = $3; }
     | expr '=' expr
         { $$ = ast_new(AST_ASSIGN, @1.first_line); $$->str1 = strdup("="); $$->a = $1; $$->b = $3; }
     | expr PLUSEQ expr
@@ -1011,6 +1083,16 @@ expr:
         { $$ = ast_new(AST_ASSIGN, @1.first_line); $$->str1 = strdup("*="); $$->a = $1; $$->b = $3; }
     | expr SLASHEQ expr
         { $$ = ast_new(AST_ASSIGN, @1.first_line); $$->str1 = strdup("/="); $$->a = $1; $$->b = $3; }
+    | expr ANDEQ expr
+        { $$ = ast_new(AST_ASSIGN, @1.first_line); $$->str1 = strdup("&="); $$->a = $1; $$->b = $3; }
+    | expr OREQ expr
+        { $$ = ast_new(AST_ASSIGN, @1.first_line); $$->str1 = strdup("|="); $$->a = $1; $$->b = $3; }
+    | expr XOREQ expr
+        { $$ = ast_new(AST_ASSIGN, @1.first_line); $$->str1 = strdup("^="); $$->a = $1; $$->b = $3; }
+    | expr SHLEQ expr
+        { $$ = ast_new(AST_ASSIGN, @1.first_line); $$->str1 = strdup("<<="); $$->a = $1; $$->b = $3; }
+    | expr SHREQ expr
+        { $$ = ast_new(AST_ASSIGN, @1.first_line); $$->str1 = strdup(">>="); $$->a = $1; $$->b = $3; }
     ;
 
 opt_arg_list:

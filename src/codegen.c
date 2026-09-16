@@ -827,6 +827,38 @@ static void print_stmt(FILE *out, const AstNode *s, int indent, int strip_return
             indent_spaces(out, indent);
             fprintf(out, "continue;\n");
             break;
+        case AST_SWITCH:
+            /* No lowering transformation happened for this node at all
+             * (see AST_SWITCH's own doc comment in ast.h) -- straight,
+             * literal C switch/case/default, since Vircon32 C already
+             * has this natively. Each body item's own indent: a CASE/
+             * DEFAULT label sits one level in from the switch's own
+             * braces; an ordinary statement between labels sits one
+             * level deeper than that (conventional C style -- purely
+             * cosmetic, doesn't affect what the generated C actually
+             * does, but matches how a person would write this by hand). */
+            indent_spaces(out, indent);
+            fprintf(out, "switch (");
+            print_expr(out, s->a);
+            fprintf(out, ") {\n");
+            for (int i = 0; i < s->list.count; i++) {
+                AstNode *item = s->list.items[i];
+                int item_indent = (item->kind == AST_CASE || item->kind == AST_DEFAULT) ? indent + 1 : indent + 2;
+                print_stmt(out, item, item_indent, strip_return_value);
+            }
+            indent_spaces(out, indent);
+            fprintf(out, "}\n");
+            break;
+        case AST_CASE:
+            indent_spaces(out, indent);
+            fprintf(out, "case ");
+            print_expr(out, s->a);
+            fprintf(out, ":\n");
+            break;
+        case AST_DEFAULT:
+            indent_spaces(out, indent);
+            fprintf(out, "default:\n");
+            break;
         case AST_EXPR_STMT:
             /* -vv support: two lowering-synthesized call PATTERNS get
              * explained here, detected structurally (never by anything

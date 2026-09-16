@@ -3364,6 +3364,141 @@ implementing, which is what caught `sample24`/`32` in the first place;
 once again after fixing both, confirming a clean run through to the
 end).
 
+## Bitwise operators and switch/case -- the first "basic C, not OOP" round
+
+Matthew asked directly whether basic, non-OOP C syntax had gaps beyond
+function pointers, framing a new use case explicitly: this project as
+a general standard-C-to-Vircon32-C adaptor, not just a C++ subset.
+Investigated the grammar directly rather than from memory (`grep`
+across `parser.y`/`lexer.l` for every relevant token/keyword) before
+answering, and the picture was bigger than expected: bitwise operators
+were completely absent (not even the tokens existed for `|`/`^`/shift),
+alongside `switch`, C-style casts, ternary, `do`/`while`, `enum`,
+`union`, `goto`, bare `struct`, source-level `sizeof`, function-pointer
+declarators, and multi-dimensional arrays. Agreed to start with
+bitwise operators and switch, the two most consequential, then do a
+fuller pass across the rest.
+
+### Bitwise operators
+
+**Confirmed before writing anything**: `&`, `|`, `^`, `~` are already
+lexed as single-character fallback tokens (the existing
+`.  { return yytext[0]; }` rule's own comment even lists them
+explicitly) -- only the multi-character forms (`<<`, `>>`, and the five
+compound-assignment forms) needed new lexer rules at all. Unary `~`
+turned out to already be fully supported, grammar AND codegen both --
+a genuine, pleasant surprise found by checking rather than assuming.
+
+**Precedence**: this grammar uses `%left`/`%right` declarations rather
+than a full precedence-level rule hierarchy, so getting C's own
+precedence table right meant inserting the new operators at exactly
+the right points in the existing list, not just adding productions.
+Confirmed the famous "`a & b == c` means `a & (b == c)`" gotcha
+directly as a test (`sample46.cpp`'s own `gotcha` variable), not just
+asserted from memory -- chose a case where the two possible readings
+actually produce DIFFERENT numeric results (`8 & 8 == 8`: correct
+reading gives 0, the wrong one would give 1), so the generated value
+itself proves which precedence a build actually used, not merely
+which parenthesization.
+
+**Zero changes needed in `codegen.c` or `sema.c`** for the core
+feature -- confirmed by reading, not assumed: `AST_BINOP`/`AST_ASSIGN`
+already print `str1` generically with no per-operator case, and
+`resolve_operator_use`'s own first line (`if (op_name == NULL)
+return;`) already makes an unrecognized operator (which `&`/`|`/`^`/
+shift all are, by design -- not added to `binop_operator_name`'s own
+overloadable set, matching `&&`/`||`'s existing treatment) a safe,
+graceful no-op. Bitwise operator overloading (`operator&` and similar,
+for this project's own OOP classes) was deliberately left out of scope
+this round -- a "basic C" gap is what was asked about, and the
+existing built-in-operator path already handles primitives completely
+without it.
+
+### `switch`/`case`/`default`
+
+**Modeled as a flat, source-ordered list** (`AST_SWITCH`'s own `list`
+holding `AST_CASE`/`AST_DEFAULT` labels interleaved directly with
+ordinary statements, matching real C's own grammar shape exactly --
+case/default are labels ON a statement, not containers holding their
+own statement lists) -- deliberately, so real C's fall-through
+behavior falls out of just walking the list in order, nothing this
+project has to implement specially. Passed straight through to
+`codegen.c` as literal `switch`/`case`/`default`, no lowering
+transformation at all, since Vircon32 C already has this natively.
+
+**The genuinely hard part was `break`'s interaction with `continue`
+and destructor invocation**, not the parsing. Real C: `break` exits
+the INNERMOST enclosing loop OR switch, whichever is closer;
+`continue` always targets the nearest loop specifically, skipping
+straight past any switch in between. This meant `sema.c` needed a
+SEPARATE `g_sema_switch_depth` counter alongside the existing
+`g_sema_loop_depth` (break valid under either; continue only under the
+loop one), and -- the part requiring real care -- `lower.c`'s own
+phase 9 (destructor invocation) needed a SEPARATE `break_boundary`
+threaded alongside the existing `loop_boundary` through both
+`destruct_scope_stmt` and `destruct_scope_block`, since a `break`
+inside a switch nested in a loop needs to destroy only what's live
+inside the SWITCH, not the whole loop, while a `continue` at that same
+point still needs to reach past the switch to the loop's own boundary.
+Traced the EXISTING `AST_WHILE`/`AST_FOR` pattern precisely before
+writing the new `AST_SWITCH` case (the boundary passed to a loop body
+is the scope the loop STATEMENT ITSELF lives in, not a newly-created
+inner scope) and replicated it exactly for `break_boundary`, entering
+a switch: only `break_boundary` becomes a new boundary; `loop_boundary`
+passes through completely unchanged, which is precisely what makes
+`continue` correctly skip past the switch to whichever loop actually
+encloses it. Reused `destruct_scope_block` directly on the `AST_SWITCH`
+node itself (not a dedicated walk) -- that function only ever reads/
+writes `block->list`, never anything `AST_BLOCK`-specific, so a
+switch's own flat body is exactly the shape it already knows how to
+walk. One real, caught-immediately mistake along the way: an accidental
+`check_node(n->a, NULL, NULL)` call for the discriminant expression --
+`check_node` is a `sema.c` function, and this phase never touches
+expressions at all (matching how `AST_WHILE`'s own condition is never
+touched either) -- caught by the syntax-check step, not left in.
+
+**A narrow, stated limitation, not silently glossed over**: a variable
+declared directly in a switch body without its own `{ }` block (e.g.
+`case 1: int x = 5; break;`) inherits real C's own notoriously tricky
+scoping rules here (the variable's scope is the whole switch body, but
+a case label can "jump over" its initializer) -- this project makes no
+attempt to detect or specially handle that narrow, rare pattern; the
+common, well-formed case (each case wrapping its own body in `{ }`
+when it declares anything) works correctly via ordinary `AST_BLOCK`
+nesting, unaffected.
+
+**The `%expect` risk, flagged again**: this grammar change (a new
+statement form, seven new tokens, restructured precedence
+declarations) is very likely to change the conflict count from
+whatever it currently is, on top of already having grammar changes
+from two earlier rounds. Same recovery protocol as every previous
+grammar round applies if bison errors on regeneration.
+
+**Tests**: `sample46.cpp` (bitwise operators, including the precedence
+gotcha with a value that actually distinguishes the two readings),
+`sample47.cpp` (fall-through, with an observable, hand-traced result --
+`classify(1)` returns 30 specifically because case 1 falls into case
+2), `sample48.cpp` (a switch nested in a loop, `continue` inside it
+confirmed to skip the switch and reach the loop, `break` inside the
+same switch confirmed to target only the switch -- hand-traced to
+`sum = 8`), `sample49.cpp` (deliberately invalid: `continue` inside a
+switch with no enclosing loop at all, confirming the
+`g_sema_loop_depth`/`g_sema_switch_depth` split genuinely distinguishes
+the two rather than conflating them).
+
+**Verified as much as this sandbox allows**: full syntax-check across
+every changed file, a build against the EXISTING (pre-this-round)
+generated grammar confirming every other file still integrates and
+links correctly, and the full 45-sample suite re-run against that same
+stale grammar with zero regressions. Ran all four new test files
+directly against that stale grammar too, specifically to confirm each
+fails EXACTLY and ONLY at its own new syntax (`sample46` at its first
+`&`; `sample47`/`48`/`49` all at `switch (x) {`'s own unrecognized
+`{`) -- not some unrelated breakage, real evidence the test files
+themselves are valid otherwise. The grammar itself, and everything
+downstream of it, still needs Matthew's own bison/flex regeneration to
+confirm for real.
+
 ## Suggested next steps, roughly in order
 
 

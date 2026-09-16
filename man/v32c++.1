@@ -226,7 +226,29 @@ or other
 line is carried into the output verbatim, not expanded or resolved);
 .B break
 and
-.BR continue ;
+.BR continue .
+The two are correctly distinguished, not conflated:
+.B break
+is valid inside a
+.B switch
+alone (no enclosing loop needed), while
+.B continue
+is not \(em matching real C exactly. Real C
+.B switch / case / default
+fall-through semantics (no
+.B break
+means execution continues into the next label's own statements, the
+same as real C); bitwise operators (
+.BR & ", " | ", " ^ ", " << ", " >>
+and their compound-assignment forms
+.RI ( &= ", " |= ", " ^= ", " <<= ", " >>= ),
+at C's own correct operator precedence \(em including the classic
+.I "a & b == c"
+gotcha (equality binds tighter than bitwise-and, so this parses as
+.IR "a & (b == c)" ,
+not
+.IR "(a & b) == c" ),
+handled exactly right rather than approximated;
 base-class constructor delegation, both EXPLICIT (
 .I ": Base(args)"
 in a constructor's own member-initializer list) and IMPLICIT (no
@@ -271,6 +293,29 @@ standard-C output mode (Vircon32-specific output quirks are tracked
 in
 .I docs/VIRCON32_QUIRKS.md
 toward this).
+.PP
+Also not yet supported \(em basic, non-OOP C syntax, confirmed directly
+by checking the grammar rather than assumed, relevant if this tool is
+being used to adapt existing standard C rather than write new C++:
+C-style casts
+.RI ( "(int)x" ),
+the ternary operator
+.RI ( ?: ),
+.BR do / while ,
+.BR enum ,
+.BR union ,
+.BR goto ,
+a bare
+.B struct
+(only
+.B class
+is recognized), source-level
+.BR sizeof ,
+function-pointer declarators, and multi-dimensional arrays. Bitwise
+operators and
+.B switch / case
+(above) were the first pass through this list; the rest remains real,
+substantial future work.
 .PP
 Never supported, by design: templates, exceptions, RTTI, multiple
 inheritance.

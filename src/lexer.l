@@ -179,6 +179,9 @@ ALNUM   [A-Za-z0-9_]
 "for"        { g_last_ident_sym = NULL; return FOR; }
 "break"      { g_last_ident_sym = NULL; return BREAK; }
 "continue"   { g_last_ident_sym = NULL; return CONTINUE; }
+"switch"     { g_last_ident_sym = NULL; return SWITCH; }
+"case"       { g_last_ident_sym = NULL; return CASE; }
+"default"    { g_last_ident_sym = NULL; return DEFAULT; }
 "int"        { g_last_ident_sym = NULL; return INT_KW; }
 "float"      { g_last_ident_sym = NULL; return FLOAT_KW; }
 "void"       { g_last_ident_sym = NULL; return VOID_KW; }
@@ -215,6 +218,13 @@ ALNUM   [A-Za-z0-9_]
 "/="    { g_last_ident_sym = NULL; return SLASHEQ; }
 "++"    { g_last_ident_sym = NULL; return INC; }
 "--"    { g_last_ident_sym = NULL; return DEC; }
+"<<="   { g_last_ident_sym = NULL; return SHLEQ; }
+">>="   { g_last_ident_sym = NULL; return SHREQ; }
+"<<"    { g_last_ident_sym = NULL; return SHL; }
+">>"    { g_last_ident_sym = NULL; return SHR; }
+"&="    { g_last_ident_sym = NULL; return ANDEQ; }
+"|="    { g_last_ident_sym = NULL; return OREQ; }
+"^="    { g_last_ident_sym = NULL; return XOREQ; }
 
 {ALPHA}{ALNUM}*  {
     /* The core of the lexer hack: classify this identifier by consulting

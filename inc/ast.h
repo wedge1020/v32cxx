@@ -147,10 +147,52 @@ typedef enum {
                               the literal C keyword -- not in how either
                               is validated or what gets destroyed before
                               one executes) */
+    AST_SWITCH,           /* a=discriminant expr, list=body statements --
+                              a FLAT list, matching real C's own switch-
+                              body structure exactly: AST_CASE/AST_DEFAULT
+                              are LABELS interleaved directly in this same
+                              list, not separate containers holding their
+                              own statements, so real C's fall-through
+                              behavior (control continues into the NEXT
+                              label's own statements unless something
+                              stops it) falls out naturally from just
+                              walking the list in order -- nothing this
+                              project has to implement specially. `break`
+                              inside the body exits the switch (see
+                              AST_BREAK above); `continue` passes straight
+                              through a switch to whatever loop (if any)
+                              actually encloses it, matching real C's own
+                              rule that continue never targets a switch.
+                              codegen.c emits this as literal C
+                              switch/case/default -- no lowering
+                              transformation at all, since Vircon32 C
+                              already has real, native switch/case. */
+    AST_CASE,             /* a=case value (a constant expression) -- a
+                              LABEL, not a container; see AST_SWITCH
+                              above for why its own "body" is simply
+                              whatever follows it in the enclosing
+                              AST_SWITCH's own list. */
+    AST_DEFAULT,          /* no fields -- a LABEL, same shape/rules as
+                              AST_CASE. */
     AST_EXPR_STMT,        /* a=expr */
-    AST_BINOP,            /* str1=operator text, a=lhs, b=rhs */
+    AST_BINOP,            /* str1=operator text (including the bitwise
+                              operators -- "&","|","^","<<",">>" -- which
+                              flow through this same generic node exactly
+                              like "+"/"-"/etc already do; codegen.c
+                              prints str1 directly with no operator-
+                              specific case needed, and sema.c's own
+                              operator-overload resolution simply never
+                              matches them, the same "always a plain
+                              built-in op on primitives" treatment
+                              "&&"/"||" already get -- see
+                              binop_operator_name's own doc comment in
+                              sema.c), a=lhs, b=rhs */
     AST_UNOP,             /* str1=operator text, a=operand */
-    AST_ASSIGN,           /* str1=operator text ("=","+=",...), a=lhs, b=rhs */
+    AST_ASSIGN,           /* str1=operator text ("=","+=",...,"&=","|=",
+                              "^=","<<=",">>=" -- the bitwise compound-
+                              assignment forms flow through this same
+                              generic node too, same reasoning as
+                              AST_BINOP above), a=lhs, b=rhs */
     AST_CALL,             /* a=callee, list=args.
                               sema_info: NULL until sema.c's overload-
                               resolution pass runs. If it resolved this
