@@ -1204,17 +1204,32 @@ static void resolve_new_expr(AstNode *new_node, AstNode *current_class, LocalVar
  * comment in ast.h for why that split exists).
  *
  * Each entry's own str1 is checked against, in order:
- *   1. The class's own DIRECT base class's name -- base-class delegation,
- *      the only case this round actually resolves. Resolved against the
- *      base's own constructor overloads through the exact same
- *      resolve_overload_generic core resolve_call/resolve_new_expr both
- *      already go through, attaching a CallResolution* to the
- *      AST_MEMBER_INIT node's own sema_info exactly like those two
- *      attach one to their own site node -- lower.c reads this the same
- *      way codegen.c eventually reads any other CallResolution.
- *   2. An actual, declared data member's own name -- not yet acted on;
- *      reported as a clear, explicit "not yet supported" error rather
- *      than silently ignored.
+ *   1. The class's own DIRECT base class's name -- base-class delegation.
+ *      Resolved against the base's own constructor overloads through the
+ *      exact same resolve_overload_generic core resolve_call/
+ *      resolve_new_expr both already go through, attaching a
+ *      CallResolution* to the AST_MEMBER_INIT node's own sema_info
+ *      exactly like those two attach one to their own site node --
+ *      lower.c's phase 8b reads this.
+ *   2. An actual, declared data member's own name. If that member's own
+ *      type is a BARE class type (not a pointer/reference TO one --
+ *      `Foo x;`, not `Foo *x;`/`Foo &x;`, which are ordinary pointer/
+ *      reference values needing no constructor call at all), this is
+ *      "not yet supported" -- a class-typed member's own constructor
+ *      invocation is real, separate complexity this project doesn't
+ *      support anywhere yet, not something to fold into this round.
+ *      Otherwise (a primitive, or a pointer/reference TO a class),
+ *      requires exactly one argument (matching real C++'s own
+ *      direct-initialization rule for a non-class member -- `: x(a, b)`
+ *      for a plain `int x` isn't legal C++ either) and marks the entry
+ *      resolved via `entry->ival = 1` -- a lighter-weight marker than a
+ *      CallResolution, deliberately: there's no overload to resolve for
+ *      a primitive assignment, just a name and one argument expression,
+ *      both already on the node. lower.c's own new phase reads this
+ *      flag directly, distinguishing a resolved member-field entry
+ *      (ival == 1, sema_info == NULL) from a resolved base-class
+ *      delegation (ival == 0, sema_info != NULL) from anything
+ *      unresolved (neither set).
  *   3. Anything else -- "not a base class or member" error.
  * A name matching BOTH (unusual, but syntactically legal C++ -- a data
  * member that happens to share its own base class's name) is treated as
@@ -1244,20 +1259,32 @@ static void resolve_member_init_list(AstNode *func, AstNode *current_class, Loca
             continue;
         }
 
-        int is_data_member = 0;
+        AstNode *member_field = NULL;
         if (layout != NULL) {
             for (int j = 0; j < layout->data_members.count; j++) {
                 if (strcmp(layout->data_members.items[j]->str1, entry->str1) == 0) {
-                    is_data_member = 1;
+                    member_field = layout->data_members.items[j];
                     break;
                 }
             }
         }
 
-        if (is_data_member) {
-            sema_error(entry->line,
-                       "member initializers for ordinary fields aren't supported yet -- "
-                       "initialize '%s' in the constructor body instead", entry->str1);
+        if (member_field != NULL) {
+            const AstNode *resolved_type = resolve_typedef_chain(member_field->type);
+            int is_bare_class_type = (resolved_type != NULL && resolved_type->kind == AST_IDENT
+                                       && find_class(resolved_type->str1) != NULL);
+            if (is_bare_class_type) {
+                sema_error(entry->line,
+                           "member initializers for class-typed fields aren't supported yet -- "
+                           "'%s' has a class type", entry->str1);
+            } else if (entry->list.count != 1) {
+                sema_error(entry->line, "member initializer for '%s' takes exactly one argument",
+                           entry->str1);
+            } else {
+                entry->ival = 1; /* resolved: a valid, single-argument primitive
+                    member-field initializer -- see this function's own doc
+                    comment above for what this flag means to lower.c */
+            }
         } else {
             sema_error(entry->line, "'%s' is not a base class or member of '%s'",
                        entry->str1, current_class->str1);

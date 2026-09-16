@@ -86,26 +86,47 @@ typedef enum {
                               entry. */
     AST_MEMBER_INIT,      /* str1=name -- either a base class's own name
                               (base-class-delegation: `: Base(args)`) or an
-                              ordinary member field's own name (`: x(val)`,
-                              not yet acted on beyond parsing -- see
-                              sema.c's resolve_member_init_list, which
-                              reports this case as a clear, explicit "not
-                              yet supported" error rather than silently
-                              ignoring it). Lexed as TYPE_NAME vs IDENTIFIER
-                              respectively (same distinction this grammar
-                              already relies on everywhere else), so the
-                              grammar itself doesn't need to know which
-                              case it's parsing -- that's sema.c's job.
+                              ordinary, primitive-typed member field's own
+                              name (`: x(val)`) -- a class-typed member's
+                              own name is also grammatically accepted here
+                              (see below) but never acted on, since that's
+                              real, separate complexity (invoking the
+                              member's own constructor) this project
+                              doesn't support anywhere yet.
+                              Lexed as TYPE_NAME vs IDENTIFIER respectively
+                              (same distinction this grammar already relies
+                              on everywhere else), so the grammar itself
+                              doesn't need to know which case it's parsing
+                              -- that's sema.c's job.
                               list=constructor-call-style argument
-                              expressions. sema_info=CallResolution* once
+                              expressions -- exactly one, for a resolved
+                              member-field entry (real C++'s own
+                              direct-initialization rule for a non-class
+                              member); zero or more, for a resolved
+                              base-class-delegation entry (whatever the
+                              base's own matched constructor overload
+                              takes).
+                              sema_info=CallResolution* once
                               resolve_member_init_list has successfully
                               matched a base-class-delegation entry against
                               one of the base class's own constructor
                               overloads (see sema.h's CallResolution) --
-                              NULL until then, and NULL permanently for a
-                              member-field entry (not yet resolved at all)
-                              or an entry sema.c couldn't confidently
-                              resolve. */
+                              NULL otherwise, including for a resolved
+                              member-field entry (see ival below instead).
+                              ival=1 once resolve_member_init_list has
+                              successfully resolved a PRIMITIVE member-
+                              field entry (name matches an actual data
+                              member, that member's own type isn't a bare
+                              class type, exactly one argument given) --
+                              0 otherwise (a base-class-delegation entry,
+                              which uses sema_info instead; a class-typed
+                              member-field entry, not yet supported; or an
+                              entry sema.c couldn't resolve at all).
+                              lower.c's phase 8a reads ival==1 entries;
+                              phase 8b reads sema_info != NULL entries --
+                              the two are mutually exclusive by
+                              construction, never both set on the same
+                              entry. */
     AST_BLOCK,            /* list=statements */
     AST_IF,               /* a=cond, b=then-stmt, c=else-stmt or NULL */
     AST_WHILE,            /* a=cond, b=body */

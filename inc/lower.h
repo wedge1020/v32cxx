@@ -334,12 +334,14 @@ typedef struct StructLayout {
  * field layout, attached to each class's `lower_info`), phase 2
  * (this-injection), phase 8 (vtable pointer init in constructors --
  * runs here, right after phase 2, so every later phase sees it as
- * simply the first statement already present), phase 8b (base-class
- * constructor delegation -- runs immediately after phase 8, so its own
- * prepend ends up AHEAD of phase 8's in the final body; see that
- * phase's own doc comment in lower.c for the full ordering reasoning),
- * phase 3 (call finalization/vtable dispatch, with phase 4's
- * operator-overload rewriting living inside that same walk), phase 5
+ * simply the first statement already present), phase 8a (member-field
+ * initializer assignments, in DECLARATION order -- runs immediately
+ * after phase 8), phase 8b (base-class constructor delegation -- runs
+ * immediately after phase 8a, so its own prepend ends up AHEAD of both
+ * phase 8a's and phase 8's in the final body; see phase 8a/8b's own doc
+ * comments in lower.c for the full ordering reasoning), phase 3 (call
+ * finalization/vtable dispatch, with phase 4's operator-overload
+ * rewriting living inside that same walk), phase 5
  * (reference-to-pointer), phase 6 (new/delete runtime calls), phase 7
  * (constructor invocation for stack-allocated locals), then phase 9
  * (destructor invocation at scope exit) -- every phase from 2 onward

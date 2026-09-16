@@ -3191,6 +3191,88 @@ the bottom) briefly looked like a missing error message on first
 already-long-established error test, that this ordering is pre-existing,
 unrelated project behavior, not something new or broken.
 
+## Member-field initializers (`: x(val)`), with correct declaration-order semantics
+
+The agreed-upon follow-up to base-class delegation: primitive-typed
+member-field initializers, scoped up front to two explicit boundaries
+-- no class-typed member support (invoking a member's own constructor
+is real, separate complexity this project doesn't support anywhere
+yet), and C++'s own declaration-order rule implemented correctly
+rather than approximated with written order.
+
+**`sema.c`**: `resolve_member_init_list` extended -- a data-member
+match now branches on whether that field's own type is a BARE class
+type (`resolve_typedef_chain` first, so a typedef to a class still
+counts; deliberately NOT `type_to_class`, which unwraps pointer/
+reference too and would have wrongly rejected a perfectly ordinary
+`Foo *ptr;` member as "class-typed", since a pointer VALUE needs no
+constructor call at all). A bare class type stays "not yet supported";
+everything else requires exactly one argument (real C++'s own
+direct-initialization rule for a non-class member) and gets marked
+resolved via `entry->ival = 1` -- a lighter marker than the
+`CallResolution*` base-class delegation uses, deliberately: there's no
+overload to resolve for a primitive assignment, just a name and one
+already-parsed argument expression. The two markers (`ival == 1` vs
+`sema_info != NULL`) are mutually exclusive by construction, so
+lower.c's two phases never conflict over the same entry.
+
+**A second real bug, found proactively this time, not by luck**:
+before writing any lowering code, checked whether `this`-injection
+(phase 2, `this_inject_method`) already reached a member-initializer
+list's own argument expressions -- it didn't, only the constructor
+BODY (`method->a`). A member-init argument referencing another member
+bare (`: y(x)`, not `: y(this->x)`) would have generated an
+uncompilable, bare `x` reference in the output C, since C has no
+implicit struct-field lookup the way this rewriting stands in for.
+Exactly the same CLASS of bug as last round's `attach_out_of_line`
+miss (old code that predates a new AST field simply not knowing to
+touch it) -- caught this time by checking directly rather than
+discovering it from broken generated output after the fact. Fixed:
+`this_inject_method` now also runs `rewrite_expr` over every member-
+init argument, using the same `locals` (constructor params only) the
+body itself uses at that point -- correct, since a member-init argument
+can only ever reference a parameter or a member, never a body-local
+variable, which doesn't exist yet at this point in construction.
+Verified directly: `: y(x)` now correctly generates
+`this->y = this->x`.
+
+**`lower.c` -- phase 8a**, member-field assignment insertion, placed
+BETWEEN phase 8 (vtable-init) and phase 8b (base-ctor-call) in the
+pipeline -- a real ordering requirement, not an arbitrary choice, using
+the same prepend-order reasoning phase 8b's own doc comment already
+established (whichever phase prepends LAST ends up FIRST in the final
+body). Walks `layout->data_members` in DECLARATION order -- not
+`m->c->list`'s own written order -- looking up a matching, resolved
+(`ival == 1`) entry for each declared field in turn; an unlisted field
+is simply skipped (unchanged, pre-existing behavior -- an un-listed
+primitive member's own default-initialization in real C++ is none at
+all). Final body order: `[base-ctor-call, member-inits (declaration
+order), vtable-init, ...original body]`, matching real C++'s own
+base-then-members-then-body construction timing for the two orderings
+that have a real analogue to match (this project's own vtable-pointer
+setup has no precise equivalent point in real C++'s own model, so its
+position relative to member-inits is an implementation choice, not
+something being matched to a reference the way base-before-members is).
+
+**Verified thoroughly, every claim checked against real generated
+output, not asserted**: the full 41-sample suite (37 previous + 4 new)
+shows exactly 9 expected failures (the original 7, plus this round's
+own `sample36`/`38`), zero regressions. `sample37` -- previously a
+deliberately-invalid test for the "not yet supported" error this exact
+syntax used to trigger -- repurposed into a genuine positive test now
+that the syntax is supported, confirmed generating `this->value = v`
+correctly. `sample38` (new) exercises the still-unsupported class-typed-
+member boundary specifically, confirmed with the intended error message
+verbatim. `sample39` (new) is the critical declaration-order check:
+fields declared `y` then `x`, but the initializer list writes `x(a),
+y(b)` (x first) -- confirmed the generated assignments are still
+`this->y = b; this->x = a;`, declaration order, not list order.
+`sample40` (new) combines base-class delegation and a member-field
+initializer in the same list, confirmed the full combined ordering.
+`sample41` (new) is a permanent regression test for the `this`-
+injection fix specifically -- `: y(x)`, confirmed generating
+`this->y = this->x`.
+
 ## Suggested next steps, roughly in order
 
 

@@ -284,6 +284,29 @@ static void this_inject_method(AstNode *method, AstNode *class_decl) {
         locals = lv;
     }
 
+    /* A member-initializer list's own argument expressions need the
+     * exact same implicit-member-reference rewriting the body itself
+     * gets, and for the same reason -- `: y(x * 2)`, where `x` is
+     * ANOTHER member (not a constructor parameter), needs `x` rewritten
+     * to `this->x` here too, or the generated C references a bare,
+     * undeclared identifier no C compiler would accept (C has no
+     * implicit struct-field lookup the way this rewriting stands in
+     * for). Uses the SAME `locals` (constructor params only, nothing
+     * body-local yet -- correct, since a member-init argument can only
+     * ever reference a parameter or a member, never a body-local
+     * variable, which doesn't exist yet at this point in construction)
+     * and runs BEFORE rewrite_stmt below, though order between the two
+     * doesn't actually matter -- they touch entirely disjoint parts of
+     * the tree (`method->c` vs `method->a`). */
+    if (method->c != NULL) {
+        for (int i = 0; i < method->c->list.count; i++) {
+            AstNode *entry = method->c->list.items[i];
+            for (int j = 0; j < entry->list.count; j++) {
+                rewrite_expr(&entry->list.items[j], class_decl, locals);
+            }
+        }
+    }
+
     rewrite_stmt(&method->a, class_decl, &locals);
 }
 
@@ -1418,6 +1441,110 @@ static void inject_vtable_init_classes(AstList *decls) {
     }
 }
 
+/* ---- phase 8a: member-field initializer assignments ---------------------
+ *
+ * For every constructor whose own member-initializer list has one or
+ * more entries resolved as primitive member-field initializers
+ * (sema.c's resolve_member_init_list, marked via `entry->ival == 1`),
+ * prepends an assignment `this->name = arg;` for each -- in DECLARATION
+ * ORDER (the order each field appears in `layout->data_members`, i.e.
+ * the order it was actually declared in the class), NOT the order the
+ * entries happen to appear in the initializer list itself. This is a
+ * well-known, deliberate real-C++ rule -- a member-initializer list's
+ * own WRITTEN order has no effect on execution order at all, only
+ * declaration order does (the textbook footgun: `Foo(int a) : y(a),
+ * x(y) {}` with fields declared `int x; int y;` initializes x BEFORE y,
+ * using y's still-uninitialized value, regardless of the list's own
+ * left-to-right appearance) -- reproduced here exactly, not the simpler
+ * "just use written order" a first pass might reach for.
+ *
+ * Runs BETWEEN phase 8 (vtable-init) and phase 8b (base-ctor-call) in
+ * the pipeline, deliberately -- phase 8, this phase, and phase 8b all
+ * PREPEND to the same constructor body, and the phase that prepends
+ * LAST ends up FIRST (see phase 8b's own doc comment below for the
+ * general reasoning). Call order in lower_run is phase 8, then this
+ * phase, then phase 8b, giving a final body order of [base-ctor-call,
+ * member-inits (declaration order), vtable-init, ...original body] --
+ * matching real C++'s own base-then-members-then-body construction
+ * timing for the two orderings that DO have a real-C++ analogue (base
+ * before members); this project's own vtable-pointer setup has no
+ * precisely analogous point in real C++'s own model to match against,
+ * so its position relative to member-inits here is an implementation
+ * choice, not a correctness requirement the way base-before-members is.
+ */
+static void inject_member_init_assigns_classes(AstList *decls) {
+    for (int i = 0; i < decls->count; i++) {
+        AstNode *n = decls->items[i];
+        if (n->kind == AST_CLASS_DECL) {
+            ClassLayout *layout = (ClassLayout *)n->sema_info;
+            if (layout != NULL) {
+                for (int j = 0; j < layout->methods.count; j++) {
+                    AstNode *m = layout->methods.items[j];
+                    if (strcmp(m->str1, n->str1) != 0) continue; /* not a constructor */
+                    if (m->kind != AST_FUNC_DEF) continue; /* no body to inject into */
+                    if (m->c == NULL) continue; /* no member-init list written at all */
+
+                    /* Walk data_members in DECLARATION order, not m->c's
+                     * own written order -- for each declared field, look
+                     * for a matching, resolved (ival == 1) entry in m->c.
+                     * A field with no matching entry at all (the common
+                     * case -- most fields aren't in the list) is simply
+                     * skipped, same as real C++ (an un-listed member gets
+                     * its default-initialization, which for a primitive
+                     * is none at all -- unchanged, pre-existing behavior,
+                     * not something this phase needs to do anything
+                     * about). */
+                    AstList assigns = ast_list_new();
+                    for (int d = 0; d < layout->data_members.count; d++) {
+                        const char *field_name = layout->data_members.items[d]->str1;
+                        AstNode *entry = NULL;
+                        for (int k = 0; k < m->c->list.count; k++) {
+                            AstNode *e = m->c->list.items[k];
+                            if (e->ival == 1 && strcmp(e->str1, field_name) == 0) {
+                                entry = e;
+                                break;
+                            }
+                        }
+                        if (entry == NULL) continue;
+
+                        AstNode *field_ref = ast_new(AST_MEMBER, m->line);
+                        field_ref->str1 = strdup("->");
+                        field_ref->str2 = strdup(field_name);
+                        field_ref->a = ast_ident("this", m->line);
+
+                        AstNode *assign = ast_new(AST_ASSIGN, m->line);
+                        assign->str1 = strdup("=");
+                        assign->a = field_ref;
+                        assign->b = entry->list.items[0]; /* resolve_member_init_list
+                            already confirmed exactly one argument for any
+                            ival==1 entry -- see its own doc comment */
+
+                        AstNode *expr_stmt = ast_new(AST_EXPR_STMT, m->line);
+                        expr_stmt->a = assign;
+
+                        ast_list_append(&assigns, expr_stmt);
+                    }
+                    if (assigns.count == 0) continue; /* every entry was
+                        base-class delegation (or an error) -- nothing
+                        for this phase to do */
+
+                    AstNode *body = m->a; /* AST_BLOCK */
+                    AstList new_list = ast_list_new();
+                    for (int k = 0; k < assigns.count; k++) {
+                        ast_list_append(&new_list, assigns.items[k]);
+                    }
+                    for (int k = 0; k < body->list.count; k++) {
+                        ast_list_append(&new_list, body->list.items[k]);
+                    }
+                    body->list = new_list;
+                }
+            }
+        } else if (n->kind == AST_NAMESPACE_DECL) {
+            inject_member_init_assigns_classes(&n->list);
+        }
+    }
+}
+
 /* ---- phase 8b: base-class constructor delegation ------------------------
  *
  * For every constructor WITH a member-initializer list that resolved to a
@@ -1972,6 +2099,11 @@ int lower_run(AstNode *program) {
         runs right after this-injection, before anything else touches a
         constructor's body, so the injected statement is simply the FIRST
         thing every later phase (call finalization, etc.) sees */
+    inject_member_init_assigns_classes(&program->list); /* phase 8a --
+        MUST run between phase 8 and phase 8b (not before phase 8, not
+        after phase 8b) -- see this phase's own doc comment for the full
+        prepend-ordering reasoning behind the final body order this
+        produces */
     inject_base_ctor_calls_classes(&program->list);    /* phase 8b -- MUST
         run right after phase 8, not before it: both PREPEND to the same
         constructor body, and the phase that prepends LAST ends up FIRST

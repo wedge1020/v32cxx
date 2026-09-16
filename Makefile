@@ -105,7 +105,11 @@ test: all | $(OUT_DIR)
 	$(BIN)  -vvv -b -g -o out/sample34.c tests/sample34.cpp 1> out/sample34.txt 2>&1
 	$(BIN)  -vvv    -o out/sample35.c tests/sample35.cpp 1> out/sample35.txt 2>&1
 	-$(BIN) -vvv    -o out/sample36.c tests/sample36.cpp 1> out/sample36.txt 2>&1
-	-$(BIN) -vvv    -o out/sample37.c tests/sample37.cpp 1> out/sample37.txt 2>&1
+	$(BIN)  -vvv    -o out/sample37.c tests/sample37.cpp 1> out/sample37.txt 2>&1
+	-$(BIN) -vvv    -o out/sample38.c tests/sample38.cpp 1> out/sample38.txt 2>&1
+	$(BIN)  -vvv    -o out/sample39.c tests/sample39.cpp 1> out/sample39.txt 2>&1
+	$(BIN)  -vvv    -o out/sample40.c tests/sample40.cpp 1> out/sample40.txt 2>&1
+	$(BIN)  -vvv    -o out/sample41.c tests/sample41.cpp 1> out/sample41.txt 2>&1
 # `-vvv` (this project's own verbosity flag, a later round -- see
 # main.c) is passed to every sample specifically so `make test`'s own
 # output still captures the full AST/semantic-analysis/lowering dumps
@@ -131,21 +135,28 @@ test: all | $(OUT_DIR)
 # of the "must define main" default main.c added this round -- every
 # sample here is a focused unit test of one specific compiler feature,
 # not a complete, standalone-compilable program, EXCEPT sample2, 14, 21,
-# 22, 23, 24, 25, 26, 27, 28, 29, 30, 32, 33, 34, 35, 36, and 37, which
-# genuinely do define their own `main` (sample2's predates this round;
-# sample14/21 were given one specifically so they could also be compiled
-# all the way through by the real Vircon32 toolchain, not just
-# transpiled; sample22 through 30, 32, 33, and 34 already had one; 35, 36,
-# and 37 (base-class constructor delegation, a later round) also define
-# their own, even though 36/37 are themselves deliberately invalid --
-# see below). sample31 is deliberately invalid (break/continue-outside-
-# a-loop) and gets `-c` like the other unit-test samples, since it isn't
-# trying to be a complete program at all. sample36/37 are ALSO
-# deliberately invalid (an unknown name, and an ordinary member field,
-# in a member-initializer list, respectively) but do NOT get `-c` -- they
-# already define their own `main`, same as 35, so `-c` would be
-# redundant, not wrong, but left off for consistency with how 35 itself
-# is invoked. Without `-c`, every other sample would now fail at the
+# 22, 23, 24, 25, 26, 27, 28, 29, 30, 32, 33, 34, 35, 36, 37, 38, 39, 40,
+# and 41, which genuinely do define their own `main` (sample2's predates
+# this round; sample14/21 were given one specifically so they could also
+# be compiled all the way through by the real Vircon32 toolchain, not
+# just transpiled; sample22 through 30, 32, 33, and 34 already had one;
+# 35 through 41 -- base-class constructor delegation and member-field
+# initializers, two later rounds -- also define their own, even though
+# 36 and 38 are themselves deliberately invalid -- see below). sample31
+# is deliberately invalid (break/continue-outside-a-loop) and gets `-c`
+# like the other unit-test samples, since it isn't trying to be a
+# complete program at all. sample36/38 are ALSO deliberately invalid (an
+# unknown name, and a class-typed field, in a member-initializer list,
+# respectively) but do NOT get `-c` -- they already define their own
+# `main`, same as 35, so `-c` would be redundant, not wrong, but left
+# off for consistency with how 35 itself is invoked. sample37 was
+# ALSO deliberately invalid once (the very case sample38 now tests --
+# a member-initializer list naming an ordinary field, "not yet
+# supported" at the time), repurposed into a real, passing test once
+# primitive member-field initializers themselves became supported;
+# sample38 is its replacement as the "still not supported" edge (a
+# class-typed field specifically) member-initializer lists now have.
+# Without `-c`, every other sample would now fail at the
 # "no main function found" check before ever reaching lowering/codegen --
 # not a bug in that check, just what it's supposed to do by default; this
 # project's own test suite is exactly the kind of "library/module

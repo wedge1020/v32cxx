@@ -56,18 +56,19 @@ to disambiguate, argument type, never guessing when it can't confidently
 resolve something.
 
 **Lowering** — transforming the semantically-checked program into
-something code generation can work from directly — runs through ten
+something code generation can work from directly — runs through eleven
 phases: struct field layout (with correct vtable-pointer placement
 across a hierarchy), `this`-injection, call finalization (including
 virtual dispatch through the vtable, and natural operator syntax like
 `a + b` resolved against declared overloads), reference-to-pointer
-rewriting, `new`/`delete` lowering, vtable pointer initialization, base-
-class constructor delegation (an explicit `: Base(args)` — see below),
-constructor invocation (both for stack-allocated locals and via `new`),
-and destructor invocation (via `delete`, automatically at scope exit
-including from an early `return`, and correctly scoped at a `break`/
-`continue` too — only what's actually live inside the loop gets
-destroyed, not everything above it).
+rewriting, `new`/`delete` lowering, vtable pointer initialization,
+member-field initializer assignments (in declaration order — see
+below), base-class constructor delegation (an explicit `: Base(args)`
+— see below), constructor invocation (both for stack-allocated locals
+and via `new`), and destructor invocation (via `delete`, automatically
+at scope exit including from an early `return`, and correctly scoped
+at a `break`/`continue` too — only what's actually live inside the
+loop gets destroyed, not everything above it).
 
 **Base-class constructor delegation** — `Derived::Derived(args) :
 Base(base_args) { ... }` — resolves the delegated call against the
@@ -79,6 +80,17 @@ a base subobject is always fully constructed before anything else runs
 just a style preference: if a base class's own fields are `private`
 (the properly encapsulated way to write one), a derived class's
 constructor previously had no legal way to initialize them at all.
+
+**Member-field initializers** — `: x(val)` for a primitive-typed field
+— assign the field right after any base-class delegation and before
+the constructor's own body, in the *declaration* order the field
+appears in the class (not the order it's written in the initializer
+list — a well-known real-C++ rule: `Pair(int a, int b) : x(a), y(b) {}`
+with `y` declared before `x` initializes `y` first, using `x`'s
+still-uninitialized value if `y`'s own initializer refers to it).
+Reaches the argument expressions themselves too, so `: y(x)` (another
+member referenced bare) correctly becomes `this->y = this->x` in the
+generated C.
 
 **Code generation** emits real, working Vircon32 C: struct and vtable
 struct definitions, method/function bodies, constructors that actually
@@ -158,11 +170,16 @@ emitted alongside it.
   inserted at all — unlike real C++, which would call the base's own
   default constructor automatically. Explicit delegation (below) is
   supported; only the implicit case is still a gap.
-- **Ordinary member-field initializers** (`: x(val)` for a plain field,
-  as opposed to `: Base(args)` for base-class delegation) are accepted
-  syntactically but not yet acted on — reported as a clear "not yet
-  supported" error rather than silently ignored or rejected as a parse
-  failure. Initialize the field in the constructor body instead, for now.
+- **Class-typed member-field initializers** (`: thing(args)` where
+  `thing`'s own type is a class, not a primitive/pointer/reference) are
+  accepted syntactically but not yet acted on — reported as a clear
+  "not yet supported" error. Invoking a member's own constructor is
+  real, separate complexity this project doesn't support anywhere yet.
+  A primitive-typed member-field initializer (`: x(val)` for a plain
+  `int`/`float`/etc., or a pointer/reference) IS supported, with real
+  C++'s own declaration-order semantics (members initialize in the
+  order they're *declared*, not the order they're *written* in the
+  list).
 - **Standard-C output mode.** Every Vircon32-specific output quirk this
   project works around is tracked in
   [`docs/VIRCON32_QUIRKS.md`](docs/VIRCON32_QUIRKS.md) toward an eventual

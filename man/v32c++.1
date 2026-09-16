@@ -229,20 +229,34 @@ and
 .BR continue ;
 base-class constructor delegation (
 .I ": Base(args)"
-in a constructor's own member-initializer list \(em ordinary member-field
-initializers,
-.IR ": field(val)" ,
-are accepted syntactically too, but not yet acted on, reported as a
-clear "not yet supported" error rather than silently ignored or
-rejected as a parse failure).
+in a constructor's own member-initializer list); primitive-typed
+member-field initializers in that same list (
+.IR ": x(val)" ,
+for a plain
+.IR int / float /etc.,
+or a pointer/reference), with real C++'s own declaration-order
+semantics \(em a field initializes in the order it's
+.I declared
+in the class, not the order it's
+.I written
+in the list, and an initializer argument referencing another member
+by its bare name is rewritten correctly too (
+.I ": y(x)"
+becomes
+.IR "this\->y = this\->x" ).
 .PP
 Not yet supported: an IMPLICIT base-class constructor call (a derived
 class with a base class but no explicit
 .I ": Base(args)"
 gets no base-constructor call inserted at all, unlike real C++, which
-would call the base's own default constructor automatically); ordinary
-member-field initializers in that same list (see above); virtual
-destructor dispatch through
+would call the base's own default constructor automatically);
+class-typed member-field initializers (
+.I ": thing(args)"
+where
+.IR thing 's
+own type is a class, not a primitive/pointer/reference \(em invoking a
+member's own constructor is real, separate complexity not supported
+anywhere in this project yet); virtual destructor dispatch through
 .B delete[]
 specifically (plain
 .B delete
