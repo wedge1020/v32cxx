@@ -93,8 +93,8 @@ jobs:
         if: matrix.os == 'windows'
         run: |
           if [ "${{ matrix.arch }}" = "arm64" ]; then
-            # Inside MSYS2, Clang natively handles Windows cross-compiling to arm64
-            mingw32-make CC="clang -target aarch64-w64-windows-gnu"
+            # Added -fuse-ld=lld to force Clang to use the LLVM cross-linker instead of native MSYS2 GNU ld
+            mingw32-make CC="clang -target aarch64-w64-windows-gnu -fuse-ld=lld"
             strip bin/*
           else
             mingw32-make CC="gcc"
