@@ -20,7 +20,6 @@ jobs:
     name: Build (${{ matrix.os }}-${{ matrix.arch }})
     runs-on: ${{ matrix.os-runner }}
     
-    # Force Windows steps to execute inside MSYS2 Bash, fallback to standard Bash on Unix
     defaults:
       run:
         shell: ${{ matrix.os == 'windows' && 'msys2 {0}' || 'bash' }}
@@ -29,7 +28,7 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          # Windows Targets (Managed via MSYS2 Environment)
+          # Windows Targets
           - os: windows
             arch: x86_64
             os-runner: windows-latest
@@ -72,12 +71,12 @@ jobs:
         with:
           msystem: UCRT64
           update: true
+          # Fixed: Packages are listed clearly on single lines without broken comments
           install: >-
             mingw-w64-ucrt-x86_64-gcc
+            mingw-w64-ucrt-x86_64-clang
             mingw-w64-ucrt-x86_64-make
             zip
-            # Conditional compilation toolchain if targeting ARM64 Windows
-            ${{ matrix.arch == 'arm64' && 'mingw-w64-ucrt-x86_64-cross-gcc' || '' }}
 
       - name: Setup Linux ARM Cross-Compilers
         if: matrix.os == 'linux'
@@ -94,9 +93,9 @@ jobs:
         if: matrix.os == 'windows'
         run: |
           if [ "${{ matrix.arch }}" = "arm64" ]; then
-            # Uses MSYS2 cross-compiler targeting Windows ARM64 hardware layouts
-            mingw32-make CC="aarch64-w64-mingw32-gcc"
-            aarch64-w64-mingw32-strip bin/*
+            # Inside MSYS2, Clang natively handles Windows cross-compiling to arm64
+            mingw32-make CC="clang -target aarch64-w64-windows-gnu"
+            strip bin/*
           else
             mingw32-make CC="gcc"
             strip bin/*
