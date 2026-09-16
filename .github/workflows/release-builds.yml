@@ -100,7 +100,8 @@ jobs:
         if: matrix.os == 'windows'
         run: |
           if [ "${{ matrix.arch }}" = "arm64" ]; then
-            mingw32-make CC="clang -target aarch64-w64-windows-gnu -fuse-ld=lld"
+            # -B tells Clang where to find the ARM64 startup files and native libs
+            mingw32-make CC="clang -target aarch64-w64-windows-gnu -fuse-ld=lld -B/ucrt64/aarch64-w64-mingw32/lib"
             strip bin/*
           else
             mingw32-make CC="gcc"
