@@ -3273,6 +3273,30 @@ initializer in the same list, confirmed the full combined ordering.
 injection fix specifically -- `: y(x)`, confirmed generating
 `this->y = this->x`.
 
+## A small, real gap found reviewing member-field initializers: duplicate entries
+
+Matthew confirmed a clean build against `sample37`/`39`/`40`/`41` (all
+five spot-checked directly against the actual generated C, not just
+trusted from exit codes -- declaration order, the cross-member-
+reference rewrite, and the combined base-delegation-plus-member-init
+case all confirmed correct). Asked what's next and whether any gaps
+remained; reviewing the whole feature end to end surfaced one real,
+if small, one: `resolve_member_init_list` never checked for the SAME
+field named twice in one list (`: x(a), x(b)`) -- real C++ treats this
+as ill-formed outright, but this project's own linear "first match
+wins" lookup (both in resolution and in `lower.c`'s own phase 8a) would
+have silently picked one and said nothing.
+
+Fixed with a small, dedicated pass at the top of
+`resolve_member_init_list`, before the main resolution loop: an O(n^2)
+scan (n is always small -- a member-initializer list realistically
+has a handful of entries, never worth a hash-set for) reporting one
+error per duplicate OCCURRENCE (the second, third, ... time a name
+repeats), each at its own line. `tests/sample42.cpp` added, confirmed
+producing exactly the intended message. Full 42-sample suite: exactly
+10 expected failures now (the previous 9, plus this one), zero
+regressions.
+
 ## Suggested next steps, roughly in order
 
 

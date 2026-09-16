@@ -1247,6 +1247,29 @@ static void resolve_member_init_list(AstNode *func, AstNode *current_class, Loca
     ClassLayout *layout = (ClassLayout *)current_class->sema_info;
     AstNode *base_class = (layout != NULL) ? layout->base_class_decl : NULL;
 
+    /* Detect a duplicate name (the same field or base named more than
+     * once in one list) BEFORE the main resolution loop below -- real
+     * C++ treats this as ill-formed (a hard compile error: "multiple
+     * initializations given for X"), not something to silently accept
+     * and let whichever entry lower.c's own phase 8a happens to find
+     * first quietly win. Reported once per duplicate OCCURRENCE (the
+     * second, third, ... time a name repeats), each at its own line --
+     * `: x(a), x(b), x(c)` gets two errors, one for the second x and
+     * one for the third, not just one. Doesn't skip resolving a
+     * duplicate entry afterward -- the diagnostic was the missing
+     * piece, not the resolution itself, which was already harmless
+     * (just silent) before this check existed. */
+    for (int i = 0; i < func->c->list.count; i++) {
+        for (int j = 0; j < i; j++) {
+            if (strcmp(func->c->list.items[i]->str1, func->c->list.items[j]->str1) == 0) {
+                sema_error(func->c->list.items[i]->line,
+                           "'%s' is initialized more than once in this constructor's initializer list",
+                           func->c->list.items[i]->str1);
+                break;
+            }
+        }
+    }
+
     for (int i = 0; i < func->c->list.count; i++) {
         AstNode *entry = func->c->list.items[i];
 
