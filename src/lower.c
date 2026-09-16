@@ -1580,30 +1580,37 @@ static void inject_member_init_assigns_classes(AstList *decls) {
  * the exact same cast this file already relies on for virtual dispatch
  * through a base-typed pointer and for `delete` through one.
  *
- * SCOPE, deliberately narrow for this first round: only the EXPLICIT
- * `: Base(args)` case is handled here. A derived class with a base class
- * but NO member-initializer list at all gets nothing inserted by this
- * phase -- exactly today's existing behavior, unchanged, not an implicit
- * base-constructor call the way real C++ would insert one when a
- * derived constructor doesn't delegate explicitly. Extending this to
- * the implicit case is real, separate future work -- see
- * docs/DESIGN_NOTES.md for the full reasoning behind leaving it out of
- * this round specifically (chiefly: risk of silently changing already-
- * working existing programs' behavior without being able to verify it,
- * since this sandbox has no way to build/run this round's own grammar
- * change at all).
+ * Handles BOTH explicit (`: Base(args)`) and IMPLICIT base-class
+ * construction -- a later round than this phase's own original,
+ * explicit-only version. A constructor with no `: Base(...)` entry at
+ * all (either no member-initializer list whatsoever, or one that
+ * doesn't mention the base) still gets a call inserted, to the base's
+ * own zero-argument constructor, found via the SAME
+ * find_zero_arg_constructor this file's own phase 7 already relies on
+ * for the analogous "stack-allocated local needs its default
+ * constructor called" question -- matching real C++'s own implicit-
+ * base-construction rule. If the base has no zero-arg constructor with
+ * a body at all, nothing is inserted here -- sema.c's own
+ * check_implicit_base_construction has ALREADY run by this point (a
+ * sema pass, always completed before lower_run ever starts) and either
+ * confirmed this is fine (the base has no constructor of its own at
+ * all, so nothing was ever going to be called, matching real C++'s own
+ * "implicitly default-constructible" rule for a class with no
+ * user-declared constructor) or already reported a real error (the
+ * base has SOME constructor, but none callable with zero arguments) --
+ * either way, by the time lowering runs, there is nothing left for
+ * THIS phase to diagnose, only to act on or correctly skip.
  */
 static void inject_base_ctor_calls_classes(AstList *decls) {
     for (int i = 0; i < decls->count; i++) {
         AstNode *n = decls->items[i];
         if (n->kind == AST_CLASS_DECL) {
             ClassLayout *layout = (ClassLayout *)n->sema_info;
-            if (layout != NULL) {
+            if (layout != NULL && layout->base_class_decl != NULL) {
                 for (int j = 0; j < layout->methods.count; j++) {
                     AstNode *m = layout->methods.items[j];
                     if (strcmp(m->str1, n->str1) != 0) continue; /* not a constructor */
                     if (m->kind != AST_FUNC_DEF) continue; /* no body to inject into */
-                    if (m->c == NULL) continue; /* no member-init list written at all */
 
                     /* Find the base-class-delegation entry, if m->c has
                      * one -- resolve_member_init_list already validated
@@ -1618,28 +1625,47 @@ static void inject_base_ctor_calls_classes(AstList *decls) {
                      * entry matching THAT base's own name -- so the
                      * first one found is the only one there could be. */
                     AstNode *base_entry = NULL;
-                    for (int k = 0; k < m->c->list.count; k++) {
-                        if (m->c->list.items[k]->sema_info != NULL) {
-                            base_entry = m->c->list.items[k];
-                            break;
+                    if (m->c != NULL) {
+                        for (int k = 0; k < m->c->list.count; k++) {
+                            if (m->c->list.items[k]->sema_info != NULL) {
+                                base_entry = m->c->list.items[k];
+                                break;
+                            }
                         }
                     }
-                    if (base_entry == NULL) continue; /* every entry was a
-                        member-field one, or none resolved -- nothing for
-                        this phase to do */
 
-                    CallResolution *cr = (CallResolution *)base_entry->sema_info;
-                    AstNode *base_ctor = cr->resolved_target;
-                    FuncSemaInfo *base_info = (FuncSemaInfo *)base_ctor->sema_info;
-                    const char *mangled = (base_info != NULL) ? base_info->mangled_name : base_ctor->str1;
+                    const char *mangled;
+                    AstList explicit_args = {NULL, 0, 0};
+                    if (base_entry != NULL) {
+                        /* Explicit delegation. */
+                        CallResolution *cr = (CallResolution *)base_entry->sema_info;
+                        AstNode *base_ctor = cr->resolved_target;
+                        FuncSemaInfo *base_info = (FuncSemaInfo *)base_ctor->sema_info;
+                        mangled = (base_info != NULL) ? base_info->mangled_name : base_ctor->str1;
+                        explicit_args = base_entry->list;
+                    } else {
+                        /* Implicit -- no explicit delegation named the
+                         * base at all. Find its own zero-arg constructor
+                         * (with a body); if none exists, sema.c's own
+                         * check_implicit_base_construction has already
+                         * either confirmed that's fine (no constructor
+                         * at all) or reported the real error (some
+                         * constructor, but none zero-arg) -- either way,
+                         * nothing left for this phase to do here. */
+                        AstNode *implicit_ctor = find_zero_arg_constructor(layout->base_class_decl);
+                        if (implicit_ctor == NULL) continue;
+                        FuncSemaInfo *implicit_info = (FuncSemaInfo *)implicit_ctor->sema_info;
+                        mangled = (implicit_info != NULL) ? implicit_info->mangled_name : implicit_ctor->str1;
+                        /* explicit_args stays empty -- a zero-arg call */
+                    }
 
                     AstNode *receiver = cast_receiver_if_needed(ast_ident("this", m->line), n, layout->base_class_decl);
 
                     AstNode *call = ast_new(AST_CALL, m->line);
                     call->a = ast_ident(mangled, m->line);
                     ast_list_append(&call->list, receiver);
-                    for (int k = 0; k < base_entry->list.count; k++) {
-                        ast_list_append(&call->list, base_entry->list.items[k]);
+                    for (int k = 0; k < explicit_args.count; k++) {
+                        ast_list_append(&call->list, explicit_args.items[k]);
                     }
 
                     AstNode *expr_stmt = ast_new(AST_EXPR_STMT, m->line);

@@ -47,8 +47,7 @@ class Square : public Shape {
         int area();
 };
 
-Square::Square(int side) {
-    this->size = side;
+Square::Square(int side) : Shape(side) {
 }
 
 Square::~Square() {

@@ -111,6 +111,9 @@ test: all | $(OUT_DIR)
 	$(BIN)  -vvv    -o out/sample40.c tests/sample40.cpp 1> out/sample40.txt 2>&1
 	$(BIN)  -vvv    -o out/sample41.c tests/sample41.cpp 1> out/sample41.txt 2>&1
 	-$(BIN) -vvv    -o out/sample42.c tests/sample42.cpp 1> out/sample42.txt 2>&1
+	$(BIN)  -vvv    -o out/sample43.c tests/sample43.cpp 1> out/sample43.txt 2>&1
+	$(BIN)  -vvv    -o out/sample44.c tests/sample44.cpp 1> out/sample44.txt 2>&1
+	-$(BIN) -vvv    -o out/sample45.c tests/sample45.cpp 1> out/sample45.txt 2>&1
 # `-vvv` (this project's own verbosity flag, a later round -- see
 # main.c) is passed to every sample specifically so `make test`'s own
 # output still captures the full AST/semantic-analysis/lowering dumps
@@ -137,27 +140,34 @@ test: all | $(OUT_DIR)
 # sample here is a focused unit test of one specific compiler feature,
 # not a complete, standalone-compilable program, EXCEPT sample2, 14, 21,
 # 22, 23, 24, 25, 26, 27, 28, 29, 30, 32, 33, 34, 35, 36, 37, 38, 39, 40,
-# 41, and 42, which genuinely do define their own `main` (sample2's
-# predates this round; sample14/21 were given one specifically so they
-# could also be compiled all the way through by the real Vircon32
-# toolchain, not just transpiled; sample22 through 30, 32, 33, and 34
-# already had one; 35 through 42 -- base-class constructor delegation
-# and member-field initializers, two later rounds -- also define their
-# own, even though 36, 38, and 42 are themselves deliberately invalid --
-# see below). sample31 is deliberately invalid (break/continue-outside-
-# a-loop) and gets `-c` like the other unit-test samples, since it isn't
-# trying to be a complete program at all. sample36/38/42 are ALSO
-# deliberately invalid (an unknown name, a class-typed field, and a
-# field named twice, respectively, in a member-initializer list) but do
-# NOT get `-c` -- they already define their own `main`, same as 35, so
-# `-c` would be redundant, not wrong, but left off for consistency with
-# how 35 itself is invoked. sample37 was ALSO deliberately invalid once
+# 41, 42, 43, 44, and 45, which genuinely do define their own `main`
+# (sample2's predates this round; sample14/21 were given one
+# specifically so they could also be compiled all the way through by
+# the real Vircon32 toolchain, not just transpiled; sample22 through 30,
+# 32, 33, and 34 already had one; 35 through 45 -- base-class
+# constructor delegation and member-field initializers, several later
+# rounds -- also define their own, even though 36, 38, 42, and 45 are
+# themselves deliberately invalid -- see below). sample31 is
+# deliberately invalid (break/continue-outside-a-loop) and gets `-c`
+# like the other unit-test samples, since it isn't trying to be a
+# complete program at all. sample36/38/42/45 are ALSO deliberately
+# invalid (an unknown name, a class-typed field, a field named twice,
+# and a base with no zero-arg constructor, respectively) but do NOT get
+# `-c` -- they already define their own `main`, same as 35, so `-c`
+# would be redundant, not wrong, but left off for consistency with how
+# 35 itself is invoked. sample37 was ALSO deliberately invalid once
 # (the very case sample38 now tests -- a member-initializer list naming
 # an ordinary field, "not yet supported" at the time), repurposed into a
 # real, passing test once primitive member-field initializers themselves
 # became supported; sample38 is its replacement as the "still not
 # supported" edge (a class-typed field specifically) member-initializer
-# lists now have. Without `-c`, every other sample would now fail at the
+# lists now have. sample24/32 needed real, one-line fixes the SAME round
+# implicit base-class construction shipped (see docs/DESIGN_NOTES.md) --
+# both had a derived constructor that never explicitly delegated to a
+# base with no zero-arg constructor of its own, which was always
+# invalid real C++, just never caught until this project's own
+# check_implicit_base_construction existed to catch it. Without `-c`,
+# every other sample would now fail at the
 # "no main function found" check before ever reaching lowering/codegen --
 # not a bug in that check, just what it's supposed to do by default; this
 # project's own test suite is exactly the kind of "library/module

@@ -3297,6 +3297,73 @@ producing exactly the intended message. Full 42-sample suite: exactly
 10 expected failures now (the previous 9, plus this one), zero
 regressions.
 
+## Implicit base-class construction -- and two real, latent bugs it caught in the test suite itself
+
+The agreed-upon follow-up to explicit base-class delegation: a derived
+constructor that never writes `: Base(args)` at all still gets the
+base's own zero-argument constructor called automatically, matching
+real C++'s own rule -- closing the other half of what explicit
+delegation deliberately left open two rounds ago.
+
+**`sema.c` -- `check_implicit_base_construction`**, called alongside
+`resolve_member_init_list` from `check_function_body` for every
+constructor. Three outcomes: no base class at all (nothing to check);
+already explicitly delegating (checked directly against `func->c`'s
+own entries, not against anything `resolve_member_init_list` attached,
+so the two checks stay independent of each other's ordering); or no
+explicit delegation, in which case the base's own constructor set gets
+inspected directly -- no constructor at all is fine (real C++'s own
+implicitly-default-constructible rule, and this project's own
+established "nothing to call" no-op everywhere else a class has no
+constructor), but a base with SOME constructor and none of them
+zero-arg is a genuine error, reported here rather than left as a
+silently uninitialized base subobject.
+
+**`lower.c` -- phase 8b extended**, not a new phase: the existing
+base-ctor-call insertion now handles the implicit case too, reusing
+`find_zero_arg_constructor` (already defined earlier in the file for
+phase 7's own, analogous "stack-allocated local needs its default
+constructor" question) rather than reimplementing the same lookup a
+second time. By the time this phase runs, sema's own check has already
+either confirmed nothing is needed or reported the real error, so
+there's nothing left for lowering itself to diagnose.
+
+**Two real, latent bugs this surfaced immediately on rebuild, not
+edge cases invented to stress-test the feature**: `sample24.cpp` and
+`sample32.cpp` -- the vtable-instance-population test and the
+virtual-destructor-dispatch test, the latter specifically confirmed
+against the real Vircon32 C compiler in an earlier round -- both had a
+`Square` constructor that set `this->size` directly (legal only
+because `size` is `protected`, not `private`) instead of delegating to
+`Shape`'s own constructor at all. Real C++ would have rejected both
+files outright from the start: `Shape` has no zero-argument
+constructor, so `Square`'s own implicit base-construction was always
+ill-formed -- this project simply had no way to notice until this
+round's own check existed. Fixed with a one-line change to each
+(`Square::Square(int side) : Shape(side) { }`, letting `Shape`'s own
+constructor do what the body used to do directly) -- confirmed the fix
+produces the exact same `this->size` value both ways, and re-verified
+`sample32`'s own virtual-destructor-dispatch logic (`v32_delete_Square`
+and its vtable-based dispatch) is completely untouched, exactly as
+expected, since this round's changes only ever touch constructor
+bodies.
+
+**Verified thoroughly, both the feature itself and its side effects
+on the existing suite**: three new tests specifically for this feature
+-- `sample43.cpp` (the positive case: base has a zero-arg constructor,
+derived doesn't mention it, confirmed the call `Base__Base__void(...)`
+is correctly inserted ahead of the member-field-init assignment that
+follows it) and `sample44.cpp` (base has NO constructor at all,
+confirmed correctly generating no call whatsoever, the no-op case) and
+`sample45.cpp` (deliberately invalid: base has only a non-zero-arg
+constructor, confirmed the exact intended error message). Full
+45-sample suite: exactly 11 expected failures now (the previous 10,
+plus this round's own `sample45`), zero OTHER regressions -- confirmed
+by actually running the full suite twice (once immediately after
+implementing, which is what caught `sample24`/`32` in the first place;
+once again after fixing both, confirming a clean run through to the
+end).
+
 ## Suggested next steps, roughly in order
 
 

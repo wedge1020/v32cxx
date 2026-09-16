@@ -1572,6 +1572,82 @@ static void check_node(AstNode *n, AstNode *current_class, LocalVarType **locals
     }
 }
 
+/* Checks whether `func` (a constructor) needs an IMPLICIT base-class
+ * constructor call -- real C++'s own rule: a derived class's
+ * constructor that does NOT explicitly delegate to its base (no
+ * ": Base(args)" written at all) still calls the base's own DEFAULT
+ * (zero-argument) constructor automatically, if one exists.
+ *
+ * Three outcomes:
+ *   - No base class at all -- nothing to check.
+ *   - Already explicitly delegating (func->c has an entry naming the
+ *     base) -- nothing more needed; checked directly against func->c
+ *     here, not against anything resolve_member_init_list attached,
+ *     so this function stays independent of that one's own ordering.
+ *   - No explicit delegation: if the base has NO constructor of its
+ *     own at all, nothing is required (matching real C++'s own
+ *     implicitly-default-constructible rule for a class with no
+ *     user-declared constructor -- and matching how this project
+ *     ALREADY treats "no constructor exists" as a no-op everywhere
+ *     else, e.g. lower.c's own find_zero_arg_constructor simply
+ *     returning NULL). If the base DOES have a constructor, but none
+ *     of its overloads is callable with zero arguments and has a body,
+ *     this is a genuine, real C++ compile error ("no default
+ *     constructor exists for base class") -- reported here, not
+ *     silently left as an uninitialized base subobject the way it
+ *     would have been before this check existed.
+ *
+ * Attaches nothing anywhere -- lower.c's own phase 8b independently
+ * re-derives "does this constructor need an implicit base call" using
+ * the identical "find a zero-arg, has-a-body base constructor" logic,
+ * since by the time lowering runs, this function has already confirmed
+ * (by not erroring) that either none is needed at all, or one
+ * genuinely exists to insert. */
+static void check_implicit_base_construction(AstNode *func, AstNode *current_class) {
+    if (current_class == NULL || strcmp(func->str1, current_class->str1) != 0) {
+        return; /* not a constructor at all */
+    }
+
+    ClassLayout *layout = (ClassLayout *)current_class->sema_info;
+    AstNode *base_class = (layout != NULL) ? layout->base_class_decl : NULL;
+    if (base_class == NULL) return; /* no base class -- nothing to check */
+
+    if (func->c != NULL) {
+        for (int i = 0; i < func->c->list.count; i++) {
+            if (strcmp(func->c->list.items[i]->str1, base_class->str1) == 0) {
+                return; /* explicit delegation already covers this */
+            }
+        }
+    }
+
+    ClassLayout *base_layout = (ClassLayout *)base_class->sema_info;
+    if (base_layout == NULL) return;
+
+    int base_has_any_ctor = 0;
+    int base_has_zero_arg_ctor = 0;
+    for (int i = 0; i < base_layout->methods.count; i++) {
+        AstNode *m = base_layout->methods.items[i];
+        if (strcmp(m->str1, base_class->str1) != 0) continue; /* not a constructor */
+        base_has_any_ctor = 1;
+        if (m->kind == AST_FUNC_DEF && m->list.count == 0) { /* has a body, zero
+            explicit params -- at sema time, before this-injection, so no
+            "this" to account for yet (unlike lower.c's own equivalent
+            check, which runs after this-injection and so compares
+            against 1, not 0) */
+            base_has_zero_arg_ctor = 1;
+            break;
+        }
+    }
+
+    if (base_has_any_ctor && !base_has_zero_arg_ctor) {
+        sema_error(func->line,
+                   "'%s' has no default constructor, but '%s' doesn't explicitly "
+                   "call one of its base's own constructors -- add a member "
+                   "initializer (': %s(args)') to '%s'",
+                   base_class->str1, func->str1, base_class->str1, func->str1);
+    }
+}
+
 static void check_function_body(AstNode *func, AstNode *current_class) {
     if (func->kind != AST_FUNC_DEF) return; /* only definitions have bodies to walk */
     LocalVarType *locals = NULL;
@@ -1591,6 +1667,7 @@ static void check_function_body(AstNode *func, AstNode *current_class) {
      * about `locals` being ready, not about any dependency the other
      * direction. */
     resolve_member_init_list(func, current_class, locals);
+    check_implicit_base_construction(func, current_class);
     check_node(func->a, current_class, &locals);
     /* `locals` is deliberately never freed -- single-shot CLI tool, same
      * memory philosophy as the rest of this project (see e.g.

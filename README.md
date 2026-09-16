@@ -81,6 +81,17 @@ just a style preference: if a base class's own fields are `private`
 (the properly encapsulated way to write one), a derived class's
 constructor previously had no legal way to initialize them at all.
 
+**Implicit base-class construction** works too now — a derived
+constructor that never writes `: Base(args)` at all still gets a call
+to the base's own zero-argument constructor inserted automatically,
+matching real C++. A base with no constructor of its own needs nothing
+called (also matching real C++'s own implicitly-default-constructible
+rule); a base with some constructor but none callable with zero
+arguments is a genuine error (`'Base' has no default constructor...`),
+not a silently uninitialized base subobject. This check caught two
+real, pre-existing bugs in this project's own test suite the moment it
+shipped — confirmed directly, not just reasoned through.
+
 **Member-field initializers** — `: x(val)` for a primitive-typed field
 — assign the field right after any base-class delegation and before
 the constructor's own body, in the *declaration* order the field
@@ -165,11 +176,6 @@ emitted alongside it.
 
 **What doesn't exist yet, worth knowing before you rely on it:**
 
-- **Implicit base-class construction.** A derived class with a base
-  class but no explicit `: Base(args)` gets no base-constructor call
-  inserted at all — unlike real C++, which would call the base's own
-  default constructor automatically. Explicit delegation (below) is
-  supported; only the implicit case is still a gap.
 - **Class-typed member-field initializers** (`: thing(args)` where
   `thing`'s own type is a class, not a primitive/pointer/reference) are
   accepted syntactically but not yet acted on — reported as a clear

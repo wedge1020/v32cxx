@@ -227,9 +227,15 @@ line is carried into the output verbatim, not expanded or resolved);
 .B break
 and
 .BR continue ;
-base-class constructor delegation (
+base-class constructor delegation, both EXPLICIT (
 .I ": Base(args)"
-in a constructor's own member-initializer list); primitive-typed
+in a constructor's own member-initializer list) and IMPLICIT (no
+.I ": Base(args)"
+written at all still calls the base's own zero-argument constructor
+automatically, matching real C++ \(em a base with no constructor of
+its own needs nothing called; a base with some constructor but none
+callable with zero arguments is a genuine, reported error, not a
+silently uninitialized base subobject); primitive-typed
 member-field initializers in that same list (
 .IR ": x(val)" ,
 for a plain
@@ -243,13 +249,12 @@ in the list, and an initializer argument referencing another member
 by its bare name is rewritten correctly too (
 .I ": y(x)"
 becomes
-.IR "this\->y = this\->x" ).
+.IR "this\->y = this\->x" );
+duplicate detection for a member-initializer list (
+.I ": x(a), x(b)"
+is a reported error, not a silent, arbitrary pick between the two).
 .PP
-Not yet supported: an IMPLICIT base-class constructor call (a derived
-class with a base class but no explicit
-.I ": Base(args)"
-gets no base-constructor call inserted at all, unlike real C++, which
-would call the base's own default constructor automatically);
+Not yet supported:
 class-typed member-field initializers (
 .I ": thing(args)"
 where
