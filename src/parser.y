@@ -107,7 +107,7 @@
 %token <ival> INT_LITERAL CHAR_LITERAL
 %token <fval> FLOAT_LITERAL
 
-%token CLASS PUBLIC PRIVATE PROTECTED NAMESPACE TYPEDEF
+%token CLASS STRUCT PUBLIC PRIVATE PROTECTED NAMESPACE TYPEDEF
 %token RETURN IF ELSE WHILE FOR BREAK CONTINUE
 %token SWITCH CASE DEFAULT
 %token INT_KW FLOAT_KW VOID_KW BOOL_KW CHAR_KW
@@ -130,7 +130,7 @@
 
 %type <str> name_tok func_name operator_symbol
 %type <access> access_spec
-%type <ival> pointer_opt opt_virtual
+%type <ival> pointer_opt opt_virtual class_or_struct_kw
 
 %right '=' PLUSEQ MINUSEQ STAREQ SLASHEQ ANDEQ OREQ XOREQ SHLEQ SHREQ
 %left OROR
@@ -216,7 +216,7 @@ namespace_decl:
 /* ---- classes -------------------------------------------------------- */
 
 class_decl:
-    CLASS IDENTIFIER opt_base
+    class_or_struct_kw IDENTIFIER opt_base
         {
             /* Register the class *before* the body is scanned, so that
              * self-referential members (`Node *next;`) and constructor/
@@ -261,8 +261,25 @@ class_decl:
              * default for that case rather than leaving it uninitialized. */
             $$->access = $3 ? $3->access : ACC_PUBLIC;
             $$->list = $6;
+            $$->ival = $1; /* is_struct -- see class_or_struct_kw below and
+                AST_CLASS_DECL's own doc comment in ast.h for what this
+                controls (only the default member-access level; every
+                other piece of this project's class machinery applies
+                identically either way) */
             g_current_class_sym = NULL;
         }
+    ;
+
+/* Distinguishes `class` from `struct` at the very first token of
+ * class_decl -- real C++'s only actual difference between the two
+ * (default member access before any explicit public:/private:/
+ * protected: label) lives entirely in this single ival value, read by
+ * sema.c's compute_layout(); nothing else in this grammar, sema.c's
+ * layout computation, lower.c, or codegen.c needs to know or care which
+ * keyword originally declared a given class. */
+class_or_struct_kw:
+      CLASS   { $$ = 0; }
+    | STRUCT  { $$ = 1; }
     ;
 
 opt_base:
@@ -1039,6 +1056,32 @@ unary_expr:
             $$ = ast_new(AST_DELETE, @1.first_line);
             $$->a = $4;
             $$->ival = 1;
+        }
+    | '(' type_spec pointer_opt ')' unary_expr
+        {
+            /* C-style cast -- (Type)expr, (Type *)expr, (Type &)expr.
+             * AST_CAST already existed (lower.c has been synthesizing
+             * one internally for a while -- implicit-upcast insertion,
+             * receiver casts -- see ast.h's own doc comment on it,
+             * updated here now that user-written source can produce
+             * one too, not just lowering).
+             *
+             * No genuine ambiguity with primary_expr's own
+             * "'(' expr ')'" parenthesized-expression alternative,
+             * confirmed directly from primary_expr's own grammar
+             * before writing this, not assumed: primary_expr only ever
+             * accepts a bare IDENTIFIER as an expression-starting
+             * token, never TYPE_NAME -- so a TYPE_NAME (or a built-in
+             * type keyword: INT_KW/FLOAT_KW/VOID_KW/BOOL_KW/CHAR_KW, all
+             * of which start type_spec and nothing in expr's own
+             * first-set) immediately after '(' can ONLY mean a cast is
+             * starting here, never the start of a plain parenthesized
+             * expression. */
+            $$ = ast_new(AST_CAST, @1.first_line);
+            $$->type = ($3 == 1) ? ast_wrap_pointer($2, @1.first_line)
+                     : ($3 == 2) ? ast_wrap_reference($2, @1.first_line)
+                     : $2;
+            $$->a = $5;
         }
     ;
 

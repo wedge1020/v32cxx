@@ -644,11 +644,16 @@ static void compute_layout(AstNode *class_decl) {
     layout->data_members = ast_list_new();
     layout->methods = ast_list_new();
 
-    /* C++'s default access for `class` (never `struct`, which this
-     * project doesn't support) is private when no access-specifier
-     * precedes the first member -- e.g. a class body that starts
-     * straight into `int x;` with no leading `public:`/`private:`. */
-    AccessSpec current_access = ACC_PRIVATE;
+    /* C++'s default access before any explicit public:/private:/
+     * protected: label: private for `class`, public for `struct` --
+     * the ONLY real difference between the two keywords, read directly
+     * from class_decl->ival (set by class_or_struct_kw in parser.y; see
+     * AST_CLASS_DECL's own doc comment in ast.h for the full picture).
+     * Every other piece of this project's own class machinery (vtables,
+     * constructors, inheritance, access control) applies identically to
+     * both -- this one line is the entire implementation of `struct`
+     * support beyond parsing the keyword itself. */
+    AccessSpec current_access = class_decl->ival ? ACC_PUBLIC : ACC_PRIVATE;
 
     for (int i = 0; i < class_decl->list.count; i++) {
         AstNode *member = class_decl->list.items[i];
@@ -1512,6 +1517,15 @@ static void check_node(AstNode *n, AstNode *current_class, LocalVarType **locals
         case AST_RETURN:
         case AST_EXPR_STMT:
         case AST_DELETE:
+        case AST_CAST:
+            /* AST_CAST added here specifically for a USER-WRITTEN cast
+             * ("(int)someFunc()") -- lowering-synthesized casts (an
+             * implicit upcast, a receiver cast) never reach check_node
+             * at all, since they're inserted after sema.c has already
+             * finished running; only a cast parsed directly from source
+             * does, and its own inner expression can contain anything
+             * an ordinary expression can, including a call that needs
+             * its own resolution the same as it would anywhere else. */
             check_node(n->a, current_class, locals);
             break;
         case AST_VAR_DECL: {
@@ -1743,6 +1757,40 @@ static void access_check_free_functions(AstList *decls) {
     }
 }
 
+/* Walks every top-level (file-scope) AST_VAR_DECL's own initializer
+ * expression, the same way check_function_body already walks a local
+ * variable's own initializer within a function body -- a real,
+ * previously-existing gap, not something this project ever deliberately
+ * scoped out: without this, a global's own initializer (if it contains
+ * a function call, say) would never get its own CallResolution
+ * attached, silently differing from how the identical expression would
+ * be treated as a local variable's own initializer one function down.
+ * current_class is NULL (a global isn't a class member) and locals
+ * starts empty each time (a global's own initializer can only ever
+ * reference OTHER globals or free functions, never anything
+ * function-local, which doesn't exist at file scope) -- a global
+ * referencing another global by name simply isn't tracked as a `local`
+ * at all (this project has no separate "globals" registry the way
+ * `locals`/class members are tracked), so `infer_expr_type` returns
+ * NULL for it the same graceful way it already does for any other
+ * unresolved identifier (an undeclared library function name, say) --
+ * not a bug, matching this project's own established "best-effort,
+ * let the real C compiler catch what this one doesn't fully
+ * understand" philosophy, and harmless here specifically because
+ * codegen.c prints a bare identifier verbatim regardless of whether
+ * sema.c ever resolved its type. */
+static void check_globals(AstList *decls) {
+    for (int i = 0; i < decls->count; i++) {
+        AstNode *n = decls->items[i];
+        if (n->kind == AST_VAR_DECL) {
+            LocalVarType *locals = NULL;
+            check_node(n->a, NULL, &locals);
+        } else if (n->kind == AST_NAMESPACE_DECL) {
+            check_globals(&n->list);
+        }
+    }
+}
+
 /* Checks whether the program defines an actual `main` -- specifically a
  * top-level (never a method; see mangle()'s own class_name == NULL
  * restriction on the same special-casing) AST_FUNC_DEF, not merely a
@@ -1801,6 +1849,7 @@ int sema_run(AstNode *program) {
      * already computed by compute_layouts() above. */
     access_check_methods(&program->list);
     access_check_free_functions(&program->list);
+    check_globals(&program->list);
 
     /* NOTE: the registries are deliberately NOT freed here anymore.
      * lower.c's vtable-dispatch phase also depends on find_class() (via
@@ -1977,6 +2026,7 @@ static void dump_calls_in_node(const AstNode *n) {
         case AST_EXPR_STMT:
         case AST_DELETE:
         case AST_VAR_DECL:
+        case AST_CAST:
             dump_calls_in_node(n->a);
             break;
         case AST_BINOP:

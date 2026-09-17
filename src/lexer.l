@@ -167,6 +167,7 @@ ALNUM   [A-Za-z0-9_]
 [ \t\r]+                        { /* whitespace */ }
 
 "class"      { g_last_ident_sym = NULL; return CLASS; }
+"struct"     { g_last_ident_sym = NULL; return STRUCT; }
 "public"     { g_last_ident_sym = NULL; return PUBLIC; }
 "private"    { g_last_ident_sym = NULL; return PRIVATE; }
 "protected"  { g_last_ident_sym = NULL; return PROTECTED; }
@@ -240,7 +241,16 @@ ALNUM   [A-Za-z0-9_]
     return IDENTIFIER;
 }
 
-{DIGIT}+"."{DIGIT}+([eE][+-]?{DIGIT}+)?  {
+{DIGIT}+"."{DIGIT}+([eE][+-]?{DIGIT}+)?[fF]?  {
+    /* Trailing f/F (real C++'s own "this is a float, not a double"
+     * suffix) is matched and simply ignored -- atof() itself already
+     * stops at the first character it can't parse, so `atof("3.9f")`
+     * correctly yields 3.9 with no separate stripping needed. Harmless
+     * either way in this project specifically: there is no distinct
+     * "double" type here for the suffix to have disambiguated FROM --
+     * every floating-point value is already `float` -- so the suffix
+     * is accepted purely for compatibility with real C++ source that
+     * writes it out of habit, not because it changes anything here. */
     g_last_ident_sym = NULL;
     yylval.fval = atof(yytext);
     return FLOAT_LITERAL;

@@ -1,4 +1,4 @@
-.TH V32C++ 1 "September 2026" "v32c++ 20260916-dev" "User Commands"
+.TH V32C++ 1 "September 2026" "v32c++ 20260917-dev" "User Commands"
 .SH NAME
 v32c++ \- transpile a subset of C++ to Vircon32 C
 .SH SYNOPSIS
@@ -205,9 +205,16 @@ project's own README and
 for the full, current picture, including known gaps under active
 development.
 .PP
-Supported: classes with single inheritance and access control;
-constructors and destructors, including automatic invocation at
-scope exit and via
+Supported: classes and plain C-style
+.BR struct s
+alike (the only real difference \(em default member access: private for
+.BR class ,
+public for
+.B struct
+\(em is handled correctly; every other class feature is shared
+identically between the two) with single inheritance and access
+control; constructors and destructors, including automatic invocation
+at scope exit and via
 .BR delete ;
 .B virtual
 functions and dynamic dispatch, including virtual destructors;
@@ -249,6 +256,9 @@ gotcha (equality binds tighter than bitwise-and, so this parses as
 not
 .IR "(a & b) == c" ),
 handled exactly right rather than approximated;
+C-style casts
+.RI ( "(int)x" ", " "(Base *)ptr" );
+global (file-scope) variables;
 base-class constructor delegation, both EXPLICIT (
 .I ": Base(args)"
 in a constructor's own member-initializer list) and IMPLICIT (no
@@ -297,25 +307,21 @@ toward this).
 Also not yet supported \(em basic, non-OOP C syntax, confirmed directly
 by checking the grammar rather than assumed, relevant if this tool is
 being used to adapt existing standard C rather than write new C++:
-C-style casts
-.RI ( "(int)x" ),
 the ternary operator
 .RI ( ?: ),
 .BR do / while ,
 .BR enum ,
 .BR union ,
 .BR goto ,
-a bare
-.B struct
-(only
-.B class
-is recognized), source-level
+source-level
 .BR sizeof ,
 function-pointer declarators, and multi-dimensional arrays. Bitwise
-operators and
-.B switch / case
-(above) were the first pass through this list; the rest remains real,
-substantial future work.
+operators,
+.BR switch / case ,
+bare
+.BR struct ,
+and C-style casts (above) were the first two passes through this
+list; the rest remains real, substantial future work.
 .PP
 Never supported, by design: templates, exceptions, RTTI, multiple
 inheritance.

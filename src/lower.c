@@ -169,6 +169,19 @@ static void rewrite_expr(AstNode **slot, AstNode *class_decl, LocalVarType *loca
             break;
         case AST_UNOP:
         case AST_DELETE:
+        case AST_CAST:
+            /* AST_CAST added here specifically for a USER-WRITTEN cast
+             * ("(Base *)this", "(int)member") -- this function
+             * previously only ever encountered an AST_CAST as something
+             * a LATER lowering phase inserted, never as part of the
+             * original, pre-this-injection AST it walks, so this case
+             * genuinely didn't need to exist until user-written casts
+             * did. The default: case below's own comment ("can't
+             * contain a `this` or a bare member reference") is simply
+             * false for a cast's own wrapped expression -- confirmed
+             * this gap directly by checking, the same way the member-
+             * initializer-list argument gap was caught earlier (see
+             * this function's own header comment on that). */
             rewrite_expr(&n->a, class_decl, locals);
             break;
         case AST_NEW:
@@ -636,6 +649,13 @@ static void finalize_calls_expr(AstNode **slot, AstNode *class_decl, LocalVarTyp
                 single-object form, a harmless no-op in that case */
             break;
         case AST_DELETE:
+        case AST_CAST:
+            /* AST_CAST added here for the same reason as rewrite_expr's
+             * own AST_CAST case above (phase 2) -- a user-written cast's
+             * own wrapped expression can contain a call needing this
+             * phase's own virtual-dispatch/overload finalization just
+             * as much as any other expression can, e.g.
+             * "(int)shape->area()". */
             finalize_calls_expr(&n->a, class_decl, locals);
             break;
         default:

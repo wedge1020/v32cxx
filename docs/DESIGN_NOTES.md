@@ -3499,6 +3499,242 @@ themselves are valid otherwise. The grammar itself, and everything
 downstream of it, still needs Matthew's own bison/flex regeneration to
 confirm for real.
 
+## Global variables (a real, confirmed bug fixed), `struct`, and C-style casts
+
+Matthew's own confirmation of the bitwise-ops/switch round (all four
+outputs spot-checked directly, precedence gotcha and the loop/switch
+break-vs-continue distinction both confirmed correct) came with the
+green light to continue the "basic C" pass: global variables first
+(the open question from last round), then `struct` and casts.
+
+### Global variables -- investigated, found a real bug, fixed
+
+A direct test (`int counter = 0;` at file scope, referenced from a
+function) surfaced a genuine, confirmed bug, not just an unsupported
+feature: the declaration was silently DROPPED from generated output
+entirely. `codegen_run` had no function walking top-level `AST_VAR_DECL`
+nodes at all -- `emit_forward_declarations`/`emit_typedefs`/
+`emit_classes`/etc never touched one. Any function referencing that
+"global" produced C that referenced an undeclared identifier -- a real
+downstream compile failure, not a graceful gap. `sema.c` had the
+identical gap one level up: `collect_declarations` never registered a
+global at all, so its own initializer expression (if it contained a
+function call) would never get its `CallResolution` resolved, unlike
+the identical expression as a local variable's own initializer one
+function down.
+
+Fixed both: `sema.c` gained `check_globals` (walks every top-level
+`VarDecl`'s own initializer through `check_node`, wired into
+`sema_run`); `codegen.c` gained `emit_globals` (reuses
+`print_var_decl_inline` directly -- the C syntax for a global
+declaration is identical to a local one), placed after `emit_classes`
+so a class-typed global's own struct definition would already exist
+(class-typed globals still aren't fully supported -- no constructor
+gets invoked for one, the same gap class-typed member fields have --
+but at least the DECLARATION itself is no longer silently dropped).
+Re-ran the original failing test after the fix: `counter` now emits
+correctly, referencing functions compile. `tests/sample50.cpp` added
+as a permanent regression test. Full suite, zero regressions.
+
+### `struct`
+
+Real C++'s ONLY actual difference between `class` and `struct` is
+default member access (private vs. public) before any explicit
+`public:`/`private:`/`protected:` label -- everything else (vtables,
+constructors, inheritance, access control once a label IS given)
+already applies identically to both in real C++, and turned out to
+already be true of this project's own `class` machinery too, since
+none of it was ever conditioned on the keyword itself. Implementation
+is correspondingly small: a new `ival` flag on `AST_CLASS_DECL` (0 for
+`class`, 1 for `struct`), set by a new `class_or_struct_kw` grammar
+production replacing the previously-hardcoded `CLASS` token at the
+start of `class_decl`, read by exactly one line in `sema.c`'s
+`compute_layout` (the `current_access` initializer). Confirmed directly
+that no other file needed changes: `codegen.c` already always emits
+`struct` in the generated C regardless of which keyword declared it
+(Vircon32 C has no `class` at all, so this was already correct and
+unrelated to this change); grepped `sema.c`/`lower.c`/`codegen.c` for
+every place that mentions "class" in a comment or diagnostic message
+and confirmed they're all using it in the general, standard C++ sense
+(real compilers do the same -- "private member of class 'Foo'" is
+standard diagnostic phrasing regardless of whether `Foo` was declared
+`class` or `struct`), not something needing correction.
+
+Three tests: `sample51.cpp` (a plain, C-style data struct with no
+methods at all -- confirms both the default-public access AND that no
+vtable/constructor machinery gets added just because the keyword was
+`struct`, since that machinery was always conditional on actually
+having virtual methods/constructors, never on the keyword itself),
+`sample52.cpp` (a struct WITH a constructor and method, confirming
+shared machinery works identically to `class`), `sample53.cpp`
+(deliberately invalid -- a plain `class`, not `struct`, with the exact
+same "access a field with no explicit `public:` label" shape, confirmed
+STILL rejected -- proving `class`'s own default wasn't accidentally
+weakened by sharing machinery with `struct`). `sample53` doesn't even
+need the new grammar to confirm this -- it uses only `class`, already
+recognized by the stale grammar -- and was run directly: produced
+exactly the intended error, a genuine, real confirmation (not just
+reasoned through) that `class`'s own behavior is unchanged.
+
+### C-style casts
+
+`AST_CAST` already existed -- lowering has synthesized one internally
+for several rounds now (implicit-upcast insertion, receiver casts) --
+so this was about making it reachable from user-written source, not
+inventing new AST. Added to `unary_expr` (not `primary_expr`'s own
+`'(' expr ')'`), matching real C's own `cast-expression: unary-
+expression | '(' type-name ')' cast-expression` grammar exactly, which
+is also what makes precedence correct for free (`(int)a + b` parses as
+`((int)a) + b`, the cast binding to just `a`, since it's now part of
+`unary_expr` specifically, not a full `expr`).
+
+**Confirmed no genuine grammar ambiguity, not assumed**: checked
+`primary_expr`'s own grammar directly before writing anything --  it
+only ever accepts a bare `IDENTIFIER` as an expression-starting token,
+never `TYPE_NAME`. So a `TYPE_NAME` (or a built-in type keyword)
+immediately after `(` can only ever mean a cast is starting; it could
+never be the start of a valid parenthesized expression instead, since
+nothing in `expr`'s own first-set overlaps with `type_spec`'s.
+
+**Two real, previously-latent gaps found by checking systematically,
+not by accident**: before assuming `AST_CAST` was fully wired
+everywhere, searched every function containing an `AST_UNOP` case (a
+reasonable proxy for "expression-walking functions that should treat a
+cast the same way") and checked each one directly. Two of four already
+handled `AST_CAST` correctly (`fix_reference_access_expr`/phase 5,
+`new_delete_rewrite_expr`/phase 6 -- both written defensively,
+apparently anticipating this exact situation, per their own existing
+comments: "handled on principle, not just for the cases seen so far").
+The other two did not: `rewrite_expr` (phase 2, this-injection) and
+`finalize_calls_expr` (phase 3, call finalization) both fell through to
+a `default:` case that explicitly does nothing, with a comment
+asserting the unhandled kinds "can't contain a `this` or a bare member
+reference" -- true for literals, false for a cast's own wrapped
+expression. Exactly the same CLASS of bug as the member-initializer-
+list argument gap found two rounds ago (old code that predates a new
+way for an AST shape to appear, simply not yet knowing to touch it) --
+caught this time by checking proactively before it could surface as
+broken generated output, not discovered from a failure after the fact.
+Fixed both, matching the established single-child-recursion pattern
+each function already uses for `AST_UNOP`/`AST_DELETE`. `sema.c`'s own
+`check_node` (and `dump_calls_in_node`, the `-vv` summary walker) had
+the identical gap for the same reason -- a user-written cast's own call
+resolution (`(int)someVirtualCall()`) would never have been resolved at
+all -- fixed the same way.
+
+`tests/sample54.cpp` exercises all of this together: a primitive cast
+(`(int)f`), a cast wrapping a bare member reference inside a method
+body (`(int)size`, confirming the phase-2 fix -- this needs to become
+`(int)this->size`, not a bare, undeclared `size`), and a cast wrapping
+a virtual call through a pointer explicitly cast to a base type
+(`(int)base->area()`, confirming the phase-3 fix reaches inside the
+cast to finalize the virtual dispatch).
+
+### Verification, across all three features
+
+Full syntax-check on every changed file; a build against the EXISTING
+(pre-this-round) generated grammar confirming every other file still
+integrates and links; the full 50-sample suite (49 previous + the new
+global-variable test, since that fix needed no grammar change and could
+be verified directly) re-run against that build with zero regressions.
+`sample51`/`52`/`53`/`54` (struct and casts, both needing the new
+grammar) each confirmed to fail EXACTLY and ONLY at their own new
+syntax against the stale grammar -- `sample51`/`52` at the unrecognized
+`struct` keyword itself (lexed as a bare, unknown identifier, producing
+a slightly different but still expected "expecting COLONCOLON" parse
+error, not the "unexpected TOKEN" shape most other new-syntax failures
+in this project produce -- worth noting the difference is cosmetic,
+not a sign of anything wrong), `sample54` at its own first cast. The
+grammar itself, and everything downstream of it, still needs Matthew's
+own bison/flex regeneration to confirm for real -- the `%expect` risk
+from every previous grammar round applies here too, now compounded
+across four separate grammar-touching rounds without a regeneration in
+between.
+
+## Header reorganization (`src/*.h` -> `inc/*.h`), and a real float-literal lexer gap
+
+Matthew confirmed all four struct/casts outputs directly (sample50-53
+all correct as designed; sample53 in particular -- plain `class`,
+needing no new grammar at all -- run directly and producing exactly
+the intended error, real confirmation `class`'s own default wasn't
+weakened) and, once again, zero new bison conflicts on regeneration.
+Two things came with that: a standing preference that every `.h` live
+in `inc/`, not scattered across `src/` (Matthew has been manually
+separating them out by hand up to now -- this project's own layout
+simply hadn't matched that expectation), and a real, confirmed bug in
+`sample54.cpp` itself: `float f = 3.9f;` failed to parse.
+
+### Header reorganization
+
+All ten `.h` files that had been living in `src/` (`ast.h`, `cartxml.h`,
+`codegen.h`, `debugmap.h`, `driver.h`, `lower.h`, `pathutil.h`,
+`sema.h`, `symtab.h`, `v32cxx.h`) moved to `inc/`, alongside the
+bison-generated `parser.h`, which was already there. Checked before
+moving anything, rather than assumed: every `#include` in this project
+already uses a bare, unqualified filename (`#include "ast.h"`, never a
+path-prefixed one), and the Makefile's `CFLAGS` already carries
+`-I$(INC_DIR)` with nothing anywhere hardcoding a `src/*.h` path. Both
+facts together meant the move needed literally zero code or Makefile
+changes -- C's own `"..."`-include search already falls back to the
+`-I` path when a bare filename isn't found next to the including file,
+so every existing `#include` line kept resolving correctly without
+being touched at all. Confirmed with a genuinely clean rebuild
+(`make clean` first) and the full suite, zero regressions.
+
+Checked Matthew's own stated concern directly too -- whether any
+LIVE, current-state documentation (README, man page) described headers
+as living in `src/` -- and found none; the only historical mention
+(`docs/DESIGN_NOTES.md`'s own entry from when `v32cxx.h` was first
+created) is a chronological journal entry describing something that
+was accurate AT THAT TIME, left untouched on purpose, consistent with
+how this file has always been treated as append-only, not a live
+reference to keep retroactively correct.
+
+### The `3.9f` bug -- real, not intentional, fixed properly rather than just worked around
+
+Confirmed directly before fixing anything: the float-literal lexer
+rule (`{DIGIT}+"."{DIGIT}+([eE][+-]?{DIGIT}+)?`) had no suffix support
+at all, so `3.9f` lexed as the float literal `3.9` followed by a
+separate, unconsumed `f` -- explaining the exact "unexpected
+IDENTIFIER, expecting ';'" error Matthew's own upload showed. Genuinely
+Claude's own bug in the test file, not a deliberate edge case -- worth
+being direct about, not glossing over.
+
+Fixed as a real, small feature rather than just editing the test to
+dodge it: real C++'s own `f`/`F` float-literal suffix (marking a
+literal as `float` specifically rather than `double`) is now accepted
+by the lexer, matched and simply ignored -- `atof()` itself already
+stops at the first character it can't parse, so `atof("3.9f")` already
+correctly yields `3.9` with no separate stripping needed. Harmless,
+and arguably the more honest fix given this project's own type system:
+there's no distinct `double` here for the suffix to ever have
+disambiguated FROM (every floating-point value is already `float`), so
+accepting it is purely for compatibility with real C++ source that
+writes it out of habit, changing nothing about how the value itself is
+treated.
+
+**Verified as thoroughly as this sandbox allows, separating the two
+concerns that were tangled together in the original failure**: since
+the lexer fix itself needs flex regeneration to take effect (not yet
+done), built a direct, minimal test isolating just the cast grammar
+(`(int)f`, no float suffix at all) to confirm THAT part works correctly
+independent of the suffix bug -- it does, cleanly. Then built a second
+direct test: `sample54.cpp`'s own content with only the `f` suffix
+stripped, run through the ACTUAL regenerated grammar, to get real
+confirmation (not just reasoning) that both of last round's genuinely
+tricky fixes work correctly together: `Shape::area()`'s own
+`return (int)size;` correctly generated `((int)this->size)`, not a
+bare, undeclared `size` (the this-injection/phase-2 fix); the virtual
+call inside `(int)base->area()` correctly generated
+`((int)base->vtable->Shape__area__void(base))`, going through real
+vtable dispatch, not a plain direct call (the call-finalization/phase-3
+fix). `sample54.cpp` itself was NOT edited to remove the suffix --
+doing so would have thrown away the one thing actually still needing
+verification (the suffix fix itself) in exchange for a test that could
+already pass; it stays exactly as it was, still blocked purely on
+Matthew's own next flex regeneration, at which point it should pass
+outright with no further changes needed on either side.
+
 ## Suggested next steps, roughly in order
 
 

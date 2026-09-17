@@ -56,55 +56,56 @@ extern int yydebug;
     CHAR_LITERAL = 262,            /* CHAR_LITERAL  */
     FLOAT_LITERAL = 263,           /* FLOAT_LITERAL  */
     CLASS = 264,                   /* CLASS  */
-    PUBLIC = 265,                  /* PUBLIC  */
-    PRIVATE = 266,                 /* PRIVATE  */
-    PROTECTED = 267,               /* PROTECTED  */
-    NAMESPACE = 268,               /* NAMESPACE  */
-    TYPEDEF = 269,                 /* TYPEDEF  */
-    RETURN = 270,                  /* RETURN  */
-    IF = 271,                      /* IF  */
-    ELSE = 272,                    /* ELSE  */
-    WHILE = 273,                   /* WHILE  */
-    FOR = 274,                     /* FOR  */
-    BREAK = 275,                   /* BREAK  */
-    CONTINUE = 276,                /* CONTINUE  */
-    SWITCH = 277,                  /* SWITCH  */
-    CASE = 278,                    /* CASE  */
-    DEFAULT = 279,                 /* DEFAULT  */
-    INT_KW = 280,                  /* INT_KW  */
-    FLOAT_KW = 281,                /* FLOAT_KW  */
-    VOID_KW = 282,                 /* VOID_KW  */
-    BOOL_KW = 283,                 /* BOOL_KW  */
-    CHAR_KW = 284,                 /* CHAR_KW  */
-    NEW = 285,                     /* NEW  */
-    DELETE = 286,                  /* DELETE  */
-    THIS = 287,                    /* THIS  */
-    VIRTUAL = 288,                 /* VIRTUAL  */
-    TRUE_KW = 289,                 /* TRUE_KW  */
-    FALSE_KW = 290,                /* FALSE_KW  */
-    OPERATOR = 291,                /* OPERATOR  */
-    COLONCOLON = 292,              /* COLONCOLON  */
-    ARROW = 293,                   /* ARROW  */
-    EQ = 294,                      /* EQ  */
-    NE = 295,                      /* NE  */
-    LE = 296,                      /* LE  */
-    GE = 297,                      /* GE  */
-    ANDAND = 298,                  /* ANDAND  */
-    OROR = 299,                    /* OROR  */
-    PLUSEQ = 300,                  /* PLUSEQ  */
-    MINUSEQ = 301,                 /* MINUSEQ  */
-    STAREQ = 302,                  /* STAREQ  */
-    SLASHEQ = 303,                 /* SLASHEQ  */
-    INC = 304,                     /* INC  */
-    DEC = 305,                     /* DEC  */
-    SHL = 306,                     /* SHL  */
-    SHR = 307,                     /* SHR  */
-    ANDEQ = 308,                   /* ANDEQ  */
-    OREQ = 309,                    /* OREQ  */
-    XOREQ = 310,                   /* XOREQ  */
-    SHLEQ = 311,                   /* SHLEQ  */
-    SHREQ = 312,                   /* SHREQ  */
-    LOWER_THAN_ELSE = 313          /* LOWER_THAN_ELSE  */
+    STRUCT = 265,                  /* STRUCT  */
+    PUBLIC = 266,                  /* PUBLIC  */
+    PRIVATE = 267,                 /* PRIVATE  */
+    PROTECTED = 268,               /* PROTECTED  */
+    NAMESPACE = 269,               /* NAMESPACE  */
+    TYPEDEF = 270,                 /* TYPEDEF  */
+    RETURN = 271,                  /* RETURN  */
+    IF = 272,                      /* IF  */
+    ELSE = 273,                    /* ELSE  */
+    WHILE = 274,                   /* WHILE  */
+    FOR = 275,                     /* FOR  */
+    BREAK = 276,                   /* BREAK  */
+    CONTINUE = 277,                /* CONTINUE  */
+    SWITCH = 278,                  /* SWITCH  */
+    CASE = 279,                    /* CASE  */
+    DEFAULT = 280,                 /* DEFAULT  */
+    INT_KW = 281,                  /* INT_KW  */
+    FLOAT_KW = 282,                /* FLOAT_KW  */
+    VOID_KW = 283,                 /* VOID_KW  */
+    BOOL_KW = 284,                 /* BOOL_KW  */
+    CHAR_KW = 285,                 /* CHAR_KW  */
+    NEW = 286,                     /* NEW  */
+    DELETE = 287,                  /* DELETE  */
+    THIS = 288,                    /* THIS  */
+    VIRTUAL = 289,                 /* VIRTUAL  */
+    TRUE_KW = 290,                 /* TRUE_KW  */
+    FALSE_KW = 291,                /* FALSE_KW  */
+    OPERATOR = 292,                /* OPERATOR  */
+    COLONCOLON = 293,              /* COLONCOLON  */
+    ARROW = 294,                   /* ARROW  */
+    EQ = 295,                      /* EQ  */
+    NE = 296,                      /* NE  */
+    LE = 297,                      /* LE  */
+    GE = 298,                      /* GE  */
+    ANDAND = 299,                  /* ANDAND  */
+    OROR = 300,                    /* OROR  */
+    PLUSEQ = 301,                  /* PLUSEQ  */
+    MINUSEQ = 302,                 /* MINUSEQ  */
+    STAREQ = 303,                  /* STAREQ  */
+    SLASHEQ = 304,                 /* SLASHEQ  */
+    INC = 305,                     /* INC  */
+    DEC = 306,                     /* DEC  */
+    SHL = 307,                     /* SHL  */
+    SHR = 308,                     /* SHR  */
+    ANDEQ = 309,                   /* ANDEQ  */
+    OREQ = 310,                    /* OREQ  */
+    XOREQ = 311,                   /* XOREQ  */
+    SHLEQ = 312,                   /* SHLEQ  */
+    SHREQ = 313,                   /* SHREQ  */
+    LOWER_THAN_ELSE = 314          /* LOWER_THAN_ELSE  */
   };
   typedef enum yytokentype yytoken_kind_t;
 #endif
@@ -122,7 +123,7 @@ union YYSTYPE
     double fval;
     AccessSpec access;
 
-#line 126 "inc/parser.h"
+#line 127 "inc/parser.h"
 
 };
 typedef union YYSTYPE YYSTYPE;

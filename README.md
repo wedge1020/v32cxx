@@ -44,21 +44,26 @@ This is **not** an attempt to support all of C++ — see
 
 ## Current status
 
-**Parsing and semantic analysis** cover namespaces, classes with single
+**Parsing and semantic analysis** cover namespaces, classes and plain
+C-style `struct`s alike — the only real difference (default member
+access: private for `class`, public for `struct`) is handled correctly,
+with every other class feature (vtables, constructors, inheritance,
+access control) shared identically between the two — with single
 inheritance and access sections, constructors and destructors (in-class
 or out-of-line), `virtual` functions with correctly-recognized overrides,
 function/operator overloading with call-site resolution, qualified
-names, pointers and references, arrays, `break`/`continue` (rejected
-outside a loop or `switch`, not just accepted blindly — and correctly
-distinguished from each other: `break` is valid inside a `switch` alone,
-`continue` is not), `switch`/`case`/`default` with real C fall-through
-semantics, bitwise operators (`& | ^ << >>` and their compound-assignment
-forms, at C's own correct precedence — including the classic `a & b ==
-c` gotcha, handled exactly right, not approximated), and the usual
-statement/expression language. Access control is enforced (including
-through inheritance); overload resolution uses argument count and, when
-needed to disambiguate, argument type, never guessing when it can't
-confidently resolve something.
+names, pointers and references, arrays, global (file-scope) variables,
+`break`/`continue` (rejected outside a loop or `switch`, not just
+accepted blindly — and correctly distinguished from each other: `break`
+is valid inside a `switch` alone, `continue` is not), `switch`/`case`/
+`default` with real C fall-through semantics, bitwise operators
+(`& | ^ << >>` and their compound-assignment forms, at C's own correct
+precedence — including the classic `a & b == c` gotcha, handled exactly
+right, not approximated), C-style casts (`(int)x`, `(Base *)ptr`), and
+the usual statement/expression language. Access control is enforced
+(including through inheritance); overload resolution uses argument
+count and, when needed to disambiguate, argument type, never guessing
+when it can't confidently resolve something.
 
 **Lowering** — transforming the semantically-checked program into
 something code generation can work from directly — runs through eleven
@@ -201,12 +206,12 @@ emitted alongside it.
 - **Basic, non-OOP C syntax still missing**, confirmed directly by
   checking the grammar rather than assumed — relevant if you're using
   this project to adapt existing standard C, not just write new C++:
-  no C-style casts (`(int)x`), no ternary (`?:`), no `do`/`while`, no
-  `enum`, no `union`, no `goto`, no bare `struct` (only `class`), no
-  `sizeof` as a source-level expression, no function-pointer
-  declarators, no multi-dimensional arrays. Bitwise operators and
-  `switch`/`case` (above) were the first pass through this list; the
-  rest is real, substantial future work, not a short tail.
+  no ternary (`?:`), no `do`/`while`, no `enum`, no `union`, no `goto`,
+  no `sizeof` as a source-level expression, no function-pointer
+  declarators, no multi-dimensional arrays. Bitwise operators,
+  `switch`/`case`, bare `struct`, and C-style casts (above) were the
+  first two passes through this list; the rest is real, substantial
+  future work, not a short tail.
 
 This is genuinely still growing — expect rough edges, and expect this
 README to need updating again as things change.

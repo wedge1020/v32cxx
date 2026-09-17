@@ -21,7 +21,24 @@ typedef enum {
                               etc.) -- meaningless when str2 is NULL (no
                               base at all); sema.c reads this when
                               computing effective access of inherited
-                              members. */
+                              members. ival=1 if declared with the
+                              `struct` keyword, 0 for `class` -- the ONLY
+                              difference between the two real C++ actually
+                              has (default member access before any
+                              explicit public:/private:/protected: label:
+                              public for struct, private for class;
+                              compute_layout() in sema.c reads this flag
+                              for exactly that). Every other piece of this
+                              project's own class machinery (vtables,
+                              constructors, inheritance, access control)
+                              applies identically to both -- a `struct`
+                              with no methods at all already produces a
+                              plain C struct in the generated output,
+                              with no vtable/constructor overhead added,
+                              since that machinery was always conditional
+                              on the class actually having virtual
+                              methods/constructors to begin with, not on
+                              which keyword declared it. */
     AST_ACCESS_SPEC,      /* access=the new default access for what follows */
     AST_VAR_DECL,         /* str1=name, type=declared type, a=initializer or NULL.
                               access: meaningful only once sema.c has run and

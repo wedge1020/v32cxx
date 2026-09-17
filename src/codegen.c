@@ -191,6 +191,58 @@ static void emit_typedefs(FILE *out, const AstList *decls) {
     }
 }
 
+static void print_var_decl_inline(FILE *out, const AstNode *n); /* forward decl -- defined below; emit_globals needs it earlier */
+
+/* ---- global (file-scope) variables --------------------------------------
+ *
+ * A real, previously-existing gap, not a deliberate scope boundary: a
+ * top-level `int x = 0;` was already syntactically accepted by the
+ * grammar (var_decl is a valid top_decl alternative) and already walked
+ * by sema.c (see check_globals, sema.c) once that gap was closed
+ * alongside this one -- but codegen_run itself never had any function
+ * that actually EMITTED one. The generated C simply dropped it
+ * entirely, silently: any function referencing that "global" produced
+ * output that referenced an undeclared identifier, a real, confirmed
+ * compile failure downstream, not merely an unsupported-but-harmless
+ * gap. Reuses print_var_decl_inline directly -- the C syntax for a
+ * global declaration is identical to a local one (`type name [=
+ * initializer];`), just written at file scope instead of inside a
+ * function body, so there was no need for a second, parallel printing
+ * function. Placed in codegen_run's own emission order AFTER
+ * emit_classes (below), not before -- a global whose own type is a
+ * class (rare, and not fully supported yet regardless -- see this
+ * function's own scope note below) would need that class's own struct
+ * definition to already exist; ordinary primitive globals don't care
+ * either way, so putting class-typed ones on the safe side costs
+ * nothing.
+ *
+ * SCOPE: only ever prints the declaration and, if present, the
+ * initializer expression exactly as written -- a class-typed global's
+ * own constructor is never invoked here (this project has no
+ * "construct a global" mechanism at all, the same gap class-typed
+ * MEMBER fields still have -- see resolve_member_init_list's own doc
+ * comment in sema.c for the closest existing analogue). A class-typed
+ * global with no explicit initializer would compile as plain,
+ * uninitialized memory in the generated C, not a real C++ default-
+ * constructed object -- silently different from what real C++ would
+ * do, in the same direction this project's other class-typed-value
+ * gaps already are, not a new kind of imprecision.
+ */
+static void emit_globals(FILE *out, const AstList *decls) {
+    int any = 0;
+    for (int i = 0; i < decls->count; i++) {
+        const AstNode *n = decls->items[i];
+        if (n->kind == AST_VAR_DECL) {
+            print_var_decl_inline(out, n);
+            fprintf(out, ";\n");
+            any = 1;
+        } else if (n->kind == AST_NAMESPACE_DECL) {
+            emit_globals(out, &n->list);
+        }
+    }
+    if (any) fprintf(out, "\n");
+}
+
 /* ---- vtable struct types ----------------------------------------------
  *
  * find_declaring_class (needed here to know a vtable slot's
@@ -1556,6 +1608,7 @@ void codegen_run(const AstNode *program, FILE *out, int verbose_comments) {
     emit_typedefs(out, &program->list);
     fprintf(out, "\n");
     emit_classes(out, &program->list);
+    emit_globals(out, &program->list);
     emit_function_prototypes_classes(out, &program->list);
     SeenNames seen = {0};
     emit_function_prototypes_free_functions(out, &program->list, &seen);
