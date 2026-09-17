@@ -257,7 +257,20 @@ not
 .IR "(a & b) == c" ),
 handled exactly right rather than approximated;
 C-style casts
-.RI ( "(int)x" ", " "(Base *)ptr" );
+.RI ( "(int)x" ", " "(Base *)ptr" )
+and C++-style casts
+.RI ( static_cast / const_cast / reinterpret_cast ,
+all three transpiling identically to the C-style form \(em the
+semantically correct simplification once the target is C, which has no
+notion of any distinction between them);
+hex/octal/binary integer literals
+.RI ( "0x1F" ", " "013" ", " "0b1010" \(em
+.B binary literals are a C++14 addition,
+not part of every C++ standard, accepted here as a convenience
+regardless) and integer/float literal suffixes
+.RI ( "42u" ", " "100L" ", " "3.9f" ,
+accepted and ignored \(em one integer type and one floating-point type
+here, so a suffix has nothing left to disambiguate);
 global (file-scope) variables;
 base-class constructor delegation, both EXPLICIT (
 .I ": Base(args)"
@@ -285,6 +298,21 @@ becomes
 duplicate detection for a member-initializer list (
 .I ": x(a), x(b)"
 is a reported error, not a silent, arbitrary pick between the two).
+.PP
+.B dynamic_cast
+is accepted too, but honestly, not silently: it parses and transpiles
+exactly like the other casts above, but since it doesn't actually
+perform the RTTI-backed runtime check real
+.B dynamic_cast
+promises (this project has never supported RTTI, by design), using it
+produces a
+.B warning ,
+not an error \(em printed to stderr, never blocking the transpile.
+Warnings are a diagnostic category separate from the semantic errors
+described throughout this section \(em they never affect this tool's
+own exit status \(em and
+.B dynamic_cast
+is currently the only thing that triggers one.
 .PP
 Not yet supported:
 class-typed member-field initializers (
@@ -320,8 +348,9 @@ operators,
 .BR switch / case ,
 bare
 .BR struct ,
-and C-style casts (above) were the first two passes through this
-list; the rest remains real, substantial future work.
+C-style casts, C++-style casts, and hex/octal/binary literals with
+suffixes (above) were the first three passes through this list; the
+rest remains real, substantial future work.
 .PP
 Never supported, by design: templates, exceptions, RTTI, multiple
 inheritance.

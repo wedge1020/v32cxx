@@ -179,6 +179,16 @@ int main(int argc, char **argv) {
         if (verbosity >= 1) printf("stage 2: running semantic analyzer\n");
         int sema_errors = sema_run(g_program);
         if (verbosity >= 3) sema_dump(g_program);
+        int sema_warnings = sema_get_warning_count();
+        if (sema_warnings > 0) {
+            /* Printed unconditionally whenever nonzero -- independent of
+             * the error/success branching just below, since a warning
+             * (currently: a user-written `dynamic_cast`, see
+             * sema_get_warning_count's own doc comment in sema.h) never
+             * itself causes this transpile to fail, so it still deserves
+             * visibility even on an otherwise-clean, successful run. */
+            fprintf(stderr, "---- %d warning(s) in %s ----\n", sema_warnings, g_current_filename);
+        }
         if (sema_errors > 0) {
             fprintf(stderr, "---- %d semantic error(s) in %s ----\n", sema_errors, g_current_filename);
             rc = 1;

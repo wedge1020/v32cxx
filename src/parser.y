@@ -112,6 +112,7 @@
 %token SWITCH CASE DEFAULT
 %token INT_KW FLOAT_KW VOID_KW BOOL_KW CHAR_KW
 %token NEW DELETE THIS VIRTUAL TRUE_KW FALSE_KW OPERATOR
+%token STATIC_CAST DYNAMIC_CAST CONST_CAST REINTERPRET_CAST
 %token COLONCOLON ARROW EQ NE LE GE ANDAND OROR
 %token PLUSEQ MINUSEQ STAREQ SLASHEQ INC DEC
 %token SHL SHR ANDEQ OREQ XOREQ SHLEQ SHREQ
@@ -130,7 +131,7 @@
 
 %type <str> name_tok func_name operator_symbol
 %type <access> access_spec
-%type <ival> pointer_opt opt_virtual class_or_struct_kw
+%type <ival> pointer_opt opt_virtual class_or_struct_kw cpp_cast_kw
 
 %right '=' PLUSEQ MINUSEQ STAREQ SLASHEQ ANDEQ OREQ XOREQ SHLEQ SHREQ
 %left OROR
@@ -1083,6 +1084,51 @@ unary_expr:
                      : $2;
             $$->a = $5;
         }
+    | cpp_cast_kw '<' type_spec pointer_opt '>' '(' expr ')'
+        {
+            /* C++-style cast -- static_cast<T>(x), const_cast<T>(x),
+             * reinterpret_cast<T>(x), dynamic_cast<T>(x). All four
+             * build the exact same AST_CAST node the C-style cast above
+             * does -- see AST_CAST's own doc comment in ast.h for why
+             * real C++'s distinctions between them collapse to nothing
+             * once the target is C, which has no notion of any of
+             * these cast KINDS, only a single generic cast syntax.
+             * dynamic_cast is marked (ival=1) so sema.c's own
+             * check_node can warn about the one real, substantive gap
+             * this collapsing introduces: no actual RTTI-backed runtime
+             * check happens, unlike what real dynamic_cast promises.
+             *
+             * The '<' '>' here are the same tokens comparison operators
+             * already use, not new ones -- no ambiguity in practice,
+             * since they only ever appear in THIS shape immediately
+             * after one of the four cast keywords, a grammar position
+             * comparison never occurs in. This is NOT template syntax
+             * and doesn't open the door to one -- it's a fixed, four-
+             * keyword special form, not a general
+             * "identifier < args >" production the way an actual
+             * template instantiation would need. */
+            $$ = ast_new(AST_CAST, @1.first_line);
+            $$->type = ($4 == 1) ? ast_wrap_pointer($3, @1.first_line)
+                     : ($4 == 2) ? ast_wrap_reference($3, @1.first_line)
+                     : $3;
+            $$->a = $7;
+            $$->ival = ($1 == 3) ? 1 : 0; /* 1 only for dynamic_cast */
+        }
+    ;
+
+/* Distinguishes which of the four C++-style cast keywords introduced
+ * this cast -- see the unary_expr production above for how the value
+ * is used. Grouped as one shared production (matching class_or_struct_kw's
+ * own established pattern) rather than four separate, nearly-identical
+ * unary_expr alternatives, since three of the four are semantically
+ * IDENTICAL here (see AST_CAST's own doc comment in ast.h) and the
+ * fourth (dynamic_cast) differs only in setting one extra flag
+ * afterward, not in any part of the grammar shape itself. */
+cpp_cast_kw:
+      STATIC_CAST        { $$ = 0; }
+    | CONST_CAST          { $$ = 1; }
+    | REINTERPRET_CAST     { $$ = 2; }
+    | DYNAMIC_CAST          { $$ = 3; }
     ;
 
 expr:

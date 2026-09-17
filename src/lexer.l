@@ -190,6 +190,10 @@ ALNUM   [A-Za-z0-9_]
 "char"       { g_last_ident_sym = NULL; return CHAR_KW; }
 "new"        { g_last_ident_sym = NULL; return NEW; }
 "delete"     { g_last_ident_sym = NULL; return DELETE; }
+"static_cast"       { g_last_ident_sym = NULL; return STATIC_CAST; }
+"dynamic_cast"      { g_last_ident_sym = NULL; return DYNAMIC_CAST; }
+"const_cast"        { g_last_ident_sym = NULL; return CONST_CAST; }
+"reinterpret_cast"  { g_last_ident_sym = NULL; return REINTERPRET_CAST; }
 "this"       { g_last_ident_sym = NULL; return THIS; }
 "virtual"    { g_last_ident_sym = NULL; return VIRTUAL; }
 "operator"   { g_last_ident_sym = NULL; return OPERATOR; }
@@ -256,7 +260,74 @@ ALNUM   [A-Za-z0-9_]
     return FLOAT_LITERAL;
 }
 
-{DIGIT}+  {
+0[xX][0-9a-fA-F]+[uUlL]*  {
+    /* Hex literal -- 0x1F, 0XFF. strtol() with an explicit base of 16
+     * already knows to accept (and skip over) a leading "0x"/"0X"
+     * itself, so the full yytext, suffix included, can be handed to it
+     * directly -- it stops parsing at the first character that doesn't
+     * fit hex, i.e. exactly at the suffix, the same "already stops
+     * where it needs to" reasoning the float-suffix rule above relies
+     * on for atof(). */
+    g_last_ident_sym = NULL;
+    yylval.ival = (int)strtol(yytext, NULL, 16);
+    return INT_LITERAL;
+}
+
+0[bB][01]+[uUlL]*  {
+    /* Binary literal -- 0b1010, 0B11110000. NOT part of every C++
+     * standard -- added in C++14; earlier standards have no binary-
+     * literal syntax at all. Accepted here anyway as a convenience,
+     * matching real C++14-and-later compilers, but worth knowing if
+     * you're deliberately targeting something that predates that (see
+     * the README/man page's own note on this). Unlike hex, strtol()
+     * does NOT know to skip a "0b"/"0B" prefix itself even with an
+     * explicit base of 2 (that leading-prefix convenience is specific
+     * to base 16, and base 0's own auto-detection, per the C standard)
+     * -- so the prefix is skipped explicitly here (yytext + 2) before
+     * handing the rest to strtol(), which then stops at the suffix the
+     * same way the hex/decimal rules do. */
+    g_last_ident_sym = NULL;
+    yylval.ival = (int)strtol(yytext + 2, NULL, 2);
+    return INT_LITERAL;
+}
+
+0[0-7]+[uUlL]*  {
+    /* Octal literal -- 013 (=11 decimal), 0777. Real C++'s own
+     * "leading zero means octal" rule -- listed BEFORE the plain
+     * decimal rule below deliberately: flex's own longest-match-wins
+     * only decides BETWEEN rules of different match length; for two
+     * rules that would match the SAME text with the SAME length (e.g.
+     * "013" matches both this rule and, if it came first, the decimal
+     * one), flex breaks the tie by rule ORDER, first-listed wins -- so
+     * this has to come first, or "013" would be silently (and
+     * incorrectly) read as decimal 13 rather than octal 11. A leading
+     * "0" whose next digit is 8 or 9 (invalid in octal, e.g. "089") is
+     * NOT matched by this rule at all (requires at least one digit in
+     * [0-7] after the leading 0) -- it falls through to the plain
+     * decimal rule below instead, silently treating it as decimal 89,
+     * not flagging real C++'s own "invalid digit in octal constant"
+     * error. Matches this project's established best-effort philosophy
+     * elsewhere -- not pedantically strict, but never silently wrong
+     * about the COMMON case. strtol() with an explicit base of 8 treats
+     * the whole matched text, leading 0 included, as ordinary base-8
+     * digits -- no separate prefix-skipping needed, unlike binary
+     * above. */
+    g_last_ident_sym = NULL;
+    yylval.ival = (int)strtol(yytext, NULL, 8);
+    return INT_LITERAL;
+}
+
+{DIGIT}+[uUlL]*  {
+    /* Suffix (u/U, l/L, and any combination -- ul, LL, ...) matched and
+     * simply ignored, the exact same "atoi/atof/strtol already stops at
+     * the first unparseable character" reasoning the float-literal
+     * suffix rule above relies on. Deliberately permissive rather than
+     * validating exactly which combinations real C++ allows (`lu` is
+     * valid, `uu` is not, etc) -- this project has exactly one integer
+     * type, so the suffix changes nothing regardless of which letters
+     * appear or in what order; being permissive here costs nothing and
+     * avoids rejecting otherwise-valid code over a distinction that
+     * has no effect either way. */
     g_last_ident_sym = NULL;
     yylval.ival = atoi(yytext);
     return INT_LITERAL;

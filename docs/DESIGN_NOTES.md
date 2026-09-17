@@ -3735,6 +3735,169 @@ already pass; it stays exactly as it was, still blocked purely on
 Matthew's own next flex regeneration, at which point it should pass
 outright with no further changes needed on either side.
 
+## Numeric literal formats/suffixes, and C++-style casts (with an honest `dynamic_cast`)
+
+Matthew confirmed `sample54` now builds correctly (the float-suffix fix
+verified for real) and asked two direct questions: are there more
+"suffix"-shaped gaps, and is C++-style casting (`static_cast` and
+friends) in place alongside the C-style casts from two rounds ago.
+Investigated both directly rather than from memory. Integer suffixes
+were indeed missing, same shape as the float one -- but the bigger
+finding was that hex/octal/binary literals didn't exist as separate
+literal FORMATS at all, a different and arguably more consequential gap
+for a fantasy-console target (colors, masks, flags are almost always
+written in hex, and pair directly with last round's own bitwise
+operators). C++-style casts were entirely absent -- zero matches for
+any of the four keywords anywhere in the grammar. Matthew's own call on
+scope: implement hex/octal/binary literals and integer suffixes;
+implement `static_cast`/`const_cast`/`reinterpret_cast` properly;
+accept `dynamic_cast` as a bare syntactic alias (parses, transpiles
+identically to the others) but emit a transpiler WARNING, not silence
+and not a hard error, since it doesn't actually perform the RTTI-backed
+runtime check real `dynamic_cast` promises.
+
+### Numeric literals
+
+Confirmed directly, not assumed: the existing integer-literal rule
+(`{DIGIT}+`) had no suffix support and no hex/octal/binary format at
+all -- only plain decimal. Four rules now: hex (`0[xX][0-9a-fA-F]+`),
+binary (`0[bB][01]+`), octal (`0[0-7]+`), and plain decimal, each with
+an optional, permissive `[uUlL]*` suffix matched and ignored -- the
+exact same "the parsing function already stops at the first character
+it can't handle" reasoning the float suffix fix relied on last round,
+just with `strtol()` in place of `atof()`. `strtol()` with an explicit
+base of 16 already knows to skip a leading `0x`/`0X` itself; base 2
+does NOT get the same courtesy (that convenience is specific to base 16
+and base 0's own auto-detection per the C standard), so the binary
+rule skips the `0b`/`0B` prefix explicitly (`yytext + 2`) before
+calling it; base 8 needs no special handling at all, since a leading
+`0` is just an ordinary base-8 digit to `strtol()`.
+
+**A genuine flex ordering subtlety, reasoned through carefully, not
+guessed at**: the octal rule had to be listed BEFORE the plain decimal
+rule in the file. Flex's own longest-match-wins only decides between
+rules of DIFFERENT match length; for two rules that would match the
+identical text with the identical length (`013` matches both the octal
+rule and, if it came first, the decimal one), flex breaks the tie by
+rule ORDER, first-listed wins. Get this backwards and `013` would
+silently (and wrongly) come out as decimal 13 rather than octal 11 --
+confirmed the ordering in the file directly before considering this
+settled, not just reasoned through in the abstract.
+
+**Deliberately permissive on the suffix**, not strictly validating
+which combinations real C++ allows (`lu` is valid, `uu` isn't, etc.) --
+this project has exactly one integer type, so the suffix changes
+nothing regardless of which letters appear or their order; matching
+real C++'s own exact grammar here would cost real effort for zero
+behavioral difference. Same reasoning extends to octal: a leading `0`
+followed by an invalid digit (`089`) isn't flagged as the "invalid
+digit in octal constant" error real C++ would give -- it simply falls
+through to the decimal rule instead (silently read as decimal 89) --
+consistent with this project's established best-effort philosophy
+elsewhere: not pedantically strict, but never silently wrong about the
+COMMON, well-formed case.
+
+**Binary literals flagged clearly as a C++14 addition, per Matthew's
+own explicit request**, not something every C++ standard has -- called
+out in the README and man page both, not just here, so a user targeting
+something that predates C++14 knows this is a convenience this project
+adds, not a guarantee their own toolchain elsewhere would share.
+
+`tests/sample55.cpp` exercises all four formats plus several suffix
+combinations, with every expected value computed by hand in the test's
+own comment.
+
+### `static_cast` / `const_cast` / `reinterpret_cast`
+
+All three collapse to the exact same `AST_CAST` node the existing
+C-style cast already builds -- confirmed directly (not assumed) that
+this is the semantically correct simplification, not a shortcut:
+real C++'s own distinctions between the three (compile-time-only, no
+runtime check for any of them) have nothing left to distinguish once
+the target is C, which has no notion of any of these cast KINDS,
+Vircon32 C included. Implementation: a new shared `cpp_cast_kw`
+nonterminal (matching `class_or_struct_kw`'s own established pattern)
+distinguishing which of the four keywords was used, feeding a single
+new `unary_expr` alternative
+(`cpp_cast_kw '<' type_spec pointer_opt '>' '(' expr ')'`) that builds
+the identical `AST_CAST` shape the C-style cast production does.
+`codegen.c` needed zero changes -- from its own perspective a
+`static_cast<int>(x)` and a `(int)x` are now literally the same AST
+node.
+
+**Confirmed no genuine grammar ambiguity with `<`/`>` as comparison
+operators**, not assumed: the new production only ever matches
+immediately after one of the four fixed cast keywords, a grammar
+position ordinary comparison-operator usage never occurs in -- this is
+a fixed, four-keyword special form, not a general
+`identifier < args >` production the way an actual template
+instantiation would need, and doesn't open any door toward template
+support (still never planned, by design).
+
+### `dynamic_cast` -- honest about the gap, not silent about it
+
+Bare syntactic alias, per Matthew's own direction: parses, transpiles
+identically to the other three (same `AST_CAST` node), but marked
+(`ival=1` on the node, checked by `sema.c`'s own `check_node`) so a
+NEW, genuinely new diagnostic category can flag it -- a WARNING, not an
+error. This project had no warning mechanism at all before this --
+only `sema_error` (fatal, increments a count `main.c` checks to decide
+pass/fail). Added `sema_warning` as a deliberate near-twin of
+`sema_error` (identical shape: line-prefixed stderr message, varargs)
+but tracked in a fully separate `g_warning_count`, with its own
+accessor (`sema_get_warning_count()`, same "call only after
+`sema_run()`" convention as `sema_program_has_main`) that `main.c`
+checks independently and prints a summary line for
+(`---- N warning(s) in FILE ----`) regardless of whether the overall
+transpile succeeded -- a warning never sets the failure exit code,
+matching Matthew's own request that this inform the user without
+stopping the build.
+
+The reasoning for warning rather than choosing either extreme:
+silently accepting `dynamic_cast` and transpiling it as a plain cast
+would risk someone relying on a safety guarantee (the RTTI-backed
+runtime check, returning NULL on a failed downcast) that was never
+actually implemented -- this project has never supported RTTI, by
+design, and that hasn't changed. A hard error would refuse to
+transpile code real C++ accepts, for a construct this project genuinely
+CAN still do something reasonable with (an ordinary cast). A warning is
+the honest middle ground Matthew asked for.
+
+`tests/sample56.cpp` exercises `static_cast`/`const_cast`/
+`reinterpret_cast` together (a primitive truncation plus a pointer
+upcast-then-cast-again through a class hierarchy, confirming neither
+cast interferes with virtual dispatch any differently than the
+C-style cast already didn't). `tests/sample57.cpp` exercises
+`dynamic_cast` specifically -- expected to produce exactly one warning
+and STILL succeed (exit 0, a real `.c` file generated), confirming a
+warning genuinely doesn't block the build the way an error would; it
+deliberately does NOT get a `-` prefix in the Makefile despite
+producing warning output, for exactly that reason.
+
+### Verification
+
+Both of my own newly-added grammar blocks (the `cpp_cast_kw`
+nonterminal and its `unary_expr` production) checked directly for
+balanced parens/braces in isolation, rather than trusting a whole-file
+count -- this file's own extensive prose commenting makes a naive
+whole-file paren count meaningless noise (natural-language parentheticals
+like "(see below" routinely appear without a matching close in the same
+comment), so the file-wide count was deliberately not treated as a
+signal either way; the two blocks that actually changed were checked on
+their own and came back balanced. Full syntax-check across every
+changed file; a build against the EXISTING (pre-this-round) generated
+grammar confirming every other file still integrates and links; the
+full 54-sample suite re-run against that build with zero regressions.
+`sample55`/`56`/`57` each confirmed to fail EXACTLY at their own first
+new-syntax line against the stale grammar (`sample55` at its own first
+hex literal; `sample56` at `static_cast`'s own first use; `sample57` at
+`dynamic_cast`'s own first use) -- not some unrelated breakage. The
+grammar itself, and everything downstream of it -- crucially including
+whether `sema_warning`'s new machinery actually fires and prints
+correctly for `dynamic_cast`, which nothing in this sandbox can confirm
+without a real build -- still needs Matthew's own bison/flex
+regeneration to confirm for real.
+
 ## Suggested next steps, roughly in order
 
 

@@ -16,6 +16,43 @@ static void sema_error(int line, const char *fmt, ...) {
     g_error_count++;
 }
 
+/* Same shape as sema_error above, deliberately -- same line-number-
+ * prefixed stderr message, same varargs signature -- but for something
+ * that should NOT stop the transpile: g_warning_count is tracked
+ * entirely separately from g_error_count, and nothing in this project
+ * ever checks it to decide pass/fail (main.c surfaces it purely for the
+ * user's own visibility, via sema_get_warning_count() below, the same
+ * "print a one-line summary if the count is nonzero" treatment
+ * sema_error's own count already gets, just never treated as a reason
+ * to report failure). First use: a user-written `dynamic_cast` (see
+ * the AST_CAST case below) -- accepted and transpiled (as a bare
+ * syntactic alias for a plain cast, per AST_CAST's own doc comment in
+ * ast.h), but without the runtime type check real dynamic_cast's own
+ * contract promises, since that requires RTTI, which this project has
+ * never supported, by design. Silently accepting that gap would risk
+ * someone relying on a safety guarantee that was never actually
+ * implemented; a hard error would refuse to transpile code real C++
+ * accepts, for a construct this project CAN still do something
+ * reasonable with. A warning is the honest middle ground. */
+static int g_warning_count = 0;
+static void sema_warning(int line, const char *fmt, ...) {
+    fprintf(stderr, "warning at line %d: ", line);
+    va_list ap;
+    va_start(ap, fmt);
+    vfprintf(stderr, fmt, ap);
+    va_end(ap);
+    fprintf(stderr, "\n");
+    g_warning_count++;
+}
+
+/* Read-only accessor for main.c -- same "call only after sema_run()"
+ * convention as sema_program_has_main/sema_program_has_function, and
+ * the same reason: this doesn't recompute or validate anything, it
+ * just reports what sema_run()'s own walk already found. */
+int sema_get_warning_count(void) {
+    return g_warning_count;
+}
+
 /* ---- flat class registry, keyed by bare (unqualified) name -----------
  *
  * SIMPLIFICATION: keyed by bare name only, ignoring namespace nesting.
@@ -1517,15 +1554,36 @@ static void check_node(AstNode *n, AstNode *current_class, LocalVarType **locals
         case AST_RETURN:
         case AST_EXPR_STMT:
         case AST_DELETE:
+            check_node(n->a, current_class, locals);
+            break;
         case AST_CAST:
-            /* AST_CAST added here specifically for a USER-WRITTEN cast
-             * ("(int)someFunc()") -- lowering-synthesized casts (an
-             * implicit upcast, a receiver cast) never reach check_node
-             * at all, since they're inserted after sema.c has already
-             * finished running; only a cast parsed directly from source
-             * does, and its own inner expression can contain anything
-             * an ordinary expression can, including a call that needs
-             * its own resolution the same as it would anywhere else. */
+            /* Recursion into n->a added here specifically for a USER-
+             * WRITTEN cast ("(int)someFunc()") -- lowering-synthesized
+             * casts (an implicit upcast, a receiver cast) never reach
+             * check_node at all, since they're inserted after sema.c
+             * has already finished running; only a cast parsed directly
+             * from source does, and its own inner expression can
+             * contain anything an ordinary expression can, including a
+             * call that needs its own resolution the same as it would
+             * anywhere else.
+             *
+             * ival==1 marks a cast that was specifically written as
+             * `dynamic_cast<T>(...)` (see cpp_cast_kw in parser.y) --
+             * warned about here, not rejected: this project transpiles
+             * it as a bare, ordinary cast (see AST_CAST's own doc
+             * comment in ast.h), which is NOT what real dynamic_cast
+             * actually promises (a runtime type check, requiring RTTI
+             * this project has never supported, by design). One
+             * warning per occurrence, not deduplicated -- matches how
+             * sema_error already reports every occurrence of a real
+             * error, not just the first. */
+            if (n->ival == 1) {
+                sema_warning(n->line,
+                             "'dynamic_cast' is accepted but not truly implemented -- "
+                             "no runtime type check is performed (this project has no "
+                             "RTTI); it transpiles as an ordinary cast, identical to "
+                             "'static_cast' here");
+            }
             check_node(n->a, current_class, locals);
             break;
         case AST_VAR_DECL: {
@@ -1832,6 +1890,8 @@ int sema_program_has_function(const AstNode *program, const char *name) {
 int sema_run(AstNode *program) {
 
     g_error_count = 0;
+    g_warning_count = 0; /* defensive reset, same reasoning as g_error_count
+        just above -- in case sema_run() is ever called twice in one process */
     free_registry();          /* defensive: in case sema_run() is ever called twice in one process */
     free_typedef_registry();  /* same */
     free_free_func_registry(); /* same */

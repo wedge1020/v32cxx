@@ -59,11 +59,29 @@ is valid inside a `switch` alone, `continue` is not), `switch`/`case`/
 `default` with real C fall-through semantics, bitwise operators
 (`& | ^ << >>` and their compound-assignment forms, at C's own correct
 precedence — including the classic `a & b == c` gotcha, handled exactly
-right, not approximated), C-style casts (`(int)x`, `(Base *)ptr`), and
-the usual statement/expression language. Access control is enforced
+right, not approximated), C-style casts (`(int)x`, `(Base *)ptr`) and
+C++-style casts (`static_cast`/`const_cast`/`reinterpret_cast` — all
+three collapse to the same generated cast as the C-style form, which is
+the semantically correct simplification once the target is C; see
+`dynamic_cast` below), hex/octal/binary integer literals (`0x1F`,
+`013`, `0b1010` — binary literals are a **C++14 addition**, not part of
+every C++ standard, accepted here as a convenience regardless) and
+integer/float literal suffixes (`42u`, `100L`, `3.9f`, accepted and
+ignored — this project has exactly one integer type and one
+floating-point type, so a suffix has nothing left to disambiguate),
+and the usual statement/expression language. Access control is enforced
 (including through inheritance); overload resolution uses argument
 count and, when needed to disambiguate, argument type, never guessing
 when it can't confidently resolve something.
+
+`dynamic_cast` is accepted too, but honestly, not silently: it parses
+and transpiles exactly like the other casts, but since it doesn't
+actually perform the RTTI-backed runtime check real `dynamic_cast`
+promises (this project has never supported RTTI, by design), using it
+produces a **warning**, not an error — printed to stderr, never
+blocking the transpile. Warnings are a new, separate diagnostic
+category from this round: `dynamic_cast` is currently the only thing
+that triggers one.
 
 **Lowering** — transforming the semantically-checked program into
 something code generation can work from directly — runs through eleven
@@ -209,9 +227,10 @@ emitted alongside it.
   no ternary (`?:`), no `do`/`while`, no `enum`, no `union`, no `goto`,
   no `sizeof` as a source-level expression, no function-pointer
   declarators, no multi-dimensional arrays. Bitwise operators,
-  `switch`/`case`, bare `struct`, and C-style casts (above) were the
-  first two passes through this list; the rest is real, substantial
-  future work, not a short tail.
+  `switch`/`case`, bare `struct`, C-style casts, C++-style casts, and
+  hex/octal/binary literals with suffixes (above) were the first three
+  passes through this list; the rest is real, substantial future work,
+  not a short tail.
 
 This is genuinely still growing — expect rough edges, and expect this
 README to need updating again as things change.

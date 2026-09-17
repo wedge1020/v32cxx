@@ -123,6 +123,9 @@ test: all | $(OUT_DIR)
 	$(BIN)  -vvv    -o out/sample52.c tests/sample52.cpp 1> out/sample52.txt 2>&1
 	-$(BIN) -vvv    -o out/sample53.c tests/sample53.cpp 1> out/sample53.txt 2>&1
 	$(BIN)  -vvv    -o out/sample54.c tests/sample54.cpp 1> out/sample54.txt 2>&1
+	$(BIN)  -vvv    -o out/sample55.c tests/sample55.cpp 1> out/sample55.txt 2>&1
+	$(BIN)  -vvv    -o out/sample56.c tests/sample56.cpp 1> out/sample56.txt 2>&1
+	$(BIN)  -vvv    -o out/sample57.c tests/sample57.cpp 1> out/sample57.txt 2>&1
 # `-vvv` (this project's own verbosity flag, a later round -- see
 # main.c) is passed to every sample specifically so `make test`'s own
 # output still captures the full AST/semantic-analysis/lowering dumps
@@ -149,36 +152,41 @@ test: all | $(OUT_DIR)
 # sample here is a focused unit test of one specific compiler feature,
 # not a complete, standalone-compilable program, EXCEPT sample2, 14, 21,
 # 22, 23, 24, 25, 26, 27, 28, 29, 30, 32, 33, 34, 35, 36, 37, 38, 39, 40,
-# 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52, 53, and 54, which
-# genuinely do define their own `main` (sample2's predates this round;
-# sample14/21 were given one specifically so they could also be compiled
-# all the way through by the real Vircon32 toolchain, not just
+# 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52, 53, 54, 55, 56, and 57,
+# which genuinely do define their own `main` (sample2's predates this
+# round; sample14/21 were given one specifically so they could also be
+# compiled all the way through by the real Vircon32 toolchain, not just
 # transpiled; sample22 through 30, 32, 33, and 34 already had one; 35
-# through 54 -- base-class constructor delegation, member-field
-# initializers, bitwise operators/switch, global variables, struct, and
-# C-style casts, several later rounds -- also define their own, even
-# though 36, 38, 42, 45, 49, and 53 are themselves deliberately invalid
-# -- see below). sample31 is deliberately invalid (break/continue-
-# outside-a-loop) and gets `-c` like the other unit-test samples, since
-# it isn't trying to be a complete program at all. sample36/38/42/45/
-# 49/53 are ALSO deliberately invalid (an unknown name, a class-typed
-# field, a field named twice, a base with no zero-arg constructor,
-# `continue` inside a switch with no enclosing loop, and a class's own
-# still-private-by-default member accessed from outside, respectively)
-# but do NOT get `-c` -- they already define their own `main`, same as
-# 35, so `-c` would be redundant, not wrong, but left off for
-# consistency with how 35 itself is invoked. sample37 was ALSO
-# deliberately invalid once (the very case sample38 now tests -- a
-# member-initializer list naming an ordinary field, "not yet supported"
-# at the time), repurposed into a real, passing test once primitive
-# member-field initializers themselves became supported; sample38 is
-# its replacement as the "still not supported" edge (a class-typed
-# field specifically) member-initializer lists now have. sample24/32
-# needed real, one-line fixes the SAME round implicit base-class
-# construction shipped (see docs/DESIGN_NOTES.md) -- both had a derived
-# constructor that never explicitly delegated to a base with no
-# zero-arg constructor of its own, which was always invalid real C++,
-# just never caught until this project's own
+# through 57 -- base-class constructor delegation, member-field
+# initializers, bitwise operators/switch, global variables, struct,
+# C-style casts, numeric literal formats/suffixes, and C++-style casts,
+# several later rounds -- also define their own, even though 36, 38, 42,
+# 45, 49, and 53 are themselves deliberately invalid -- see below).
+# sample31 is deliberately invalid (break/continue-outside-a-loop) and
+# gets `-c` like the other unit-test samples, since it isn't trying to
+# be a complete program at all. sample36/38/42/45/49/53 are ALSO
+# deliberately invalid (an unknown name, a class-typed field, a field
+# named twice, a base with no zero-arg constructor, `continue` inside a
+# switch with no enclosing loop, and a class's own still-private-by-
+# default member accessed from outside, respectively) but do NOT get
+# `-c` -- they already define their own `main`, same as 35, so `-c`
+# would be redundant, not wrong, but left off for consistency with how
+# 35 itself is invoked. sample57 is NOT in that deliberately-invalid
+# list despite producing a warning (dynamic_cast, see
+# docs/DESIGN_NOTES.md) -- a warning never causes this project's own
+# transpile to fail (see sema_get_warning_count's own doc comment in
+# sema.h), so it gets no `-` prefix here either, same as any other
+# passing sample. sample37 was ALSO deliberately invalid once
+# (the very case sample38 now tests -- a member-initializer list naming
+# an ordinary field, "not yet supported" at the time), repurposed into a
+# real, passing test once primitive member-field initializers themselves
+# became supported; sample38 is its replacement as the "still not
+# supported" edge (a class-typed field specifically) member-initializer
+# lists now have. sample24/32 needed real, one-line fixes the SAME round
+# implicit base-class construction shipped (see docs/DESIGN_NOTES.md) --
+# both had a derived constructor that never explicitly delegated to a
+# base with no zero-arg constructor of its own, which was always
+# invalid real C++, just never caught until this project's own
 # check_implicit_base_construction existed to catch it. Without `-c`,
 # every other sample would now fail at the
 # "no main function found" check before ever reaching lowering/codegen --

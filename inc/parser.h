@@ -84,28 +84,32 @@ extern int yydebug;
     TRUE_KW = 290,                 /* TRUE_KW  */
     FALSE_KW = 291,                /* FALSE_KW  */
     OPERATOR = 292,                /* OPERATOR  */
-    COLONCOLON = 293,              /* COLONCOLON  */
-    ARROW = 294,                   /* ARROW  */
-    EQ = 295,                      /* EQ  */
-    NE = 296,                      /* NE  */
-    LE = 297,                      /* LE  */
-    GE = 298,                      /* GE  */
-    ANDAND = 299,                  /* ANDAND  */
-    OROR = 300,                    /* OROR  */
-    PLUSEQ = 301,                  /* PLUSEQ  */
-    MINUSEQ = 302,                 /* MINUSEQ  */
-    STAREQ = 303,                  /* STAREQ  */
-    SLASHEQ = 304,                 /* SLASHEQ  */
-    INC = 305,                     /* INC  */
-    DEC = 306,                     /* DEC  */
-    SHL = 307,                     /* SHL  */
-    SHR = 308,                     /* SHR  */
-    ANDEQ = 309,                   /* ANDEQ  */
-    OREQ = 310,                    /* OREQ  */
-    XOREQ = 311,                   /* XOREQ  */
-    SHLEQ = 312,                   /* SHLEQ  */
-    SHREQ = 313,                   /* SHREQ  */
-    LOWER_THAN_ELSE = 314          /* LOWER_THAN_ELSE  */
+    STATIC_CAST = 293,             /* STATIC_CAST  */
+    DYNAMIC_CAST = 294,            /* DYNAMIC_CAST  */
+    CONST_CAST = 295,              /* CONST_CAST  */
+    REINTERPRET_CAST = 296,        /* REINTERPRET_CAST  */
+    COLONCOLON = 297,              /* COLONCOLON  */
+    ARROW = 298,                   /* ARROW  */
+    EQ = 299,                      /* EQ  */
+    NE = 300,                      /* NE  */
+    LE = 301,                      /* LE  */
+    GE = 302,                      /* GE  */
+    ANDAND = 303,                  /* ANDAND  */
+    OROR = 304,                    /* OROR  */
+    PLUSEQ = 305,                  /* PLUSEQ  */
+    MINUSEQ = 306,                 /* MINUSEQ  */
+    STAREQ = 307,                  /* STAREQ  */
+    SLASHEQ = 308,                 /* SLASHEQ  */
+    INC = 309,                     /* INC  */
+    DEC = 310,                     /* DEC  */
+    SHL = 311,                     /* SHL  */
+    SHR = 312,                     /* SHR  */
+    ANDEQ = 313,                   /* ANDEQ  */
+    OREQ = 314,                    /* OREQ  */
+    XOREQ = 315,                   /* XOREQ  */
+    SHLEQ = 316,                   /* SHLEQ  */
+    SHREQ = 317,                   /* SHREQ  */
+    LOWER_THAN_ELSE = 318          /* LOWER_THAN_ELSE  */
   };
   typedef enum yytokentype yytoken_kind_t;
 #endif
@@ -123,7 +127,7 @@ union YYSTYPE
     double fval;
     AccessSpec access;
 
-#line 127 "inc/parser.h"
+#line 131 "inc/parser.h"
 
 };
 typedef union YYSTYPE YYSTYPE;

@@ -286,12 +286,39 @@ typedef enum {
                               has no aggregate/struct initializer syntax of
                               its own, so this is array-specific, not a
                               general "braced initializer" concept */
-    AST_CAST              /* type=target type, a=expr being cast -- an
-                              explicit "(Type)expr". Never produced by the
-                              parser (this project's grammar has no C-
-                              style cast-expression syntax) -- introduced
-                              by TWO lowering phases, both for the same
-                              underlying reason: lower.c's finalize_call,
+    AST_CAST              /* type=target type, a=expr being cast.
+                              ival=1 if this was specifically written as
+                              `dynamic_cast<T>(...)` (see cpp_cast_kw in
+                              parser.y) -- 0 for every other spelling
+                              (C-style `(Type)expr`, `static_cast`,
+                              `const_cast`, `reinterpret_cast`), all of
+                              which this project treats identically:
+                              real C++'s own distinctions between them
+                              (static_cast/const_cast/reinterpret_cast
+                              are all compile-time-only, no runtime
+                              check for any of them) collapse to nothing
+                              once the target is C, which has no notion
+                              of any of these cast KINDS at all, only a
+                              single, generic cast syntax -- Vircon32 C
+                              included. dynamic_cast is different: real
+                              C++ gives it an actual runtime type check
+                              (returning NULL on a failed pointer cast),
+                              which requires RTTI -- this project has
+                              never supported RTTI, by design, so a
+                              user-written dynamic_cast transpiles as a
+                              bare, ordinary cast too, NOT a real,
+                              safety-checked one; ival=1 exists so
+                              sema.c's own check_node can warn about
+                              that gap specifically (see its AST_CAST
+                              case) rather than silently accepting code
+                              that looks safety-checked but isn't.
+
+                              Reachable from user-written source (see
+                              unary_expr's own cast alternatives in
+                              parser.y) as well as being synthesized
+                              internally by TWO lowering phases, both
+                              for the same underlying reason: lower.c's
+                              finalize_call,
                               to make a receiver ("this") argument's
                               pointer type match whatever the callee
                               actually declares it as; and lower.c's

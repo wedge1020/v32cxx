@@ -194,6 +194,18 @@ typedef struct FuncSemaInfo {
  */
 int sema_run(AstNode *program);
 
+/* Read-only accessor for the count sema_warning() (sema.c) accumulates
+ * during the walk sema_run() just performed -- call only after
+ * sema_run() has returned, same convention as sema_program_has_main
+ * below. Distinct from sema_run()'s own return value (the ERROR count):
+ * a warning never causes sema_run() to report failure, so main.c has to
+ * ask separately if it wants to surface these to the user. Currently
+ * the only thing that ever increments this is a user-written
+ * `dynamic_cast` -- see AST_CAST's own doc comment in ast.h and
+ * check_node's AST_CAST case in sema.c for why that specific construct
+ * gets a warning rather than silent acceptance or a hard error. */
+int sema_get_warning_count(void);
+
 /* Checks whether the program defines an actual top-level `main` (an
  * AST_FUNC_DEF, not merely a prototype). Call ONLY after sema_run() has
  * completed with zero errors -- this doesn't validate anything about
