@@ -1614,6 +1614,20 @@ static void check_node(AstNode *n, AstNode *current_class, LocalVarType **locals
             check_node(n->a, current_class, locals);
             resolve_operator_use(n, unop_operator_name(n->str1), n->a, NULL, current_class, *locals);
             break;
+        case AST_TERNARY:
+            /* No resolve_operator_use call -- the ternary operator isn't
+             * in this project's own overloadable set at all (matching
+             * "&&"/"||", never in binop_operator_name's own list
+             * either), so it's always a plain, built-in construct, not
+             * something to check against a class's own operator
+             * overloads. All three children walked, unlike AST_CAST's
+             * single child -- a ternary's condition, true-branch, and
+             * false-branch can each independently contain a call or
+             * other construct needing its own resolution. */
+            check_node(n->a, current_class, locals);
+            check_node(n->b, current_class, locals);
+            check_node(n->c, current_class, locals);
+            break;
         case AST_NEW:
             for (int i = 0; i < n->list.count; i++) check_node(n->list.items[i], current_class, locals);
             check_node(n->a, current_class, locals); /* array-new's own size expression, if any (NULL otherwise) */
@@ -2107,6 +2121,9 @@ static void dump_calls_in_node(const AstNode *n) {
         case AST_UNOP:
             dump_calls_in_node(n->a);
             print_resolution_if_any(n); /* same reasoning as BINOP/ASSIGN/SUBSCRIPT above */
+            break;
+        case AST_TERNARY:
+            dump_calls_in_node(n->a); dump_calls_in_node(n->b); dump_calls_in_node(n->c);
             break;
         case AST_MEMBER:
             dump_calls_in_node(n->a);

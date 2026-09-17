@@ -69,8 +69,17 @@ every C++ standard, accepted here as a convenience regardless) and
 integer/float literal suffixes (`42u`, `100L`, `3.9f`, accepted and
 ignored — this project has exactly one integer type and one
 floating-point type, so a suffix has nothing left to disambiguate),
-and the usual statement/expression language. Access control is enforced
-(including through inheritance); overload resolution uses argument
+the ternary operator (`cond ? a : b`, at C's own correct precedence —
+between assignment and `||`, right-associative, so chaining nests the
+way real C++ does), `do`/`while` (the body runs at least once,
+unconditionally, before the first check — reuses the exact same
+loop-depth and destructor-boundary handling as `while`/`for`, verified
+directly rather than assumed), `enum` (top-level/namespace-level;
+auto-incrementing or explicit values, resolved by the C compiler
+downstream exactly as real C++ would, not computed by this project
+itself), and the usual statement/expression language. Access control
+is enforced (including through inheritance); overload resolution uses
+argument
 count and, when needed to disambiguate, argument type, never guessing
 when it can't confidently resolve something.
 
@@ -224,13 +233,12 @@ emitted alongside it.
 - **Basic, non-OOP C syntax still missing**, confirmed directly by
   checking the grammar rather than assumed — relevant if you're using
   this project to adapt existing standard C, not just write new C++:
-  no ternary (`?:`), no `do`/`while`, no `enum`, no `union`, no `goto`,
-  no `sizeof` as a source-level expression, no function-pointer
-  declarators, no multi-dimensional arrays. Bitwise operators,
-  `switch`/`case`, bare `struct`, C-style casts, C++-style casts, and
-  hex/octal/binary literals with suffixes (above) were the first three
-  passes through this list; the rest is real, substantial future work,
-  not a short tail.
+  no `union`, no `goto`, no `sizeof` as a source-level expression, no
+  function-pointer declarators, no multi-dimensional arrays. Bitwise
+  operators, `switch`/`case`, bare `struct`, C-style casts, C++-style
+  casts, hex/octal/binary literals with suffixes, ternary, `do`/`while`,
+  and `enum` (above) were the first four passes through this list; the
+  rest is real, substantial future work, not a short tail.
 
 This is genuinely still growing — expect rough edges, and expect this
 README to need updating again as things change.

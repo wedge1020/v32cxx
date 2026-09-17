@@ -35,6 +35,7 @@ typedef enum {
     SYM_FUNC,
     SYM_TYPEDEF,
     SYM_CLASS,
+    SYM_ENUM,
     SYM_NAMESPACE
 } SymbolKind;
 

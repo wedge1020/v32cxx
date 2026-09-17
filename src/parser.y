@@ -107,8 +107,8 @@
 %token <ival> INT_LITERAL CHAR_LITERAL
 %token <fval> FLOAT_LITERAL
 
-%token CLASS STRUCT PUBLIC PRIVATE PROTECTED NAMESPACE TYPEDEF
-%token RETURN IF ELSE WHILE FOR BREAK CONTINUE
+%token CLASS STRUCT ENUM PUBLIC PRIVATE PROTECTED NAMESPACE TYPEDEF
+%token RETURN IF ELSE DO WHILE FOR BREAK CONTINUE
 %token SWITCH CASE DEFAULT
 %token INT_KW FLOAT_KW VOID_KW BOOL_KW CHAR_KW
 %token NEW DELETE THIS VIRTUAL TRUE_KW FALSE_KW OPERATOR
@@ -119,6 +119,7 @@
 
 %type <node> program top_decl namespace_decl class_decl member
 %type <node> func_decl func_def func_header var_decl typedef_decl out_of_line_def
+%type <node> enum_decl enumerator
 %type <node> opt_member_init_list member_init
 %type <node> block stmt for_init opt_initializer opt_array_initializer
 %type <node> expr expr_opt unary_expr postfix_expr primary_expr
@@ -127,13 +128,14 @@
 %type <list> top_decl_list member_list stmt_list
 %type <list> param_list opt_param_list arg_list opt_arg_list qname_prefix
 %type <list> member_init_list
-%type <list> switch_body
+%type <list> switch_body enumerator_list
 
 %type <str> name_tok func_name operator_symbol
 %type <access> access_spec
 %type <ival> pointer_opt opt_virtual class_or_struct_kw cpp_cast_kw
 
 %right '=' PLUSEQ MINUSEQ STAREQ SLASHEQ ANDEQ OREQ XOREQ SHLEQ SHREQ
+%right '?'
 %left OROR
 %left ANDAND
 %left '|'
@@ -169,6 +171,7 @@ top_decl_list:
 top_decl:
       namespace_decl    { $$ = $1; }
     | class_decl ';'    { $$ = $1; }
+    | enum_decl ';'      { $$ = $1; }
     | func_def          { $$ = $1; }
     | func_decl ';'     { $$ = $1; }
     | var_decl ';'       { $$ = $1; }
@@ -813,6 +816,43 @@ typedef_decl:
         }
     ;
 
+/* ---- enums -----------------------------------------------------------
+ *
+ * Top-level/namespace-level only (reachable via top_decl, which
+ * namespace_decl's own body already reuses -- see namespace_decl's own
+ * grammar for that reuse) -- deliberately NOT also reachable as a class
+ * member (a nested enum, e.g. `class Foo { enum Bar { ... }; };`), a
+ * real C++ pattern this project doesn't parse yet. Registered as a
+ * single, non-split action (unlike class_decl's own mid-rule
+ * registration) since nothing inside an enum's own body can ever
+ * reference the enum's own name recursively -- there's no ordering
+ * requirement a mid-rule action would exist to satisfy here.
+ */
+enum_decl:
+    ENUM IDENTIFIER '{' enumerator_list '}'
+        {
+            symtab_insert(g_symtab, g_symtab->current, $2, SYM_ENUM);
+            $$ = ast_new(AST_ENUM_DECL, @1.first_line);
+            $$->str1 = strdup($2);
+            $$->list = $4;
+        }
+    ;
+
+enumerator_list:
+      enumerator                        { $$ = ast_list_new(); ast_list_append(&$$, $1); }
+    | enumerator_list ',' enumerator
+        { $$ = $1; ast_list_append(&$$, $3); }
+    | enumerator_list ','
+        { $$ = $1; /* trailing comma -- real C++ allows one after the last enumerator */ }
+    ;
+
+enumerator:
+      IDENTIFIER
+        { $$ = ast_new(AST_ENUM_VALUE, @1.first_line); $$->str1 = strdup($1); }
+    | IDENTIFIER '=' expr
+        { $$ = ast_new(AST_ENUM_VALUE, @1.first_line); $$->str1 = strdup($1); $$->a = $3; }
+    ;
+
 /* ---- statements --------------------------------------------------------- */
 
 block:
@@ -845,6 +885,18 @@ stmt:
         {
             $$ = ast_new(AST_WHILE, @1.first_line);
             $$->a = $3; $$->b = $5;
+        }
+    | DO stmt WHILE '(' expr ')' ';'
+        {
+            /* do-while -- reuses AST_WHILE (a=cond, b=body) with
+             * ival=1 marking "test after", rather than a separate node
+             * kind -- see AST_WHILE's own doc comment in ast.h for why
+             * every OTHER pass that walks this node treats the two
+             * identically, only codegen.c's own printing needs to
+             * check the flag. */
+            $$ = ast_new(AST_WHILE, @1.first_line);
+            $$->a = $5; $$->b = $2;
+            $$->ival = 1;
         }
     | SWITCH '(' expr ')' '{' switch_body '}'
         {
@@ -1182,6 +1234,31 @@ expr:
         { $$ = ast_new(AST_ASSIGN, @1.first_line); $$->str1 = strdup("<<="); $$->a = $1; $$->b = $3; }
     | expr SHREQ expr
         { $$ = ast_new(AST_ASSIGN, @1.first_line); $$->str1 = strdup(">>="); $$->a = $1; $$->b = $3; }
+    | expr '?' expr ':' expr %prec '?'
+        {
+            /* Ternary/conditional expression -- cond ? true : false.
+             * Explicit %prec '?' overrides bison's own default (the
+             * LAST terminal in the rule, which would otherwise be
+             * ':') -- deliberately: ':' is reused across many other,
+             * unrelated grammar contexts in this file (switch/case
+             * labels, access specifiers, base-class lists, member-init
+             * lists) with no precedence of its own declared anywhere,
+             * so leaning on ITS precedence here would be both
+             * meaningless (it has none) and risk entangling this
+             * production with all those other, unrelated ones. '?'
+             * appears NOWHERE else in this grammar, so giving it its
+             * own dedicated precedence level (see the new %right '?'
+             * declaration above, sitting between assignment and '||',
+             * matching real C++'s own conditional-expression placement)
+             * and pointing this rule at it explicitly is both correct
+             * and fully self-contained. %right makes chaining
+             * right-associative, matching real C++: `a ? b : c ? d : e`
+             * parses as `a ? b : (c ? d : e)`. */
+            $$ = ast_new(AST_TERNARY, @1.first_line);
+            $$->a = $1;
+            $$->b = $3;
+            $$->c = $5;
+        }
     ;
 
 opt_arg_list:

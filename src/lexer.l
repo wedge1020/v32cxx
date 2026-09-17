@@ -168,6 +168,7 @@ ALNUM   [A-Za-z0-9_]
 
 "class"      { g_last_ident_sym = NULL; return CLASS; }
 "struct"     { g_last_ident_sym = NULL; return STRUCT; }
+"enum"       { g_last_ident_sym = NULL; return ENUM; }
 "public"     { g_last_ident_sym = NULL; return PUBLIC; }
 "private"    { g_last_ident_sym = NULL; return PRIVATE; }
 "protected"  { g_last_ident_sym = NULL; return PROTECTED; }
@@ -176,6 +177,7 @@ ALNUM   [A-Za-z0-9_]
 "return"     { g_last_ident_sym = NULL; return RETURN; }
 "if"         { g_last_ident_sym = NULL; return IF; }
 "else"       { g_last_ident_sym = NULL; return ELSE; }
+"do"         { g_last_ident_sym = NULL; return DO; }
 "while"      { g_last_ident_sym = NULL; return WHILE; }
 "for"        { g_last_ident_sym = NULL; return FOR; }
 "break"      { g_last_ident_sym = NULL; return BREAK; }
@@ -239,7 +241,7 @@ ALNUM   [A-Za-z0-9_]
     yylval.str = strdup(yytext);
     Symbol *sym = symtab_lookup_qualified(g_symtab, yytext);
     g_last_ident_sym = sym;
-    if (sym != NULL && (sym->kind == SYM_CLASS || sym->kind == SYM_TYPEDEF)) {
+    if (sym != NULL && (sym->kind == SYM_CLASS || sym->kind == SYM_TYPEDEF || sym->kind == SYM_ENUM)) {
         return TYPE_NAME;
     }
     return IDENTIFIER;
@@ -370,7 +372,7 @@ ALNUM   [A-Za-z0-9_]
 .  {
     /* Single-character tokens: operators/punctuation not covered above
      * ('+','-','*','/','%','<','>','=','!','&','|','~','(',')','{','}',
-     * '[',']',';',',','.',':'). Returning the raw character code lets
+     * '[',']',';',',','.',':','?'). Returning the raw character code lets
      * parser.y reference them directly as e.g. '+' in grammar rules. */
     g_last_ident_sym = NULL;
     return yytext[0];

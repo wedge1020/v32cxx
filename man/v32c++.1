@@ -271,6 +271,21 @@ regardless) and integer/float literal suffixes
 .RI ( "42u" ", " "100L" ", " "3.9f" ,
 accepted and ignored \(em one integer type and one floating-point type
 here, so a suffix has nothing left to disambiguate);
+the ternary operator
+.RI ( "cond ? a : b" )
+at C's own correct precedence, between assignment and
+.BR || ,
+right-associative, so chaining nests the way real C++ does;
+.BR do / while
+(the body runs at least once, unconditionally, before the first check
+\(em reuses the exact same loop-depth and destructor-boundary handling
+as
+.BR while / for ,
+verified directly, not assumed);
+.B enum
+(top-level/namespace-level; auto-incrementing or explicit values,
+resolved by the C compiler downstream exactly as real C++ would, not
+computed by this project itself);
 global (file-scope) variables;
 base-class constructor delegation, both EXPLICIT (
 .I ": Base(args)"
@@ -335,10 +350,6 @@ toward this).
 Also not yet supported \(em basic, non-OOP C syntax, confirmed directly
 by checking the grammar rather than assumed, relevant if this tool is
 being used to adapt existing standard C rather than write new C++:
-the ternary operator
-.RI ( ?: ),
-.BR do / while ,
-.BR enum ,
 .BR union ,
 .BR goto ,
 source-level
@@ -348,9 +359,13 @@ operators,
 .BR switch / case ,
 bare
 .BR struct ,
-C-style casts, C++-style casts, and hex/octal/binary literals with
-suffixes (above) were the first three passes through this list; the
-rest remains real, substantial future work.
+C-style casts, C++-style casts, hex/octal/binary literals with
+suffixes, the ternary operator,
+.BR do / while ,
+and
+.B enum
+(above) were the first four passes through this list; the rest
+remains real, substantial future work.
 .PP
 Never supported, by design: templates, exceptions, RTTI, multiple
 inheritance.

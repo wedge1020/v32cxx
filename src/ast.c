@@ -60,6 +60,8 @@ static const char *kind_name(AstKind k) {
         case AST_ACCESS_SPEC: return "AccessSpec";
         case AST_VAR_DECL: return "VarDecl";
         case AST_TYPEDEF_DECL: return "TypedefDecl";
+        case AST_ENUM_DECL: return "EnumDecl";
+        case AST_ENUM_VALUE: return "EnumValue";
         case AST_FUNC_DECL: return "FuncDecl";
         case AST_FUNC_DEF: return "FuncDef";
         case AST_PARAM: return "Param";
@@ -79,6 +81,7 @@ static const char *kind_name(AstKind k) {
         case AST_BINOP: return "BinOp";
         case AST_UNOP: return "UnOp";
         case AST_ASSIGN: return "Assign";
+        case AST_TERNARY: return "Ternary";
         case AST_CALL: return "Call";
         case AST_MEMBER: return "Member";
         case AST_SUBSCRIPT: return "Subscript";

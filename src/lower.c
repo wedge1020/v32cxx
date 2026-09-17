@@ -184,6 +184,17 @@ static void rewrite_expr(AstNode **slot, AstNode *class_decl, LocalVarType *loca
              * this function's own header comment on that). */
             rewrite_expr(&n->a, class_decl, locals);
             break;
+        case AST_TERNARY:
+            /* Same reasoning as AST_CAST just above -- a ternary's
+             * condition, true-branch, and false-branch can each
+             * independently contain a bare `this` or member reference
+             * needing this-injection's own rewriting, e.g.
+             * `flag ? this->x : y`. All three children, unlike
+             * AST_CAST's single one. */
+            rewrite_expr(&n->a, class_decl, locals);
+            rewrite_expr(&n->b, class_decl, locals);
+            rewrite_expr(&n->c, class_decl, locals);
+            break;
         case AST_NEW:
             /* Constructor arguments (if any) can absolutely contain a
              * bare `this` or an implicit member reference -- `new
@@ -636,6 +647,17 @@ static void finalize_calls_expr(AstNode **slot, AstNode *class_decl, LocalVarTyp
             finalize_calls_expr(&n->a, class_decl, locals);
             rewrite_operator_use(slot, n->a, NULL, class_decl, locals);
             break;
+        case AST_TERNARY:
+            /* No rewrite_operator_use call -- same reasoning as
+             * check_node's own AST_TERNARY case in sema.c: the ternary
+             * operator was never in the overloadable set to begin with,
+             * so there's no operator-overload rewriting that could ever
+             * apply here. All three children still need their own
+             * calls finalized independently, though. */
+            finalize_calls_expr(&n->a, class_decl, locals);
+            finalize_calls_expr(&n->b, class_decl, locals);
+            finalize_calls_expr(&n->c, class_decl, locals);
+            break;
         case AST_NEW:
             /* The type being allocated isn't an expression -- only the
              * constructor ARGUMENTS (if any) might contain nested calls/
@@ -840,6 +862,11 @@ static void fix_reference_access_expr(AstNode **slot, LocalVarType *locals) {
         case AST_UNOP:
         case AST_DELETE:
             fix_reference_access_expr(&n->a, locals);
+            break;
+        case AST_TERNARY:
+            fix_reference_access_expr(&n->a, locals);
+            fix_reference_access_expr(&n->b, locals);
+            fix_reference_access_expr(&n->c, locals);
             break;
         case AST_CAST:
             /* Recurses into the cast's wrapped expression (always just
@@ -1149,6 +1176,11 @@ static void new_delete_rewrite_expr(AstNode **slot, AstNode *class_decl, LocalVa
             break;
         case AST_UNOP:
             new_delete_rewrite_expr(&n->a, class_decl, locals);
+            break;
+        case AST_TERNARY:
+            new_delete_rewrite_expr(&n->a, class_decl, locals);
+            new_delete_rewrite_expr(&n->b, class_decl, locals);
+            new_delete_rewrite_expr(&n->c, class_decl, locals);
             break;
         case AST_CAST:
             new_delete_rewrite_expr(&n->a, class_decl, locals); /* same reasoning as the

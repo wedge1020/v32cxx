@@ -191,6 +191,41 @@ static void emit_typedefs(FILE *out, const AstList *decls) {
     }
 }
 
+static void print_expr(FILE *out, const AstNode *e); /* forward decl -- defined below; emit_enums needs it earlier */
+
+/* ---- enums ------------------------------------------------------------
+ *
+ * Literal, unmodified C enum syntax -- no lowering transformation
+ * happened for this node at all (see AST_ENUM_DECL's own doc comment
+ * in ast.h), since Vircon32 C already has this natively, the same
+ * "pass it straight through" treatment AST_SWITCH already gets.
+ * Called from codegen_run() alongside emit_typedefs, before
+ * emit_classes -- a class field could plausibly be typed as an
+ * already-declared enum, so the enum's own declaration needs to exist
+ * first in the generated output, same reasoning as typedefs.
+ */
+static void emit_enums(FILE *out, const AstList *decls) {
+    for (int i = 0; i < decls->count; i++) {
+        const AstNode *n = decls->items[i];
+        if (n->kind == AST_ENUM_DECL) {
+            fprintf(out, "enum %s {\n", n->str1);
+            for (int j = 0; j < n->list.count; j++) {
+                const AstNode *ev = n->list.items[j];
+                fprintf(out, "    %s", ev->str1);
+                if (ev->a != NULL) {
+                    fprintf(out, " = ");
+                    print_expr(out, ev->a);
+                }
+                fprintf(out, "%s\n", (j < n->list.count - 1) ? "," : "");
+            }
+            fprintf(out, "};\n\n");
+        } else if (n->kind == AST_NAMESPACE_DECL) {
+            emit_enums(out, &n->list);
+        }
+    }
+}
+
+
 static void print_var_decl_inline(FILE *out, const AstNode *n); /* forward decl -- defined below; emit_globals needs it earlier */
 
 /* ---- global (file-scope) variables --------------------------------------
@@ -701,6 +736,15 @@ static void print_expr(FILE *out, const AstNode *e) {
             print_expr(out, e->b);
             fprintf(out, ")");
             break;
+        case AST_TERNARY:
+            fprintf(out, "(");
+            print_expr(out, e->a);
+            fprintf(out, " ? ");
+            print_expr(out, e->b);
+            fprintf(out, " : ");
+            print_expr(out, e->c);
+            fprintf(out, ")");
+            break;
         case AST_UNOP:
             print_unop(out, e);
             break;
@@ -827,6 +871,20 @@ static void print_stmt(FILE *out, const AstNode *s, int indent, int strip_return
             }
             break;
         case AST_WHILE:
+            if (s->ival == 1) {
+                /* do-while -- test after the body runs once
+                 * unconditionally, not before (see AST_WHILE's own doc
+                 * comment in ast.h for why this reuses the same node
+                 * kind, distinguished only by this flag). */
+                indent_spaces(out, indent);
+                fprintf(out, "do\n");
+                print_stmt(out, s->b, indent, strip_return_value);
+                indent_spaces(out, indent);
+                fprintf(out, "while (");
+                print_expr(out, s->a);
+                fprintf(out, ");\n");
+                break;
+            }
             indent_spaces(out, indent);
             fprintf(out, "while (");
             print_expr(out, s->a);
@@ -1607,6 +1665,7 @@ void codegen_run(const AstNode *program, FILE *out, int verbose_comments) {
     fprintf(out, "\n");
     emit_typedefs(out, &program->list);
     fprintf(out, "\n");
+    emit_enums(out, &program->list);
     emit_classes(out, &program->list);
     emit_globals(out, &program->list);
     emit_function_prototypes_classes(out, &program->list);

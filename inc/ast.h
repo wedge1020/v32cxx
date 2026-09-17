@@ -50,6 +50,51 @@ typedef enum {
                               marker precedes it). Meaningless/unset on a
                               free (non-member) variable declaration. */
     AST_TYPEDEF_DECL,     /* str1=new name, type=underlying type */
+    AST_ENUM_DECL,        /* str1=name, list=AST_ENUM_VALUE entries.
+                              Top-level/namespace-level only -- NOT
+                              supported as a class member (a nested
+                              enum), a deliberate scope boundary, not an
+                              oversight; see enum_decl's own comment in
+                              parser.y. codegen.c emits this as literal,
+                              unmodified C enum syntax -- no lowering
+                              transformation at all, the same "Vircon32
+                              C already has this natively" treatment
+                              AST_SWITCH already gets (see its own doc
+                              comment above). The enum's own NAME is
+                              registered as a type (SYM_ENUM in
+                              symtab.h, checked alongside SYM_CLASS/
+                              SYM_TYPEDEF by the lexer's own TYPE_NAME
+                              hack), so it can be used as an ordinary
+                              variable/parameter type afterward, same as
+                              a class or typedef name can be -- but
+                              sema.c's own class-specific machinery
+                              (ClassLayout, type_to_class, ...) has no
+                              notion of it at all, since an enum isn't a
+                              class; a variable of enum type is simply
+                              never resolved to one, the same "unknown,
+                              not an error" treatment any other
+                              non-class type already gets. Each
+                              enumerator NAME is never specially
+                              resolved anywhere in this project's own
+                              pipeline -- it flows through as an
+                              ordinary bare AST_IDENT wherever it's
+                              used, printed verbatim by codegen.c, and
+                              made a legal, resolvable identifier
+                              (equal to whatever integer value it
+                              should have) purely by the fact that the
+                              generated C's own enum declaration
+                              defines it -- real C already does the
+                              actual name-to-value resolution, so this
+                              project doesn't have to. */
+    AST_ENUM_VALUE,        /* str1=name, a=explicit value expr, or NULL
+                              for "one more than the previous entry" (or
+                              0, if this is the first) -- real C++'s own
+                              auto-increment rule, needing no special
+                              handling here since it's real C's own rule
+                              too, applied automatically by whichever C
+                              compiler processes the generated output;
+                              this project never itself computes what an
+                              omitted value resolves to. */
     AST_FUNC_DECL,        /* str1=name, type=return type (NULL for ctor/dtor),
                               list=params, a=NULL (no body).
                               str1 for an operator overload is literally
@@ -146,7 +191,22 @@ typedef enum {
                               entry. */
     AST_BLOCK,            /* list=statements */
     AST_IF,               /* a=cond, b=then-stmt, c=else-stmt or NULL */
-    AST_WHILE,            /* a=cond, b=body */
+    AST_WHILE,            /* a=cond, b=body. ival=1 for a do-while
+                              (`do body while (cond);` -- test AFTER the
+                              body runs once unconditionally, not
+                              before), 0 for an ordinary `while` (test
+                              before, per usual). Reuses this same node
+                              kind rather than a separate AST_DO_WHILE
+                              one, since a/b mean exactly the same thing
+                              either way and every OTHER pass that walks
+                              an AST_WHILE (sema.c's loop-depth tracking
+                              for break/continue, lower.c's destructor-
+                              boundary tracking) treats the two
+                              identically -- a loop body is a loop body
+                              regardless of when its condition is
+                              tested; only codegen.c's own printing
+                              needs to know the difference, checked
+                              there via this same flag. */
     AST_FOR,              /* a=init-stmt or NULL, b=cond or NULL, c=step-expr or NULL, d=body */
     AST_RETURN,           /* a=expr or NULL */
     AST_BREAK,            /* no fields -- a leaf statement, `break;`.
@@ -210,6 +270,21 @@ typedef enum {
                               assignment forms flow through this same
                               generic node too, same reasoning as
                               AST_BINOP above), a=lhs, b=rhs */
+    AST_TERNARY,          /* a=condition, b=true-branch, c=false-branch --
+                              `cond ? true_branch : false_branch`.
+                              Grammar-level precedence sits between
+                              assignment (loosest) and `||` (see the new
+                              '?' precedence declaration in parser.y),
+                              matching real C++'s own conditional-
+                              expression placement; right-associative, so
+                              a chained `a ? b : c ? d : e` parses as
+                              `a ? b : (c ? d : e)`, same as real C++.
+                              codegen.c prints this as a literal C
+                              ternary -- Vircon32 C already has this
+                              natively, so no lowering transformation
+                              happens here at all, the same "pass it
+                              through" treatment AST_SWITCH already
+                              gets. */
     AST_CALL,             /* a=callee, list=args.
                               sema_info: NULL until sema.c's overload-
                               resolution pass runs. If it resolved this
