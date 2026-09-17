@@ -184,6 +184,13 @@ static void rewrite_expr(AstNode **slot, AstNode *class_decl, LocalVarType *loca
              * this function's own header comment on that). */
             rewrite_expr(&n->a, class_decl, locals);
             break;
+        case AST_SIZEOF:
+            /* NULL-safe: rewrite_expr's own guard handles the type-
+             * taking form's NULL `a` the same way it would any other
+             * NULL slot. Only the expression-taking form
+             * (`sizeof(this->x)`, say) has anything to rewrite. */
+            rewrite_expr(&n->a, class_decl, locals);
+            break;
         case AST_TERNARY:
             /* Same reasoning as AST_CAST just above -- a ternary's
              * condition, true-branch, and false-branch can each
@@ -232,6 +239,12 @@ static void rewrite_stmt(AstNode **slot, AstNode *class_decl, LocalVarType **loc
             rewrite_expr(&n->a, class_decl, *locals);
             rewrite_stmt(&n->b, class_decl, locals);
             rewrite_stmt(&n->c, class_decl, locals);
+            break;
+        case AST_LABEL:
+            /* The wrapped statement (n->a) needs the exact same
+             * this-injection any other statement in this position
+             * would get -- a label doesn't change what's inside it. */
+            rewrite_stmt(&n->a, class_decl, locals);
             break;
         case AST_WHILE:
             rewrite_expr(&n->a, class_decl, *locals);
@@ -680,6 +693,9 @@ static void finalize_calls_expr(AstNode **slot, AstNode *class_decl, LocalVarTyp
              * "(int)shape->area()". */
             finalize_calls_expr(&n->a, class_decl, locals);
             break;
+        case AST_SIZEOF:
+            finalize_calls_expr(&n->a, class_decl, locals); /* NULL-safe for the type-taking form, same as AST_CAST's own case just above */
+            break;
         default:
             break;
     }
@@ -698,6 +714,9 @@ static void finalize_calls_stmt(AstNode **slot, AstNode *class_decl, LocalVarTyp
             finalize_calls_expr(&n->a, class_decl, *locals);
             finalize_calls_stmt(&n->b, class_decl, locals);
             finalize_calls_stmt(&n->c, class_decl, locals);
+            break;
+        case AST_LABEL:
+            finalize_calls_stmt(&n->a, class_decl, locals);
             break;
         case AST_WHILE:
             finalize_calls_expr(&n->a, class_decl, *locals);
@@ -876,6 +895,9 @@ static void fix_reference_access_expr(AstNode **slot, LocalVarType *locals) {
              * every other node kind this walk covers). */
             fix_reference_access_expr(&n->a, locals);
             break;
+        case AST_SIZEOF:
+            fix_reference_access_expr(&n->a, locals); /* NULL-safe for the type-taking form, same as AST_CAST's own case just above */
+            break;
         case AST_NEW:
             for (int i = 0; i < n->list.count; i++) {
                 fix_reference_access_expr(&n->list.items[i], locals);
@@ -901,6 +923,9 @@ static void fix_reference_access_stmt(AstNode **slot, LocalVarType **locals) {
             fix_reference_access_expr(&n->a, *locals);
             fix_reference_access_stmt(&n->b, locals);
             fix_reference_access_stmt(&n->c, locals);
+            break;
+        case AST_LABEL:
+            fix_reference_access_stmt(&n->a, locals);
             break;
         case AST_WHILE:
             fix_reference_access_expr(&n->a, *locals);
@@ -1186,6 +1211,9 @@ static void new_delete_rewrite_expr(AstNode **slot, AstNode *class_decl, LocalVa
             new_delete_rewrite_expr(&n->a, class_decl, locals); /* same reasoning as the
                 AST_CAST case in fix_reference_access_expr, above */
             break;
+        case AST_SIZEOF:
+            new_delete_rewrite_expr(&n->a, class_decl, locals); /* NULL-safe for the type-taking form, same as AST_CAST's own case just above */
+            break;
         default:
             break;
     }
@@ -1204,6 +1232,9 @@ static void new_delete_rewrite_stmt(AstNode **slot, AstNode *class_decl, LocalVa
             new_delete_rewrite_expr(&n->a, class_decl, *locals);
             new_delete_rewrite_stmt(&n->b, class_decl, locals);
             new_delete_rewrite_stmt(&n->c, class_decl, locals);
+            break;
+        case AST_LABEL:
+            new_delete_rewrite_stmt(&n->a, class_decl, locals);
             break;
         case AST_WHILE:
             new_delete_rewrite_expr(&n->a, class_decl, *locals);
@@ -1384,6 +1415,9 @@ static void inject_ctor_calls_stmt(AstNode **slot) {
         case AST_IF:
             inject_ctor_calls_stmt(&s->b);
             inject_ctor_calls_stmt(&s->c);
+            break;
+        case AST_LABEL:
+            inject_ctor_calls_stmt(&s->a);
             break;
         case AST_WHILE:
             inject_ctor_calls_stmt(&s->b);
@@ -1895,6 +1929,19 @@ static void destruct_scope_stmt(AstNode **slot, DestructScope *scope,
             destruct_scope_stmt(&n->b, scope, loop_boundary, break_boundary, func_return_type, ret_tmp_counter);
             destruct_scope_stmt(&n->c, scope, loop_boundary, break_boundary, func_return_type, ret_tmp_counter);
             break;
+        case AST_LABEL:
+            /* Same "pass through unchanged" treatment as AST_IF just
+             * above -- a label doesn't introduce any scope of its own
+             * either, it's transparent to destructor-boundary tracking
+             * for the statement it wraps. Note this project makes NO
+             * attempt to handle a `goto` that jumps INTO or OUT OF a
+             * scope with a live destructible local correctly -- see
+             * AST_GOTO's own doc comment in ast.h for that explicit,
+             * known gap; this case only concerns the label itself
+             * being transparent, not goto's own interaction with
+             * destruction, which remains unhandled. */
+            destruct_scope_stmt(&n->a, scope, loop_boundary, break_boundary, func_return_type, ret_tmp_counter);
+            break;
         case AST_WHILE:
             /* The body gets a NEW loop_boundary = scope -- exactly the
              * scope in effect right before entering this loop, i.e. the
@@ -2145,6 +2192,9 @@ static void insert_pointer_cast_stmt(AstNode **slot, AstNode *class_decl, LocalV
         case AST_IF:
             insert_pointer_cast_stmt(&n->b, class_decl, locals);
             insert_pointer_cast_stmt(&n->c, class_decl, locals);
+            break;
+        case AST_LABEL:
+            insert_pointer_cast_stmt(&n->a, class_decl, locals);
             break;
         case AST_WHILE:
             insert_pointer_cast_stmt(&n->b, class_decl, locals);

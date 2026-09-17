@@ -107,11 +107,11 @@
 %token <ival> INT_LITERAL CHAR_LITERAL
 %token <fval> FLOAT_LITERAL
 
-%token CLASS STRUCT ENUM PUBLIC PRIVATE PROTECTED NAMESPACE TYPEDEF
-%token RETURN IF ELSE DO WHILE FOR BREAK CONTINUE
+%token CLASS STRUCT ENUM UNION PUBLIC PRIVATE PROTECTED NAMESPACE TYPEDEF
+%token RETURN IF ELSE DO WHILE FOR BREAK CONTINUE GOTO
 %token SWITCH CASE DEFAULT
 %token INT_KW FLOAT_KW VOID_KW BOOL_KW CHAR_KW
-%token NEW DELETE THIS VIRTUAL TRUE_KW FALSE_KW OPERATOR
+%token NEW DELETE THIS VIRTUAL TRUE_KW FALSE_KW OPERATOR SIZEOF
 %token STATIC_CAST DYNAMIC_CAST CONST_CAST REINTERPRET_CAST
 %token COLONCOLON ARROW EQ NE LE GE ANDAND OROR
 %token PLUSEQ MINUSEQ STAREQ SLASHEQ INC DEC
@@ -119,7 +119,7 @@
 
 %type <node> program top_decl namespace_decl class_decl member
 %type <node> func_decl func_def func_header var_decl typedef_decl out_of_line_def
-%type <node> enum_decl enumerator
+%type <node> enum_decl enumerator union_decl
 %type <node> opt_member_init_list member_init
 %type <node> block stmt for_init opt_initializer opt_array_initializer
 %type <node> expr expr_opt unary_expr postfix_expr primary_expr
@@ -128,7 +128,7 @@
 %type <list> top_decl_list member_list stmt_list
 %type <list> param_list opt_param_list arg_list opt_arg_list qname_prefix
 %type <list> member_init_list
-%type <list> switch_body enumerator_list
+%type <list> switch_body enumerator_list union_member_list
 
 %type <str> name_tok func_name operator_symbol
 %type <access> access_spec
@@ -146,6 +146,7 @@
 %left SHL SHR
 %left '+' '-'
 %left '*' '/' '%'
+%nonassoc SIZEOF_TYPE_PREC
 
 %nonassoc LOWER_THAN_ELSE
 %nonassoc ELSE
@@ -172,6 +173,7 @@ top_decl:
       namespace_decl    { $$ = $1; }
     | class_decl ';'    { $$ = $1; }
     | enum_decl ';'      { $$ = $1; }
+    | union_decl ';'      { $$ = $1; }
     | func_def          { $$ = $1; }
     | func_decl ';'     { $$ = $1; }
     | var_decl ';'       { $$ = $1; }
@@ -853,6 +855,41 @@ enumerator:
         { $$ = ast_new(AST_ENUM_VALUE, @1.first_line); $$->str1 = strdup($1); $$->a = $3; }
     ;
 
+/* ---- unions ------------------------------------------------------------
+ *
+ * Top-level/namespace-level only, same scope boundary as enum_decl
+ * above (no nested union-as-class-member support). Deliberately NOT
+ * routed through class_decl the way `struct` is -- see AST_UNION_DECL's
+ * own doc comment in ast.h for why a union needs its own, narrower
+ * construct rather than inheriting class_decl's full machinery (real
+ * C++ itself restricts what a union can contain far more than a
+ * struct). Each member reuses var_decl directly (a union member is
+ * syntactically just "type name;", the same shape any other variable
+ * declaration already is) rather than a dedicated member grammar --
+ * this project doesn't attempt to validate real C++'s own additional
+ * union-specific restrictions (no member with a user-defined
+ * constructor/destructor unless it's the union's own anonymous-union
+ * special case, at most one member with a default initializer, ...);
+ * a union violating one of those still parses and transpiles here,
+ * left for the downstream C/C++ compiler to catch, the same best-
+ * effort philosophy this project already applies elsewhere (e.g. an
+ * invalid octal digit in a numeric literal).
+ */
+union_decl:
+    UNION IDENTIFIER '{' union_member_list '}'
+        {
+            symtab_insert(g_symtab, g_symtab->current, $2, SYM_UNION);
+            $$ = ast_new(AST_UNION_DECL, @1.first_line);
+            $$->str1 = strdup($2);
+            $$->list = $4;
+        }
+    ;
+
+union_member_list:
+      /* empty */                          { $$ = ast_list_new(); }
+    | union_member_list var_decl ';'        { $$ = $1; ast_list_append(&$$, $2); }
+    ;
+
 /* ---- statements --------------------------------------------------------- */
 
 block:
@@ -935,6 +972,38 @@ stmt:
         { $$ = ast_new(AST_BREAK, @1.first_line); }
     | CONTINUE ';'
         { $$ = ast_new(AST_CONTINUE, @1.first_line); }
+    | GOTO IDENTIFIER ';'
+        { $$ = ast_new(AST_GOTO, @1.first_line); $$->str1 = strdup($2); }
+    | IDENTIFIER ':' stmt
+        {
+            /* Labeled statement -- `label: stmt`. The one genuinely
+             * higher-risk grammar addition of this round, worth being
+             * direct about: a bare IDENTIFIER at the START of a
+             * statement is ALSO how an ordinary expression-statement
+             * begins (`expr ';'` below, where expr reduces from
+             * IDENTIFIER through primary_expr -- `foo();`, `foo = 5;`,
+             * ...), so the parser cannot know which production it's
+             * building until it sees whether ':' or something else
+             * follows the identifier. This project's own %glr-parser
+             * declaration exists precisely for this kind of situation
+             * (see this file's own header comment on it) -- GLR
+             * defers the choice, exploring both readings until the
+             * next token resolves it, rather than requiring one token
+             * of lookahead to be enough the way plain LALR(1) would.
+             * This is not a novel problem: real C's own yacc/bison
+             * grammars have successfully modeled labeled-statement vs.
+             * expression-statement this exact way for decades. Still,
+             * this is a case actually worth Matthew's own attention on
+             * regeneration -- more likely than most of this project's
+             * other recent grammar additions to shift the %expect
+             * count by more than one, or, in the worst case, to
+             * surface a genuine reduce/reduce conflict GLR can't
+             * resolve on its own -- flagged here and in
+             * docs/DESIGN_NOTES.md, not discovered by surprise. */
+            $$ = ast_new(AST_LABEL, @1.first_line);
+            $$->str1 = strdup($1);
+            $$->a = $3;
+        }
     | var_decl ';'      { $$ = $1; }
     | typedef_decl ';'  { $$ = $1; }
     | expr ';'
@@ -1135,6 +1204,69 @@ unary_expr:
                      : ($3 == 2) ? ast_wrap_reference($2, @1.first_line)
                      : $2;
             $$->a = $5;
+        }
+    | SIZEOF '(' type_spec pointer_opt ')'  %prec SIZEOF_TYPE_PREC
+        {
+            /* sizeof(Type) -- the type-taking form. Same disambiguation
+             * reasoning as the C-style cast just above for WHETHER this
+             * form or the expression form applies (a TYPE_NAME, or
+             * built-in type keyword, immediately after SIZEOF's own
+             * '(' can only mean this form, never the expression form
+             * below, since type_spec's own first-set never overlaps
+             * with expr's) -- but a SEPARATE, genuine ambiguity exists
+             * even once that much is settled, and needs its own fix,
+             * below.
+             *
+             * The %prec SIZEOF_TYPE_PREC is that fix, for a real bug
+             * caught by bison itself on regeneration, not cosmetic:
+             * without it, `sizeof(int) - 5` -- extremely ordinary code
+             * -- would by default parse as `sizeof((int)(-5))` instead
+             * of the obviously-intended `(sizeof(int)) - 5`. The root
+             * cause: this rule's own closing ')' is ALSO exactly where
+             * unary_expr's own C-style-cast production
+             * ("'(' type_spec pointer_opt ')' unary_expr", just above)
+             * could instead keep going, treating the same
+             * "'(' type_spec pointer_opt ')'" prefix as the START of a
+             * cast rather than a complete, standalone sizeof argument
+             * -- so a lookahead token that could begin a new
+             * unary_expr ('-', '&', '*', ...) creates a real shift/
+             * reduce conflict: shift, and keep building toward
+             * "sizeof applied to a cast-expression"; or reduce this
+             * rule now, treating sizeof(Type) as already complete and
+             * whatever follows as a separate, subsequent operator.
+             * Real C++ always takes the second reading once the
+             * parenthesized content is unambiguously a type -- sizeof's
+             * own type-form terminates at its closing paren, full
+             * stop, never continuing into a cast -- so REDUCE is the
+             * only correct choice here, not merely bison's own
+             * default. SIZEOF_TYPE_PREC is declared as the single
+             * highest-precedence level in this grammar specifically so
+             * this rule's own reduction always wins against any of
+             * those lookahead tokens, whichever binary/unary operator
+             * token it turns out to be -- deliberately a dedicated,
+             * virtual token with no lexer rule ever returning it
+             * (bison only needs it declared via the %nonassoc line
+             * near the top of this file to have a precedence to
+             * reference here), the same pattern LOWER_THAN_ELSE
+             * already uses for the dangling-else problem elsewhere in
+             * this grammar. */
+            $$ = ast_new(AST_SIZEOF, @1.first_line);
+            $$->type = ($4 == 1) ? ast_wrap_pointer($3, @1.first_line)
+                     : ($4 == 2) ? ast_wrap_reference($3, @1.first_line)
+                     : $3;
+        }
+    | SIZEOF unary_expr
+        {
+            /* sizeof expr / sizeof(expr) -- the expression-taking form.
+             * No separate parenthesized alternative needed here:
+             * `sizeof(x)` where x is an ordinary expression already
+             * reaches this same production, since unary_expr's own
+             * reduction through primary_expr already covers
+             * "'(' expr ')'" -- the parens aren't sizeof's own syntax
+             * in that case, they're just an ordinary parenthesized
+             * expression being sized, same as they'd be anywhere else. */
+            $$ = ast_new(AST_SIZEOF, @1.first_line);
+            $$->a = $2;
         }
     | cpp_cast_kw '<' type_spec pointer_opt '>' '(' expr ')'
         {

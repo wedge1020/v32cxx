@@ -77,7 +77,16 @@ loop-depth and destructor-boundary handling as `while`/`for`, verified
 directly rather than assumed), `enum` (top-level/namespace-level;
 auto-incrementing or explicit values, resolved by the C compiler
 downstream exactly as real C++ would, not computed by this project
-itself), and the usual statement/expression language. Access control
+itself), plain C-style `union`s (top-level/namespace-level; not routed
+through the same machinery as `class`/`struct`, since real C++ itself
+restricts what a union may contain far more than either), source-level
+`sizeof` (both `sizeof(Type)` and `sizeof expr`/`sizeof(expr)`, with a
+call inside the expression form correctly resolved, not skipped), and
+`goto`/labeled statements (a real, deliberately-flagged limitation
+here: no validation that a label actually exists, and no destructor
+invocation for a `goto` that jumps into or out of a scope holding a
+live class-typed local — see the note below). The usual
+statement/expression language is covered throughout. Access control
 is enforced (including through inheritance); overload resolution uses
 argument
 count and, when needed to disambiguate, argument type, never guessing
@@ -213,6 +222,16 @@ emitted alongside it.
 
 **What doesn't exist yet, worth knowing before you rely on it:**
 
+- **`goto` and destructors don't interact correctly.** `goto` and
+  labeled statements are supported, but this project makes no attempt
+  to invoke destructors for a class-typed local when a `goto` jumps out
+  of (or into) the scope that local lives in — every other exit path
+  (`break`, `continue`, `return`) is handled correctly by a dedicated
+  pass that knows exactly what needs destroying at that point; `goto`
+  has no equivalent. There's also no validation that a `goto`'s own
+  label actually exists anywhere in the function. Keep `goto` to flat
+  scopes with no destructible (class-typed) locals in play until this
+  is addressed.
 - **Class-typed member-field initializers** (`: thing(args)` where
   `thing`'s own type is a class, not a primitive/pointer/reference) are
   accepted syntactically but not yet acted on — reported as a clear
@@ -233,12 +252,12 @@ emitted alongside it.
 - **Basic, non-OOP C syntax still missing**, confirmed directly by
   checking the grammar rather than assumed — relevant if you're using
   this project to adapt existing standard C, not just write new C++:
-  no `union`, no `goto`, no `sizeof` as a source-level expression, no
-  function-pointer declarators, no multi-dimensional arrays. Bitwise
-  operators, `switch`/`case`, bare `struct`, C-style casts, C++-style
-  casts, hex/octal/binary literals with suffixes, ternary, `do`/`while`,
-  and `enum` (above) were the first four passes through this list; the
-  rest is real, substantial future work, not a short tail.
+  no function-pointer declarators, no multi-dimensional arrays.
+  Bitwise operators, `switch`/`case`, bare `struct`, C-style casts,
+  C++-style casts, hex/octal/binary literals with suffixes, ternary,
+  `do`/`while`, `enum`, `union`, source-level `sizeof`, and `goto`
+  (above) were the first five passes through this list; only two items
+  remain from the original list.
 
 This is genuinely still growing — expect rough edges, and expect this
 README to need updating again as things change.

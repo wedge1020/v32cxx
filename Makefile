@@ -129,6 +129,9 @@ test: all | $(OUT_DIR)
 	$(BIN)  -vvv    -o out/sample58.c tests/sample58.cpp 1> out/sample58.txt 2>&1
 	$(BIN)  -vvv    -o out/sample59.c tests/sample59.cpp 1> out/sample59.txt 2>&1
 	$(BIN)  -vvv    -o out/sample60.c tests/sample60.cpp 1> out/sample60.txt 2>&1
+	$(BIN)  -vvv    -o out/sample61.c tests/sample61.cpp 1> out/sample61.txt 2>&1
+	$(BIN)  -vvv    -o out/sample62.c tests/sample62.cpp 1> out/sample62.txt 2>&1
+	$(BIN)  -vvv    -o out/sample63.c tests/sample63.cpp 1> out/sample63.txt 2>&1
 # `-vvv` (this project's own verbosity flag, a later round -- see
 # main.c) is passed to every sample specifically so `make test`'s own
 # output still captures the full AST/semantic-analysis/lowering dumps
@@ -156,15 +159,16 @@ test: all | $(OUT_DIR)
 # not a complete, standalone-compilable program, EXCEPT sample2, 14, 21,
 # 22, 23, 24, 25, 26, 27, 28, 29, 30, 32, 33, 34, 35, 36, 37, 38, 39, 40,
 # 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52, 53, 54, 55, 56, 57, 58,
-# 59, and 60, which genuinely do define their own `main` (sample2's
-# predates this round; sample14/21 were given one specifically so they
-# could also be compiled all the way through by the real Vircon32
-# toolchain, not just transpiled; sample22 through 30, 32, 33, and 34
-# already had one; 35 through 60 -- base-class constructor delegation,
-# member-field initializers, bitwise operators/switch, global variables,
-# struct, C-style casts, numeric literal formats/suffixes, C++-style
-# casts, ternary, do-while, and enum, several later rounds -- also
-# define their own, even though 36, 38, 42,
+# 59, 60, 61, 62, and 63, which genuinely do define their own `main`
+# (sample2's predates this round; sample14/21 were given one
+# specifically so they could also be compiled all the way through by
+# the real Vircon32 toolchain, not just transpiled; sample22 through
+# 30, 32, 33, and 34 already had one; 35 through 63 -- base-class
+# constructor delegation, member-field initializers, bitwise
+# operators/switch, global variables, struct, C-style casts, numeric
+# literal formats/suffixes, C++-style
+# casts, ternary, do-while, enum, union, sizeof, and goto, several
+# later rounds -- also define their own, even though 36, 38, 42,
 # 45, 49, and 53 are themselves deliberately invalid -- see below).
 # sample31 is deliberately invalid (break/continue-outside-a-loop) and
 # gets `-c` like the other unit-test samples, since it isn't trying to

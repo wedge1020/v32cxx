@@ -169,6 +169,7 @@ ALNUM   [A-Za-z0-9_]
 "class"      { g_last_ident_sym = NULL; return CLASS; }
 "struct"     { g_last_ident_sym = NULL; return STRUCT; }
 "enum"       { g_last_ident_sym = NULL; return ENUM; }
+"union"      { g_last_ident_sym = NULL; return UNION; }
 "public"     { g_last_ident_sym = NULL; return PUBLIC; }
 "private"    { g_last_ident_sym = NULL; return PRIVATE; }
 "protected"  { g_last_ident_sym = NULL; return PROTECTED; }
@@ -182,6 +183,7 @@ ALNUM   [A-Za-z0-9_]
 "for"        { g_last_ident_sym = NULL; return FOR; }
 "break"      { g_last_ident_sym = NULL; return BREAK; }
 "continue"   { g_last_ident_sym = NULL; return CONTINUE; }
+"goto"       { g_last_ident_sym = NULL; return GOTO; }
 "switch"     { g_last_ident_sym = NULL; return SWITCH; }
 "case"       { g_last_ident_sym = NULL; return CASE; }
 "default"    { g_last_ident_sym = NULL; return DEFAULT; }
@@ -199,6 +201,7 @@ ALNUM   [A-Za-z0-9_]
 "this"       { g_last_ident_sym = NULL; return THIS; }
 "virtual"    { g_last_ident_sym = NULL; return VIRTUAL; }
 "operator"   { g_last_ident_sym = NULL; return OPERATOR; }
+"sizeof"     { g_last_ident_sym = NULL; return SIZEOF; }
 "true"       { g_last_ident_sym = NULL; return TRUE_KW; }
 "false"      { g_last_ident_sym = NULL; return FALSE_KW; }
 
@@ -241,7 +244,7 @@ ALNUM   [A-Za-z0-9_]
     yylval.str = strdup(yytext);
     Symbol *sym = symtab_lookup_qualified(g_symtab, yytext);
     g_last_ident_sym = sym;
-    if (sym != NULL && (sym->kind == SYM_CLASS || sym->kind == SYM_TYPEDEF || sym->kind == SYM_ENUM)) {
+    if (sym != NULL && (sym->kind == SYM_CLASS || sym->kind == SYM_TYPEDEF || sym->kind == SYM_ENUM || sym->kind == SYM_UNION)) {
         return TYPE_NAME;
     }
     return IDENTIFIER;

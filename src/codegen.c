@@ -204,6 +204,8 @@ static void print_expr(FILE *out, const AstNode *e); /* forward decl -- defined 
  * already-declared enum, so the enum's own declaration needs to exist
  * first in the generated output, same reasoning as typedefs.
  */
+static void print_var_decl_inline(FILE *out, const AstNode *n); /* forward decl -- defined below; emit_unions (and, further down, emit_globals) needs it earlier */
+
 static void emit_enums(FILE *out, const AstList *decls) {
     for (int i = 0; i < decls->count; i++) {
         const AstNode *n = decls->items[i];
@@ -225,8 +227,34 @@ static void emit_enums(FILE *out, const AstList *decls) {
     }
 }
 
+/* ---- unions -------------------------------------------------------------
+ *
+ * Literal, unmodified C union syntax -- no lowering transformation
+ * happened for this node at all (see AST_UNION_DECL's own doc comment
+ * in ast.h), the same "pass it straight through" treatment
+ * AST_SWITCH/AST_ENUM_DECL already get. Each member reuses
+ * print_var_decl_inline directly -- a union member's own C syntax
+ * ("type name;") is identical to a local or global variable's, so
+ * there's no need for a second, parallel printing function here either
+ * (same reasoning as emit_globals's own reuse of it).
+ */
+static void emit_unions(FILE *out, const AstList *decls) {
+    for (int i = 0; i < decls->count; i++) {
+        const AstNode *n = decls->items[i];
+        if (n->kind == AST_UNION_DECL) {
+            fprintf(out, "union %s {\n", n->str1);
+            for (int j = 0; j < n->list.count; j++) {
+                fprintf(out, "    ");
+                print_var_decl_inline(out, n->list.items[j]);
+                fprintf(out, ";\n");
+            }
+            fprintf(out, "};\n\n");
+        } else if (n->kind == AST_NAMESPACE_DECL) {
+            emit_unions(out, &n->list);
+        }
+    }
+}
 
-static void print_var_decl_inline(FILE *out, const AstNode *n); /* forward decl -- defined below; emit_globals needs it earlier */
 
 /* ---- global (file-scope) variables --------------------------------------
  *
@@ -765,6 +793,18 @@ static void print_expr(FILE *out, const AstNode *e) {
             print_expr(out, e->a);
             fprintf(out, ")");
             break;
+        case AST_SIZEOF:
+            /* Literal `sizeof(...)` -- exactly one of type/a is set
+             * (see AST_SIZEOF's own doc comment in ast.h), so exactly
+             * one of these two branches ever fires for a given node. */
+            fprintf(out, "sizeof(");
+            if (e->type != NULL) {
+                print_type(out, e->type);
+            } else {
+                print_expr(out, e->a);
+            }
+            fprintf(out, ")");
+            break;
         case AST_QUALIFIED_ID:
             /* Not expected as a general expression (this project's
              * grammar only ever produces one as the class-name marker on
@@ -936,6 +976,20 @@ static void print_stmt(FILE *out, const AstNode *s, int indent, int strip_return
         case AST_CONTINUE:
             indent_spaces(out, indent);
             fprintf(out, "continue;\n");
+            break;
+        case AST_GOTO:
+            indent_spaces(out, indent);
+            fprintf(out, "goto %s;\n", s->str1);
+            break;
+        case AST_LABEL:
+            /* Real C's own label syntax: the label itself is NOT
+             * indented to the current statement level (conventional C
+             * style -- a label sits at column 0, or close to it,
+             * visually separate from the code around it), but the
+             * statement it precedes still gets ordinary indentation,
+             * printed via the normal recursive call. */
+            fprintf(out, "%s:\n", s->str1);
+            print_stmt(out, s->a, indent, strip_return_value);
             break;
         case AST_SWITCH:
             /* No lowering transformation happened for this node at all
@@ -1666,6 +1720,7 @@ void codegen_run(const AstNode *program, FILE *out, int verbose_comments) {
     emit_typedefs(out, &program->list);
     fprintf(out, "\n");
     emit_enums(out, &program->list);
+    emit_unions(out, &program->list);
     emit_classes(out, &program->list);
     emit_globals(out, &program->list);
     emit_function_prototypes_classes(out, &program->list);

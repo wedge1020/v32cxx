@@ -62,6 +62,7 @@ static const char *kind_name(AstKind k) {
         case AST_TYPEDEF_DECL: return "TypedefDecl";
         case AST_ENUM_DECL: return "EnumDecl";
         case AST_ENUM_VALUE: return "EnumValue";
+        case AST_UNION_DECL: return "UnionDecl";
         case AST_FUNC_DECL: return "FuncDecl";
         case AST_FUNC_DEF: return "FuncDef";
         case AST_PARAM: return "Param";
@@ -74,6 +75,8 @@ static const char *kind_name(AstKind k) {
         case AST_RETURN: return "Return";
         case AST_BREAK: return "Break";
         case AST_CONTINUE: return "Continue";
+        case AST_GOTO: return "Goto";
+        case AST_LABEL: return "Label";
         case AST_SWITCH: return "Switch";
         case AST_CASE: return "Case";
         case AST_DEFAULT: return "Default";
@@ -100,6 +103,7 @@ static const char *kind_name(AstKind k) {
         case AST_ARRAY_TYPE: return "ArrayType";
         case AST_INIT_LIST: return "InitList";
         case AST_CAST: return "Cast";
+        case AST_SIZEOF: return "Sizeof";
     }
     return "?";
 }

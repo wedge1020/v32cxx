@@ -1500,6 +1500,15 @@ static void check_node(AstNode *n, AstNode *current_class, LocalVarType **locals
             check_node(n->b, current_class, locals);
             check_node(n->c, current_class, locals);
             break;
+        case AST_LABEL:
+            /* The labeled statement itself (n->a) needs exactly the
+             * same walk any other statement in this position would --
+             * a label is transparent to everything this function
+             * checks (break/continue validity, loop depth, variable
+             * declarations, call resolution, ...), it just marks a
+             * jump target on top of an otherwise ordinary statement. */
+            check_node(n->a, current_class, locals);
+            break;
         case AST_WHILE:
             check_node(n->a, current_class, locals);
             g_sema_loop_depth++;
@@ -1584,6 +1593,18 @@ static void check_node(AstNode *n, AstNode *current_class, LocalVarType **locals
                              "RTTI); it transpiles as an ordinary cast, identical to "
                              "'static_cast' here");
             }
+            check_node(n->a, current_class, locals);
+            break;
+        case AST_SIZEOF:
+            /* Only one of type/a is ever set (see AST_SIZEOF's own doc
+             * comment in ast.h) -- the type-taking form (`sizeof(int)`)
+             * has nothing to recurse into at all; only the expression-
+             * taking form (`sizeof(someFunc())`) can contain a call or
+             * other construct needing its own resolution. check_node's
+             * own NULL guard (same as every other recursive walker in
+             * this file) makes an explicit `if (n->a != NULL)` check
+             * here unnecessary -- calling it with a NULL a is already
+             * a safe no-op. */
             check_node(n->a, current_class, locals);
             break;
         case AST_VAR_DECL: {
@@ -2089,6 +2110,9 @@ static void dump_calls_in_node(const AstNode *n) {
         case AST_IF:
             dump_calls_in_node(n->a); dump_calls_in_node(n->b); dump_calls_in_node(n->c);
             break;
+        case AST_LABEL:
+            dump_calls_in_node(n->a);
+            break;
         case AST_WHILE:
             dump_calls_in_node(n->a); dump_calls_in_node(n->b);
             break;
@@ -2102,6 +2126,9 @@ static void dump_calls_in_node(const AstNode *n) {
         case AST_VAR_DECL:
         case AST_CAST:
             dump_calls_in_node(n->a);
+            break;
+        case AST_SIZEOF:
+            dump_calls_in_node(n->a); /* NULL-safe when the type-taking form is used, same as AST_CAST's own case just above relies on for its own single child */
             break;
         case AST_BINOP:
         case AST_ASSIGN:

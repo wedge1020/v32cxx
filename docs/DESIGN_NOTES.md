@@ -4040,6 +4040,133 @@ unrelated breakage. The grammar itself, and everything downstream of
 it, still needs Matthew's own bison/flex regeneration to confirm for
 real.
 
+## `union`, `sizeof`, and `goto` -- including this round's genuinely highest-risk grammar change
+
+Matthew confirmed the ternary/do-while/enum outputs directly and the
+stale-object-file fix resolved cleanly, then greenlit the next batch:
+`union`, `goto`, and source-level `sizeof`.
+
+### `union`
+
+New `AST_UNION_DECL`, new `SYM_UNION` symbol kind wired into the same
+TYPE_NAME-recognition check the lexer already uses for class/typedef/
+enum. Deliberately NOT routed through `class_decl` the way `struct`
+is, unlike that earlier decision -- real C++ restricts what a union
+can contain far more than a struct (no virtual functions, no base
+classes, no vtable-requiring members at all), so reusing `class_decl`'s
+full machinery here would have silently implied capabilities a union
+doesn't actually have. Union members reuse `var_decl` directly (a
+member is syntactically just "type name;"), and `codegen.c`'s new
+`emit_unions` is a near-copy of `emit_enums`, passed straight through
+as literal C union syntax -- no lowering, Vircon32 C already has this
+natively. One real ordering bug caught immediately by the syntax
+checker, not left in: the existing forward declaration for
+`print_var_decl_inline` sat AFTER where `emit_unions` needed to call
+it (it had only ever needed to precede `emit_globals` before); moved
+it earlier rather than adding a second, redundant one.
+
+### `sizeof`
+
+New `AST_SIZEOF`, exactly one of `type`/`a` ever set -- matching real
+C++'s own dual grammar (`sizeof(Type)` vs. `sizeof expr` /
+`sizeof(expr)`), disambiguated the identical way the C-style cast's
+two possible readings already are (`type_spec`'s own first-set never
+overlaps with `expr`'s, confirmed directly before relying on it again,
+not re-derived from scratch). Two real bugs caught by the compiler
+itself before they could ship, worth naming plainly since they're
+exactly the kind of thing easy to miss by hand: `AST_CAST` had no
+trailing comma (it was the enum's last member before this) -- inserting
+`AST_SIZEOF` right after it without adding one would have been a
+genuine compile error, caught by `gcc -fsyntax-only`; and a missing
+`kind_name` case for `AST_SIZEOF` in `ast.c`, caught by `-Wswitch`
+firing on the very next syntax-check run. Worth noting for future
+rounds: `-Wswitch` is a real, mechanical safety net for `kind_name`
+specifically (no `default:` case there to suppress it), but NOT for
+any of the `check_node`/`rewrite_*`/`finalize_*` walkers, which all
+have their own `default:` -- so the systematic per-function sweep
+remains the only way to catch a gap in those, `-Wswitch` won't do it
+for you. The full seven-location sweep (two `sema.c`, four `lower.c`,
+one `codegen.c`) confirmed complete afterward, same method as
+`AST_TERNARY` two rounds ago -- each new case calls its own function
+unconditionally on `n->a` rather than guarding with an explicit
+NULL check first, since every one of those functions already
+NULL-guards its own input at the top (confirmed directly for all of
+them before relying on it, not assumed) -- the type-taking form's
+NULL `a` is already a safe no-op without any extra code.
+
+### `goto` and labeled statements -- the real risk, handled carefully rather than rushed
+
+New `AST_GOTO` (a leaf, no children) and `AST_LABEL` (wraps the one
+statement it precedes, matching real C++'s own grammar exactly -- a
+label is not a container). This is genuinely the highest-risk grammar
+change of any round so far, and treated that way throughout rather
+than added casually:
+
+**The ambiguity, reasoned through before writing the grammar, not
+after**: a labeled statement (`label: stmt`) and an ordinary
+expression-statement (`expr ';'`, where `expr` can reduce from a bare
+IDENTIFIER through `primary_expr`) both legally start with the exact
+same token in the exact same grammar position. The parser cannot know
+which one it's building until it sees whether `:` follows the
+identifier or something else does. Confirmed this is not a novel
+problem before proceeding -- real C's own yacc/bison grammars have
+successfully modeled labeled-statement vs. expression-statement this
+exact way for decades -- and confirmed this project's own grammar
+already carries a `%glr-parser` declaration specifically for this
+class of situation, with its own header comment already anticipating
+the grammar growing into "genuinely ambiguous" territory. GLR defers
+the reduce decision, exploring both readings until the next token
+resolves it, rather than requiring one token of lookahead to be enough
+the way plain LALR(1) would need. Proceeded on that basis, but flagged
+this specific production with an unusually long comment directly in
+`parser.y` calling out that it's more likely than this round's other
+additions to shift the `%expect` count by more than one, or, in the
+worst case, surface a genuine reduce/reduce conflict GLR can't resolve
+on its own -- want this to be a prepared-for possibility on
+regeneration, not a surprise.
+
+**Scope, stated explicitly rather than silently gapped**: this project
+makes no attempt to validate that a `goto`'s own label actually exists
+anywhere in the function, and -- the more consequential gap -- no
+attempt to handle destructor invocation correctly for a `goto` that
+jumps into or out of a scope with a live destructible (class-typed)
+local. Every other exit path this project already handles specially
+(`break`, `continue`, `return`) goes through `lower.c`'s own
+`destruct_scope` phase, which knows exactly which destructibles need
+invoking at that exact point; `goto` has no equivalent, and doesn't
+get one this round. `AST_LABEL` itself IS threaded through every
+scope-tracking pass correctly (the label is transparent to loop-depth
+tracking, this-injection, call finalization, and destructor-boundary
+computation for the statement it wraps -- confirmed via the same
+nine-location sweep method used for `AST_TERNARY`/`AST_SIZEOF`, this
+time using `AST_IF` as the proxy for "statement-level walkers," since
+`AST_LABEL` wraps an arbitrary STATEMENT rather than being a leaf or
+an expression -- two in `sema.c`, seven in `lower.c`, confirmed nine
+total cases after) -- what's NOT handled is `goto`'s own jump
+interacting with destruction, a real, separate concern from the label
+itself being walked correctly. Documented explicitly in `AST_GOTO`'s
+own doc comment in `ast.h`, not left implicit; `tests/sample63.cpp`
+deliberately stays within a single function's own flat, no-
+destructible-locals scope specifically to demonstrate the feature
+without exercising the known gap.
+
+### Verification
+
+Full syntax-check across every changed file; a genuinely full `make
+clean` rebuild (not the lighter touch-based shortcut) specifically
+because `symtab.h` changed again this round (`SYM_UNION`, inserted
+before `SYM_NAMESPACE` the same way `SYM_ENUM` was two rounds ago) --
+applying that lesson deliberately this time rather than re-discovering
+it by accident again; the full 60-sample suite re-run against that
+build with zero regressions. `sample61`/`62`/`63` each confirmed to
+fail EXACTLY at their own first new-syntax line against the stale
+grammar (`sample61` at its own `union Value {`; `sample62` at its own
+first `sizeof(int)`; `sample63` at its own `loop:` label) -- not some
+unrelated breakage. The grammar itself, and everything downstream of
+it -- especially whether the `goto`/label production actually
+regenerates cleanly, the one genuinely uncertain part of this round --
+still needs Matthew's own bison/flex regeneration to confirm for real.
+
 ## Suggested next steps, roughly in order
 
 

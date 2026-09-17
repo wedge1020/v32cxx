@@ -95,6 +95,28 @@ typedef enum {
                               compiler processes the generated output;
                               this project never itself computes what an
                               omitted value resolves to. */
+    AST_UNION_DECL,        /* str1=name, list=AST_VAR_DECL entries (the
+                              union's own members -- reuses the exact
+                              same node a struct/class field already
+                              is, not a dedicated one, since a union
+                              member is syntactically identical: a type
+                              and a name). Top-level/namespace-level
+                              only, same scope boundary as AST_ENUM_DECL
+                              (no nested union-as-class-member support).
+                              Deliberately NOT routed through class_decl
+                              the way `struct` is -- real C++ itself
+                              restricts what a union can contain (no
+                              virtual functions, no base classes, no
+                              vtable-requiring members at all), so
+                              reusing class_decl's full machinery would
+                              silently imply capabilities a union
+                              doesn't actually have; this is its own,
+                              narrower construct instead, sized to what
+                              a union actually is. codegen.c emits this
+                              as literal, unmodified C union syntax --
+                              Vircon32 C already has this natively, the
+                              same "pass it straight through" treatment
+                              AST_SWITCH/AST_ENUM_DECL already get. */
     AST_FUNC_DECL,        /* str1=name, type=return type (NULL for ctor/dtor),
                               list=params, a=NULL (no body).
                               str1 for an operator overload is literally
@@ -224,6 +246,45 @@ typedef enum {
                               the literal C keyword -- not in how either
                               is validated or what gets destroyed before
                               one executes) */
+    AST_GOTO,             /* str1=label name -- `goto label;`. codegen.c
+                              emits this as the literal C keyword,
+                              Vircon32 C already has this natively.
+                              SCOPE: this project makes NO attempt to
+                              validate that the named label actually
+                              exists anywhere in the enclosing function,
+                              nor does it track any of real C++'s own
+                              restrictions on what a goto may jump
+                              INTO or past (e.g. jumping into a block
+                              past a variable's own initialization) --
+                              left entirely to the downstream C
+                              compiler to catch, the same best-effort
+                              philosophy already applied elsewhere (an
+                              unresolved global reference, an invalid
+                              octal digit). Also, deliberately, no
+                              destructor-invocation handling at a goto
+                              the way break/continue/return already
+                              get (see lower.c's own destruct_scope
+                              phase) -- jumping out of a scope with a
+                              live destructible local via goto is a
+                              real, known gap, not silently assumed
+                              safe; see this project's own README/
+                              DESIGN_NOTES.md for the explicit call-out. */
+    AST_LABEL,            /* str1=label name, a=the labeled statement --
+                              `label: stmt`. Matches real C++'s own
+                              grammar exactly: a label attaches to the
+                              statement that follows it, it is not a
+                              standalone thing or a container of its
+                              own -- the same shape AST_SWITCH's own
+                              case/default labels already have,
+                              structurally, though those are handled by
+                              a different pair of node kinds (AST_CASE/
+                              AST_DEFAULT) since a switch's own body is
+                              a flat list a label is injected into,
+                              while an ordinary label instead wraps the
+                              one statement it precedes. codegen.c
+                              emits this as literal `label:` followed
+                              by the statement, Vircon32 C already
+                              having this natively too. */
     AST_SWITCH,           /* a=discriminant expr, list=body statements --
                               a FLAT list, matching real C's own switch-
                               body structure exactly: AST_CASE/AST_DEFAULT
@@ -361,7 +422,7 @@ typedef enum {
                               has no aggregate/struct initializer syntax of
                               its own, so this is array-specific, not a
                               general "braced initializer" concept */
-    AST_CAST              /* type=target type, a=expr being cast.
+    AST_CAST,             /* type=target type, a=expr being cast.
                               ival=1 if this was specifically written as
                               `dynamic_cast<T>(...)` (see cpp_cast_kw in
                               parser.y) -- 0 for every other spelling
@@ -414,6 +475,29 @@ typedef enum {
                               even more strictly than standard C) just
                               has no way to know that on its own, so an
                               explicit cast has to say so. */
+    AST_SIZEOF             /* Exactly one of type/a is set, never both --
+                              real C++'s own dual grammar for sizeof:
+                              type=target type for `sizeof(Type)`
+                              (parens required for this form in real
+                              C++ too), a=target expr for `sizeof expr`
+                              or `sizeof(expr)` (parens optional --
+                              `sizeof(expr)` reaches this same a-set
+                              form via unary_expr's own reduction
+                              through primary_expr's `'(' expr ')'`,
+                              not through the type-taking alternative,
+                              since parser.y's own two productions are
+                              disambiguated the identical way the
+                              C-style cast's two possible readings
+                              already are: type_spec's own first-set
+                              -- TYPE_NAME, INT_KW, FLOAT_KW, ... --
+                              never overlaps with expr's). codegen.c
+                              prints this as literal `sizeof(...)` --
+                              Vircon32 C already has this natively, the
+                              same "pass it straight through" treatment
+                              AST_SWITCH/AST_ENUM_DECL/AST_UNION_DECL
+                              already get; this project never itself
+                              computes a size, real C's own compiler
+                              does, downstream. */
 } AstKind;
 
 typedef enum { ACC_PUBLIC, ACC_PRIVATE, ACC_PROTECTED } AccessSpec;
