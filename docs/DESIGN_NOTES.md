@@ -4851,6 +4851,148 @@ Shape_ref((&(*b)))`), and `sample68`'s own const-reference case
 directly) run end to end with zero regressions -- the same 13
 deliberately-invalid samples, nothing else.
 
+## The `--target` flag and the vircon32-mode ternary rewrite -- two features, one round, real bugs found in each
+
+Matthew asked for an architectural assessment before committing to a
+two-pass (emit standard C text, re-parse, re-emit Vircon32 C) design.
+Investigated directly rather than reasoning abstractly: `lower.c`
+already has essentially zero Vircon32-specific LOGIC (only the
+`v32_new_`/`v32_delete` naming convention, cosmetic, not structural),
+and `docs/VIRCON32_QUIRKS.md` -- accumulated round by round across this
+whole project, not written for this occasion -- already enumerated
+every place generated C diverges from standard C, each with its own
+"for a standard-C mode" note. Recommended a single-pipeline,
+target-dialect-flag design instead of literal two-pass reparsing
+(which would mean re-solving C declarator parsing, exactly this
+project's own repeated hard part, from scratch, on TEXT, having thrown
+away the type information the AST already carries for free). Matthew
+agreed; this round is that flag, built for real.
+
+### `--target=vircon32|v32|standard|std`
+
+New `CodegenTarget` global (`driver.h`/`main.c`), matching the
+established `g_uses_new_or_delete` global pattern rather than
+threading a parameter through every function that might eventually
+need it. Cart XML and debug-map emission forced off entirely for
+standard mode (Vircon32-platform concerns with no meaning outside it),
+in one place right after CLI parsing, not as a second condition at
+each of the two call sites -- avoids the two ever drifting out of sync
+with each other.
+
+Worked through `VIRCON32_QUIRKS.md`'s own checklist, entry by entry --
+full detail lives there now (every entry marked IMPLEMENTED, NOT YET
+IMPLEMENTED, or N/A), but two things are worth calling out here
+specifically because they didn't match the plan on paper:
+
+**The `struct`-keyword entry was predicted as "the cheapest on the
+whole list" and turned out to be one of the more involved ones.**
+Fixing `print_type` alone (the function this whole checklist assumed
+was the single funnel point) wasn't enough: `emit_new_delete_runtime`,
+`emit_array_new_runtime`, `emit_vtable_struct`, `emit_vtable_instance`,
+and `emit_method_prototype` all build a class's own type name by hand,
+entirely bypassing `print_type`. Found only by actually running
+`--target=standard` against a real class-having test and reading the
+output line by line (`struct Shape *v32_new_Shape...` sitting a few
+lines above a bare, un-prefixed `Shape *self = ...`), not by
+re-deriving every call site from the plan alone -- exactly the kind of
+gap a systematic-sweep-by-reasoning-only would have missed. Fixed with
+a new `print_class_type_name` helper, swept across every call site
+found this way.
+
+**A self-inflicted bug along the way, worth naming as a lesson**: a
+doc comment written for `print_class_type_name` contained the literal
+text `v32_new_*/v32_delete*`, which happens to contain the two-
+character sequence `*/` -- prematurely closing the C comment itself
+and turning the rest of it into malformed code. Caught immediately by
+the very next syntax check (which this project runs after every edit,
+not just logic changes), not shipped -- but a reminder that comment
+edits need the same verification discipline as code edits, not less.
+
+**The array-declarator entry's own prediction held up exactly**:
+`print_type`'s "prefix, then caller appends the name" architecture
+genuinely can't produce `name[N]` on its own, confirmed by
+implementing the predicted fix (a new `print_array_suffix` helper,
+called by the two call sites that can ever reach an array-typed
+declaration -- traced directly, not assumed, that a return type or
+parameter type never can).
+
+**`void main(void)`**: the one entry the checklist itself flagged as
+needing a deliberate decision rather than a toggle, since forcing
+`void` changes real program behavior (an exit code becoming
+unobservable). Decision made: standard mode honors whatever `main`'s
+own C++ declaration actually said.
+
+**Function-pointer declarators/casts (#3/#4) were scoped out of this
+round entirely, deliberately.** The name has to sit INSIDE the parens
+for standard C, not get appended after -- the same suffix trick that
+solved arrays doesn't apply, and would need its own prefix/suffix
+split at multiple call sites. Confirmed with Matthew before treating
+this as settled: the C++-side dual-input-syntax acceptance for
+function pointers was always a Vircon32-specific nicety, never
+something standard mode needed to preserve, which removed one
+possible reason to attempt the fuller fix under time pressure this
+round.
+
+### The ternary-to-if/else rewrite (`vircon32` mode only)
+
+A genuinely new quirk, not previously on `VIRCON32_QUIRKS.md`'s own
+list at all -- the real Vircon32 compiler doesn't support the ternary
+operator, reported directly by Matthew alongside the `--target` work.
+Added as entry #10 to that same checklist, with the same evidentiary
+honesty the rest of the list holds itself to: flagged as
+Matthew-reported, not yet independently confirmed against the real
+compiler the way most other entries have been.
+
+Design turned out simpler than first planned: `var_decl`, a plain `=`
+assignment to a bare identifier, and `return` each already have a
+natural place to put a value (the variable's own name, the lvalue, or
+a return statement), so no temporary variable is needed at all --
+`int x = cond ? a : b;` becomes `int x; if (cond) { x = a; } else
+{ x = b; }`, and similarly for the other two shapes. Implemented as a
+new, final lowering phase (phase 10), running only when `g_target ==
+TARGET_VIRCON32` and only after every earlier phase that still treats
+AST_TERNARY as an ordinary expression node has finished.
+
+**A real gap caught by testing against an EXISTING sample, not a new
+one written to order**: `tests/sample58.cpp`'s own `classify` function
+(`x < 0 ? -1 : (x == 0 ? 0 : 1)`, already in this project's suite,
+written to test chaining/precedence long before this phase existed)
+initially only got its OUTERMOST ternary rewritten -- the nested one
+sitting in the else-branch survived untouched, producing output that
+would still fail to compile on the real Vircon32 toolchain. Fixed by
+recursively re-checking each newly-built branch before wrapping it
+into its own if/else, so a chain unwinds one level at a time until
+nothing ternary-shaped remains -- confirmed directly against the same
+sample afterward, not just reasoned to be fixed.
+
+SCOPE, stated plainly rather than left implicit: only the three
+DIRECT shapes above are rewritten. A ternary nested inside a call
+argument, a larger arithmetic expression, a for-loop's own clauses, or
+assigned through anything other than a bare identifier is left
+completely untouched -- confirmed this fails predictably (not silently
+mishandled) via a dedicated test case. The assignment case specifically
+needed a narrower check than "any assignment": a general lvalue
+duplicated across both an if-branch and an else-branch would risk
+double-evaluating a side effect inside it (`arr[i++] = cond ? a : b;`);
+a bare identifier has no such risk, so that's the line drawn.
+
+### Verification
+
+Full syntax-check across every changed file (including catching and
+fixing the malformed-comment bug above before it went anywhere).
+Rebuilt against the real, already-synced grammar (no grammar changes
+at all this round -- everything here is `.c`-file work). Full 71-sample
+suite in `vircon32` mode, zero regressions; a second full sweep of
+every real sample under `--target=standard`, using each sample's own
+exact Makefile flags (`-c` where needed) rather than a uniform
+invocation, to avoid the false "no main" failures a naive re-run
+produced at first -- zero unexpected failures there either.
+`tests/sample71.cpp` (new) exercises all three ternary-rewrite shapes,
+the chained case, and the deliberate call-argument boundary in one
+file, confirmed directly: exactly one ternary survives in `vircon32`
+mode (the documented boundary case) and all four survive, untouched,
+in `standard` mode.
+
 ## Suggested next steps, roughly in order
 
 

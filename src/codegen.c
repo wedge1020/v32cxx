@@ -132,7 +132,24 @@ static void print_type(FILE *out, const AstNode *type) {
     }
     switch (type->kind) {
         case AST_IDENT:
-            fprintf(out, "%s", type->str1);
+            /* Vircon32 mode: bare, always -- a primitive keyword, a
+             * class name, or a typedef name are all just bare
+             * identifiers in valid C, and Vircon32 specifically
+             * rejects `struct Name` as a type REFERENCE (see the
+             * quirks doc). Standard mode: a CLASS name (confirmed via
+             * type_to_class, the same lookup sema.c itself already
+             * uses for this -- find_class is static to sema.c, so
+             * this reuses the already-public wrapper rather than
+             * exposing a second entry point for the same lookup)
+             * needs the `struct` keyword real, portable C requires
+             * for referencing a struct tag with no typedef of its
+             * own; a primitive or a typedef name (type_to_class
+             * returns NULL for either) stays bare either way. */
+            if (g_target == TARGET_STANDARD && type_to_class(type) != NULL) {
+                fprintf(out, "struct %s", type->str1);
+            } else {
+                fprintf(out, "%s", type->str1);
+            }
             break;
         case AST_QUALIFIED_ID:
             if (type->list.count > 0) {
@@ -216,6 +233,21 @@ static void print_type(FILE *out, const AstNode *type) {
                 base = base->a;
             }
             print_type(out, base);
+            if (g_target == TARGET_STANDARD) {
+                /* Standard C wants the bracket(s) AFTER the name
+                 * (`int scores[8];`), which this function's own
+                 * "prefix, then caller appends the name" architecture
+                 * can't produce here -- print the base type ONLY,
+                 * exactly as just above, and stop; the caller is
+                 * responsible for calling print_array_suffix (this
+                 * function's own standard-mode counterpart, defined
+                 * further down) AFTER printing the name, at the one
+                 * or two call sites where an array-typed declaration
+                 * can actually appear. See print_array_suffix's own
+                 * doc comment for the full reasoning and exactly
+                 * which call sites those are. */
+                break;
+            }
             for (int i = 0; i < dim_count; i++) {
                 fprintf(out, "%s[%d]", (i == 0) ? " " : "", dims[i]);
             }
@@ -241,7 +273,32 @@ static void print_type(FILE *out, const AstNode *type) {
              * at all: that case's own recursive print_type(type->a)
              * call lands here first, producing "ReturnType(Params)*",
              * then its own " [%d]" is appended, then the ordinary
-             * caller-appends-the-name step happens exactly as always. */
+             * caller-appends-the-name step happens exactly as always.
+             *
+             * KNOWN, DELIBERATE GAP for --target=standard: emitted
+             * this same Vircon32-style form UNCONDITIONALLY, even in
+             * standard mode, where it's invalid C. Unlike
+             * AST_ARRAY_TYPE just above, standard C's own function-
+             * pointer declarator (`ReturnType (*name)(ParamTypes)`)
+             * needs the NAME embedded INSIDE the parens, in the
+             * middle of the type -- not appended afterward the way
+             * every other case in this function (arrays included)
+             * works, so the same "print a suffix after the name"
+             * fix that solved arrays doesn't directly apply; it would
+             * need its own prefix/suffix split (print "ReturnType (*"
+             * here, let the caller print the name, then a NEW
+             * "print_func_ptr_suffix" prints ")(ParamTypes)" after
+             * it), at every call site that can reach a function-
+             * pointer-typed declaration. Scoped out of this round
+             * deliberately, not silently: function pointers are rare
+             * enough, and this split genuinely involved enough, that
+             * getting it right under time pressure alongside
+             * everything else this round touched felt riskier than
+             * flagging it clearly and coming back to it. Standard-
+             * mode output involving a function-pointer-typed
+             * variable, parameter, or field is therefore NOT valid
+             * standard C yet -- see docs/VIRCON32_QUIRKS.md and
+             * README.md for this same boundary stated again. */
             print_type(out, type->type);
             fprintf(out, "(");
             for (int i = 0; i < type->list.count; i++) {
@@ -253,6 +310,72 @@ static void print_type(FILE *out, const AstNode *type) {
         default:
             fprintf(out, "void" /* unrecognized type node -- best-effort */);
             break;
+    }
+}
+
+/* Prints `name` as a type reference, applying the same Vircon32-vs-
+ * standard "struct" keyword treatment print_type's own AST_IDENT case
+ * does -- but for the handful of runtime-generation functions further
+ * down (emit_new_delete_runtime, emit_array_new_runtime, emit_v32_delete,
+ * emit_delete_runtime) that build a class's own v32_new_ and v32_delete
+ * wrapper functions directly via class_decl->str1 (always genuinely a
+ * class name by construction here -- these functions only ever exist
+ * for an actual class) rather than through print_type/an AST node at
+ * all, and so never picked up print_type's own g_target handling
+ * automatically. A real, separate gap from the one print_type itself
+ * needed fixing for arrays -- these functions build their own
+ * declarator text by hand, entirely bypassing print_type, discovered
+ * only by actually running --target=standard against a real class-
+ * having test and reading the output, not by re-deriving every call
+ * site from first principles. `is_known_primitive` exists because
+ * emit_array_new_runtime's own `type_name` parameter is the one
+ * exception in this group that ISN'T always a class name -- it's also
+ * called with the four hardcoded primitive element types
+ * (emit_primitive_array_new_runtime), which must never get `struct`
+ * prefixed. */
+static int is_known_primitive_type_name(const char *name) {
+    return strcmp(name, "int") == 0 || strcmp(name, "float") == 0
+        || strcmp(name, "char") == 0 || strcmp(name, "bool") == 0
+        || strcmp(name, "void") == 0;
+}
+
+static void print_class_type_name(FILE *out, const char *name) {
+    if (g_target == TARGET_STANDARD && !is_known_primitive_type_name(name)) {
+        fprintf(out, "struct %s", name);
+    } else {
+        fprintf(out, "%s", name);
+    }
+}
+
+/* Standard-C mode's own counterpart to AST_ARRAY_TYPE's printing above:
+ * Vircon32 puts the bracket(s) BEFORE the name (print_type handles that
+ * entirely on its own, the caller just appends the name afterward, no
+ * special-casing needed anywhere else) -- but standard C puts them
+ * AFTER the name (`int scores[8];`, never `int [8] scores;`), which
+ * print_type's own "prefix, then caller appends the name" architecture
+ * can't produce on its own. So in standard mode, print_type's own
+ * AST_ARRAY_TYPE case (just above) skips printing any bracket at all --
+ * see its own dim_count==0 short-circuit -- and every CALLER that might
+ * be printing an array-typed declaration calls this function AFTER
+ * printing the name instead. Only two call sites actually need this:
+ * print_var_decl_inline (covers both local variables and, through it,
+ * globals) and emit_struct's own data-field loop (struct/class
+ * members) -- confirmed directly by finding every print_type call site
+ * in this file and checking which ones can ever see an array type at
+ * all: a function's own return type and every parameter's own type
+ * never can (illegal to return an array by value in C/C++; `param`'s
+ * own grammar decays an array parameter straight to a pointer at parse
+ * time, so no AST_ARRAY_TYPE node is ever built for one in the first
+ * place -- see var_decl's own grammar comments in parser.y). A no-op
+ * for a non-array type (nothing printed at all) and for Vircon32 mode
+ * (where print_type already handled the brackets itself, before the
+ * name) -- safe to call unconditionally from either call site without
+ * its own target/array-type guard at each one. */
+static void print_array_suffix(FILE *out, const AstNode *type) {
+    if (g_target != TARGET_STANDARD || type == NULL) return;
+    while (type->kind == AST_ARRAY_TYPE) {
+        fprintf(out, "[%d]", type->ival);
+        type = type->a;
     }
 }
 
@@ -434,6 +557,13 @@ static void emit_globals(FILE *out, const AstList *decls) {
  * few rounds back should have gotten from the start: a count/shape that
  * differs depending on whether this-injection has touched it needs to be
  * checked for that difference explicitly, not assumed uniform.
+ *
+ * KNOWN, DELIBERATE GAP for --target=standard: builds its own
+ * function-pointer declarator text inline, unconditionally in
+ * Vircon32's own reversed form, regardless of g_target -- see
+ * print_type's own AST_FUNC_PTR_TYPE case (this file) for the full
+ * reasoning on why standard-mode function-pointer output was scoped
+ * out of this round entirely, which applies here identically.
  */
 static void emit_vtable_struct(FILE *out, const AstNode *class_decl) {
     ClassLayout *layout = (ClassLayout *)class_decl->sema_info;
@@ -496,10 +626,18 @@ static void emit_struct(FILE *out, const AstNode *class_decl) {
              * longer positioned to indent. */
             explain(out, 1, "C has no built-in dynamic dispatch -- this pointer to a table of function pointers is how a virtual call finds the right override at runtime");
             fprintf(out, "    ");
-            /* Bare, no `struct` keyword -- this is a REFERENCE to the
-             * vtable struct type emitted just above by
-             * emit_vtable_struct(), not a definition. */
-            fprintf(out, "%s_VTable *vtable;\n", class_decl->str1);
+            /* Vircon32 mode: bare, no `struct` keyword -- this is a
+             * REFERENCE to the vtable struct type emitted just above
+             * by emit_vtable_struct(), not a definition. Standard
+             * mode: needs `struct` for the same reason print_type's
+             * own AST_IDENT case does for an ordinary class reference
+             * -- this is also a struct-tag reference with no typedef
+             * of its own. Inlined directly (not via
+             * print_class_type_name, which expects a bare name, not
+             * one with "_VTable" already appended) since this is the
+             * only spot needing exactly this suffixed shape. */
+            fprintf(out, "%s%s_VTable *vtable;\n",
+                    (g_target == TARGET_STANDARD) ? "struct " : "", class_decl->str1);
         } else {
             if (f->declaring_class != class_decl && !explained_inherited) {
                 /* Only explain once, at the FIRST inherited field --
@@ -518,7 +656,11 @@ static void emit_struct(FILE *out, const AstNode *class_decl) {
             }
             fprintf(out, "    ");
             print_type(out, f->type);
-            fprintf(out, " %s;\n", f->name);
+            fprintf(out, " %s", f->name);
+            print_array_suffix(out, f->type); /* no-op except in
+                standard mode on an array-typed field -- see its own
+                doc comment */
+            fprintf(out, ";\n");
         }
     }
     fprintf(out, "};\n\n");
@@ -568,6 +710,12 @@ static void emit_struct(FILE *out, const AstNode *class_decl) {
  * reasoning as print_type's function-pointer choices elsewhere in this
  * file: safer, more likely to be supported without needing to confirm
  * a second, independent piece of Vircon32-specific syntax.
+ *
+ * KNOWN, DELIBERATE GAP for --target=standard: same boundary as
+ * emit_vtable_struct just above -- the cast-insertion branch below
+ * builds Vircon32's own reversed function-pointer CAST syntax inline,
+ * unconditionally, regardless of g_target. See print_type's own
+ * AST_FUNC_PTR_TYPE case for the full reasoning.
  */
 static void emit_vtable_instance(FILE *out, const AstNode *class_decl) {
     ClassLayout *layout = (ClassLayout *)class_decl->sema_info;
@@ -586,7 +734,8 @@ static void emit_vtable_instance(FILE *out, const AstNode *class_decl) {
      * whoever next hand-writes a struct-typed declaration in this file
      * without routing it through print_type or this same reasoning. */
     explain(out, 0, "every object of this class points its own vtable field at THIS single, shared instance -- one copy per class, not one per object");
-    fprintf(out, "%s_VTable %s_vtable_instance = {\n", class_decl->str1, class_decl->str1);
+    fprintf(out, "%s%s_VTable %s_vtable_instance = {\n",
+            (g_target == TARGET_STANDARD) ? "struct " : "", class_decl->str1, class_decl->str1);
     for (int i = 0; i < layout->vtable->count; i++) {
         VtableEntry *entry = &layout->vtable->entries[i];
         AstNode *impl = entry->method;
@@ -930,6 +1079,8 @@ static void indent_spaces(FILE *out, int indent) {
 static void print_var_decl_inline(FILE *out, const AstNode *n) {
     print_type(out, n->type);
     fprintf(out, " %s", n->str1);
+    print_array_suffix(out, n->type); /* no-op except in standard mode
+        on an array-typed declaration -- see its own doc comment */
     if (n->a != NULL) {
         fprintf(out, " = ");
         print_expr(out, n->a);
@@ -1196,14 +1347,22 @@ static void print_stmt(FILE *out, const AstNode *s, int indent, int strip_return
  * definition below needs it too (to decide whether to strip return
  * values in the body) and there's no reason to look it up twice. */
 static void emit_function_header(FILE *out, const AstNode *func, const char *name) {
-    int is_main = (strcmp(name, "main") == 0);
+    int force_void_main = (strcmp(name, "main") == 0 && g_target == TARGET_VIRCON32);
+    /* Vircon32 requires `void main()` specifically, regardless of what
+     * the C++ source actually declared (commonly `int main()`) -- see
+     * mangle()'s own doc comment in sema.c for why this is forced here
+     * rather than requiring the source to already declare it that way.
+     * Standard mode deliberately does NOT force this: unlike every
+     * other --target difference this project has, forcing `void` here
+     * changes actual PROGRAM BEHAVIOR (an exit code becomes
+     * unobservable), not just surface syntax -- docs/VIRCON32_QUIRKS.md
+     * flagged this as needing a deliberate decision rather than a
+     * silent default when this flag got built, and the decision made
+     * is: standard mode honors whatever `main`'s own C++ declaration
+     * actually said (typically `int`), the ordinary, unsurprising
+     * choice for real, portable C. */
 
-    if (is_main) {
-        /* Vircon32 requires `void main()` specifically -- see mangle()'s
-         * own doc comment in sema.c for why this is forced here rather
-         * than requiring the C++ source to already declare it that way.
-         * func->type is deliberately ignored in this case, whatever the
-         * C++ source actually declared (commonly `int main()`). */
+    if (force_void_main) {
         fprintf(out, "void");
     } else {
         print_type(out, func->type);
@@ -1233,7 +1392,18 @@ static void emit_function_prototype(FILE *out, const AstNode *func) {
 static void emit_function_definition(FILE *out, const AstNode *func) {
     FuncSemaInfo *info = (FuncSemaInfo *)func->sema_info;
     const char *name = (info != NULL) ? info->mangled_name : func->str1;
-    int is_main = (strcmp(name, "main") == 0);
+    int force_void_main = (strcmp(name, "main") == 0 && g_target == TARGET_VIRCON32);
+    /* Matches emit_function_header's own identical condition just
+     * above -- deliberately kept as the exact same expression in both
+     * places rather than, say, computing it once and threading it
+     * through as a parameter, so the two can never drift apart and
+     * disagree about whether THIS particular `main` gets the void-
+     * forcing/return-value-stripping treatment. strip_return_value
+     * (passed to print_stmt below) only ever needs to fire alongside
+     * the void-forcing above: stripping `return expr;` down to
+     * `expr; return;` only makes sense when the signature genuinely
+     * became `void`, never when standard mode is honoring the
+     * source's own real return type instead. */
 
     /* -g support: this function's own first line of C output always
      * gets an entry, function_name included -- unlike print_stmt's own
@@ -1264,7 +1434,7 @@ static void emit_function_definition(FILE *out, const AstNode *func) {
     }
     emit_function_header(out, func, name);
     fprintf(out, "\n");
-    print_stmt(out, func->a, 0, is_main); /* func->a is the body, an AST_BLOCK */
+    print_stmt(out, func->a, 0, force_void_main); /* func->a is the body, an AST_BLOCK */
     fprintf(out, "\n");
 }
 
@@ -1313,7 +1483,9 @@ static void emit_method_prototype(FILE *out, const AstNode *class_decl, const As
     const char *name = (info != NULL) ? info->mangled_name : method->str1;
 
     print_type(out, method->type);
-    fprintf(out, " %s(%s *this", name, class_decl->str1);
+    fprintf(out, " %s(", name);
+    print_class_type_name(out, class_decl->str1);
+    fprintf(out, " *this");
     for (int p = 0; p < method->list.count; p++) {
         fprintf(out, ", ");
         AstNode *param = method->list.items[p];
@@ -1488,7 +1660,8 @@ static void emit_new_delete_runtime(FILE *out, const AstNode *class_decl) {
          * already need for the identical reason. */
         int start = has_body ? 1 : 0;
 
-        fprintf(out, "%s *v32_new_%s(", class_decl->str1, ctor_mangled);
+        print_class_type_name(out, class_decl->str1);
+        fprintf(out, " *v32_new_%s(", ctor_mangled);
         if (start == m->list.count) {
             fprintf(out, "void");
         }
@@ -1500,8 +1673,13 @@ static void emit_new_delete_runtime(FILE *out, const AstNode *class_decl) {
         }
         fprintf(out, ")\n{\n");
         explain(out, 1, "C++'s 'new' has no C equivalent -- this function does what 'new' does under the hood: allocate raw memory, then call the constructor on it explicitly");
-        fprintf(out, "    %s *self = (%s *)malloc(sizeof(%s));\n",
-                class_decl->str1, class_decl->str1, class_decl->str1);
+        fprintf(out, "    ");
+        print_class_type_name(out, class_decl->str1);
+        fprintf(out, " *self = (");
+        print_class_type_name(out, class_decl->str1);
+        fprintf(out, " *)malloc(sizeof(");
+        print_class_type_name(out, class_decl->str1);
+        fprintf(out, "));\n");
         if (has_body) {
             fprintf(out, "    %s(self", ctor_mangled);
             for (int p = start; p < m->list.count; p++) {
@@ -1522,9 +1700,12 @@ static void emit_new_delete_runtime(FILE *out, const AstNode *class_decl) {
     }
 
     if (!found_ctor) {
-        fprintf(out, "%s *v32_new_%s(void)\n{\n", class_decl->str1, class_decl->str1);
-        fprintf(out, "    return (%s *)malloc(sizeof(%s));\n", class_decl->str1, class_decl->str1);
-        fprintf(out, "}\n\n\n");
+        print_class_type_name(out, class_decl->str1);
+        fprintf(out, " *v32_new_%s(void)\n{\n    return (", class_decl->str1);
+        print_class_type_name(out, class_decl->str1);
+        fprintf(out, " *)malloc(sizeof(");
+        print_class_type_name(out, class_decl->str1);
+        fprintf(out, "));\n}\n\n\n");
     }
 }
 
@@ -1551,9 +1732,12 @@ static void emit_new_delete_runtime_classes(FILE *out, const AstList *decls) {
  * with array-`new` goes unused rather than being scoped out by an
  * "only if actually used" scan this project hasn't built). */
 static void emit_array_new_runtime(FILE *out, const char *type_name) {
-    fprintf(out, "%s *v32_new_arr_%s(int n)\n{\n", type_name, type_name);
-    fprintf(out, "    return (%s *)malloc(n * sizeof(%s));\n", type_name, type_name);
-    fprintf(out, "}\n\n\n");
+    print_class_type_name(out, type_name);
+    fprintf(out, " *v32_new_arr_%s(int n)\n{\n    return (", type_name);
+    print_class_type_name(out, type_name);
+    fprintf(out, " *)malloc(n * sizeof(");
+    print_class_type_name(out, type_name);
+    fprintf(out, "));\n}\n\n\n");
 }
 
 static void emit_array_new_runtime_classes(FILE *out, const AstList *decls) {
@@ -1659,7 +1843,9 @@ static void emit_delete_runtime(FILE *out, const AstNode *class_decl) {
         break; /* at most one can ever exist -- no ambiguity to resolve */
     }
 
-    fprintf(out, "void v32_delete_%s(%s *ptr)\n{\n", class_decl->str1, class_decl->str1);
+    fprintf(out, "void v32_delete_%s(", class_decl->str1);
+    print_class_type_name(out, class_decl->str1);
+    fprintf(out, " *ptr)\n{\n");
     explain(out, 1, "C++'s 'delete' has no C equivalent -- this function does what 'delete' does under the hood: call the destructor explicitly, then free the memory");
 
     /* VIRTUAL DESTRUCTOR DISPATCH: if this class's destructor is
@@ -1792,7 +1978,19 @@ void codegen_run(const AstNode *program, FILE *out, int verbose_comments) {
      * from the output despite being called. */
     int needs_misc = program_has_any_class(&program->list) || g_uses_new_or_delete;
     if (needs_misc) {
-        fprintf(out, "#include \"misc.h\"\n");
+        /* Vircon32 mode: "misc.h", Vircon32's own header providing
+         * malloc/free/rand/srand/exit (among others). Standard mode:
+         * <stdlib.h>, the portable C header providing the same set --
+         * this project's own generated code never emits memset/memcpy
+         * calls of its own (confirmed directly, not assumed; a real
+         * user-written call to either still needs its own <string.h>,
+         * but that's the source's own responsibility the same way it
+         * already is in Vircon32 mode, unrelated to this include). */
+        if (g_target == TARGET_STANDARD) {
+            fprintf(out, "#include <stdlib.h>\n");
+        } else {
+            fprintf(out, "#include \"misc.h\"\n");
+        }
     }
     fprintf(out, "/* Auto-generated Vircon32 C -- do not edit by hand. */\n\n");
     emit_forward_declarations(out, &program->list);

@@ -449,6 +449,37 @@ project mangles one). `cpp_path` is always the original `.cpp` given on
 the command line — never a preprocessed intermediate, even if a
 separate preprocessor tool exists someday.
 
+`--target=vircon32` (or `v32`, the default) targets the real Vircon32 C
+compiler's own quirks throughout; `--target=standard` (or `std`)
+targets plain, portable C instead, for using this project as an
+ordinary C++-to-C transpiler on some other system entirely — no cart
+XML or debug map either way for `--target=standard`, since both are
+Vircon32-platform concepts with no meaning outside it (`-x`/`-g` are
+simply ignored in that mode, not an error). One single pipeline
+either way, not two separate compilation passes — see
+`docs/VIRCON32_QUIRKS.md` for the itemized checklist of every place
+this actually branches, and its own status per entry (a few are still
+genuinely Vircon32-only for now, most notably function-pointer
+declarators — a deliberate, stated gap, not an oversight). One real
+behavioral difference worth knowing, not just a syntax swap: `main`'s
+own return type. Vircon32 mode still always forces `void main(void)`,
+discarding whatever the C++ source actually declared (matching the
+real hardware's own requirement); standard mode honors it, typically
+`int`, with real `return` statements preserved rather than stripped.
+
+Vircon32 mode ALSO rewrites the ternary operator (`cond ? a : b`) into
+an equivalent `if`/`else` wherever it directly initializes a variable,
+is directly assigned to a bare identifier, or is directly a `return`
+expression (including a chain of these, `cond1 ? a : cond2 ? b : c`,
+fully unwound) — the real Vircon32 C compiler doesn't support the
+ternary operator at all. Standard mode keeps it exactly as written,
+since real standard C supports it natively. A ternary nested any other
+way (a call argument, part of a larger expression, a for-loop's own
+clauses, assigned through anything but a bare identifier) is left
+untouched in either mode — a stated scope boundary, not silently
+mishandled; see `docs/VIRCON32_QUIRKS.md`'s own entry #10 for the full
+reasoning.
+
 A large set of example inputs lives in `tests/`, including a couple that
 are *deliberately* invalid (an undeclared type, an out-of-line
 definition with no matching prototype) to show that errors are reported
@@ -478,7 +509,7 @@ src/
   driver.h      shared state between the lexer and parser
   v32cxx.h      project identity (VERSION/AUTHOR/URL) and build-time
                 configuration constants
-  main.c        CLI entry point (-o, -c, -v, -x, -b, -g, --version)
+  main.c        CLI entry point (-o, -c, -v, -x, -b, -g, --target, --version)
 tests/          example .cpp inputs, including intentionally-invalid
                 ones and several real, hand-written programs
 docs/           design notes, implementation deep-dives, and the

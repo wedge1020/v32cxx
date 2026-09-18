@@ -69,6 +69,35 @@ extern PreprocessorLines g_preprocessor_lines;
 extern int g_uses_new_or_delete;
 
 /*
+ * The output C dialect: TARGET_VIRCON32 (the default -- every quirk
+ * this project has ever had to reason through against the real
+ * Vircon32 compiler) or TARGET_STANDARD (plain, portable C, for using
+ * this project as an ordinary C++-to-C transpiler on some OTHER
+ * system entirely). Set once, in main.c, from the `--target` CLI flag
+ * before lowering or codegen ever runs; read by both. A global rather
+ * than a parameter threaded through every function signature that
+ * might eventually need it (lower_run, codegen_run, and everything
+ * each of them calls) -- the same trade-off already made for
+ * g_uses_new_or_delete just above, for the same reason: this is
+ * single-shot, whole-program state decided once at the very start of
+ * a run, not something that varies mid-traversal or needs to differ
+ * between two calls in the same process.
+ *
+ * See docs/VIRCON32_QUIRKS.md for the full, itemized list of exactly
+ * what changes between the two targets and where -- that document was
+ * written as a checklist for precisely this flag, well before it
+ * existed, so treat it as the authoritative map of every conditional
+ * this enum is threaded into, not just the handful mentioned in any
+ * one function's own comment.
+ */
+typedef enum {
+    TARGET_VIRCON32,
+    TARGET_STANDARD
+} CodegenTarget;
+
+extern CodegenTarget g_target;
+
+/*
  * Cart hints: `#texture NAME "file.png"` and `#sound NAME "file.wav"`,
  * recognized directly by the lexer (a targeted special-case, NOT the
  * start of a general preprocessor -- every other `#`-line still just

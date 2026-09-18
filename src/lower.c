@@ -2345,6 +2345,257 @@ static void insert_pointer_cast_free_functions(AstList *decls) {
     }
 }
 
+/* ---- phase 10: ternary-to-if/else rewriting (--target=vircon32 only) ---
+ *
+ * A real Vircon32-compiler limitation, not a portability nicety: the
+ * real Vircon32 C compiler doesn't support the ternary operator at
+ * all. This project's own grammar and every earlier lowering phase
+ * still treat `cond ? a : b` as an ordinary expression throughout --
+ * this phase runs LAST, after everything else that walks an
+ * AST_TERNARY node as part of a larger expression (finalize_calls,
+ * fix_references, new_delete_rewrite, ...) has already finished, and
+ * rewrites the three STATEMENT-level contexts where a ternary
+ * commonly appears into equivalent if/else:
+ *
+ *   int x = cond ? a : b;     ->  int x; if (cond) { x = a; } else { x = b; }
+ *   x = cond ? a : b;         ->  if (cond) { x = a; } else { x = b; }
+ *   return cond ? a : b;      ->  if (cond) { return a; } else { return b; }
+ *
+ * Each of these three shapes already has a natural "place to put the
+ * value" (the declared variable's own name, the assignment's own
+ * lvalue, or a return statement) -- no temporary variable is ever
+ * needed, unlike a general ternary-hoisting scheme would require.
+ * Chained/nested ternaries (`cond1 ? a : cond2 ? b : c`, a common,
+ * idiomatic pattern, not a rare edge case -- confirmed by
+ * tests/sample58.cpp's own `classify`, already in this project's
+ * suite before this phase existed) are fully handled too: each
+ * newly-built branch is recursively re-checked before being wrapped
+ * into its own if/else, so a ternary nested arbitrarily deep through
+ * a CHAIN of these three shapes keeps unwinding one level at a time
+ * until nothing ternary-shaped remains.
+ *
+ * SCOPE, deliberate and stated plainly: only a ternary that is
+ * DIRECTLY the initializer of a var_decl, DIRECTLY the rhs of a plain
+ * `=` assignment to a bare identifier, or DIRECTLY a return
+ * expression is rewritten -- CHAINED that way (the recursion just
+ * above), not nested any other way. A ternary nested INSIDE a call
+ * argument, as part of a larger arithmetic expression, inside a
+ * for-loop's own init/cond/incr clauses, or assigned through anything
+ * other than a bare identifier (`arr[i] = cond ? a : b;`,
+ * `obj.field = cond ? a : b;`) -- is left completely untouched and
+ * will not compile on the real Vircon32 toolchain. Two real reasons
+ * for this boundary, not just running out of time: (1) a fully
+ * general rewrite needs to hoist arbitrary sub-expressions into
+ * temporaries while preserving evaluation order, sequencing this
+ * project doesn't have any machinery for yet (no comma operator,
+ * itself a separate, already-tracked gap); (2) the assignment case
+ * specifically needed a NARROWER check than "any assignment" even
+ * within this scope -- an arbitrary lvalue duplicated across both an
+ * if-branch and an else-branch would double-evaluate any side effect
+ * inside it (`arr[i++] = cond ? a : b;` would increment `i` in
+ * whichever branch runs, but a general lvalue could appear in code
+ * generated for BOTH branches if this were done carelessly); a bare
+ * identifier has no such risk, so that's the line drawn here.
+ *
+ * Runs only when g_target == TARGET_VIRCON32 (lower_run's own call
+ * site below) -- standard C supports the ternary operator natively,
+ * so standard-mode output keeps it exactly as written, unrewritten.
+ */
+
+/* True for the three statement shapes this phase rewrites -- kept as
+ * its own predicate rather than inlined at each call site, since
+ * rewrite_ternary_block (below) needs to check it BEFORE deciding
+ * whether a statement gets a 1:1 slot replacement or needs to become
+ * TWO statements (var_decl's own case), and getting those two checks
+ * out of sync would be a real bug waiting to happen. */
+static AstNode *build_ternary_if_else(AstNode *cond, AstNode *then_stmt, AstNode *else_stmt, int line) {
+    AstNode *if_node = ast_new(AST_IF, line);
+    if_node->a = cond;
+    AstNode *then_block = ast_new(AST_BLOCK, line);
+    ast_list_append(&then_block->list, then_stmt);
+    if_node->b = then_block;
+    AstNode *else_block = ast_new(AST_BLOCK, line);
+    ast_list_append(&else_block->list, else_stmt);
+    if_node->c = else_block;
+    return if_node;
+}
+
+static void rewrite_ternary_block(AstNode *block);
+
+/* Handles the two REPLACEMENT shapes (assign, return) that can stand
+ * in for a single statement slot even OUTSIDE a block's own list --
+ * `if (cond) return x ? a : b;` (no braces) is valid in this grammar,
+ * and the rewritten if/else is still exactly one statement, so it
+ * fits in that same slot with no list to insert into needed. var_decl
+ * is deliberately NOT handled here -- its own rewrite needs to become
+ * TWO statements (the now-uninitialized declaration, then the
+ * if/else), which only rewrite_ternary_block's own list-splicing can
+ * do; a var_decl reaching this function (as a bare if/while/for body
+ * with no surrounding block) is left unrewritten, the same documented
+ * boundary this whole phase's own doc comment already states for
+ * anything a plain slot-replacement can't safely reach. */
+static void rewrite_ternary_stmt(AstNode **slot) {
+    AstNode *s = *slot;
+    if (s == NULL) return;
+    switch (s->kind) {
+        case AST_BLOCK:
+            rewrite_ternary_block(s);
+            break;
+        case AST_IF:
+            rewrite_ternary_stmt(&s->b);
+            rewrite_ternary_stmt(&s->c);
+            break;
+        case AST_WHILE:
+            rewrite_ternary_stmt(&s->b);
+            break;
+        case AST_FOR:
+            rewrite_ternary_stmt(&s->d);
+            break;
+        case AST_LABEL:
+            rewrite_ternary_stmt(&s->a);
+            break;
+        case AST_RETURN:
+            if (s->a != NULL && s->a->kind == AST_TERNARY) {
+                AstNode *t = s->a;
+                AstNode *then_ret = ast_new(AST_RETURN, s->line);
+                then_ret->a = t->b;
+                AstNode *else_ret = ast_new(AST_RETURN, s->line);
+                else_ret->a = t->c;
+                /* Recurse on each newly-built branch BEFORE wrapping it
+                 * into the if/else below -- a chained/nested ternary
+                 * (`cond1 ? a : cond2 ? b : c`, a common, idiomatic
+                 * pattern, not a rare edge case) means t->b or t->c can
+                 * itself be another AST_TERNARY; without this, only
+                 * the OUTERMOST level would get rewritten, leaving a
+                 * still-broken, still-uncompilable ternary sitting
+                 * inside the else-branch this function just built.
+                 * Each recursive call sees the exact same AST_RETURN
+                 * shape this case already handles, so it either
+                 * rewrites it again (another nested ternary) or does
+                 * nothing (a plain expression, the base case). */
+                rewrite_ternary_stmt(&then_ret);
+                rewrite_ternary_stmt(&else_ret);
+                *slot = build_ternary_if_else(t->a, then_ret, else_ret, s->line);
+            }
+            break;
+        case AST_EXPR_STMT:
+            if (s->a != NULL && s->a->kind == AST_ASSIGN
+                && s->a->str1 != NULL && strcmp(s->a->str1, "=") == 0
+                && s->a->a != NULL && s->a->a->kind == AST_IDENT
+                && s->a->b != NULL && s->a->b->kind == AST_TERNARY) {
+                AstNode *assign = s->a;
+                AstNode *t = assign->b;
+                const char *name = assign->a->str1;
+
+                AstNode *then_assign = ast_new(AST_ASSIGN, s->line);
+                then_assign->str1 = strdup("=");
+                then_assign->a = ast_ident(name, s->line);
+                then_assign->b = t->b;
+                AstNode *then_stmt = ast_new(AST_EXPR_STMT, s->line);
+                then_stmt->a = then_assign;
+
+                AstNode *else_assign = ast_new(AST_ASSIGN, s->line);
+                else_assign->str1 = strdup("=");
+                else_assign->a = ast_ident(name, s->line);
+                else_assign->b = t->c;
+                AstNode *else_stmt = ast_new(AST_EXPR_STMT, s->line);
+                else_stmt->a = else_assign;
+
+                /* Same chained-ternary recursion as AST_RETURN just
+                 * above, same reasoning -- t->b/t->c can themselves be
+                 * another AST_TERNARY, and each recursive call sees
+                 * the exact AST_EXPR_STMT(AST_ASSIGN(...)) shape this
+                 * case already knows how to rewrite. */
+                rewrite_ternary_stmt(&then_stmt);
+                rewrite_ternary_stmt(&else_stmt);
+                *slot = build_ternary_if_else(t->a, then_stmt, else_stmt, s->line);
+            }
+            break;
+        default:
+            break;
+    }
+}
+
+static void rewrite_ternary_block(AstNode *block) {
+    AstList new_list = ast_list_new();
+    for (int i = 0; i < block->list.count; i++) {
+        AstNode *stmt = block->list.items[i];
+
+        if (stmt->kind == AST_VAR_DECL && stmt->a != NULL && stmt->a->kind == AST_TERNARY) {
+            /* The one shape needing TWO statements in its place --
+             * see this whole phase's own doc comment above for why
+             * this can only happen here, inside a real list, never
+             * via rewrite_ternary_stmt's own single-slot replacement. */
+            AstNode *t = stmt->a;
+            AstNode *decl_only = stmt;
+            decl_only->a = NULL; /* same node, reused -- just drops its own initializer */
+            ast_list_append(&new_list, decl_only);
+
+            AstNode *then_assign = ast_new(AST_ASSIGN, stmt->line);
+            then_assign->str1 = strdup("=");
+            then_assign->a = ast_ident(stmt->str1, stmt->line);
+            then_assign->b = t->b;
+            AstNode *then_stmt = ast_new(AST_EXPR_STMT, stmt->line);
+            then_stmt->a = then_assign;
+
+            AstNode *else_assign = ast_new(AST_ASSIGN, stmt->line);
+            else_assign->str1 = strdup("=");
+            else_assign->a = ast_ident(stmt->str1, stmt->line);
+            else_assign->b = t->c;
+            AstNode *else_stmt = ast_new(AST_EXPR_STMT, stmt->line);
+            else_stmt->a = else_assign;
+
+            /* Same chained-ternary recursion as rewrite_ternary_stmt's
+             * own AST_RETURN/AST_EXPR_STMT cases, same reasoning: t->b
+             * or t->c can itself be another AST_TERNARY
+             * (`int x = cond1 ? a : cond2 ? b : c;`), and each
+             * recursive call sees the exact AST_EXPR_STMT(AST_ASSIGN
+             * (...)) shape rewrite_ternary_stmt already knows how to
+             * rewrite. */
+            rewrite_ternary_stmt(&then_stmt);
+            rewrite_ternary_stmt(&else_stmt);
+
+            ast_list_append(&new_list, build_ternary_if_else(t->a, then_stmt, else_stmt, stmt->line));
+        } else {
+            rewrite_ternary_stmt(&stmt);
+            ast_list_append(&new_list, stmt);
+        }
+    }
+    block->list = new_list;
+}
+
+static void rewrite_ternary_in_method(AstNode *method) {
+    if (method->kind != AST_FUNC_DEF) return;
+    rewrite_ternary_stmt(&method->a);
+}
+
+static void rewrite_ternary_classes(AstList *decls) {
+    for (int i = 0; i < decls->count; i++) {
+        AstNode *n = decls->items[i];
+        if (n->kind == AST_CLASS_DECL) {
+            ClassLayout *layout = (ClassLayout *)n->sema_info;
+            if (layout != NULL) {
+                for (int j = 0; j < layout->methods.count; j++) {
+                    rewrite_ternary_in_method(layout->methods.items[j]);
+                }
+            }
+        } else if (n->kind == AST_NAMESPACE_DECL) {
+            rewrite_ternary_classes(&n->list);
+        }
+    }
+}
+
+static void rewrite_ternary_free_functions(AstList *decls) {
+    for (int i = 0; i < decls->count; i++) {
+        AstNode *n = decls->items[i];
+        if (n->kind == AST_NAMESPACE_DECL) {
+            rewrite_ternary_free_functions(&n->list);
+        } else if (n->kind == AST_FUNC_DEF && n->b == NULL) {
+            rewrite_ternary_in_method(n);
+        }
+    }
+}
+
 int lower_run(AstNode *program) {
     compute_struct_layouts(&program->list);
     this_inject_classes(&program->list);
@@ -2377,6 +2628,16 @@ int lower_run(AstNode *program) {
     inject_ctor_calls_free_functions(&program->list);
     destruct_scope_classes(&program->list);           /* phase 9 */
     destruct_scope_free_functions(&program->list);
+    if (g_target == TARGET_VIRCON32) {
+        /* phase 10 -- deliberately conditional, unlike every earlier
+         * phase: standard C supports the ternary operator natively,
+         * so standard-mode output keeps `cond ? a : b` exactly as
+         * written. See this phase's own doc comment (just above) for
+         * the full reasoning and the real, stated scope boundary on
+         * which ternary-containing statements this actually rewrites. */
+        rewrite_ternary_classes(&program->list);
+        rewrite_ternary_free_functions(&program->list);
+    }
     return 0;
 }
 
