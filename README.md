@@ -81,11 +81,18 @@ itself), plain C-style `union`s (top-level/namespace-level; not routed
 through the same machinery as `class`/`struct`, since real C++ itself
 restricts what a union may contain far more than either), source-level
 `sizeof` (both `sizeof(Type)` and `sizeof expr`/`sizeof(expr)`, with a
-call inside the expression form correctly resolved, not skipped), and
+call inside the expression form correctly resolved, not skipped),
 `goto`/labeled statements (a real, deliberately-flagged limitation
 here: no validation that a label actually exists, and no destructor
 invocation for a `goto` that jumps into or out of a scope holding a
-live class-typed local — see the note below). The usual
+live class-typed local — see the note below), and function pointers —
+**both** Vircon32's own quirky declarator style (`ReturnType(ParamTypes)*
+name;`) and standard C's (`ReturnType (*name)(ParamTypes);`) are
+accepted as input, including arrays of either
+(`ReturnType (*name[N])(ParamTypes);` and, less certainly — see below —
+`ReturnType(ParamTypes)* [N] name;`); output is always Vircon32's own
+required form regardless of which one the source used, the same
+dual-acceptance treatment array declarators already have. The usual
 statement/expression language is covered throughout. Access control
 is enforced (including through inheritance); overload resolution uses
 argument
@@ -252,12 +259,21 @@ emitted alongside it.
 - **Basic, non-OOP C syntax still missing**, confirmed directly by
   checking the grammar rather than assumed — relevant if you're using
   this project to adapt existing standard C, not just write new C++:
-  no function-pointer declarators, no multi-dimensional arrays.
-  Bitwise operators, `switch`/`case`, bare `struct`, C-style casts,
-  C++-style casts, hex/octal/binary literals with suffixes, ternary,
-  `do`/`while`, `enum`, `union`, source-level `sizeof`, and `goto`
-  (above) were the first five passes through this list; only two items
-  remain from the original list.
+  no multi-dimensional arrays. Bitwise operators, `switch`/`case`,
+  bare `struct`, C-style casts, C++-style casts, hex/octal/binary
+  literals with suffixes, ternary, `do`/`while`, `enum`, `union`,
+  source-level `sizeof`, `goto`, and function pointers (above) were
+  the first six passes through this list; only one item remains from
+  the original list.
+- **The Vircon32-style array-of-function-pointers declarator is
+  unconfirmed.** `ReturnType(ParamTypes)* [N] name;` is this project's
+  own extrapolation from its two individually-confirmed patterns (the
+  plain Vircon32 function-pointer form, and the plain Vircon32 array
+  form) — no existing generated output combines them, so this specific
+  spelling hasn't been verified against the real compiler the way
+  everything else Vircon32-specific in this project has been. The
+  standard-C array-of-function-pointers form, and both plain
+  (non-array) function-pointer forms, don't have this caveat.
 
 This is genuinely still growing — expect rough edges, and expect this
 README to need updating again as things change.

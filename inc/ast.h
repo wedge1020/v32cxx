@@ -415,6 +415,54 @@ typedef enum {
                               "ElementType [N]" form on output regardless
                               of which input form was used -- codegen.c's
                               print_type is where that happens */
+    AST_FUNC_PTR_TYPE,    /* type=return type, list=param TYPES (bare
+                              types only -- e.g. a list of AST_IDENT/
+                              AST_POINTER_TYPE/... nodes built from
+                              type_spec+pointer_opt, never full "param"
+                              nodes with names, since a function-pointer
+                              TYPE carries no parameter names at all,
+                              matching real C++ exactly) -- represents
+                              the TYPE of a function pointer, e.g.
+                              "int (*)(int, int)" on the standard-C
+                              side. Accepted on the C++ input side in
+                              BOTH standard-C declarator form
+                              ("ReturnType (*name)(ParamTypes);") and
+                              Vircon32-native form
+                              ("ReturnType(ParamTypes)* name;" -- see
+                              docs/VIRCON32_QUIRKS.md's own "Function-
+                              pointer declarator syntax reversed" entry,
+                              itself confirmed against the real
+                              compiler via vtable-slot emission, long
+                              before this node existed to represent a
+                              SOURCE-level declaration of the same
+                              shape) -- same "two accepted spellings,
+                              one AST shape, one always-Vircon32-style
+                              output" treatment AST_ARRAY_TYPE already
+                              established, extended here deliberately
+                              rather than decided fresh (see
+                              VIRCON32_QUIRKS.md's own standing
+                              principle on this). Composes with
+                              AST_ARRAY_TYPE for free, no special
+                              casing needed anywhere: an "array of
+                              function pointers" is simply an
+                              AST_ARRAY_TYPE whose own element type (a)
+                              is an AST_FUNC_PTR_TYPE, exactly the same
+                              structural relationship an ordinary array
+                              of ints already has -- ast_wrap_array
+                              doesn't care what it's wrapping, and
+                              print_type's own recursion handles it
+                              automatically once AST_FUNC_PTR_TYPE has
+                              its own case. codegen.c's print_type
+                              emits the return type, then "(ParamType,
+                              ParamType, ...)", then "*" -- with NO
+                              name embedded inside the parens at all
+                              (unlike the standard-C form's own
+                              "(*name)"), matching the confirmed
+                              vtable-slot precedent exactly
+                              (`int(Shape *)* Shape__area__void;`) --
+                              the caller then appends " name" after
+                              print_type returns, the same pattern
+                              every other type already follows. */
     AST_INIT_LIST,        /* list=initializer values, e.g. the "{1, 2, 3}"
                               in "int arr[3] = {1, 2, 3};" -- ONLY ever
                               appears as a var_decl's own `a` (initializer),
@@ -578,6 +626,7 @@ AstNode *ast_wrap_reference(AstNode *inner, int line);
  * produced it (parser.y's var_decl has both); the AST itself carries no
  * memory of which spelling the source used. */
 AstNode *ast_wrap_array(AstNode *inner, int length, int line);
+AstNode *ast_wrap_func_ptr(AstNode *return_type, AstList param_types, int line);
 
 void ast_dump(const AstNode *node, int indent);
 

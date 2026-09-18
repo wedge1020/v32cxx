@@ -170,6 +170,35 @@ static void print_type(FILE *out, const AstNode *type) {
             print_type(out, type->a);
             fprintf(out, " [%d]", type->ival);
             break;
+        case AST_FUNC_PTR_TYPE:
+            /* Vircon32's own reversed function-pointer-declarator
+             * quirk (see docs/VIRCON32_QUIRKS.md's own "Function-
+             * pointer declarator syntax reversed" entry, confirmed
+             * against the real compiler for vtable-slot emission --
+             * `int(Shape *)* Shape__area__void;`, never the standard-C
+             * `int (*Shape__area__void)(Shape *);`) -- emitted here
+             * regardless of which of parser.y's two accepted C++-side
+             * declarator forms produced this node, same "AST carries
+             * no memory of which spelling was used" treatment
+             * AST_ARRAY_TYPE just above already established. No name
+             * embedded inside the parens at all (unlike the standard-C
+             * form's own "(*name)") -- the caller appends " name"
+             * after this function returns, the exact same pattern
+             * every other type in this function already follows,
+             * which is also what makes composing with AST_ARRAY_TYPE
+             * (an array of function pointers) work with no extra code
+             * at all: that case's own recursive print_type(type->a)
+             * call lands here first, producing "ReturnType(Params)*",
+             * then its own " [%d]" is appended, then the ordinary
+             * caller-appends-the-name step happens exactly as always. */
+            print_type(out, type->type);
+            fprintf(out, "(");
+            for (int i = 0; i < type->list.count; i++) {
+                if (i > 0) fprintf(out, ", ");
+                print_type(out, type->list.items[i]);
+            }
+            fprintf(out, ")*");
+            break;
         default:
             fprintf(out, "void" /* unrecognized type node -- best-effort */);
             break;

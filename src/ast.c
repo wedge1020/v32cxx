@@ -52,6 +52,13 @@ AstNode *ast_wrap_array(AstNode *inner, int length, int line) {
     return n;
 }
 
+AstNode *ast_wrap_func_ptr(AstNode *return_type, AstList param_types, int line) {
+    AstNode *n = ast_new(AST_FUNC_PTR_TYPE, line);
+    n->type = return_type;
+    n->list = param_types;
+    return n;
+}
+
 static const char *kind_name(AstKind k) {
     switch (k) {
         case AST_PROGRAM: return "Program";
@@ -101,6 +108,7 @@ static const char *kind_name(AstKind k) {
         case AST_POINTER_TYPE: return "PointerType";
         case AST_REFERENCE_TYPE: return "ReferenceType";
         case AST_ARRAY_TYPE: return "ArrayType";
+        case AST_FUNC_PTR_TYPE: return "FuncPtrType";
         case AST_INIT_LIST: return "InitList";
         case AST_CAST: return "Cast";
         case AST_SIZEOF: return "Sizeof";

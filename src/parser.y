@@ -92,7 +92,28 @@
  * and confirm the actual concrete input you care about still parses
  * correctly before trusting the new number.
  */
-%expect 22
+%expect 23
+/* Bumped from 22 to 23 for exactly one new, deliberately-accepted
+ * shift/reduce conflict, added alongside function pointers: a
+ * qualified type name (`Namespace::ClassName`) immediately followed by
+ * '(' -- e.g. `Namespace::ClassName (*fp)(int);`, a standard-C
+ * function-pointer declarator whose own RETURN type happens to be
+ * qualified -- is, at that exact point, also a valid PREFIX of an
+ * out-of-line constructor definition for that same qualified class
+ * (`Namespace::ClassName(int x) { ... }`), which this grammar already
+ * supported. Read this specific counterexample directly (not just
+ * trusted the total count) before accepting it: bison's own default
+ * resolution (prefer shift) picks the out-of-line-constructor reading,
+ * which is also the correct, by-far-more-common one to prefer here --
+ * a function pointer whose own return type is a qualified name is a
+ * rare, unusual case, while out-of-line constructor definitions are
+ * completely ordinary. Confirmed the genuinely different case this
+ * round also surfaced (a real reduce/reduce conflict, VOID_KW
+ * reachable two ways inside a function-pointer parameter list) was a
+ * true defect, not a benign default -- fixed that one outright rather
+ * than accepting it (see opt_func_ptr_param_list's own comment on it)
+ * -- so this file's own reduce/reduce count stays at its permanent 0,
+ * unlike this one shift/reduce addition. */
 
 %union {
     AstNode *node;
@@ -119,7 +140,7 @@
 
 %type <node> program top_decl namespace_decl class_decl member
 %type <node> func_decl func_def func_header var_decl typedef_decl out_of_line_def
-%type <node> enum_decl enumerator union_decl
+%type <node> enum_decl enumerator union_decl func_ptr_param_type
 %type <node> opt_member_init_list member_init
 %type <node> block stmt for_init opt_initializer opt_array_initializer
 %type <node> expr expr_opt unary_expr postfix_expr primary_expr
@@ -128,7 +149,7 @@
 %type <list> top_decl_list member_list stmt_list
 %type <list> param_list opt_param_list arg_list opt_arg_list qname_prefix
 %type <list> member_init_list
-%type <list> switch_body enumerator_list union_member_list
+%type <list> switch_body enumerator_list union_member_list func_ptr_param_list opt_func_ptr_param_list
 
 %type <str> name_tok func_name operator_symbol
 %type <access> access_spec
@@ -616,6 +637,7 @@ out_of_line_def:
 
 opt_param_list:
       /* empty */   { $$ = ast_list_new(); }
+    | VOID_KW        { $$ = ast_list_new(); /* `(void)` -- real C's own "no parameters" spelling, same fix as opt_func_ptr_param_list's own VOID_KW alternative. A genuine, PRE-EXISTING gap, unrelated to function pointers -- found only because a function-pointer test happened to also declare an ordinary function using this spelling. Unambiguous against param_list's own first alternative: a bare VOID_KW with nothing following only ever matches here, since param itself always requires a name after its own type. */ }
     | param_list     { $$ = $1; }
     ;
 
@@ -781,7 +803,154 @@ var_decl:
             $$->type = ast_wrap_array($1, $3, @1.first_line);
             $$->a = $6;
         }
+    | type_spec pointer_opt '(' '*' IDENTIFIER ')' '(' opt_func_ptr_param_list ')' opt_initializer
+        {
+            /* Standard-C function-pointer declarator --
+             * `ReturnType (*name)(ParamTypes);`. Accepted as an
+             * ALTERNATE valid C++-side input form alongside the
+             * Vircon32-native one just below -- same "two spellings,
+             * one AST shape, one always-Vircon32-style output"
+             * treatment the array declarators above already
+             * established (see AST_FUNC_PTR_TYPE's own doc comment in
+             * ast.h, and docs/VIRCON32_QUIRKS.md's "Function-pointer
+             * declarator syntax reversed" entry, confirmed against the
+             * real compiler for vtable-slot emission well before this
+             * grammar existed to reach the same node from a source-
+             * level declaration). Disambiguated from the Vircon32-style
+             * alternative below by the very next token after this
+             * rule's own opening '(': a bare '*' can only ever start
+             * THIS form (type_spec's own first-set never includes
+             * '*'), so the two never actually compete for the same
+             * lookahead. */
+            symtab_insert(g_symtab, g_symtab->current, $5, SYM_VAR);
+            $$ = ast_new(AST_VAR_DECL, @5.first_line);
+            $$->str1 = strdup($5);
+            AstNode *ret = ($2 == 1) ? ast_wrap_pointer($1, @1.first_line)
+                         : ($2 == 2) ? ast_wrap_reference($1, @1.first_line)
+                         : $1;
+            $$->type = ast_wrap_func_ptr(ret, $8, @1.first_line);
+            $$->a = $10;
+        }
+    | type_spec pointer_opt '(' opt_func_ptr_param_list ')' '*' IDENTIFIER opt_initializer
+        {
+            /* Vircon32-native function-pointer declarator --
+             * `ReturnType(ParamTypes)* name;` -- see the standard-C
+             * alternative just above for the full reasoning (shared
+             * between both). Both alternatives build the identical
+             * AST_FUNC_PTR_TYPE regardless of which one matched; the
+             * AST itself carries no memory of which spelling the
+             * source used. */
+            symtab_insert(g_symtab, g_symtab->current, $7, SYM_VAR);
+            $$ = ast_new(AST_VAR_DECL, @7.first_line);
+            $$->str1 = strdup($7);
+            AstNode *ret = ($2 == 1) ? ast_wrap_pointer($1, @1.first_line)
+                         : ($2 == 2) ? ast_wrap_reference($1, @1.first_line)
+                         : $1;
+            $$->type = ast_wrap_func_ptr(ret, $4, @1.first_line);
+            $$->a = $8;
+        }
+    | type_spec pointer_opt '(' '*' IDENTIFIER '[' INT_LITERAL ']' ')' '(' opt_func_ptr_param_list ')' opt_array_initializer
+        {
+            /* Standard-C ARRAY-of-function-pointers declarator --
+             * `ReturnType (*name[N])(ParamTypes);`. Builds an
+             * AST_ARRAY_TYPE whose own element type is an
+             * AST_FUNC_PTR_TYPE -- exactly the same structural
+             * composition an ordinary array of any other type already
+             * has (see AST_FUNC_PTR_TYPE's own doc comment in ast.h
+             * for why this composes for free, needing no special
+             * casing in ast_wrap_array or print_type beyond
+             * AST_FUNC_PTR_TYPE having its own case). */
+            symtab_insert(g_symtab, g_symtab->current, $5, SYM_VAR);
+            $$ = ast_new(AST_VAR_DECL, @5.first_line);
+            $$->str1 = strdup($5);
+            AstNode *ret = ($2 == 1) ? ast_wrap_pointer($1, @1.first_line)
+                         : ($2 == 2) ? ast_wrap_reference($1, @1.first_line)
+                         : $1;
+            AstNode *fp = ast_wrap_func_ptr(ret, $11, @1.first_line);
+            $$->type = ast_wrap_array(fp, $7, @1.first_line);
+            $$->a = $13;
+        }
+    | type_spec pointer_opt '(' opt_func_ptr_param_list ')' '*' '[' INT_LITERAL ']' IDENTIFIER opt_array_initializer
+        {
+            /* Vircon32-native ARRAY-of-function-pointers declarator.
+             * UNCONFIRMED against the real compiler, worth being
+             * direct about -- unlike the plain (non-array) Vircon32
+             * function-pointer form, which VIRCON32_QUIRKS.md already
+             * confirms via vtable-slot emission, no existing generated
+             * output anywhere in this project combines Vircon32's own
+             * array-bracket placement with its own function-pointer
+             * placement, so this specific combination
+             * ("ReturnType(ParamTypes)* [N] name;" -- the array
+             * brackets positioned exactly where they'd go for an
+             * ordinary array of any other Vircon32-style type,
+             * directly before the name) is this project's own
+             * extrapolation from the two individually-confirmed
+             * patterns, not something Matthew's own build has verified
+             * end to end. Needs real-compiler confirmation before this
+             * specific spelling is treated as settled, same standard
+             * every other Vircon32-specific quirk in this project was
+             * held to before being trusted. */
+            symtab_insert(g_symtab, g_symtab->current, $10, SYM_VAR);
+            $$ = ast_new(AST_VAR_DECL, @10.first_line);
+            $$->str1 = strdup($10);
+            AstNode *ret = ($2 == 1) ? ast_wrap_pointer($1, @1.first_line)
+                         : ($2 == 2) ? ast_wrap_reference($1, @1.first_line)
+                         : $1;
+            AstNode *fp = ast_wrap_func_ptr(ret, $4, @1.first_line);
+            $$->type = ast_wrap_array(fp, $8, @1.first_line);
+            $$->a = $11;
+        }
     ;
+
+/* ---- function-pointer parameter-type lists -----------------------------
+ *
+ * Deliberately separate from this file's own existing param_list/
+ * opt_param_list (used for an ordinary function's own parameters,
+ * which DO carry names) -- a function-pointer TYPE's own parameter
+ * list carries bare TYPES only, matching real C++ exactly
+ * (`int (*)(int, float)`, never `int (*)(int x, float y)`).
+ */
+func_ptr_param_type:
+    type_spec pointer_opt
+        {
+            $$ = ($2 == 1) ? ast_wrap_pointer($1, @1.first_line)
+               : ($2 == 2) ? ast_wrap_reference($1, @1.first_line)
+               : $1;
+        }
+    ;
+
+func_ptr_param_list:
+      func_ptr_param_type
+        { $$ = ast_list_new(); ast_list_append(&$$, $1); }
+    | func_ptr_param_list ',' func_ptr_param_type
+        { $$ = $1; ast_list_append(&$$, $3); }
+    ;
+
+opt_func_ptr_param_list:
+      /* empty */          { $$ = ast_list_new(); }
+    | func_ptr_param_list   { $$ = $1; }
+    ;
+
+/* `(void)` -- real C's own "no parameters" spelling -- deliberately has
+ * NO dedicated alternative of its own here, unlike opt_param_list's own
+ * VOID_KW alternative just above (for an ORDINARY function's params,
+ * which DO require a name after each type). A real, caught-on-
+ * regeneration bug once lived here: this rule used to have its own
+ * explicit "| VOID_KW { $$ = ast_list_new(); }" alternative, matching
+ * opt_param_list's -- but func_ptr_param_type's own "type_spec
+ * pointer_opt" ALREADY accepts a bare VOID_KW as a complete, valid
+ * type (needed for a `void *` parameter, and type_spec itself has no
+ * way to know it's being used in a context where a BARE void isn't
+ * meaningful) -- so a lone "(void)" was reducible TWO different ways
+ * to the exact same AST shape's worth of meaning, a genuine reduce/
+ * reduce conflict bison correctly refused to resolve silently. Fixed
+ * by removing the redundant alternative rather than trying to keep
+ * both: "(void)" still parses correctly and still prints as "(void)"
+ * in generated output, now via the ONE remaining path -- a single-
+ * entry func_ptr_param_list whose own entry is the bare `void` type,
+ * exactly what real C's own "no parameters" spelling already looks
+ * like syntactically, so nothing about the accepted INPUT or produced
+ * OUTPUT actually changed, only which internal path reaches it. */
 
 opt_array_initializer:
       /* empty */                     { $$ = NULL; }

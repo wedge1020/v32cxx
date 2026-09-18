@@ -305,6 +305,15 @@ skipped);
 .B goto
 and labeled statements (a real, deliberately-flagged limitation here
 \(em see BUGS below);
+function pointers, in BOTH Vircon32's own quirky declarator style
+.RI ( "ReturnType(ParamTypes)* name;" )
+and standard C's
+.RI ( "ReturnType (*name)(ParamTypes);" ),
+including arrays of either \(em output is always Vircon32's own
+required form regardless of which the source used, the same dual-
+acceptance treatment array declarators already have (see BUGS below
+for one specific spelling that isn't yet confirmed against the real
+compiler);
 global (file-scope) variables;
 base-class constructor delegation, both EXPLICIT (
 .I ": Base(args)"
@@ -369,7 +378,7 @@ toward this).
 Also not yet supported \(em basic, non-OOP C syntax, confirmed directly
 by checking the grammar rather than assumed, relevant if this tool is
 being used to adapt existing standard C rather than write new C++:
-function-pointer declarators, and multi-dimensional arrays. Bitwise
+multi-dimensional arrays. Bitwise
 operators,
 .BR switch / case ,
 bare
@@ -381,10 +390,10 @@ suffixes, the ternary operator,
 .BR union ,
 source-level
 .BR sizeof ,
-and
-.B goto
-(above) were the first five passes through this list; only two items
-remain from the original list.
+.BR goto ,
+and function pointers
+(above) were the first six passes through this list; only one item
+remains from the original list.
 .PP
 Never supported, by design: templates, exceptions, RTTI, multiple
 inheritance.
@@ -695,6 +704,17 @@ label actually exists anywhere in its function. Keep
 .B goto
 to flat scopes with no destructible locals in play until this is
 addressed.
+.PP
+The Vircon32-style ARRAY-of-function-pointers declarator
+.RI ( "ReturnType(ParamTypes)* [N] name;" )
+is this project's own extrapolation from its two individually-
+confirmed patterns (the plain Vircon32 function-pointer form, and the
+plain Vircon32 array form) \(em no existing generated output combines
+them, so this specific spelling has not been verified against the
+real compiler the way everything else Vircon32-specific in this
+project has been. The standard-C array-of-function-pointers form, and
+both plain (non-array) function-pointer forms, don't have this
+caveat.
 .PP
 Report issues, including anything this tool transpiles incorrectly or
 any real C++ feature you'd like to see prioritized, via the project

@@ -4167,6 +4167,223 @@ it -- especially whether the `goto`/label production actually
 regenerates cleanly, the one genuinely uncertain part of this round --
 still needs Matthew's own bison/flex regeneration to confirm for real.
 
+## Function pointers -- both declarator styles, arrays of them, and a real bonus bug found along the way
+
+Matthew confirmed the clean bison build (25 -> 22 conflicts, exactly as
+predicted -- the `sizeof`/cast ambiguity really was the only genuinely
+new one, `union`/`goto`/`AST_LABEL` added none at all) and the
+sample61-63 outputs, then asked for function pointers -- explicitly
+both Vircon32's own quirky declarator style and standard C's, plus
+arrays of them. Before implementing anything, directly confirmed the
+`sizeof` fix on the exact case it was designed for (`sizeof(int) - 5`,
+`sizeof(int) & 1`, `sizeof(int) * 2` all correctly parse as `sizeof`
+completing at its own closing paren, not swallowing the operator into
+a cast) -- the earlier clean build only proved zero CONFLICTS, not that
+the chosen resolution was semantically the one intended; worth
+verifying separately, and it was.
+
+### Investigated before designing anything, not guessed at
+
+`docs/VIRCON32_QUIRKS.md` already had both forms confirmed against the
+real compiler from earlier vtable-slot emission work: Vircon32 requires
+`ReturnType(ParamTypes)* name;`, standard C is
+`ReturnType (*name)(ParamTypes);`. More valuably, it already carried an
+explicit standing principle from Matthew, quoted directly in that file:
+extend the SAME dual-acceptance approach array declarators already use
+(accept both spellings as C++-side input, produce one identical AST
+shape regardless, always emit Vircon32's own required form on output)
+to function-pointer declarators whenever that work happened, rather
+than deciding the approach fresh. Followed that precedent exactly
+rather than inventing a new one -- traced `ast_wrap_array`'s own
+implementation and every `print_type` call site's "print the type,
+then the caller appends the name" convention before writing a single
+line of new grammar.
+
+### Design: one type node, reused for the array case for free
+
+New `AST_FUNC_PTR_TYPE` (type=return type, list=bare parameter TYPES,
+no names -- matching real C++'s own function-pointer type exactly).
+Deliberately NOT a parallel struct with its own array-of variant: since
+`AST_FUNC_PTR_TYPE` is just another ordinary type node, wrapping one
+with the EXISTING `ast_wrap_array` helper (the same one every other
+array-typed declaration already uses) produces "array of function
+pointers" with no new composition code at all -- `print_type`'s own
+existing `AST_ARRAY_TYPE` case already recurses into whatever its own
+element type turns out to be, function-pointer type included, once
+`AST_FUNC_PTR_TYPE` had its own case to recurse into. Four new
+`var_decl` grammar productions: standard-C plain, Vircon32-style plain,
+standard-C array, Vircon32-style array -- each pair disambiguated from
+its sibling by the very next token after the shared `type_spec
+pointer_opt '('` prefix (a bare `'*'` can only ever start the
+standard-C form, since `type_spec`'s own first-set never includes
+`'*'`, so the two forms never actually compete for the same lookahead
+-- confirmed by this same first-set reasoning already proven correct
+for the C-style cast and `sizeof` disambiguations in earlier rounds,
+not re-derived from scratch this time).
+
+A new, separate `func_ptr_param_type`/`func_ptr_param_list`/
+`opt_func_ptr_param_list` grammar family, deliberately NOT reusing the
+existing `param`/`param_list`/`opt_param_list` (an ordinary function's
+own parameters, which DO carry names) -- a function-pointer TYPE's own
+parameter list is bare types only. Supports the `(void)` "no
+parameters" spelling explicitly, real C's own idiom for this.
+
+`codegen.c`'s new `AST_FUNC_PTR_TYPE` case in `print_type` emits
+`ReturnType(ParamType, ParamType, ...)*` -- no name inside the parens
+at all, matching the confirmed vtable-slot precedent exactly
+(`int(Shape *)* Shape__area__void;`) -- with the caller appending
+` name` afterward, the same pattern every other type in that function
+already follows, which is also exactly what makes the array
+composition work automatically.
+
+### An honest gap, not silently extrapolated as if confirmed
+
+The Vircon32-style ARRAY-of-function-pointers spelling specifically
+(`ReturnType(ParamTypes)* [N] name;`) is this project's own
+extrapolation from the two individually-confirmed patterns -- no
+existing generated output anywhere in this project combines Vircon32's
+own array-bracket placement with its own function-pointer placement in
+the same declarator, so unlike the plain (non-array) Vircon32
+function-pointer form, this specific combination has NOT been
+confirmed against the real compiler. Said so directly in three places
+(`AST_FUNC_PTR_TYPE`'s own doc comment in `ast.h`, that grammar
+production's own comment in `parser.y`, and `tests/sample66.cpp`'s own
+header comment) rather than presenting it with the same confidence as
+the pieces that are actually settled.
+
+### A genuine, separate bug found along the way, unrelated to function pointers at all
+
+While writing `tests/sample64.cpp`, an ORDINARY function declared
+`int getZero(void) { ... }` failed to parse -- nothing to do with
+function pointers. Isolated and confirmed directly (a standalone
+two-line test with no function-pointer syntax anywhere in it):
+`opt_param_list` had never accepted the explicit `(void)` spelling for
+"no parameters" at all, only bare `()` -- a real, pre-existing gap this
+project simply hadn't been asked to close yet, `(void)` being extremely
+common, idiomatic C. Fixed with the identical `VOID_KW` alternative
+already added to `opt_func_ptr_param_list` for the same reason, same
+unambiguous reasoning (a bare `VOID_KW` with nothing following it can
+only ever match this new alternative, since `param` itself always
+requires a name after its own type, so there's no competition with
+`param_list`'s own first alternative). This is exactly the kind of
+gap this project has repeatedly caught by testing real, complete
+programs end to end rather than narrowly-scoped feature probes -- worth
+naming as a pattern, not just this one instance of it.
+
+### Tests
+
+`sample64.cpp` (standard-C style, including the `(void)` no-params
+case, both the fix above and the function-pointer form's own `(void)`
+alternative), `sample65.cpp` (Vircon32-style, confirming identical
+behavior to the standard-C form), `sample66.cpp` (arrays of function
+pointers in both styles, the Vircon32 array form's own header comment
+carrying the "not yet confirmed" flag described above). All three
+exercise actual USAGE too, not just declaration syntax -- assigning a
+function's own name to the pointer and calling through it -- confirming
+(rather than assuming) that this project's existing, fully generic
+expression grammar already handles both without any new work: a bare
+function name is already an ordinary identifier expression, and
+calling through a pointer already uses the same call syntax as calling
+a function directly, so neither needed any new grammar at all, only
+confirmation that nothing about the surrounding pipeline breaks it.
+
+### Verification
+
+Full syntax-check across every changed file; a build against the
+EXISTING (pre-this-round) generated grammar confirming every other
+file still integrates and links; the full 63-sample suite re-run
+against that build with zero regressions. `sample64`/`65`/`66` each
+confirmed to fail against the stale grammar in the expected place --
+`sample65` and `sample66` exactly at their own first new declarator
+syntax; `sample64` reported at its own `getZero(void)` line rather
+than its later function-pointer syntax, consistent with (not
+contradicting) the stale-grammar failure mode already seen in earlier
+rounds, where GLR's own error reporting can surface a few tokens after
+the actual point of divergence rather than exactly on it. `type_to_class`
+(sema.c) confirmed directly to already handle an unrecognized type kind
+gracefully via its own `default: return NULL;` -- no change needed
+there for `AST_FUNC_PTR_TYPE` to be treated safely as "not a class."
+The grammar itself, and everything downstream of it -- crucially
+including whether the two disambiguation points (standard-C vs.
+Vircon32-style function-pointer declarators, and the new `(void)`
+alternative) actually regenerate cleanly -- still needs Matthew's own
+bison/flex regeneration to confirm for real.
+
+## Function-pointer grammar conflicts -- one real bug, one benign, resolved differently
+
+Matthew's own bison run surfaced exactly what function pointers' extra
+grammar risk was flagged as likely to produce: a reduce/reduce conflict
+(new -- this project had never had one before) and a shift/reduce delta
+of +1 (23 found against the 22 baseline). Read every counterexample
+directly before responding, per this file's own standing instruction
+at the `%expect` declaration itself (added at some earlier point in
+this project's history, evidently from a previous close call: "read
+every new counterexample... and confirm the actual concrete input you
+care about still parses correctly before trusting the new number") --
+not just the totals, and not assumed to be another instance of the
+already-familiar `out_of_line_def`-vs-`func_def` family that accounts
+for the bulk of the existing 22.
+
+**The reduce/reduce conflict was a real, exact bug**, not a benign
+default: `opt_func_ptr_param_list`'s own `(void)` alternative
+(`VOID_KW`) was flagged as reachable two different ways for the exact
+same input. Root cause: `func_ptr_param_type` is `type_spec
+pointer_opt`, and `type_spec` already accepts a bare `VOID_KW` as a
+complete, valid type on its own (needed for a `void *` parameter) --
+`type_spec` has no way to know it's being used somewhere a bare `void`
+isn't meaningful. So a lone `(void)` reduced BOTH via the dedicated
+`VOID_KW` alternative added for exactly this spelling, AND via the
+ordinary `type_spec`-accepts-`VOID_KW` path producing a single-entry
+parameter list -- two genuinely different derivations for the same
+input, which is exactly what a reduce/reduce conflict means and
+exactly why bison refused to resolve it silently. Fixed by removing
+the now-redundant dedicated alternative entirely, not by trying to
+keep both and disambiguate between them: `(void)` still parses
+correctly and still prints as `(void)` in generated output, now via
+the one remaining path (a single-entry list whose entry is the bare
+`void` type) -- neither the accepted input nor the produced output
+actually changed, only which internal grammar path reaches it.
+
+**The shift/reduce conflict was genuinely new but benign, accepted
+rather than eliminated**: a qualified type name immediately followed
+by `(` (`Namespace::ClassName (*fp)(int);` -- a function pointer whose
+own return type happens to be qualified) is, at that exact point, also
+a valid prefix of an out-of-line constructor definition for that same
+qualified class (`Namespace::ClassName(int x) { ... }`), which this
+grammar already supported before function pointers existed at all.
+Bison's own default resolution (prefer shift) picks the out-of-line-
+constructor reading -- and confirmed this is also the CORRECT default
+to prefer, not merely convenient: a function pointer whose own return
+type is a qualified name is a rare, unusual case, while out-of-line
+constructor definitions are completely ordinary, so shift-preference
+happens to match the far more likely intended reading, the same way
+it already does for the unrelated, pre-existing dangling-else problem
+elsewhere in this grammar. `%expect` bumped from 22 to 23 to account
+for it, with the full reasoning recorded directly at the declaration
+itself, not just the number changed silently.
+
+**The two were NOT handled the same way, deliberately** -- a bug and a
+benign conflict call for different responses, and treating them
+identically (either fixing both, or accepting both) would have been
+the wrong instinct either way. The reduce/reduce conflict was fixed
+outright, keeping this project's own reduce/reduce count at its
+permanent zero; the shift/reduce conflict was examined, confirmed
+correct by default, and accepted with its own count and reasoning
+updated to match, not fixed for its own sake when nothing was actually
+wrong with the outcome it already produced.
+
+### Verification
+
+Full syntax-check across every changed file (the fix and the `%expect`
+change are both confined to `parser.y`, touching no `.c` file at all);
+a build against the EXISTING (pre-this-round) generated grammar
+confirming nothing else regressed; the full 63-sample suite re-run
+against that build with zero changes, exactly as expected since
+neither fix altered any already-generated grammar behavior -- both
+fixes are inert until Matthew's own next bison regeneration, which
+remains the only way to confirm the reduce/reduce conflict is
+genuinely gone and the shift/reduce count lands on exactly 23.
+
 ## Suggested next steps, roughly in order
 
 
