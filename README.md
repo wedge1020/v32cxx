@@ -136,11 +136,13 @@ return type larger than one word — its own field count, via
 project's own existing test suite actually found two real violations
 already in it (`tests/sample9.cpp`, `tests/sample15.cpp`, both passing
 a two-field `Vector2D` by value throughout their own operator
-overloads) — left as-is deliberately, since rewriting them is a
-separate decision about what those tests demonstrate. See
-`docs/VIRCON32_QUIRKS.md`'s own entry #11 for the full reasoning and
-stated scope gaps (an array- or nested-struct-typed field can still
-under-count; unions aren't checked at all).
+overloads). Both have since been rewritten to return `Vector2D *`
+instead (heap-allocated via `new`), once entry #12 below made that
+possible, eliminating the warning entirely rather than leaving it
+documented as a known limitation. See `docs/VIRCON32_QUIRKS.md`'s own
+entry #11 for the full reasoning and stated scope gaps (an array- or
+nested-struct-typed field can still under-count; unions aren't checked
+at all).
 
 **Lowering** — transforming the semantically-checked program into
 something code generation can work from directly — runs through eleven
@@ -319,18 +321,20 @@ emitted alongside it.
   method through a const reference — the syntax is accepted and
   correctly emitted in generated C, with real violations left for the
   downstream C/C++ compiler to catch.
-- **No function anywhere can return a pointer or reference type at
-  all** — confirmed directly, not assumed: `int *getPtr(int x) {
-  return &x; }` and `int &getRef();` both fail to parse.
-  `func_header`'s own grammar has no `pointer_opt` between the return
-  type and the function name at all (unlike `var_decl`/`param`, which
-  both do), so this applies to every function, not just operators —
-  an entirely ordinary `Shape *makeShape()` fails the same way. A
-  real, previously-undiscovered gap, surfaced while correcting
-  `sample9.cpp`/`sample15.cpp` (see the note on those two below) —
-  worth prioritizing given it blocks the realistic Vircon32 idiom for
-  a value-producing operator or factory function (return a pointer to
-  a newly-`new`'d result).
+- ~~No function anywhere can return a pointer or reference type at
+  all~~ — **FIXED**: `func_header` and `out_of_line_def` both now
+  accept a `pointer_opt` between the return type and the function
+  name, matching `var_decl`/`param`; the corresponding lowering
+  (implicit address-of at a reference-returning `return` site, implicit
+  dereference at a reference-returning call's use site, and the
+  function's own return-type relabeling) is done too. See
+  `docs/VIRCON32_QUIRKS.md`'s entry #12 for the full, bison-and-gcc-
+  verified account, including two adjacent pre-existing bugs this fix
+  surfaced along the way. One related, narrower gap remains open: this
+  project still doesn't model const-correctness on a method's own
+  `this` receiver, so forwarding a `const T &` as a method receiver can
+  produce a `-Wdiscarded-qualifiers` warning in the generated C (a
+  warning, not a hard type error) — see entry #12's own note on this.
 - **No direct-initialization with constructor arguments on a
   stack-allocated local** (`Shape shape(7);` — valid, idiomatic C++,
   confirmed a real gap, not a rejected feature). Only two forms exist

@@ -492,8 +492,34 @@ static AstNode *cast_receiver_if_needed(AstNode *obj_expr, const AstNode *actual
  * exposed from sema.c specifically for this. */
 static AstNode *address_of_if_needed(AstNode *obj_expr, AstNode *class_decl, LocalVarType *locals) {
     AstNode *t = infer_expr_type(obj_expr, class_decl, locals);
-    if (t == NULL || t->kind == AST_POINTER_TYPE) {
-        /* Already a pointer, OR we couldn't determine its type at all --
+    if (t == NULL || t->kind == AST_POINTER_TYPE || t->kind == AST_REFERENCE_TYPE) {
+        /* AST_REFERENCE_TYPE here (not just AST_POINTER_TYPE) is a real,
+         * separate fix, not part of the original pointer check: this
+         * whole phase (3/4) deliberately runs BEFORE phase 5 relabels
+         * any AST_REFERENCE_TYPE to AST_POINTER_TYPE anywhere (see
+         * finalize_call's own comment on that ordering, and
+         * inject_reference_return_address_stmt's, both above) -- so a
+         * bare identifier that is itself a reference PARAMETER or LOCAL
+         * still reports AST_REFERENCE_TYPE here via infer_expr_type
+         * (which returns the declared type as-is, unmodified), even
+         * though it is ALREADY going to be a pointer value by the time
+         * phase 5 finishes and codegen ever sees it. Without this,
+         * forwarding a reference parameter as another reference-typed
+         * argument (e.g. a free function `addThem(const Vector2D &a,
+         * const Vector2D &b)` computing `a + b`, which resolves to
+         * `operator+(const Vector2D &other)`) got a WRONGLY-inserted
+         * extra `&`, producing `(&a)` where `a` is already pointer-
+         * valued -- a real double-pointer type mismatch, caught by
+         * actually compiling tests/sample15.cpp's generated C (gcc
+         * reported `const struct Vector2D **` passed where `struct
+         * Vector2D *` was expected), not guessed at. Confirmed this is
+         * safe for the ORIGINAL "value local needs &" case too: a
+         * plain, non-reference local's own declared type is never
+         * AST_REFERENCE_TYPE in the first place, so this added
+         * condition only ever fires for exactly the already-pointer-
+         * bound-for case it's meant to.
+         *
+         * Already a pointer, OR we couldn't determine its type at all --
          * best-effort, same principle as everywhere else in this file:
          * don't insert a transformation on a guess. Wrongly adding `&`
          * to an expression that's already a pointer would silently
@@ -710,7 +736,7 @@ static void finalize_calls_expr(AstNode **slot, AstNode *class_decl, LocalVarTyp
         case AST_MEMBER:
             finalize_calls_expr(&n->a, class_decl, locals);
             break;
-        case AST_CALL:
+        case AST_CALL: {
             finalize_calls_expr(&n->a, class_decl, locals);
             for (int i = 0; i < n->list.count; i++) {
                 finalize_calls_expr(&n->list.items[i], class_decl, locals);
@@ -718,7 +744,57 @@ static void finalize_calls_expr(AstNode **slot, AstNode *class_decl, LocalVarTyp
             /* Post-order: arguments (including any nested calls used as
              * arguments) are finalized above before this call itself. */
             finalize_call(n, class_decl, locals);
+            /* Reference-RETURN calls need a deref inserted at their use
+             * site -- symmetric to reference-PARAMETER arguments needing
+             * an addr-of inserted at the call site (finalize_call's own
+             * comment on that, above). A C++ reference return acts like
+             * the referent itself; once lowered to a real pointer
+             * return, an ordinary use of the call's result needs an
+             * explicit dereference to keep meaning what it meant in
+             * C++ -- otherwise `int x = obj.getRef();` would assign the
+             * ADDRESS instead of the value. Not a guess: caught against
+             * an actual build of tests/sample72.cpp, where
+             * `int viaReference = original->getValueRef();` generated
+             * `int viaReference = Box__getValueRef__void(original);`,
+             * assigning an `int *` into an `int` -- exactly the kind of
+             * mismatch Vircon32's own C compiler already rejects
+             * elsewhere in this project (see address_of_if_needed's own
+             * doc comment for a matching real example).
+             *
+             * Checked against `target`'s type BEFORE phase 5 relabels
+             * any AST_REFERENCE_TYPE to AST_POINTER_TYPE, same ordering
+             * requirement as inject_reference_return_address_stmt above
+             * (see its own comment for why this phase has to run before
+             * phase 5, not after).
+             *
+             * SCOPE LIMITATION: this always inserts the deref, with no
+             * check for whether the call's result is itself flowing into
+             * a reference-typed local (`int &r = obj.getRef();`, which
+             * would want to keep the pointer, not dereference it) --
+             * reference-typed LOCALS are their own separate, already-
+             * incomplete area of this project (their own initializers
+             * don't get address-of treatment either; see
+             * fix_reference_access_stmt's AST_VAR_DECL case, which only
+             * fixes up `.`/`->` access, never initialization), and no
+             * test anywhere in this project currently combines the two.
+             * Left as a known, honestly-stated limitation rather than
+             * guessed at, matching this project's established practice
+             * everywhere else in this file. */
+            CallResolution *cr = (CallResolution *)n->sema_info;
+            if (cr != NULL && cr->resolved_target != NULL) {
+                AstNode *target = cr->resolved_target;
+                if (target->type != NULL && target->type->kind == AST_REFERENCE_TYPE) {
+                    AstNode *deref = ast_new(AST_UNOP, n->line);
+                    deref->str1 = strdup("deref"); /* same AST_UNOP shape
+                        used everywhere else in this project for `*expr`
+                        -- print_unop (codegen.c) already knows "deref"
+                        means "(*expr)"; no new AST kind needed */
+                    deref->a = n;
+                    *slot = deref;
+                }
+            }
             break;
+        }
         case AST_BINOP:
             finalize_calls_expr(&n->a, class_decl, locals);
             finalize_calls_expr(&n->b, class_decl, locals);
@@ -842,10 +918,84 @@ static LocalVarType *seed_locals_from_params(AstNode *func) {
     return locals;
 }
 
+/* Wraps `return expr` in address_of_if_needed when the enclosing
+ * function's own return type is AST_REFERENCE_TYPE -- a C++ reference
+ * return implicitly takes the address of whatever's returned, the same
+ * "needs &, unless the expression is already a pointer" transformation
+ * address_of_if_needed already gives method receivers (just above) and
+ * reference-typed call arguments (finalize_call's own comment on that,
+ * higher in this file). VIRCON32_QUIRKS.md entry #12: closing this gap
+ * is what lets a function actually return T& (or T*) at all, on top of
+ * the earlier, parameter-only fix.
+ *
+ * MUST run before phase 5 (fix_references) ever relabels
+ * AST_REFERENCE_TYPE to AST_POINTER_TYPE anywhere in the program --
+ * once that's happened there is no way left to tell a true pointer
+ * return from a lowered reference one, the exact same ordering hazard
+ * finalize_call's own reference-parameter fix already explains for
+ * parameters (see that comment for the full reasoning; it applies here
+ * unchanged).
+ *
+ * Mirrors finalize_calls_stmt's own traversal shape exactly, including
+ * its VAR_DECL locals-tracking -- but DELIBERATELY runs as a fully
+ * separate pass with its own freshly-seeded locals list, not sharing
+ * finalize_calls_stmt's, for the same reason fix_references_in_method's
+ * own seed_locals_with_reference_tracking is kept separate from phase
+ * 3's seed_locals_from_params (see that comment, above): a shared/
+ * aliased locals list here would just be redundant bookkeeping, not a
+ * correctness requirement, but keeping this walk independent means it
+ * can be reasoned about (and tested) entirely on its own, without
+ * depending on finalize_calls_stmt happening to run first in the same
+ * call. */
+static void inject_reference_return_address_stmt(AstNode **slot, AstNode *class_decl, LocalVarType **locals) {
+    AstNode *n = *slot;
+    if (n == NULL) return;
+    switch (n->kind) {
+        case AST_BLOCK:
+            for (int i = 0; i < n->list.count; i++) {
+                inject_reference_return_address_stmt(&n->list.items[i], class_decl, locals);
+            }
+            break;
+        case AST_IF:
+            inject_reference_return_address_stmt(&n->b, class_decl, locals);
+            inject_reference_return_address_stmt(&n->c, class_decl, locals);
+            break;
+        case AST_LABEL:
+            inject_reference_return_address_stmt(&n->a, class_decl, locals);
+            break;
+        case AST_WHILE:
+            inject_reference_return_address_stmt(&n->b, class_decl, locals);
+            break;
+        case AST_FOR:
+            inject_reference_return_address_stmt(&n->a, class_decl, locals);
+            inject_reference_return_address_stmt(&n->d, class_decl, locals);
+            break;
+        case AST_RETURN:
+            if (n->a != NULL) {
+                n->a = address_of_if_needed(n->a, class_decl, *locals);
+            }
+            break;
+        case AST_VAR_DECL: {
+            LocalVarType *lv = calloc(1, sizeof(LocalVarType)); /* calloc: zero-inits was_reference too */
+            lv->name = n->str1;
+            lv->type = n->type;
+            lv->next = *locals;
+            *locals = lv;
+            break;
+        }
+        default:
+            break;
+    }
+}
+
 static void finalize_calls_in_method(AstNode *method, AstNode *class_decl) {
     if (method->kind != AST_FUNC_DEF) return;
     LocalVarType *locals = seed_locals_from_params(method);
     finalize_calls_stmt(&method->a, class_decl, &locals);
+    if (method->type != NULL && method->type->kind == AST_REFERENCE_TYPE) {
+        LocalVarType *ret_locals = seed_locals_from_params(method);
+        inject_reference_return_address_stmt(&method->a, class_decl, &ret_locals);
+    }
 }
 
 static void finalize_calls_classes(AstList *decls) {
@@ -876,6 +1026,13 @@ static void finalize_calls_free_functions(AstList *decls) {
              * project for exactly this reason). */
             LocalVarType *locals = seed_locals_from_params(n);
             finalize_calls_stmt(&n->a, NULL, &locals);
+            if (n->type != NULL && n->type->kind == AST_REFERENCE_TYPE) {
+                /* Same reference-return handling as
+                 * finalize_calls_in_method just above -- a free function
+                 * can return T& just as much as a method can. */
+                LocalVarType *ret_locals = seed_locals_from_params(n);
+                inject_reference_return_address_stmt(&n->a, NULL, &ret_locals);
+            }
         }
     }
 }
@@ -1041,6 +1198,19 @@ static void fix_references_in_method(AstNode *method) {
     if (method->kind != AST_FUNC_DEF) return;
     LocalVarType *locals = seed_locals_with_reference_tracking(method);
     fix_reference_access_stmt(&method->a, &locals);
+    if (method->type != NULL && method->type->kind == AST_REFERENCE_TYPE) {
+        /* A function's OWN return type needs the exact same relabeling
+         * seed_locals_with_reference_tracking already gives every
+         * parameter/local just above (AST_REFERENCE_TYPE -> same node,
+         * just AST_POINTER_TYPE) -- this was never done here before
+         * VIRCON32_QUIRKS.md entry #12's fix, confirmed by grep across
+         * this whole file first, not assumed. The corresponding
+         * "needs &" transformation at every `return expr` site is phase
+         * 3/4's job (inject_reference_return_address_stmt, above,
+         * already run by finalize_calls_in_method before this phase
+         * ever reaches here) -- this is only the type-label half. */
+        method->type->kind = AST_POINTER_TYPE;
+    }
 }
 
 static void fix_references_classes(AstList *decls) {
@@ -1067,6 +1237,12 @@ static void fix_references_free_functions(AstList *decls) {
         } else if (n->kind == AST_FUNC_DEF && n->b == NULL) {
             LocalVarType *locals = seed_locals_with_reference_tracking(n);
             fix_reference_access_stmt(&n->a, &locals);
+            if (n->type != NULL && n->type->kind == AST_REFERENCE_TYPE) {
+                /* Same reference-return relabeling as
+                 * fix_references_in_method just above -- a free function
+                 * can return T& just as much as a method can. */
+                n->type->kind = AST_POINTER_TYPE;
+            }
         }
     }
 }

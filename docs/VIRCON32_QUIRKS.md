@@ -412,17 +412,18 @@ important default to protect.
   and `tests/sample15.cpp` (both exercising operator overloading on a
   `Vector2D` class -- `x`/`y`, two `int` fields, two words) both
   triggered this warning repeatedly. Matthew asked for these to be
-  corrected. PARTIALLY fixed, honestly: every `Vector2D` PARAMETER now
-  takes `const Vector2D &` instead of by value, eliminating that half
-  of the warnings entirely. The RETURN side could not be fixed at
-  all -- see the new entry #12 below for why (no function anywhere in
-  this grammar can return a pointer or reference type), a real,
-  separate, previously-undiscovered gap this correction attempt is
-  what surfaced. Both samples still warn on their own by-value
-  `Vector2D` returns, now honestly documented in their own header
-  comments as a known limitation rather than silently left unexplained.
+  corrected. Originally PARTIALLY fixed: every `Vector2D` PARAMETER
+  took `const Vector2D &` instead of by value, eliminating that half of
+  the warnings, but the RETURN side couldn't be fixed at all -- see
+  entry #12 below, the real, separate, previously-undiscovered gap this
+  correction attempt is what surfaced (no function anywhere in this
+  grammar could return a pointer or reference type). NOW FULLY fixed,
+  once entry #12 closed: both samples were rewritten again to return
+  `Vector2D *` (heap-allocated via `new`) from every value-producing
+  operator, eliminating the by-value-return warning entirely rather
+  than just documenting it as a known limitation.
 
-## 12. No function can return a pointer or reference type at all
+## 12. No function can return a pointer or reference type at all -- FIXED
 
 - Not a Vircon32-specific quirk -- a general, previously-undiscovered
   gap in this project's own grammar, surfaced while trying to fix
@@ -430,26 +431,91 @@ important default to protect.
   producing operator overload return a pointer instead of a multi-word
   struct by value.
 - **Confirmed directly**: `int *getPtr(int x) { return &x; }` and
-  `int &getRef();` (inside a class) both fail to parse --
-  `func_header`'s own grammar (`type_spec func_name '(' ...`) has no
+  `int &getRef();` (inside a class) both used to fail to parse --
+  `func_header`'s own grammar (`type_spec func_name '(' ...`) had no
   `pointer_opt` between the return type and the function name at all,
-  unlike `var_decl`/`param`, which both do. This applies to EVERY
-  function in this grammar, not just operators -- an entirely ordinary
-  `Shape *makeShape()` fails the same way.
-- **Status**: confirmed directly against this project's own real
-  parser, not assumed.
-- **Where**: `func_header`'s own grammar productions (`parser.y`) --
-  none of them include a `pointer_opt` before `func_name`.
-- **Impact on entry #11 above**: this is the reason `sample9`/
-  `sample15` could only be partially corrected -- a value-producing
-  operator overload has no way to avoid a multi-word by-value return
-  on Vircon32 until this gap closes, since returning a pointer to a
-  newly-`new`'d result (the realistic Vircon32 idiom for this) isn't
-  syntactically possible yet.
-- **Not yet fixed** -- a genuine grammar change (adding `pointer_opt`,
-  and presumably reference support too, to `func_header`), out of
-  scope for the correction that found it. Worth prioritizing given
-  what it blocks.
+  unlike `var_decl`/`param`, which both already did. This applied to
+  EVERY function in this grammar, not just operators -- an entirely
+  ordinary `Shape *makeShape()` failed the same way. `out_of_line_def`
+  had the identical gap in its own, separate grammar production.
+- **Fix**: `pointer_opt` added to both `func_header`'s and
+  `out_of_line_def`'s first alternatives, wrapping the return type via
+  `ast_wrap_pointer`/`ast_wrap_reference` exactly like `var_decl`
+  already does. `%expect` actually went DOWN, from 26 to 25 -- verified
+  with a real `bison -d`/`bison -v` run (not assumed): giving
+  `out_of_line_def` its own `pointer_opt` right after `type_spec`,
+  matching `var_decl`, means the two productions now agree on shifting
+  through `pointer_opt` first, eliminating a pre-existing 1-shift/
+  reduce fork between them rather than adding a new one. See the
+  comment on `%expect` in `parser.y` for the full, bison-verified
+  reasoning.
+- **Lowering, three parts**, all in `lower.c`:
+  1. A reference RETURN needs the same implicit "take the address"
+     treatment a reference PARAMETER already gets at its call site --
+     `inject_reference_return_address_stmt` wraps `return expr` in
+     `address_of_if_needed` whenever the enclosing function's return
+     type is `AST_REFERENCE_TYPE`, run in phase 3/4 (before phase 5
+     ever relabels `AST_REFERENCE_TYPE` to `AST_POINTER_TYPE`, the same
+     ordering requirement the existing reference-parameter fix already
+     documents).
+  2. `fix_references_in_method`/`fix_references_free_functions` (phase
+     5) now also relabel the FUNCTION'S OWN return type from
+     `AST_REFERENCE_TYPE` to `AST_POINTER_TYPE` -- previously this
+     phase only ever touched parameter/local types, never a function's
+     own return type.
+  3. A reference-returning CALL now gets an explicit dereference
+     inserted at its use site (`finalize_calls_expr`'s `AST_CALL`
+     case) -- the symmetric case to (1): a C++ reference return acts
+     like the referent itself, so `int x = obj.getRef();` needs a
+     `*` inserted around the (now pointer-returning) call, or it would
+     assign the address instead of the value. Caught by actually
+     compiling generated code, not guessed at (see below).
+- **Two adjacent, pre-existing bugs found and fixed along the way**,
+  both surfaced only once this round finally had a working bison+flex
+  toolchain available to actually COMPILE generated output, not just
+  parse-check it:
+  - `address_of_if_needed` only recognized `AST_POINTER_TYPE` as
+    "already pointer-like, don't add `&`" -- not `AST_REFERENCE_TYPE`.
+    Since phase 3/4 runs before phase 5 relabels references to
+    pointers, a bare reference PARAMETER forwarded as another
+    reference-typed argument (e.g. `addThem(const Vector2D &a, const
+    Vector2D &b)` computing `a + b`, resolving to `operator+(const
+    Vector2D &other)`) got a wrongly-inserted extra `&`, producing a
+    double pointer (`const Vector2D **` where `const Vector2D *` was
+    expected) -- a real compile error, caught by actually building
+    `tests/sample15.cpp`'s generated C. Fixed by also treating
+    `AST_REFERENCE_TYPE` as "already pointer-bound" in
+    `address_of_if_needed`.
+  - A leftover from this same investigation, **not yet fixed**: this
+    project doesn't model const-correctness on a method's own `this`
+    receiver, so forwarding a `const Vector2D &` as a method receiver
+    (same `sample15.cpp` scenario above) still produces a
+    `-Wdiscarded-qualifiers` WARNING (`const struct Vector2D *` passed
+    where a plain `struct Vector2D *this` is expected) -- not a hard
+    type error like the double-pointer bug was, and unrelated to
+    return types specifically, so left open rather than folded into
+    this entry's own scope.
+- **Verified end-to-end**, not just parse-checked: with a real
+  bison+flex toolchain built from source in this round's own sandbox
+  (flex wasn't previously available here; see `docs/DESIGN_NOTES.md`),
+  `tests/sample9.cpp`, `sample15.cpp`, and the new, dedicated
+  `tests/sample72.cpp` (a non-operator pointer/reference-return test:
+  an in-class + out-of-line pointer-returning method, a free function
+  returning a pointer, and a reference-returning method) all transpile
+  cleanly, and their generated C compiles with plain `gcc` with zero
+  errors. `sample72.cpp` was additionally compiled and RUN directly
+  (`--target=standard`), producing exactly the expected output
+  (`viaPointerMethod=7 viaFreeFunction=7 viaReference=7`).
+- **Where**: `func_header`/`out_of_line_def` (`parser.y`);
+  `inject_reference_return_address_stmt`, `finalize_calls_in_method`,
+  `finalize_calls_free_functions`, `fix_references_in_method`,
+  `fix_references_free_functions`, `finalize_calls_expr`'s `AST_CALL`
+  case, and `address_of_if_needed` (`lower.c`).
+- **Impact on entry #11 above**: this closes the reason `sample9`/
+  `sample15` could only be partially corrected -- both now return
+  `Vector2D *` (heap-allocated via `new`) instead of a multi-word
+  struct by value, avoiding the word-size warning entirely, and both
+  are rewritten to do so as part of this fix.
 
 ---
 

@@ -92,7 +92,7 @@
  * and confirm the actual concrete input you care about still parses
  * correctly before trusting the new number.
  */
-%expect 26
+%expect 25
 /* Bumped from 23 to 26 for exactly three new shift/reduce conflicts,
  * added alongside `const`: CONST is a new leading token for
  * type_spec, and every OTHER token that can start type_spec (INT_KW,
@@ -111,6 +111,38 @@
  * with `CONST type_spec` in place of a bare type keyword. Bison's own
  * default resolution (prefer shift) already handles this correctly
  * for the same reason the original family does. */
+
+/* Dropped from 26 to 25 -- one FEWER conflict, not more -- for the
+ * `pointer_opt` insertion into func_header's and out_of_line_def's first
+ * alternatives (VIRCON32_QUIRKS.md entry #12: function return types can
+ * now be a pointer or reference to T, not just plain T). This is a real,
+ * bison-verified count (`bison -d src/parser.y`, comparing state tables
+ * before and after this edit), not a guess -- the earlier draft of this
+ * comment (kept out of the final version) assumed the count would be
+ * unchanged and was wrong, which is exactly why this project's rule is
+ * to run bison and read it rather than trust a plausible-sounding
+ * prediction.
+ *
+ * What actually happened: before this change, out_of_line_def's first
+ * alternative started `type_spec qname_prefix func_name ...` (no
+ * pointer_opt), while var_decl's alternatives all start `type_spec
+ * pointer_opt ...`. After a bare `type_spec` followed by IDENTIFIER,
+ * the parser had to choose between reducing pointer_opt to nothing (var_decl
+ * path) or shifting into qname_prefix (out_of_line_def path) -- that
+ * fork was the "State 27" 1-shift/reduce conflict in the old table (see
+ * `bison -v`'s .output file). Giving out_of_line_def its own
+ * `pointer_opt` right after `type_spec`, matching var_decl exactly,
+ * means both paths now agree on shifting through pointer_opt first, so
+ * that particular fork no longer exists -- it merges into the states
+ * already used for var_decl's own pointer_opt handling instead of
+ * creating a new one. Confirmed by diffing `bison -v` output before and
+ * after: the same four other conflict states persist unchanged (8, 1, 8,
+ * 8 shift/reduce, matching the documented benign families elsewhere in
+ * this file), and the old state 27 fork is simply gone, not moved
+ * somewhere new and hidden.
+ *
+ * If a future grammar edit changes this count again, the same rule
+ * applies: run bison, read the actual counterexamples, don't assume. */
 
 /* Bumped from 22 to 23 for exactly one new, deliberately-accepted
  * shift/reduce conflict, added alongside function pointers: a
@@ -482,7 +514,7 @@ operator_symbol:
     ;
 
 func_header:
-      type_spec func_name '(' { symtab_push_scope(g_symtab, NULL, 0); } opt_param_list ')' opt_const
+      type_spec pointer_opt func_name '(' { symtab_push_scope(g_symtab, NULL, 0); } opt_param_list ')' opt_const
         {
             /* Overload note: this inserts every overload of `name` into
              * the same bucket, later ones shadowing earlier ones for
@@ -493,12 +525,18 @@ func_header:
              * site) needs a proper per-scope overload set, which belongs
              * in the semantic-analysis pass over the AST, not in this
              * table. */
-            symtab_insert(g_symtab, g_symtab->current->parent, $2, SYM_FUNC);
-            $$ = ast_new(AST_FUNC_DECL, @2.first_line);
-            $$->str1 = strdup($2);
-            $$->type = $1;
-            $$->list = $5;
-            $$->str2 = $7 ? strdup("const") : NULL; /* see AST_FUNC_DECL's
+            symtab_insert(g_symtab, g_symtab->current->parent, $3, SYM_FUNC);
+            $$ = ast_new(AST_FUNC_DECL, @3.first_line);
+            $$->str1 = strdup($3);
+            $$->type = ($2 == 1) ? ast_wrap_pointer($1, @1.first_line)
+                     : ($2 == 2) ? ast_wrap_reference($1, @1.first_line)
+                     : $1; /* pointer_opt lets a function's return type be
+                              a pointer or reference to T -- see
+                              docs/VIRCON32_QUIRKS.md entry #12 for why
+                              this was missing and what closing it
+                              required on the lowering side. */
+            $$->list = $6;
+            $$->str2 = $8 ? strdup("const") : NULL; /* see AST_FUNC_DECL's
                 own doc comment in ast.h for this field's meaning here --
                 str2 is otherwise completely unused across this whole
                 func_decl/func_def/out_of_line_def family, confirmed
@@ -601,18 +639,23 @@ func_def:
  */
 
 out_of_line_def:
-    type_spec qname_prefix func_name '(' { symtab_push_scope(g_symtab, NULL, 0); } opt_param_list ')' opt_const block
+    type_spec pointer_opt qname_prefix func_name '(' { symtab_push_scope(g_symtab, NULL, 0); } opt_param_list ')' opt_const block
         {
             $$ = ast_new(AST_FUNC_DEF, @1.first_line);
-            $$->str1 = strdup($3);
-            $$->type = $1;
-            $$->list = $6;
-            $$->str2 = $8 ? strdup("const") : NULL; /* see func_header's
+            $$->str1 = strdup($4);
+            $$->type = ($2 == 1) ? ast_wrap_pointer($1, @1.first_line)
+                     : ($2 == 2) ? ast_wrap_reference($1, @1.first_line)
+                     : $1; /* see func_header's identical pointer_opt
+                              handling above -- out-of-line definitions need
+                              the same pointer/reference return-type
+                              support */
+            $$->list = $7;
+            $$->str2 = $9 ? strdup("const") : NULL; /* see func_header's
                 own identical assignment above, and AST_FUNC_DECL's doc
                 comment in ast.h, for this field's meaning */
-            $$->a = $9;
-            $$->b = ast_new(AST_QUALIFIED_ID, @2.first_line);
-            $$->b->list = $2;
+            $$->a = $10;
+            $$->b = ast_new(AST_QUALIFIED_ID, @3.first_line);
+            $$->b->list = $3;
             symtab_pop_scope(g_symtab);
         }
     | qualified_type '(' { symtab_push_scope(g_symtab, NULL, 0); } opt_param_list ')' opt_member_init_list block

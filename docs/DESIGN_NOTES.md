@@ -5197,6 +5197,104 @@ this real case, not just trusted: `Vector2D__op_add__Vector2D_ref((&a),
 (&b))` and similar at every call site. Full 71-sample suite, both
 modes, zero regressions.
 
+## Closing entry #12: pointer/reference return types
+
+Matthew asked to actually close this gap rather than leave it
+documented. Unlike the round above, this one had a genuine bison+flex
+toolchain available (built from source in-sandbox this round -- bison
+was already present, flex wasn't and had to be compiled from its own
+release tarball, fetched over GitHub; see this file's own earlier
+notes on why neither was assumed available before), so every claim
+below is verified by actually running the real parser and actually
+compiling the generated C, not reasoned about from the grammar alone.
+
+### The grammar fix
+
+`pointer_opt` added to `func_header`'s and `out_of_line_def`'s first
+alternatives, matching `var_decl`/`param`'s existing shape exactly.
+The interesting part: `%expect` didn't need to go UP. A real `bison -d`
+run showed the conflict count dropping from 26 to 25 -- diffing
+`bison -v`'s own `.output` state tables before and after the change
+showed why: `out_of_line_def` used to lack `pointer_opt` entirely,
+so a bare `type_spec` followed by an identifier forced a 1-shift/
+reduce fork between "reduce pointer_opt to nothing (var_decl path)"
+and "shift into qname_prefix (out_of_line_def path)". Giving
+`out_of_line_def` its own `pointer_opt`, agreeing with `var_decl`,
+merges that fork away instead of opening a new one. Recorded as a
+lesson directly in `parser.y`'s own `%expect` comment: a plausible-
+sounding "this shouldn't change the count" prediction was drafted
+first and was WRONG (in the safe direction -- fewer conflicts, not
+more -- but still a real miss), which is exactly the kind of guess
+this project's own established rule (run bison, read the actual
+conflicts, don't assume) exists to catch.
+
+### The lowering fix
+
+Three parts, mirroring the existing reference-PARAMETER handling
+wherever a symmetric reference-RETURN case existed:
+1. `inject_reference_return_address_stmt` -- implicit address-of at a
+   `return expr` site when the function returns a reference, run
+   before phase 5 relabels reference types to pointer types (same
+   ordering hazard as the existing reference-parameter fix).
+2. `fix_references_in_method`/`fix_references_free_functions` (phase
+   5) now also relabel a function's OWN return type -- previously only
+   ever touched parameters/locals.
+3. Implicit dereference at a reference-returning CALL's use site
+   (`finalize_calls_expr`'s `AST_CALL` case) -- the point at which this
+   stopped being purely grammar-shaped and became a real, build-
+   verified bug hunt: the first working build assigned a raw `int *`
+   into a plain `int` local (`int viaReference = obj.getValueRef();`),
+   caught immediately by actually compiling the generated C with gcc,
+   not by reading the AST dump and assuming it was fine.
+
+### Two adjacent, pre-existing bugs found by actually compiling output
+
+Both invisible to every previous round, which could only parse-check,
+never compile-check:
+- `address_of_if_needed` treated `AST_POINTER_TYPE` as "already a
+  pointer, don't add `&`" but not `AST_REFERENCE_TYPE` -- so a
+  reference PARAMETER forwarded as another reference-typed argument
+  (`sample15.cpp`'s `addThem(const Vector2D &a, ...)` computing
+  `a + b`) got a wrongly-inserted extra `&`, producing a real double-
+  pointer compile error (`const Vector2D **` where `const Vector2D *`
+  was expected). This is a pre-existing bug, not something this
+  round's own changes introduced -- `sample15.cpp` had this exact
+  shape before this round too, it just had never been build-verified
+  before. Fixed by treating `AST_REFERENCE_TYPE` the same as
+  `AST_POINTER_TYPE` in `address_of_if_needed` (justified directly:
+  `infer_expr_type` returns a reference parameter's DECLARED type
+  as-is at this phase, before phase 5 ever mutates it, so a reference-
+  typed identifier here is already known to be pointer-bound).
+- Left OPEN, deliberately, as out of this entry's own scope: this
+  project still doesn't model const-correctness on a method's own
+  `this` receiver, so the same `sample15.cpp` scenario still produces
+  a `-Wdiscarded-qualifiers` WARNING (not a hard error) when a `const
+  Vector2D &` is forwarded as a method receiver. A real, narrower gap,
+  worth its own entry if it ever blocks something the way entry #12
+  itself did -- not folded into this fix's own scope since it's about
+  const-modeling on receivers generally, not specific to return types.
+
+### Verification
+
+`sample9.cpp`/`sample15.cpp` rewritten again (their operators now
+return `Vector2D *` via `new`, closing the by-value-return warning
+entry #11 could only partially close before). New dedicated
+`tests/sample72.cpp` added specifically for the GENERAL, non-operator
+case (in-class + out-of-line pointer-returning method, free function
+returning a pointer, reference-returning method) -- entries #9/#15
+already covered the operator-specific angle, but neither exercises an
+out-of-line pointer-returning method definition or a plain function
+returning a reference on its own terms.
+
+All three transpile cleanly and their generated C compiles with plain
+`gcc` (`--target=standard`, `-fsyntax-only`) with zero errors.
+`sample72.cpp` additionally compiled and RUN directly, producing
+exactly the expected values (`viaPointerMethod=7 viaFreeFunction=7
+viaReference=7`) -- genuine end-to-end verification, not just a clean
+parse. Full 72-sample suite (`make test`) run clean: only the
+already-documented, deliberately-invalid samples fail, matching the
+Makefile's own `-`-prefix list exactly, zero new regressions.
+
 ## Suggested next steps, roughly in order
 
 
