@@ -411,16 +411,45 @@ important default to protect.
   existing suite, not invented for the occasion**: `tests/sample9.cpp`
   and `tests/sample15.cpp` (both exercising operator overloading on a
   `Vector2D` class -- `x`/`y`, two `int` fields, two words) both
-  trigger this warning repeatedly, on `operator+`, `operator-`, and
-  similar, every one of them taking or returning a `Vector2D` BY
-  VALUE. Both samples have "passed" (transpiled successfully, no
-  fatal error) throughout this entire project's history -- this
-  warning is the first thing to surface that their generated C would
-  not actually compile on real Vircon32 hardware at all. Left as-is,
-  not rewritten to pass by reference: fixing the SAMPLES is a
-  separate, deliberate decision for Matthew to make (would change
-  what those two tests are demonstrating), not something to do
-  silently as a side effect of adding this check.
+  triggered this warning repeatedly. Matthew asked for these to be
+  corrected. PARTIALLY fixed, honestly: every `Vector2D` PARAMETER now
+  takes `const Vector2D &` instead of by value, eliminating that half
+  of the warnings entirely. The RETURN side could not be fixed at
+  all -- see the new entry #12 below for why (no function anywhere in
+  this grammar can return a pointer or reference type), a real,
+  separate, previously-undiscovered gap this correction attempt is
+  what surfaced. Both samples still warn on their own by-value
+  `Vector2D` returns, now honestly documented in their own header
+  comments as a known limitation rather than silently left unexplained.
+
+## 12. No function can return a pointer or reference type at all
+
+- Not a Vircon32-specific quirk -- a general, previously-undiscovered
+  gap in this project's own grammar, surfaced while trying to fix
+  entry #11's own `sample9`/`sample15` findings by having a value-
+  producing operator overload return a pointer instead of a multi-word
+  struct by value.
+- **Confirmed directly**: `int *getPtr(int x) { return &x; }` and
+  `int &getRef();` (inside a class) both fail to parse --
+  `func_header`'s own grammar (`type_spec func_name '(' ...`) has no
+  `pointer_opt` between the return type and the function name at all,
+  unlike `var_decl`/`param`, which both do. This applies to EVERY
+  function in this grammar, not just operators -- an entirely ordinary
+  `Shape *makeShape()` fails the same way.
+- **Status**: confirmed directly against this project's own real
+  parser, not assumed.
+- **Where**: `func_header`'s own grammar productions (`parser.y`) --
+  none of them include a `pointer_opt` before `func_name`.
+- **Impact on entry #11 above**: this is the reason `sample9`/
+  `sample15` could only be partially corrected -- a value-producing
+  operator overload has no way to avoid a multi-word by-value return
+  on Vircon32 until this gap closes, since returning a pointer to a
+  newly-`new`'d result (the realistic Vircon32 idiom for this) isn't
+  syntactically possible yet.
+- **Not yet fixed** -- a genuine grammar change (adding `pointer_opt`,
+  and presumably reference support too, to `func_header`), out of
+  scope for the correction that found it. Worth prioritizing given
+  what it blocks.
 
 ---
 

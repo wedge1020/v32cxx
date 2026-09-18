@@ -319,6 +319,18 @@ emitted alongside it.
   method through a const reference — the syntax is accepted and
   correctly emitted in generated C, with real violations left for the
   downstream C/C++ compiler to catch.
+- **No function anywhere can return a pointer or reference type at
+  all** — confirmed directly, not assumed: `int *getPtr(int x) {
+  return &x; }` and `int &getRef();` both fail to parse.
+  `func_header`'s own grammar has no `pointer_opt` between the return
+  type and the function name at all (unlike `var_decl`/`param`, which
+  both do), so this applies to every function, not just operators —
+  an entirely ordinary `Shape *makeShape()` fails the same way. A
+  real, previously-undiscovered gap, surfaced while correcting
+  `sample9.cpp`/`sample15.cpp` (see the note on those two below) —
+  worth prioritizing given it blocks the realistic Vircon32 idiom for
+  a value-producing operator or factory function (return a pointer to
+  a newly-`new`'d result).
 - **No direct-initialization with constructor arguments on a
   stack-allocated local** (`Shape shape(7);` — valid, idiomatic C++,
   confirmed a real gap, not a rejected feature). Only two forms exist

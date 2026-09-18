@@ -5148,6 +5148,55 @@ outcome as before (warnings don't fail a build), with the two new,
 genuine warnings on `sample9`/`sample15` confirmed by reading their
 own source, not just trusted from the tool's own output.
 
+## Correcting sample9/sample15 -- a partial, honest fix, and a significant new gap it surfaced
+
+Matthew asked to correct the two samples the word-size check flagged,
+since neither was meant to test a failure.
+
+### The fix that worked: parameters
+
+Every `Vector2D` parameter across both files now takes `const Vector2D
+&` instead of by value -- straightforward, idiomatic, and confirmed
+directly to eliminate every parameter-side warning while leaving the
+generated C correct (reference-to-pointer lowering and call-site `&`
+insertion, both fixed in earlier rounds, confirmed still working
+correctly here too).
+
+### The fix that couldn't happen, discovered by trying it
+
+The natural fix for the RETURN side -- have a value-producing operator
+like `operator+` return a pointer to a newly-`new`'d result, the
+realistic Vircon32 idiom for this -- turned out to be blocked by a
+significant, previously-undiscovered gap: NO function anywhere in this
+grammar can return a pointer or reference type at all. Confirmed
+directly with a minimal, unrelated test (`int *getPtr(int x) { return
+&x; }` fails to parse) before concluding this wasn't specific to
+operators -- `func_header`'s own grammar simply has no `pointer_opt`
+between the return type and the function name, unlike `var_decl`/
+`param`, which both do. An entirely ordinary `Shape *makeShape()`
+fails the identical way.
+
+Rather than expanding scope into a grammar change to unblock this
+(risky under the circumstances -- a change I can't verify with bison
+myself, discovered mid-task, for a correction that was supposed to be
+narrow), reverted to the parameter-only fix and documented the
+remaining return-side warnings honestly in each sample's own header
+comment, rather than silently leaving them unexplained or forcing
+through an untested grammar change to make them disappear. Added as
+`docs/VIRCON32_QUIRKS.md`'s own entry #12, cross-referenced from entry
+#11's own note about these two samples.
+
+### Verification
+
+Both samples transpile cleanly (`sample9`: 4 warnings, down from 8,
+all parameter-side eliminated; `sample15`: 4 warnings, down from 12,
+same pattern) -- confirmed by reading the actual remaining warnings,
+not just a reduced count. `sample15`'s own generated output read
+directly to confirm the reference lowering is genuinely correct in
+this real case, not just trusted: `Vector2D__op_add__Vector2D_ref((&a),
+(&b))` and similar at every call site. Full 71-sample suite, both
+modes, zero regressions.
+
 ## Suggested next steps, roughly in order
 
 
