@@ -92,7 +92,26 @@
  * and confirm the actual concrete input you care about still parses
  * correctly before trusting the new number.
  */
-%expect 23
+%expect 26
+/* Bumped from 23 to 26 for exactly three new shift/reduce conflicts,
+ * added alongside `const`: CONST is a new leading token for
+ * type_spec, and every OTHER token that can start type_spec (INT_KW,
+ * FLOAT_KW, VOID_KW, BOOL_KW, CHAR_KW, TYPE_NAME) already triggers the
+ * identical, long-standing out_of_line_def-vs-func_def ambiguity
+ * explained on out_of_line_def itself, once per context where a
+ * declaration can start (top-level, inside a namespace, inside a
+ * class body) -- three contexts, three new conflicts, matching this
+ * bump exactly. This is not a new KIND of conflict, just an existing,
+ * already-benign one now also reachable through one more starting
+ * token -- confirmed by reading the actual counterexamples this time
+ * too, not assumed from the total alone: each one's own shift
+ * derivation and reduce derivation are structurally identical to the
+ * INT_KW/FLOAT_KW/etc conflicts already accounted for in the base 22
+ * (see the very first %expect bump's own comment, still below), just
+ * with `CONST type_spec` in place of a bare type keyword. Bison's own
+ * default resolution (prefer shift) already handles this correctly
+ * for the same reason the original family does. */
+
 /* Bumped from 22 to 23 for exactly one new, deliberately-accepted
  * shift/reduce conflict, added alongside function pointers: a
  * qualified type name (`Namespace::ClassName`) immediately followed by
@@ -132,7 +151,7 @@
 %token RETURN IF ELSE DO WHILE FOR BREAK CONTINUE GOTO
 %token SWITCH CASE DEFAULT
 %token INT_KW FLOAT_KW VOID_KW BOOL_KW CHAR_KW
-%token NEW DELETE THIS VIRTUAL TRUE_KW FALSE_KW OPERATOR SIZEOF
+%token NEW DELETE THIS VIRTUAL TRUE_KW FALSE_KW OPERATOR SIZEOF CONST
 %token STATIC_CAST DYNAMIC_CAST CONST_CAST REINTERPRET_CAST
 %token COLONCOLON ARROW EQ NE LE GE ANDAND OROR
 %token PLUSEQ MINUSEQ STAREQ SLASHEQ INC DEC
@@ -149,11 +168,11 @@
 %type <list> top_decl_list member_list stmt_list
 %type <list> param_list opt_param_list arg_list opt_arg_list qname_prefix
 %type <list> member_init_list
-%type <list> switch_body enumerator_list union_member_list func_ptr_param_list opt_func_ptr_param_list
+%type <list> switch_body enumerator_list union_member_list func_ptr_param_list opt_func_ptr_param_list array_bracket_list
 
 %type <str> name_tok func_name operator_symbol
 %type <access> access_spec
-%type <ival> pointer_opt opt_virtual class_or_struct_kw cpp_cast_kw
+%type <ival> pointer_opt opt_virtual opt_const class_or_struct_kw cpp_cast_kw
 
 %right '=' PLUSEQ MINUSEQ STAREQ SLASHEQ ANDEQ OREQ XOREQ SHLEQ SHREQ
 %right '?'
@@ -381,6 +400,27 @@ opt_virtual:
  * than committing early -- nothing to fix here, just something to
  * remember if this area of the grammar gets restructured later. */
 
+opt_const:
+      /* empty */  { $$ = 0; }
+    | CONST        { $$ = 1; }
+    ;
+/* Unlike opt_virtual just above, this sits AFTER a func_header's own
+ * closing ')', not before type_spec -- structurally a different
+ * position, not the same "can match nothing before type_spec" shape
+ * that makes opt_virtual's own ε alternative so conflict-heavy. By the
+ * point opt_const is reached, the parser has already fully committed
+ * to "this is a function" (an entire parameter list has already been
+ * shifted), so there's no equivalent var_decl-vs-func_decl ambiguity
+ * left to resolve here -- whether const matched or not, what follows
+ * (';' for a bare declaration, '{' or ':' for a definition) is decided
+ * by ordinary lookahead independent of opt_const's own presence. This
+ * reasoning hasn't been confirmed by an actual bison run, though --
+ * unlike everywhere else in this file, no %expect number was bumped
+ * for this addition, deliberately: if this reasoning is wrong, bison
+ * will error on the next regeneration and name the actual conflict,
+ * which is the honest way to find out rather than guessing a number
+ * here that might not hold up. */
+
 /* ---- operator overloading: `operator+`, `operator==`, `operator[]`, etc.
  * are just another spelling of "the function's own name" wherever
  * func_header spells one out of IDENTIFIER -- func_name below is a drop-in
@@ -442,7 +482,7 @@ operator_symbol:
     ;
 
 func_header:
-      type_spec func_name '(' { symtab_push_scope(g_symtab, NULL, 0); } opt_param_list ')'
+      type_spec func_name '(' { symtab_push_scope(g_symtab, NULL, 0); } opt_param_list ')' opt_const
         {
             /* Overload note: this inserts every overload of `name` into
              * the same bucket, later ones shadowing earlier ones for
@@ -458,6 +498,11 @@ func_header:
             $$->str1 = strdup($2);
             $$->type = $1;
             $$->list = $5;
+            $$->str2 = $7 ? strdup("const") : NULL; /* see AST_FUNC_DECL's
+                own doc comment in ast.h for this field's meaning here --
+                str2 is otherwise completely unused across this whole
+                func_decl/func_def/out_of_line_def family, confirmed
+                directly before repurposing it, not assumed. */
         }
     | TYPE_NAME '(' { symtab_push_scope(g_symtab, NULL, 0); } opt_param_list ')'
         {
@@ -556,13 +601,16 @@ func_def:
  */
 
 out_of_line_def:
-    type_spec qname_prefix func_name '(' { symtab_push_scope(g_symtab, NULL, 0); } opt_param_list ')' block
+    type_spec qname_prefix func_name '(' { symtab_push_scope(g_symtab, NULL, 0); } opt_param_list ')' opt_const block
         {
             $$ = ast_new(AST_FUNC_DEF, @1.first_line);
             $$->str1 = strdup($3);
             $$->type = $1;
             $$->list = $6;
-            $$->a = $8;
+            $$->str2 = $8 ? strdup("const") : NULL; /* see func_header's
+                own identical assignment above, and AST_FUNC_DECL's doc
+                comment in ast.h, for this field's meaning */
+            $$->a = $9;
             $$->b = ast_new(AST_QUALIFIED_ID, @2.first_line);
             $$->b->list = $2;
             symtab_pop_scope(g_symtab);
@@ -711,6 +759,35 @@ type_spec:
     | CHAR_KW       { $$ = ast_ident("char", @1.first_line); }
     | TYPE_NAME     { $$ = ast_ident($1, @1.first_line); }
     | qualified_type { $$ = $1; }
+    | CONST type_spec
+        {
+            /* `const T` -- a single new leading token (CONST) for
+             * type_spec, unique among every one of its existing
+             * alternatives' own starting tokens (INT_KW, FLOAT_KW,
+             * VOID_KW, BOOL_KW, CHAR_KW, TYPE_NAME, IDENTIFIER-via-
+             * qualified_type) -- so this doesn't create any NEW
+             * ambiguity at the point type_spec itself is expected;
+             * wherever type_spec could already start (var_decl, param,
+             * func_ptr_param_type, typedef_decl, a function's own
+             * return type, ...), `const` becomes available there too,
+             * for free, with no need to touch each of those
+             * productions individually. Right-recursive on type_spec
+             * itself rather than a fixed "CONST base_type_only" shape,
+             * so `const` composes correctly with a qualified type too
+             * (`const Foo::Bar x;`) the same way plain type_spec
+             * already does -- and, harmlessly, allows nonsensical
+             * repetition like `const const int` to parse (matching
+             * real C++'s own permissiveness here; redundant `const` is
+             * legal, if pointless, in real C++ too). See
+             * AST_CONST_TYPE's own doc comment in ast.h for this
+             * project's own scope boundary: only ever a PREFIX before
+             * a type (pointee-const), never a suffix after a pointer's
+             * own '*' (a const POINTER itself, `int * const p`, isn't
+             * accepted), and no actual const-correctness ENFORCEMENT
+             * anywhere -- accepted and correctly emitted, not
+             * validated. */
+            $$ = ast_wrap_const($2, @1.first_line);
+        }
     ;
 
 /* Qualified names (v32::Timer, Outer::Inner, ...). The lexer has already
@@ -767,41 +844,48 @@ var_decl:
                      : $1;
             $$->a = $4;
         }
-    | type_spec pointer_opt IDENTIFIER '[' INT_LITERAL ']' opt_array_initializer
+    | type_spec pointer_opt IDENTIFIER array_bracket_list opt_array_initializer
         {
             /* Standard C/C++ array declarator: length AFTER the name --
-             * `int scores[8];`, optionally `= {1, 2, 3};` alongside it. */
+             * `int scores[8];`, or multi-dimensional (`int grid[8][4];`,
+             * handled uniformly here since array_bracket_list already
+             * accepts one OR MORE bracket groups -- see its own comment
+             * below and ast_wrap_array_dims's in ast.c for how the
+             * correct nesting gets built regardless of dimension
+             * count), optionally `= {1, 2, 3};` alongside it. */
             symtab_insert(g_symtab, g_symtab->current, $3, SYM_VAR);
             $$ = ast_new(AST_VAR_DECL, @3.first_line);
             $$->str1 = strdup($3);
             AstNode *base = ($2 == 1) ? ast_wrap_pointer($1, @1.first_line)
                           : ($2 == 2) ? ast_wrap_reference($1, @1.first_line)
                           : $1;
-            $$->type = ast_wrap_array(base, $5, @1.first_line);
-            $$->a = $7;
+            $$->type = ast_wrap_array_dims(base, $4, @1.first_line);
+            $$->a = $5;
         }
-    | type_spec '[' INT_LITERAL ']' IDENTIFIER opt_array_initializer
+    | type_spec array_bracket_list IDENTIFIER opt_array_initializer
         {
             /* Vircon32-native-style array declarator, accepted as an
              * ALTERNATE valid C++-side input form -- same meaning as
              * the standard-C alternative above, length BEFORE the name
-             * instead of after (`int [8] scores;`), matching Vircon32 C
-             * itself. Deliberately no pointer_opt here (unlike the
-             * standard-C form) -- this form exists specifically to let
-             * someone already fluent in Vircon32 C, or transitioning
-             * from it, keep writing what's already familiar to them
-             * without having to also learn a second, unrelated
-             * declarator convention; it isn't trying to be a general
-             * C-declarator sublanguage of its own. Both forms produce
-             * an identical AST_ARRAY_TYPE -- codegen always emits
-             * Vircon32's own required form regardless of which one the
-             * source used, so this choice is purely a source-reading
-             * preference, never a behavioral one. */
-            symtab_insert(g_symtab, g_symtab->current, $5, SYM_VAR);
-            $$ = ast_new(AST_VAR_DECL, @5.first_line);
-            $$->str1 = strdup($5);
-            $$->type = ast_wrap_array($1, $3, @1.first_line);
-            $$->a = $6;
+             * instead of after (`int [8] scores;`, or multi-dimensional
+             * `int [8][4] grid;`), matching Vircon32 C itself.
+             * Deliberately no pointer_opt here (unlike the standard-C
+             * form) -- this form exists specifically to let someone
+             * already fluent in Vircon32 C, or transitioning from it,
+             * keep writing what's already familiar to them without
+             * having to also learn a second, unrelated declarator
+             * convention; it isn't trying to be a general C-declarator
+             * sublanguage of its own. Both forms produce an identical,
+             * identically-nested AST_ARRAY_TYPE structure regardless of
+             * dimension count -- codegen always emits Vircon32's own
+             * required form regardless of which one the source used, so
+             * this choice is purely a source-reading preference, never
+             * a behavioral one. */
+            symtab_insert(g_symtab, g_symtab->current, $3, SYM_VAR);
+            $$ = ast_new(AST_VAR_DECL, @3.first_line);
+            $$->str1 = strdup($3);
+            $$->type = ast_wrap_array_dims($1, $2, @1.first_line);
+            $$->a = $4;
         }
     | type_spec pointer_opt '(' '*' IDENTIFIER ')' '(' opt_func_ptr_param_list ')' opt_initializer
         {
@@ -951,6 +1035,34 @@ opt_func_ptr_param_list:
  * exactly what real C's own "no parameters" spelling already looks
  * like syntactically, so nothing about the accepted INPUT or produced
  * OUTPUT actually changed, only which internal path reaches it. */
+
+/* Collects one or more `[N]` bracket groups, in SOURCE order (left to
+ * right), as a list of bare AST_INT_LIT nodes -- reused for both
+ * accepted array-declarator forms above (standard-C length-after-name
+ * and Vircon32-style length-before-name), and for BOTH single- and
+ * multi-dimensional arrays uniformly, since "one bracket group" is
+ * simply the one-element case of "one or more". See
+ * ast_wrap_array_dims (ast.c) for how the caller turns this source-
+ * order list into the correctly-nested AST_ARRAY_TYPE structure real
+ * C's own multi-dimensional semantics need (outermost node = FIRST
+ * bracket's length, not the last).
+ */
+array_bracket_list:
+      '[' INT_LITERAL ']'
+        {
+            $$ = ast_list_new();
+            AstNode *n = ast_new(AST_INT_LIT, @1.first_line);
+            n->ival = $2;
+            ast_list_append(&$$, n);
+        }
+    | array_bracket_list '[' INT_LITERAL ']'
+        {
+            $$ = $1;
+            AstNode *n = ast_new(AST_INT_LIT, @2.first_line);
+            n->ival = $3;
+            ast_list_append(&$$, n);
+        }
+    ;
 
 opt_array_initializer:
       /* empty */                     { $$ = NULL; }

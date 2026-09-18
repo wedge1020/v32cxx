@@ -149,7 +149,17 @@ static void print_type(FILE *out, const AstNode *type) {
             print_type(out, type->a);
             fprintf(out, " /* WARNING: unlowered reference type */ *");
             break;
-        case AST_ARRAY_TYPE:
+        case AST_CONST_TYPE:
+            /* Prefixes rather than suffixes when printed -- "const int",
+             * never "int const" -- unlike every other wrap this
+             * function handles (pointer, reference, array all recurse
+             * THEN append their own marker after). Matches real C's
+             * own conventional placement, and is what real Vircon32 C
+             * itself expects too, being ordinary C in this respect. */
+            fprintf(out, "const ");
+            print_type(out, type->a);
+            break;
+        case AST_ARRAY_TYPE: {
             /* Vircon32's own reversed array-declarator quirk: length in
              * brackets BEFORE the name, not after (`int [8] scores;`,
              * not standard C's `int scores[8];`). Every call site in
@@ -166,10 +176,51 @@ static void print_type(FILE *out, const AstNode *type) {
              * length-before-name, offered as an alternate input
              * spelling) produced the AST_ARRAY_TYPE node -- the AST
              * itself carries no memory of which spelling the source
-             * used, and output is always this one form regardless. */
-            print_type(out, type->a);
-            fprintf(out, " [%d]", type->ival);
+             * used, and output is always this one form regardless.
+             *
+             * Multi-dimensional arrays are nested AST_ARRAY_TYPE nodes
+             * (see its own doc comment in ast.h) -- printed here as
+             * "BaseType [D1][D2]...", outermost dimension first,
+             * matching both real C's own multi-dimensional array
+             * syntax and how the source itself was written. This is
+             * NOT the naive "print_type(type->a) then append this
+             * node's own bracket" the single-dimension case above might
+             * suggest generalizes on its own -- traced through a
+             * concrete `int grid[8][4]` by hand before trusting that:
+             * recursing first and appending after, unwound normally,
+             * would print the INNERMOST node's own bracket first
+             * ("int [4] [8]"), backwards from what real C requires
+             * ("int [8][4]") and a real change of meaning, not just
+             * cosmetics -- a caught-before-shipping bug, not a
+             * hypothetical one. Instead, walk down through however many
+             * AST_ARRAY_TYPE layers exist, collecting each one's own
+             * length in that same outermost-first order, until reaching
+             * the true (non-array) element type; print that base type
+             * once, then every collected bracket immediately after it,
+             * adjacent to each other (no space between brackets,
+             * matching real C's own convention -- only the first
+             * bracket gets a leading space, separating it from the
+             * base type's own name). */
+            const AstNode *base = type;
+            int dims[64]; /* generous fixed cap, not a dynamically-sized
+                structure -- this is a purely local, transient printing
+                operation, not part of the persistent AST, and a
+                64-dimensional array is so far beyond anything remotely
+                realistic that a fixed stack array is the simpler,
+                completely sufficient choice here, matching how other
+                bounded, small-scale bookkeeping already works elsewhere
+                in this file (e.g. indent tracking). */
+            int dim_count = 0;
+            while (base->kind == AST_ARRAY_TYPE && dim_count < 64) {
+                dims[dim_count++] = base->ival;
+                base = base->a;
+            }
+            print_type(out, base);
+            for (int i = 0; i < dim_count; i++) {
+                fprintf(out, "%s[%d]", (i == 0) ? " " : "", dims[i]);
+            }
             break;
+        }
         case AST_FUNC_PTR_TYPE:
             /* Vircon32's own reversed function-pointer-declarator
              * quirk (see docs/VIRCON32_QUIRKS.md's own "Function-

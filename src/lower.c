@@ -296,7 +296,29 @@ static void this_inject_method(AstNode *method, AstNode *class_decl) {
 
     AstNode *this_param = ast_new(AST_PARAM, method->line);
     this_param->str1 = strdup("this");
-    this_param->type = ast_wrap_pointer(ast_ident(class_decl->str1, method->line), method->line);
+    AstNode *class_type = ast_ident(class_decl->str1, method->line);
+    if (method->str2 != NULL) {
+        /* method->str2 == "const" means a trailing `const` was written
+         * after this method's own parameter list (see AST_FUNC_DECL's
+         * own doc comment in ast.h) -- propagate that to the injected
+         * `this` parameter's own type, exactly as real C++'s own
+         * compiler would (a const member function's own implicit
+         * `this` is `const ClassName *`, not `ClassName *`). This is
+         * the actual reason const member functions are worth
+         * supporting beyond just parsing the keyword: passing `const`
+         * through to the generated C's own `this` parameter is what
+         * makes the emitted code's own signature match what the
+         * method actually promises, rather than silently discarding
+         * the qualifier. Still no ENFORCEMENT that the method body
+         * itself honors this (no error for writing through `this`
+         * inside a const method) -- matching this project's existing
+         * best-effort treatment of `const` everywhere else; a real C
+         * compiler downstream, working from the correctly-const-
+         * qualified `this` this project now emits, is what would
+         * actually catch that violation. */
+        class_type = ast_wrap_const(class_type, method->line);
+    }
+    this_param->type = ast_wrap_pointer(class_type, method->line);
 
     AstList new_params = ast_list_new();
     ast_list_append(&new_params, this_param);
@@ -2338,6 +2360,22 @@ static char *render_type(const AstNode *type) {
             size_t len = strlen(inner) + strlen(suffix) + 1;
             char *out = malloc(len);
             snprintf(out, len, "%s%s", inner, suffix);
+            free(inner);
+            return out;
+        }
+        case AST_CONST_TYPE: {
+            /* Unlike type_signature_str's own AST_CONST_TYPE case
+             * (sema.c), which deliberately makes const TRANSPARENT for
+             * name-mangling purposes, this function is for human-
+             * readable -vvv display (the "lowering summary (struct
+             * layouts)" dump) -- here, showing "const" is the more
+             * useful, accurate rendering, matching what the field was
+             * actually declared as, not hiding it the way mangling
+             * needs to for a different reason entirely. */
+            char *inner = render_type(type->a);
+            size_t len = strlen(inner) + 7; /* "const " + inner + NUL */
+            char *out = malloc(len);
+            snprintf(out, len, "const %s", inner);
             free(inner);
             return out;
         }

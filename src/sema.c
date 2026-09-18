@@ -284,6 +284,21 @@ static int types_equal(const AstNode *t1, const AstNode *t2) {
     if (t1 == NULL || t2 == NULL) {
         return t1 == t2;
     }
+    /* const is stripped from both sides before anything else -- BEFORE
+     * resolve_typedef_chain too, since that function only recognizes a
+     * bare AST_IDENT as a possible typedef name, and "const
+     * SomeTypedefName" wrapped in AST_CONST_TYPE would never reach that
+     * check otherwise. Deliberately made transparent for type-equality
+     * purposes across the board here, not modeling real C++'s own
+     * genuinely nuanced rules for when a const mismatch does or doesn't
+     * matter for overload purposes (significant on a reference/pointer
+     * parameter, ignored on a by-value one) -- this project's own
+     * overload resolution is already best-effort, and treating a
+     * const/non-const mismatch as a hard "not equal" would be a worse,
+     * more surprising failure to match an otherwise-obvious overload
+     * than simply ignoring the distinction. */
+    while (t1->kind == AST_CONST_TYPE) t1 = t1->a;
+    while (t2->kind == AST_CONST_TYPE) t2 = t2->a;
     t1 = resolve_typedef_chain(t1);
     t2 = resolve_typedef_chain(t2);
     if (t1 == NULL || t2 == NULL) {
@@ -371,6 +386,18 @@ static char *type_signature_str(const AstNode *type) {
             free(inner);
             return out;
         }
+        case AST_CONST_TYPE:
+            /* const is transparent for mangling purposes too, matching
+             * types_equal's own identical decision just above in this
+             * file -- "const int" and "int" mangle identically
+             * (`_int`, not `_unknown` -- the default: case's own
+             * fallback, which this would otherwise have fallen into,
+             * silently and unhelpfully). Keeping this consistent with
+             * types_equal matters: if overload resolution already
+             * treats the two as the same parameter type, the mangled
+             * name scheme should agree, not produce two different
+             * answers to the same question. */
+            return type_signature_str(type->a);
         default:
             return strdup("unknown");
     }
@@ -821,6 +848,7 @@ AstNode *type_to_class(const AstNode *type) {
     switch (type->kind) {
         case AST_POINTER_TYPE:
         case AST_REFERENCE_TYPE:
+        case AST_CONST_TYPE:
             return type_to_class(type->a);
         case AST_IDENT:
             return find_class(type->str1);

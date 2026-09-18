@@ -200,6 +200,7 @@ ALNUM   [A-Za-z0-9_]
 "reinterpret_cast"  { g_last_ident_sym = NULL; return REINTERPRET_CAST; }
 "this"       { g_last_ident_sym = NULL; return THIS; }
 "virtual"    { g_last_ident_sym = NULL; return VIRTUAL; }
+"const"      { g_last_ident_sym = NULL; return CONST; }
 "operator"   { g_last_ident_sym = NULL; return OPERATOR; }
 "sizeof"     { g_last_ident_sym = NULL; return SIZEOF; }
 "true"       { g_last_ident_sym = NULL; return TRUE_KW; }

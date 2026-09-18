@@ -45,11 +45,37 @@ AstNode *ast_wrap_reference(AstNode *inner, int line) {
     return n;
 }
 
+AstNode *ast_wrap_const(AstNode *inner, int line) {
+    AstNode *n = ast_new(AST_CONST_TYPE, line);
+    n->a = inner;
+    return n;
+}
+
 AstNode *ast_wrap_array(AstNode *inner, int length, int line) {
     AstNode *n = ast_new(AST_ARRAY_TYPE, line);
     n->a = inner;
     n->ival = length;
     return n;
+}
+
+AstNode *ast_wrap_array_dims(AstNode *inner, AstList dims, int line) {
+    /* dims holds one AST_INT_LIT per bracket group, in SOURCE order
+     * (left to right, e.g. [8][4] -> {8, 4}) -- real C's own multi-
+     * dimensional array semantics need these wrapped from the LAST
+     * dimension inward, since the type of `grid` in `int grid[8][4]`
+     * is "array of 8 (array of 4 int)", the OUTERMOST AST_ARRAY_TYPE
+     * carrying the FIRST bracket's own length, not the last. Walking
+     * the list backwards and calling the existing, single-dimension
+     * ast_wrap_array repeatedly builds that nesting directly, with no
+     * new AST node kind needed at all -- a 2D array is simply two
+     * ordinary AST_ARRAY_TYPE nodes, one wrapping the other, the exact
+     * same shape this project already uses for "array of function
+     * pointers" (an AST_ARRAY_TYPE wrapping an AST_FUNC_PTR_TYPE). */
+    AstNode *result = inner;
+    for (int i = dims.count - 1; i >= 0; i--) {
+        result = ast_wrap_array(result, dims.items[i]->ival, line);
+    }
+    return result;
 }
 
 AstNode *ast_wrap_func_ptr(AstNode *return_type, AstList param_types, int line) {
@@ -107,6 +133,7 @@ static const char *kind_name(AstKind k) {
         case AST_DELETE: return "Delete";
         case AST_POINTER_TYPE: return "PointerType";
         case AST_REFERENCE_TYPE: return "ReferenceType";
+        case AST_CONST_TYPE: return "ConstType";
         case AST_ARRAY_TYPE: return "ArrayType";
         case AST_FUNC_PTR_TYPE: return "FuncPtrType";
         case AST_INIT_LIST: return "InitList";

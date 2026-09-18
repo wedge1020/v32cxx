@@ -92,7 +92,22 @@ accepted as input, including arrays of either
 (`ReturnType (*name[N])(ParamTypes);` and, less certainly — see below —
 `ReturnType(ParamTypes)* [N] name;`); output is always Vircon32's own
 required form regardless of which one the source used, the same
-dual-acceptance treatment array declarators already have. The usual
+dual-acceptance treatment array declarators already have. Arrays can
+be multi-dimensional too (`int grid[8][4];` or `int [8][4] grid;`,
+dimensions nested outermost-first, matching real C exactly), with
+chained subscripting (`grid[i][j]`) needing no new work at all since
+it already composed through the existing, already-left-recursive
+subscript grammar. `const` is accepted as a type prefix everywhere a
+type can appear (`const int x`, `const int *p`, a `const` parameter or
+return type) — resolving method calls and overloads correctly through
+a const-qualified class type, not just parsing the keyword — and as a
+trailing qualifier on member functions too (`int getValue() const {
+... }`, both declared in-class and defined out-of-line), which
+actually propagates: the generated `this` parameter for a const method
+is `const ClassName *`, not a plain pointer with the qualifier
+silently dropped. This project doesn't enforce const-correctness
+itself anywhere, though; see the note below for the exact boundary.
+The usual
 statement/expression language is covered throughout. Access control
 is enforced (including through inheritance); overload resolution uses
 argument
@@ -256,15 +271,63 @@ emitted alongside it.
   implemented yet.
 - **A real preprocessor.** Only pass-through exists (see above) — no
   macro expansion, `#include` resolution, or `#ifdef` evaluation.
-- **Basic, non-OOP C syntax still missing**, confirmed directly by
-  checking the grammar rather than assumed — relevant if you're using
-  this project to adapt existing standard C, not just write new C++:
-  no multi-dimensional arrays. Bitwise operators, `switch`/`case`,
-  bare `struct`, C-style casts, C++-style casts, hex/octal/binary
-  literals with suffixes, ternary, `do`/`while`, `enum`, `union`,
-  source-level `sizeof`, `goto`, and function pointers (above) were
-  the first six passes through this list; only one item remains from
-  the original list.
+- **The original "basic, non-OOP C syntax" gap list is now complete.**
+  Bitwise operators, `switch`/`case`, bare `struct`, C-style casts,
+  C++-style casts, hex/octal/binary literals with suffixes, ternary,
+  `do`/`while`, `enum`, `union`, source-level `sizeof`, `goto`,
+  function pointers, and multi-dimensional arrays are all supported
+  now. A fresh audit (confirmed directly by checking the grammar, not
+  assumed) turned up a further, separate list of common C features
+  still missing — see the next bullet.
+- **A second round of basic C gaps, found by a fresh audit**: `const`
+  is now supported (see below) — `volatile`, `static`, `extern`,
+  `inline`, and `register` are not (none of these keywords are
+  recognized at all); no multiple declarators in one statement
+  (`int a, b, c;` — only one variable per declaration is currently
+  accepted); no function-pointer `typedef` (`typedef int
+  (*Callback)(int);` — `typedef_decl` doesn't accept the function-
+  pointer declarator shape); no adjacent string-literal concatenation
+  (`"foo" "bar"` does not become `"foobar"`); no bit-fields
+  (`unsigned x : 4;` inside a `struct`/`union`); no comma operator
+  (`a, b, c` as a single expression, e.g. in a `for` loop's own
+  increment clause). None of these are implemented yet.
+- **`const` doesn't cover a const POINTER itself** — only `const T`
+  and `const T *` (pointer to const, the pointee can't change) are
+  accepted; `T * const p` (the pointer itself can't be reassigned) is
+  not. This project also makes no attempt to actually ENFORCE
+  const-correctness anywhere it does accept the syntax — no error for
+  reassigning a const variable, no error for calling a non-const
+  method through a const reference — the syntax is accepted and
+  correctly emitted in generated C, with real violations left for the
+  downstream C/C++ compiler to catch.
+- **A real, pre-existing bug in reference-parameter call sites**,
+  unrelated to `const` or anything else recent — found while fixing
+  unrelated test files, confirmed with and without `const` involved at
+  all. A function taking a plain reference parameter (`int getArea(Shape
+  &s)`) generates a call site that passes the argument directly
+  (`getArea__Shape_ref(shape)`) even though the parameter itself lowers
+  to a pointer (`Shape * s`) — a type mismatch that won't compile as
+  real C. The equivalent POINTER parameter (`Shape *s`, called as
+  `getArea(&shape)`) lowers correctly. Whatever inserts `&` at a call
+  site only fires when the source itself wrote `&` explicitly, not as
+  part of reference-to-pointer lowering itself, which never inserts it
+  implicitly the way a C++ reference requires. Not yet fixed — flagged
+  here for prioritization.
+- **No direct-initialization with constructor arguments on a
+  stack-allocated local** (`Shape shape(7);`). Only two forms exist for
+  a class-typed local: an explicit initializer via `=`, or no
+  initializer at all (which triggers this project's own zero-argument-
+  constructor injection). `opt_initializer` has no grammar shape for
+  constructor arguments in parentheses. Workaround: default-construct,
+  then set public fields directly (`Shape shape; shape.size = 7;`).
+- **Two narrower, deliberate scope boundaries from the multi-
+  dimensional array work specifically**: a function PARAMETER's own
+  array-to-pointer decay (`void foo(int arr[8])`) stays single-
+  dimension only — a second dimension has genuinely different decay
+  rules than a first one, not just "one more bracket" the way
+  declaring a variable is — and a multi-dimensional array of function
+  pointers is unsupported, an intentionally rare combination not
+  pursued alongside everything else that round already touched.
 - **The Vircon32-style array-of-function-pointers declarator is
   unconfirmed.** `ReturnType(ParamTypes)* [N] name;` is this project's
   own extrapolation from its two individually-confirmed patterns (the

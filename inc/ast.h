@@ -148,7 +148,27 @@ typedef enum {
                               AST_FUNC_DEF built by out_of_line_def in
                               parser.y, where b=AST_QUALIFIED_ID holding
                               the Class:: (or Namespace::Class::) qualifier
-                              chain the definition was written against. */
+                              chain the definition was written against.
+                              str2=NULL normally; "const" (a literal,
+                              non-NULL sentinel string, not meant to be
+                              displayed) if a trailing `const` was written
+                              after the parameter list (`int getValue()
+                              const`) -- real C++'s own const-member-
+                              function marker, meaning "this method
+                              doesn't modify *this". Confirmed unused
+                              elsewhere across this whole func_decl/
+                              func_def/out_of_line_def family before
+                              repurposing it for this, not assumed.
+                              this_inject_method (lower.c) reads this to
+                              decide whether the injected `this`
+                              parameter's own type is `const ClassName *`
+                              or plain `ClassName *` -- see its own
+                              comment there. Like ival's virtual-ness,
+                              this project accepts and threads the
+                              keyword through correctly, but doesn't
+                              ENFORCE what it promises: no error for a
+                              const method actually modifying a field
+                              through `this`. */
     AST_FUNC_DEF,         /* same as AST_FUNC_DECL but a=body (AST_BLOCK).
                               c=AST_MEMBER_INIT_LIST or NULL -- a constructor's
                               own member-initializer list (`: Base(args)`),
@@ -408,13 +428,63 @@ typedef enum {
                               new[] or delete[] yet). */
     AST_POINTER_TYPE,     /* a=pointee type -- represents "T *" */
     AST_REFERENCE_TYPE,   /* a=referent type -- represents "T &" */
+    AST_CONST_TYPE,       /* a=underlying type -- represents "const T"
+                              (pointee-const / variable-const, e.g.
+                              `const int x`, `const int *p` -- a
+                              pointer to const int). Wraps its own
+                              inner type the same way AST_POINTER_TYPE/
+                              AST_REFERENCE_TYPE/AST_ARRAY_TYPE already
+                              do, but PREFIXES rather than suffixes when
+                              printed (`const int`, not `int const`) --
+                              codegen.c's print_type has its own case
+                              for this reason, it isn't just another
+                              "recurse then append" wrap. SCOPE: only
+                              ever wraps the type itself (`const int`,
+                              `const int *` -- pointer TO const, the
+                              pointee can't change); a const POINTER
+                              itself (`int * const p` -- the pointer
+                              can't be reassigned, its pointee can) is
+                              NOT supported -- `const` is only accepted
+                              as a PREFIX before a type_spec, never
+                              after a `pointer_opt`'s own `*`. This
+                              project makes no attempt to actually
+                              ENFORCE const-correctness anywhere either
+                              (no error for reassigning a const
+                              variable, no error for calling a non-
+                              const method through a const reference) --
+                              accepted and emitted correctly in the
+                              generated C so it doesn't block valid
+                              code from transpiling at all, with real
+                              const-correctness violations left for the
+                              downstream C/C++ compiler to catch, the
+                              same best-effort philosophy this project
+                              already applies elsewhere. */
     AST_ARRAY_TYPE,       /* a=element type, ival=length -- represents "T[N]"
                               on the C++ input side, in either accepted
                               declarator form (see parser.y's var_decl);
                               always emitted as Vircon32's own required
                               "ElementType [N]" form on output regardless
                               of which input form was used -- codegen.c's
-                              print_type is where that happens */
+                              print_type is where that happens.
+                              Multi-dimensional arrays are simply NESTED
+                              AST_ARRAY_TYPE nodes -- `int grid[8][4]`'s
+                              own type is an AST_ARRAY_TYPE (ival=8)
+                              whose own element type (a) is ANOTHER
+                              AST_ARRAY_TYPE (ival=4) wrapping plain
+                              `int` -- the outermost node carries the
+                              FIRST bracket's length, matching real C's
+                              own "array of arrays" semantics exactly
+                              (`grid` is an array of 8 elements, each of
+                              which is an array of 4 ints, not the
+                              reverse). No new node kind needed for
+                              this -- see ast_wrap_array_dims (ast.c)
+                              for how parser.y builds the correct
+                              nesting from a source-order list of
+                              bracket lengths, and print_type's own
+                              existing recursion (already needed for
+                              "array of function pointers") handles
+                              printing it correctly with no changes at
+                              all once it existed for that case. */
     AST_FUNC_PTR_TYPE,    /* type=return type, list=param TYPES (bare
                               types only -- e.g. a list of AST_IDENT/
                               AST_POINTER_TYPE/... nodes built from
@@ -620,12 +690,14 @@ AstNode *ast_ident(const char *name, int line);
  * ast_wrap_pointer/ast_wrap_reference once per entry, innermost first. */
 AstNode *ast_wrap_pointer(AstNode *inner, int line);
 AstNode *ast_wrap_reference(AstNode *inner, int line);
+AstNode *ast_wrap_const(AstNode *inner, int line);
 
 /* Wraps `inner` as an array of `length` elements -- represents "T[N]"
  * regardless of which of the two accepted C++-side declarator forms
  * produced it (parser.y's var_decl has both); the AST itself carries no
  * memory of which spelling the source used. */
 AstNode *ast_wrap_array(AstNode *inner, int length, int line);
+AstNode *ast_wrap_array_dims(AstNode *inner, AstList dims, int line);
 AstNode *ast_wrap_func_ptr(AstNode *return_type, AstList param_types, int line);
 
 void ast_dump(const AstNode *node, int indent);

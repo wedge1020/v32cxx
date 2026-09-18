@@ -314,6 +314,28 @@ required form regardless of which the source used, the same dual-
 acceptance treatment array declarators already have (see BUGS below
 for one specific spelling that isn't yet confirmed against the real
 compiler);
+multi-dimensional arrays
+.RI ( "int grid[8][4];" " or " "int [8][4] grid;" ,
+dimensions nested outermost-first, matching real C exactly), with
+chained subscripting
+.RI ( "grid[i][j]" )
+needing no new work at all;
+.B const
+as a type prefix everywhere a type can appear
+.RI ( "const int x" ", " "const int *p" ,
+a
+.B const
+parameter or return type) \(em resolving method calls and overloads
+correctly through a const-qualified class type, not just parsing the
+keyword \(em and as a trailing qualifier on member functions too
+.RI ( "int getValue() const { ... }" ,
+both declared in-class and defined out-of-line), which actually
+propagates: the generated
+.I this
+parameter for a const method is
+.RI ( "const ClassName *" ,
+not a plain pointer with the qualifier silently dropped (see BUGS
+below for the exact boundary on what this doesn't cover);
 global (file-scope) variables;
 base-class constructor delegation, both EXPLICIT (
 .I ": Base(args)"
@@ -375,10 +397,8 @@ in
 .I docs/VIRCON32_QUIRKS.md
 toward this).
 .PP
-Also not yet supported \(em basic, non-OOP C syntax, confirmed directly
-by checking the grammar rather than assumed, relevant if this tool is
-being used to adapt existing standard C rather than write new C++:
-multi-dimensional arrays. Bitwise
+The original list of basic, non-OOP C syntax gaps (confirmed directly
+by checking the grammar rather than assumed) is now complete: bitwise
 operators,
 .BR switch / case ,
 bare
@@ -391,9 +411,33 @@ suffixes, the ternary operator,
 source-level
 .BR sizeof ,
 .BR goto ,
-and function pointers
-(above) were the first six passes through this list; only one item
-remains from the original list.
+function pointers, and multi-dimensional arrays are all supported now.
+.PP
+A fresh audit (confirmed directly, not assumed) found a further,
+separate round of common C gaps, one of which
+.RB ( const )
+is now closed too (see above and BUGS below for its own exact
+boundary) \(em still open:
+.BR volatile ", " static ", " extern ", " inline ,
+and
+.B register
+(none recognized at all); no multiple declarators in one statement
+.RI ( "int a, b, c;" ,
+only one variable per declaration is currently accepted); no
+function-pointer
+.B typedef
+.RI ( "typedef int (*Callback)(int);" );
+no adjacent string-literal concatenation
+.RI ( "\(dqfoo\(dq \(dqbar\(dq"
+does not become
+.IR "\(dqfoobar\(dq" );
+no bit-fields
+.RI ( "unsigned x : 4;"
+inside a
+.BR struct / union );
+no comma operator
+.RI ( "a, b, c"
+as a single expression). None of these are implemented yet.
 .PP
 Never supported, by design: templates, exceptions, RTTI, multiple
 inheritance.
@@ -715,6 +759,42 @@ real compiler the way everything else Vircon32-specific in this
 project has been. The standard-C array-of-function-pointers form, and
 both plain (non-array) function-pointer forms, don't have this
 caveat.
+.PP
+.B const
+is only accepted as a PREFIX before a type
+.RI ( "const int" ", " "const int *" ,
+pointer to const \(em the pointee can't change); a const POINTER
+itself
+.RI ( "int * const p" ,
+the pointer can't be reassigned) is not supported. Most importantly,
+this project does not ENFORCE const-correctness anywhere it accepts
+the syntax: no error for reassigning a const variable, no error for
+writing through
+.I this
+inside a const member function, no error for calling a non-const
+method through a const reference. The syntax is accepted and
+correctly emitted in generated C \(em including, for a const member
+function, the generated
+.I this
+parameter's own type \(em with real violations left for the downstream
+C/C++ compiler to catch.
+.PP
+A function taking a plain reference parameter
+.RI ( "int getArea(Shape &s)" )
+generates a call site that passes the argument directly instead of
+inserting the address-of a C++ reference implicitly needs when lowered
+to a C pointer \(em a real type mismatch that won't compile as real C.
+The equivalent POINTER parameter lowers correctly; only reference
+parameters are affected. Not yet fixed.
+.PP
+No direct-initialization with constructor arguments on a
+stack-allocated local
+.RI ( "Shape shape(7);" ).
+Only an explicit
+.B =
+initializer or no initializer at all (triggering this project's own
+zero-argument-constructor injection) are accepted. Workaround:
+default-construct, then set public fields directly.
 .PP
 Report issues, including anything this tool transpiles incorrectly or
 any real C++ feature you'd like to see prioritized, via the project

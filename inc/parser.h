@@ -89,33 +89,34 @@ extern int yydebug;
     FALSE_KW = 295,                /* FALSE_KW  */
     OPERATOR = 296,                /* OPERATOR  */
     SIZEOF = 297,                  /* SIZEOF  */
-    STATIC_CAST = 298,             /* STATIC_CAST  */
-    DYNAMIC_CAST = 299,            /* DYNAMIC_CAST  */
-    CONST_CAST = 300,              /* CONST_CAST  */
-    REINTERPRET_CAST = 301,        /* REINTERPRET_CAST  */
-    COLONCOLON = 302,              /* COLONCOLON  */
-    ARROW = 303,                   /* ARROW  */
-    EQ = 304,                      /* EQ  */
-    NE = 305,                      /* NE  */
-    LE = 306,                      /* LE  */
-    GE = 307,                      /* GE  */
-    ANDAND = 308,                  /* ANDAND  */
-    OROR = 309,                    /* OROR  */
-    PLUSEQ = 310,                  /* PLUSEQ  */
-    MINUSEQ = 311,                 /* MINUSEQ  */
-    STAREQ = 312,                  /* STAREQ  */
-    SLASHEQ = 313,                 /* SLASHEQ  */
-    INC = 314,                     /* INC  */
-    DEC = 315,                     /* DEC  */
-    SHL = 316,                     /* SHL  */
-    SHR = 317,                     /* SHR  */
-    ANDEQ = 318,                   /* ANDEQ  */
-    OREQ = 319,                    /* OREQ  */
-    XOREQ = 320,                   /* XOREQ  */
-    SHLEQ = 321,                   /* SHLEQ  */
-    SHREQ = 322,                   /* SHREQ  */
-    SIZEOF_TYPE_PREC = 323,        /* SIZEOF_TYPE_PREC  */
-    LOWER_THAN_ELSE = 324          /* LOWER_THAN_ELSE  */
+    CONST = 298,                   /* CONST  */
+    STATIC_CAST = 299,             /* STATIC_CAST  */
+    DYNAMIC_CAST = 300,            /* DYNAMIC_CAST  */
+    CONST_CAST = 301,              /* CONST_CAST  */
+    REINTERPRET_CAST = 302,        /* REINTERPRET_CAST  */
+    COLONCOLON = 303,              /* COLONCOLON  */
+    ARROW = 304,                   /* ARROW  */
+    EQ = 305,                      /* EQ  */
+    NE = 306,                      /* NE  */
+    LE = 307,                      /* LE  */
+    GE = 308,                      /* GE  */
+    ANDAND = 309,                  /* ANDAND  */
+    OROR = 310,                    /* OROR  */
+    PLUSEQ = 311,                  /* PLUSEQ  */
+    MINUSEQ = 312,                 /* MINUSEQ  */
+    STAREQ = 313,                  /* STAREQ  */
+    SLASHEQ = 314,                 /* SLASHEQ  */
+    INC = 315,                     /* INC  */
+    DEC = 316,                     /* DEC  */
+    SHL = 317,                     /* SHL  */
+    SHR = 318,                     /* SHR  */
+    ANDEQ = 319,                   /* ANDEQ  */
+    OREQ = 320,                    /* OREQ  */
+    XOREQ = 321,                   /* XOREQ  */
+    SHLEQ = 322,                   /* SHLEQ  */
+    SHREQ = 323,                   /* SHREQ  */
+    SIZEOF_TYPE_PREC = 324,        /* SIZEOF_TYPE_PREC  */
+    LOWER_THAN_ELSE = 325          /* LOWER_THAN_ELSE  */
   };
   typedef enum yytokentype yytoken_kind_t;
 #endif
@@ -124,7 +125,7 @@ extern int yydebug;
 #if ! defined YYSTYPE && ! defined YYSTYPE_IS_DECLARED
 union YYSTYPE
 {
-#line 118 "src/parser.y"
+#line 137 "src/parser.y"
 
     AstNode *node;
     AstList list;
@@ -133,7 +134,7 @@ union YYSTYPE
     double fval;
     AccessSpec access;
 
-#line 137 "inc/parser.h"
+#line 138 "inc/parser.h"
 
 };
 typedef union YYSTYPE YYSTYPE;

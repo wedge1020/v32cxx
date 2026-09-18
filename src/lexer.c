@@ -356,8 +356,8 @@ static void yynoreturn yy_fatal_error ( const char* msg  );
 	(yy_hold_char) = *yy_cp; \
 	*yy_cp = '\0'; \
 	(yy_c_buf_p) = yy_cp;
-#define YY_NUM_RULES 78
-#define YY_END_OF_BUFFER 79
+#define YY_NUM_RULES 79
+#define YY_END_OF_BUFFER 80
 /* This struct is not used in this scanner,
    but its presence is necessary. */
 struct yy_trans_info
@@ -367,42 +367,42 @@ struct yy_trans_info
 	};
 static const flex_int16_t yy_accept[324] =
     {   0,
-        0,    0,   79,   77,    9,    8,   77,   77,   77,   77,
-       77,   77,   77,   77,   74,   74,   77,   77,   77,   77,
-       69,   77,   69,   69,   69,   69,   69,   69,   69,   69,
-       69,   69,   69,   69,   69,   69,   69,   69,   77,    7,
-        9,   51,    0,   75,    0,   54,   66,    0,    0,   58,
-       60,   56,   61,   57,   49,    0,    1,   59,    0,   73,
-       74,    0,   74,    0,   48,   64,   52,   50,   53,   65,
-       69,   68,   69,   69,   69,   69,   69,   69,   69,   22,
-       69,   69,   69,   69,   69,   69,   69,   20,   69,   69,
-       69,   69,   69,   69,   69,   69,   69,   69,   69,   69,
+        0,    0,   80,   78,    9,    8,   78,   78,   78,   78,
+       78,   78,   78,   78,   75,   75,   78,   78,   78,   78,
+       70,   78,   70,   70,   70,   70,   70,   70,   70,   70,
+       70,   70,   70,   70,   70,   70,   70,   70,   78,    7,
+        9,   52,    0,   76,    0,   55,   67,    0,    0,   59,
+       61,   57,   62,   58,   50,    0,    1,   60,    0,   74,
+       75,    0,   75,    0,   49,   65,   53,   51,   54,   66,
+       70,   69,   70,   70,   70,   70,   70,   70,   70,   22,
+       70,   70,   70,   70,   70,   70,   70,   20,   70,   70,
+       70,   70,   70,   70,   70,   70,   70,   70,   70,   70,
 
-       69,   69,   69,   69,   69,   67,   55,    7,    7,    7,
-        7,   76,    0,    0,    1,   70,   73,   72,   71,   62,
-       63,   69,   69,   69,   69,   69,   69,   69,   69,   69,
-       69,   69,   69,   69,   24,   69,   31,   69,   36,   69,
-       69,   69,   69,   69,   69,   69,   69,   69,   69,   69,
-       69,   69,   69,   69,   69,   69,    7,    7,    7,    7,
-        2,    0,   70,   72,   71,   34,   69,   29,   35,   69,
-       69,   69,   69,   69,   69,   21,   12,   69,   69,   27,
-       69,   69,   69,   69,   69,   69,   69,   69,   69,   69,
-       69,   42,   46,   69,   69,   69,   33,   69,    7,    7,
+       70,   70,   70,   70,   70,   68,   56,    7,    7,    7,
+        7,   77,    0,    0,    1,   71,   74,   73,   72,   63,
+       64,   70,   70,   70,   70,   70,   70,   70,   70,   70,
+       70,   70,   70,   70,   24,   70,   31,   70,   36,   70,
+       70,   70,   70,   70,   70,   70,   70,   70,   70,   70,
+       70,   70,   70,   70,   70,   70,    7,    7,    7,    7,
+        2,    0,   71,   73,   72,   34,   70,   29,   35,   70,
+       70,   70,   70,   70,   70,   21,   12,   70,   70,   27,
+       70,   70,   70,   70,   70,   70,   70,   70,   70,   70,
+       70,   42,   47,   70,   70,   70,   33,   70,    7,    7,
 
-        7,    7,    0,   70,   25,   10,   69,   69,   69,   69,
-       69,   47,   32,   69,   69,   69,   69,   69,   69,   69,
-       69,   69,   69,   69,   69,   13,   69,   23,    7,    7,
-        7,    7,   69,   69,   69,   37,   69,   69,   69,   69,
-       69,   14,   69,   19,   45,   69,   11,   28,   69,   69,
-        7,    7,    7,    7,   69,   69,   30,   69,   69,   69,
-       15,   69,   69,   69,   18,   43,    7,    7,    7,    7,
-       69,   26,   69,   69,   44,   69,   69,   69,    7,    7,
-        7,    7,   69,   69,   17,   16,   69,   69,    7,    7,
-        7,    7,    5,    7,   40,   69,   69,   69,    7,    7,
+        7,    7,    0,   71,   25,   10,   44,   70,   70,   70,
+       70,   48,   32,   70,   70,   70,   70,   70,   70,   70,
+       70,   70,   70,   70,   70,   13,   70,   23,    7,    7,
+        7,    7,   70,   70,   70,   37,   70,   70,   70,   70,
+       70,   14,   70,   19,   46,   70,   11,   28,   70,   70,
+        7,    7,    7,    7,   70,   70,   30,   70,   70,   70,
+       15,   70,   70,   70,   18,   43,    7,    7,    7,    7,
+       70,   26,   70,   70,   45,   70,   70,   70,    7,    7,
+        7,    7,   70,   70,   17,   16,   70,   70,    7,    7,
+        7,    7,    5,    7,   40,   70,   70,   70,    7,    7,
 
-        5,    6,   69,   69,   38,    7,    4,    7,    7,    6,
-        6,   39,   69,    4,    7,   69,    7,    3,   69,    3,
-       69,   41,    0
+        5,    6,   70,   70,   38,    7,    4,    7,    7,    6,
+        6,   39,   70,    4,    7,   70,    7,    3,   70,    3,
+       70,   41,    0
     } ;
 
 static const YY_CHAR yy_ec[256] =
@@ -1355,26 +1355,31 @@ YY_RULE_SETUP
 case 44:
 YY_RULE_SETUP
 #line 203 "src/lexer.l"
-{ g_last_ident_sym = NULL; return OPERATOR; }
+{ g_last_ident_sym = NULL; return CONST; }
 	YY_BREAK
 case 45:
 YY_RULE_SETUP
 #line 204 "src/lexer.l"
-{ g_last_ident_sym = NULL; return SIZEOF; }
+{ g_last_ident_sym = NULL; return OPERATOR; }
 	YY_BREAK
 case 46:
 YY_RULE_SETUP
 #line 205 "src/lexer.l"
-{ g_last_ident_sym = NULL; return TRUE_KW; }
+{ g_last_ident_sym = NULL; return SIZEOF; }
 	YY_BREAK
 case 47:
 YY_RULE_SETUP
 #line 206 "src/lexer.l"
-{ g_last_ident_sym = NULL; return FALSE_KW; }
+{ g_last_ident_sym = NULL; return TRUE_KW; }
 	YY_BREAK
 case 48:
 YY_RULE_SETUP
-#line 208 "src/lexer.l"
+#line 207 "src/lexer.l"
+{ g_last_ident_sym = NULL; return FALSE_KW; }
+	YY_BREAK
+case 49:
+YY_RULE_SETUP
+#line 209 "src/lexer.l"
 {
     /* Arm (or clear) the qualifier context for the *next* token, using
      * whatever symbol the previous identifier-like token resolved to.
@@ -1385,109 +1390,109 @@ YY_RULE_SETUP
     return COLONCOLON;
 }
 	YY_BREAK
-case 49:
-YY_RULE_SETUP
-#line 218 "src/lexer.l"
-{ g_last_ident_sym = NULL; return ARROW; }
-	YY_BREAK
 case 50:
 YY_RULE_SETUP
 #line 219 "src/lexer.l"
-{ g_last_ident_sym = NULL; return EQ; }
+{ g_last_ident_sym = NULL; return ARROW; }
 	YY_BREAK
 case 51:
 YY_RULE_SETUP
 #line 220 "src/lexer.l"
-{ g_last_ident_sym = NULL; return NE; }
+{ g_last_ident_sym = NULL; return EQ; }
 	YY_BREAK
 case 52:
 YY_RULE_SETUP
 #line 221 "src/lexer.l"
-{ g_last_ident_sym = NULL; return LE; }
+{ g_last_ident_sym = NULL; return NE; }
 	YY_BREAK
 case 53:
 YY_RULE_SETUP
 #line 222 "src/lexer.l"
-{ g_last_ident_sym = NULL; return GE; }
+{ g_last_ident_sym = NULL; return LE; }
 	YY_BREAK
 case 54:
 YY_RULE_SETUP
 #line 223 "src/lexer.l"
-{ g_last_ident_sym = NULL; return ANDAND; }
+{ g_last_ident_sym = NULL; return GE; }
 	YY_BREAK
 case 55:
 YY_RULE_SETUP
 #line 224 "src/lexer.l"
-{ g_last_ident_sym = NULL; return OROR; }
+{ g_last_ident_sym = NULL; return ANDAND; }
 	YY_BREAK
 case 56:
 YY_RULE_SETUP
 #line 225 "src/lexer.l"
-{ g_last_ident_sym = NULL; return PLUSEQ; }
+{ g_last_ident_sym = NULL; return OROR; }
 	YY_BREAK
 case 57:
 YY_RULE_SETUP
 #line 226 "src/lexer.l"
-{ g_last_ident_sym = NULL; return MINUSEQ; }
+{ g_last_ident_sym = NULL; return PLUSEQ; }
 	YY_BREAK
 case 58:
 YY_RULE_SETUP
 #line 227 "src/lexer.l"
-{ g_last_ident_sym = NULL; return STAREQ; }
+{ g_last_ident_sym = NULL; return MINUSEQ; }
 	YY_BREAK
 case 59:
 YY_RULE_SETUP
 #line 228 "src/lexer.l"
-{ g_last_ident_sym = NULL; return SLASHEQ; }
+{ g_last_ident_sym = NULL; return STAREQ; }
 	YY_BREAK
 case 60:
 YY_RULE_SETUP
 #line 229 "src/lexer.l"
-{ g_last_ident_sym = NULL; return INC; }
+{ g_last_ident_sym = NULL; return SLASHEQ; }
 	YY_BREAK
 case 61:
 YY_RULE_SETUP
 #line 230 "src/lexer.l"
-{ g_last_ident_sym = NULL; return DEC; }
+{ g_last_ident_sym = NULL; return INC; }
 	YY_BREAK
 case 62:
 YY_RULE_SETUP
 #line 231 "src/lexer.l"
-{ g_last_ident_sym = NULL; return SHLEQ; }
+{ g_last_ident_sym = NULL; return DEC; }
 	YY_BREAK
 case 63:
 YY_RULE_SETUP
 #line 232 "src/lexer.l"
-{ g_last_ident_sym = NULL; return SHREQ; }
+{ g_last_ident_sym = NULL; return SHLEQ; }
 	YY_BREAK
 case 64:
 YY_RULE_SETUP
 #line 233 "src/lexer.l"
-{ g_last_ident_sym = NULL; return SHL; }
+{ g_last_ident_sym = NULL; return SHREQ; }
 	YY_BREAK
 case 65:
 YY_RULE_SETUP
 #line 234 "src/lexer.l"
-{ g_last_ident_sym = NULL; return SHR; }
+{ g_last_ident_sym = NULL; return SHL; }
 	YY_BREAK
 case 66:
 YY_RULE_SETUP
 #line 235 "src/lexer.l"
-{ g_last_ident_sym = NULL; return ANDEQ; }
+{ g_last_ident_sym = NULL; return SHR; }
 	YY_BREAK
 case 67:
 YY_RULE_SETUP
 #line 236 "src/lexer.l"
-{ g_last_ident_sym = NULL; return OREQ; }
+{ g_last_ident_sym = NULL; return ANDEQ; }
 	YY_BREAK
 case 68:
 YY_RULE_SETUP
 #line 237 "src/lexer.l"
-{ g_last_ident_sym = NULL; return XOREQ; }
+{ g_last_ident_sym = NULL; return OREQ; }
 	YY_BREAK
 case 69:
 YY_RULE_SETUP
-#line 239 "src/lexer.l"
+#line 238 "src/lexer.l"
+{ g_last_ident_sym = NULL; return XOREQ; }
+	YY_BREAK
+case 70:
+YY_RULE_SETUP
+#line 240 "src/lexer.l"
 {
     /* The core of the lexer hack: classify this identifier by consulting
      * the symbol table *right now*, using the qualifier context armed by
@@ -1502,9 +1507,9 @@ YY_RULE_SETUP
     return IDENTIFIER;
 }
 	YY_BREAK
-case 70:
+case 71:
 YY_RULE_SETUP
-#line 253 "src/lexer.l"
+#line 254 "src/lexer.l"
 {
     /* Trailing f/F (real C++'s own "this is a float, not a double"
      * suffix) is matched and simply ignored -- atof() itself already
@@ -1520,9 +1525,9 @@ YY_RULE_SETUP
     return FLOAT_LITERAL;
 }
 	YY_BREAK
-case 71:
+case 72:
 YY_RULE_SETUP
-#line 268 "src/lexer.l"
+#line 269 "src/lexer.l"
 {
     /* Hex literal -- 0x1F, 0XFF. strtol() with an explicit base of 16
      * already knows to accept (and skip over) a leading "0x"/"0X"
@@ -1536,9 +1541,9 @@ YY_RULE_SETUP
     return INT_LITERAL;
 }
 	YY_BREAK
-case 72:
+case 73:
 YY_RULE_SETUP
-#line 281 "src/lexer.l"
+#line 282 "src/lexer.l"
 {
     /* Binary literal -- 0b1010, 0B11110000. NOT part of every C++
      * standard -- added in C++14; earlier standards have no binary-
@@ -1557,9 +1562,9 @@ YY_RULE_SETUP
     return INT_LITERAL;
 }
 	YY_BREAK
-case 73:
+case 74:
 YY_RULE_SETUP
-#line 299 "src/lexer.l"
+#line 300 "src/lexer.l"
 {
     /* Octal literal -- 013 (=11 decimal), 0777. Real C++'s own
      * "leading zero means octal" rule -- listed BEFORE the plain
@@ -1586,9 +1591,9 @@ YY_RULE_SETUP
     return INT_LITERAL;
 }
 	YY_BREAK
-case 74:
+case 75:
 YY_RULE_SETUP
-#line 325 "src/lexer.l"
+#line 326 "src/lexer.l"
 {
     /* Suffix (u/U, l/L, and any combination -- ul, LL, ...) matched and
      * simply ignored, the exact same "atoi/atof/strtol already stops at
@@ -1605,9 +1610,9 @@ YY_RULE_SETUP
     return INT_LITERAL;
 }
 	YY_BREAK
-case 75:
+case 76:
 YY_RULE_SETUP
-#line 341 "src/lexer.l"
+#line 342 "src/lexer.l"
 {
     /* SIMPLIFICATION: escape sequences inside the string are kept as
      * literal backslash-letter pairs rather than being decoded (\n stays
@@ -1623,10 +1628,10 @@ YY_RULE_SETUP
     return STRING_LITERAL;
 }
 	YY_BREAK
-case 76:
-/* rule 76 can match eol */
+case 77:
+/* rule 77 can match eol */
 YY_RULE_SETUP
-#line 356 "src/lexer.l"
+#line 357 "src/lexer.l"
 {
     g_last_ident_sym = NULL;
     if (yytext[1] == '\\') {
@@ -1646,9 +1651,9 @@ YY_RULE_SETUP
     return CHAR_LITERAL;
 }
 	YY_BREAK
-case 77:
+case 78:
 YY_RULE_SETUP
-#line 375 "src/lexer.l"
+#line 376 "src/lexer.l"
 {
     /* Single-character tokens: operators/punctuation not covered above
      * ('+','-','*','/','%','<','>','=','!','&','|','~','(',')','{','}',
@@ -1658,12 +1663,12 @@ YY_RULE_SETUP
     return yytext[0];
 }
 	YY_BREAK
-case 78:
+case 79:
 YY_RULE_SETUP
-#line 384 "src/lexer.l"
+#line 385 "src/lexer.l"
 ECHO;
 	YY_BREAK
-#line 1666 "src/lexer.c"
+#line 1671 "src/lexer.c"
 case YY_STATE_EOF(INITIAL):
 	yyterminate();
 
@@ -2634,6 +2639,6 @@ void yyfree (void * ptr )
 
 #define YYTABLES_NAME "yytables"
 
-#line 384 "src/lexer.l"
+#line 385 "src/lexer.l"
 
 
