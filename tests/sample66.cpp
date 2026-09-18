@@ -1,12 +1,11 @@
 // Exercises arrays of function pointers, in BOTH accepted declarator
 // styles -- standard-C (`ReturnType (*name[N])(ParamTypes);`) and
 // Vircon32-native (`ReturnType(ParamTypes)* [N] name;`). The Vircon32
-// array-of-function-pointers spelling specifically is this project's
-// own extrapolation from its two individually-confirmed patterns (the
-// plain Vircon32 function-pointer form, and the plain Vircon32 array
-// form), NOT yet confirmed end to end against the real compiler -- see
-// AST_FUNC_PTR_TYPE's own doc comment in ast.h and that production's
-// own comment in parser.y.
+// array-of-function-pointers spelling specifically was originally
+// this project's own extrapolation from its two individually-
+// confirmed patterns (the plain Vircon32 function-pointer form, and
+// the plain Vircon32 array form) -- now CONFIRMED correct, directly
+// by Matthew, against the real compiler.
 //
 // Expected: r0 = 8 (ops[0] is add, called through the standard-C-
 // declared array), r1 = 2 (ops[1] is subtract); r2 = 15 (ops2[0] is

@@ -192,11 +192,13 @@ a bare identifier, or is directly a
 .B return
 expression (including a chain of these) \(em the real Vircon32
 compiler doesn't support the ternary operator at all; standard mode
-keeps it exactly as written. See
+keeps it exactly as written. Function pointers (including arrays of
+them, and virtual-dispatch vtables) also produce correct standard-C
+declarator/cast syntax under
+.BR \-\-target=standard ,
+not just Vircon32's own reversed form. See
 .I docs/VIRCON32_QUIRKS.md
-for the itemized list of everything this flag actually changes,
-including function-pointer declarators, which remain Vircon32-only
-for now, a stated gap rather than an oversight.
+for the itemized list of everything this flag actually changes.
 .SH EXIT STATUS
 .TP
 .B 0
@@ -792,17 +794,6 @@ label actually exists anywhere in its function. Keep
 .B goto
 to flat scopes with no destructible locals in play until this is
 addressed.
-.PP
-The Vircon32-style ARRAY-of-function-pointers declarator
-.RI ( "ReturnType(ParamTypes)* [N] name;" )
-is this project's own extrapolation from its two individually-
-confirmed patterns (the plain Vircon32 function-pointer form, and the
-plain Vircon32 array form) \(em no existing generated output combines
-them, so this specific spelling has not been verified against the
-real compiler the way everything else Vircon32-specific in this
-project has been. The standard-C array-of-function-pointers form, and
-both plain (non-array) function-pointer forms, don't have this
-caveat.
 .PP
 .B const
 is only accepted as a PREFIX before a type

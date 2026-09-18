@@ -151,28 +151,26 @@ important default to protect.
   C++-side function-pointer variable-declaration feature (`int (*fp)
   (int, int);` and Vircon32's own `int(int, int)* fp;` spelling) --
   that case has the identical reversed-declarator shape.
-- **For a standard-C mode**: NOT YET IMPLEMENTED -- a deliberate,
-  documented boundary, not an oversight. Unlike array declarators
-  (#2 above), the name has to sit INSIDE the parens for standard C
-  (`ReturnType (*name)(Params)`), not get appended after the way
-  every other case in `print_type` works -- the same "print a suffix
-  after the name" fix that solved arrays doesn't apply here; it would
-  need its own prefix/suffix split (print `ReturnType (*` before the
-  name, a new suffix function prints `)(Params)` after it) at every
-  call site that can reach a function-pointer-typed declaration, in
-  both `print_type` and `emit_vtable_struct`. Scoped out of the
-  `--target` round deliberately: function pointers are rare enough,
-  and this split genuinely involved enough, that getting it right
-  under time pressure alongside everything else that round touched
-  felt riskier than flagging it clearly and coming back to it later.
-  Matthew's own confirmation when this was raised: the C++-side
-  dual-input-syntax acceptance for function pointers was always a
-  Vircon32-specific nicety, not something standard mode needs to
-  preserve either. Standard-mode output involving a function-pointer-
-  typed variable, parameter, field, or vtable slot is therefore NOT
-  valid standard C yet -- `print_type`'s own `AST_FUNC_PTR_TYPE` case,
-  and `emit_vtable_struct`/`emit_vtable_instance`'s own doc comments,
-  all point back here.
+- **For a standard-C mode**: IMPLEMENTED, in a follow-up round.
+  Solved differently than `print_type` alone could manage: a new
+  `print_type_and_name` (codegen.c) builds the ENTIRE standard-mode
+  declarator (return type, name, any array dimensions, parameter
+  list) as one self-contained unit, at each of the two call sites
+  that can ever reach a function-pointer-typed declaration
+  (`print_var_decl_inline`, `emit_struct`'s own field loop -- and,
+  through it, `emit_unions` too -- confirmed directly that
+  `ast_wrap_func_ptr` is only ever called from `var_decl`'s own
+  grammar, and `var_decl` is what both a variable declaration and a
+  class member reduce to; no parameter or return type can ever be
+  function-pointer-typed in this grammar). Array-of-function-pointers
+  composition works too (`ReturnType (*name[N])(Params);`, standard
+  C's own syntax for it), confirmed directly against
+  `tests/sample66.cpp`'s own output. `emit_vtable_struct` and
+  `emit_vtable_instance` (their own inline declarator/cast text,
+  never routed through `print_type` at all) got the identical fix
+  applied separately, confirmed against `tests/sample14.cpp`'s own
+  vtable output. No grammar changes were needed for any of this --
+  every part of the fix lives in codegen.c.
 
 ## 4. Function-pointer CAST syntax, same reversed pattern
 
@@ -187,9 +185,12 @@ important default to protect.
 - **Where**: `emit_vtable_instance` (codegen.c), the cast-insertion
   branch for a vtable slot whose current implementation's declaring
   class differs from the field's canonically-declared one.
-- **For a standard-C mode**: NOT YET IMPLEMENTED, same boundary and
-  same reasoning as #3 above -- deferred deliberately, not an
-  oversight.
+- **For a standard-C mode**: IMPLEMENTED alongside #3 above, in
+  `emit_vtable_instance`'s own cast-insertion branch -- standard C's
+  own function-pointer cast has an EMPTY `()` where a declarator's
+  own name would go (there's no name to give a cast), `(ReturnType
+  (*)(Params))expr`, confirmed directly against `tests/sample14.cpp`'s
+  own output.
 
 ## 5. Pointer null-initialization requires `NULL`, not `0`
 
@@ -340,6 +341,86 @@ important default to protect.
   assignment case specifically needed a narrower check than "any
   assignment" (an arbitrary lvalue duplicated across both branches
   would risk double-evaluating a side effect inside it).
+
+---
+
+## 11. Parameters and return values must be exactly one word -- no by-value structs/unions/arrays larger than that
+
+- **Vircon32 requires**: a function's own parameters and return value
+  must each be exactly one word in size. A struct, union, or array
+  larger than one word cannot be passed or returned BY VALUE at all --
+  a pointer to it must be used instead (matching this project's own
+  existing choice for every method's own receiver, `ClassName *this`,
+  already pointer-based for an unrelated reason). Reported directly by
+  Matthew, quoting Vircon32's own documentation: "functions cannot use
+  parameters or return values of size different from 1. That is: they
+  cannot use arrays, unions or structures (unless their size is just a
+  single word). Instead they must operate with pointers to them."
+  Passing an array BY DECAYING TO A POINTER (`void foo(int arr[8])`,
+  already how this project's own `param` grammar treats an array
+  parameter -- see entry #2 above) is explicitly fine, same as
+  standard C; the restriction is specifically about passing/returning
+  a fixed-size AGGREGATE (struct/union/array) as a genuine, by-value
+  copy.
+- **Standard C**: no such restriction -- an ordinary struct, union, or
+  (via a wrapping struct, since C itself doesn't allow a bare array
+  parameter or return type either) array of any size can be passed or
+  returned by value.
+- **Status**: Reported directly by Matthew, quoting Vircon32's own
+  documentation -- not yet independently confirmed against the real
+  compiler by transpiling and compiling a deliberately-oversized
+  by-value parameter or return type to see the specific error Vircon32
+  produces, the same evidentiary gap entry #10 (ternary) already has.
+- **Where**: `lower.c`'s `check_word_sizes_classes`/`check_word_sizes_
+  free_functions`, run immediately after `compute_struct_layouts`
+  (needs the field counts it computes) but before anything else in
+  `lower_run` -- a warning-only pass, not a transformation, so it
+  doesn't need a numbered phase slot of its own.
+- **For a standard-C mode**: no change needed -- this restriction is
+  Vircon32-specific, matching entry #1's own "vircon32 mode is the one
+  that needs the extra treatment" shape; the check itself is gated on
+  `g_target == TARGET_VIRCON32` at each call site.
+- **IMPLEMENTED**, once Matthew confirmed the numbers this entry's own
+  first version said were missing: Vircon32 is a 32-bit, word-based
+  machine (1 word = 32 bits), and `int`/`float`/every pointer are
+  already exactly one word -- crucially, `char`/`short`/`double`/etc
+  (recent-compiler aliases) are "mere syntactic sugar" over the same
+  4-byte word underneath, so EVERY field of ANY supported primitive
+  type is exactly one word, with no per-type size table needed at
+  all. A class/struct's own size in words is therefore just its
+  `StructLayout`'s own field count (data members plus a vtable
+  pointer, if any) -- `sema_warning` (exposed from sema.c, not static
+  anymore, so lower.c can reuse the same counting/formatting machinery
+  rather than duplicating it) fires when a bare (not pointer, not
+  reference -- `const`-qualified still counts) class/struct parameter
+  or return type has more than one such field.
+  A real, if narrow, gap remains: an array-typed or nested-struct-
+  typed DATA MEMBER only ever contributes ONE to its own `StructLayout`
+  count here, even though it may itself be several words wide, so a
+  struct with exactly one such field could still under-count as
+  "one word" when it's actually more -- the same conservative
+  direction (miss a violation rather than warn on valid code) as
+  every other best-effort check in this project. Unions are
+  deliberately not checked at all: an ordinary union of simple
+  primitive members is already exactly one word by construction
+  (members overlap, not stack), so only a union containing an array or
+  nested-struct member large enough to itself exceed one word would
+  violate this -- narrower still than the struct gap above, and not
+  pursued this round.
+- **A genuinely valuable finding from testing this against the
+  existing suite, not invented for the occasion**: `tests/sample9.cpp`
+  and `tests/sample15.cpp` (both exercising operator overloading on a
+  `Vector2D` class -- `x`/`y`, two `int` fields, two words) both
+  trigger this warning repeatedly, on `operator+`, `operator-`, and
+  similar, every one of them taking or returning a `Vector2D` BY
+  VALUE. Both samples have "passed" (transpiled successfully, no
+  fatal error) throughout this entire project's history -- this
+  warning is the first thing to surface that their generated C would
+  not actually compile on real Vircon32 hardware at all. Left as-is,
+  not rewritten to pass by reference: fixing the SAMPLES is a
+  separate, deliberate decision for Matthew to make (would change
+  what those two tests are demonstrating), not something to do
+  silently as a side effect of adding this check.
 
 ---
 

@@ -957,23 +957,14 @@ var_decl:
     | type_spec pointer_opt '(' opt_func_ptr_param_list ')' '*' '[' INT_LITERAL ']' IDENTIFIER opt_array_initializer
         {
             /* Vircon32-native ARRAY-of-function-pointers declarator.
-             * UNCONFIRMED against the real compiler, worth being
-             * direct about -- unlike the plain (non-array) Vircon32
-             * function-pointer form, which VIRCON32_QUIRKS.md already
-             * confirms via vtable-slot emission, no existing generated
-             * output anywhere in this project combines Vircon32's own
-             * array-bracket placement with its own function-pointer
-             * placement, so this specific combination
-             * ("ReturnType(ParamTypes)* [N] name;" -- the array
+             * CONFIRMED against the real compiler (Matthew directly):
+             * "ReturnType(ParamTypes)* [N] name;" -- the array
              * brackets positioned exactly where they'd go for an
              * ordinary array of any other Vircon32-style type,
-             * directly before the name) is this project's own
+             * directly before the name -- is genuinely correct
+             * Vircon32 syntax, not just this project's own
              * extrapolation from the two individually-confirmed
-             * patterns, not something Matthew's own build has verified
-             * end to end. Needs real-compiler confirmation before this
-             * specific spelling is treated as settled, same standard
-             * every other Vircon32-specific quirk in this project was
-             * held to before being trusted. */
+             * patterns it was originally reasoned from. */
             symtab_insert(g_symtab, g_symtab->current, $10, SYM_VAR);
             $$ = ast_new(AST_VAR_DECL, @10.first_line);
             $$->str1 = strdup($10);

@@ -35,7 +35,17 @@ static void sema_error(int line, const char *fmt, ...) {
  * accepts, for a construct this project CAN still do something
  * reasonable with. A warning is the honest middle ground. */
 static int g_warning_count = 0;
-static void sema_warning(int line, const char *fmt, ...) {
+/* Non-fatal: reports something worth flagging without refusing to
+ * transpile code real C++ (or, per the Vircon32 word-size check in
+ * lower.c, real Vircon32 C) accepts. Exposed (not static) so lower.c
+ * can reuse the same counting/formatting machinery for its own
+ * warnings rather than duplicating it -- sema.c's own pass and
+ * lower.c's own passes are both "diagnostics about accepted code",
+ * conceptually the same kind of finding, just surfaced at different
+ * points in the pipeline (sema.c before lowering runs at all; the
+ * word-size check only after compute_struct_layouts has computed the
+ * field counts it needs). */
+void sema_warning(int line, const char *fmt, ...) {
     fprintf(stderr, "warning at line %d: ", line);
     va_list ap;
     va_start(ap, fmt);

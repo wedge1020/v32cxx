@@ -4993,6 +4993,161 @@ file, confirmed directly: exactly one ternary survives in `vircon32`
 mode (the documented boundary case) and all four survive, untouched,
 in `standard` mode.
 
+## Function-pointer standard-mode output, closed for real -- and a genuinely new gap found while scoping the array follow-up
+
+Matthew asked to close the function-pointer standard-mode gap the
+previous round deliberately deferred, then look at any remaining
+array-related work.
+
+### Function pointers: closed
+
+Confirmed directly (not re-guessed) that `ast_wrap_func_ptr` is only
+ever called from `var_decl`'s own grammar productions, and `var_decl`
+is what both a variable declaration and a class member (`member: ...
+| var_decl ';'`) reduce to -- meaning exactly two call sites
+(`print_var_decl_inline`, `emit_struct`'s own field loop) can ever
+need to print a function-pointer-typed declaration, and neither a
+parameter nor a return type ever can. New `print_type_and_name`
+(codegen.c) builds the entire standard-mode declarator as one self-
+contained unit at those two sites, rather than trying to force the
+name-goes-inside-the-parens shape through `print_type`'s own single-
+type-in-single-string-out contract the way the array fix's suffix
+trick could. `emit_vtable_struct`/`emit_vtable_instance` (their own
+separate, inline declarator/cast text, never routed through
+`print_type` at all) got the identical fix applied directly. No
+grammar changes needed anywhere -- confirmed with a genuinely
+comprehensive test pass this time, not just the two or three samples
+checked after the earlier `--target` round: `sample64`/`66` (plain and
+array-of function pointers) and `sample14` (vtable dispatch) all
+produce correct standard C, read line by line, not just "exit code
+0" checked.
+
+### The array follow-up surfaced a real, deeper complication -- reported rather than rushed
+
+Investigated multi-dimensional array PARAMETER decay (`void foo(int
+arr[8][4])` -- currently single-dimension only) as the clearest
+remaining array item within reach. Real C/C++ semantics here are more
+involved than the single-dimension case already handled: only the
+FIRST dimension decays to a pointer; the rest stay as array
+dimensions, so the parameter's own true type is `int (*arr)[4]` -- a
+pointer to a 4-element array of int, not a flat `int **arr`.
+
+Tracing through what `print_type` would need to emit for that type
+today surfaced a genuinely new problem, not specific to multi-
+dimensional array parameters at all: this project has never once
+needed to print a POINTER-TO-ARRAY type before, and `print_type`'s
+existing `AST_POINTER_TYPE` case (`print_type(type->a); " *"`) gets it
+wrong in EITHER dialect, not just standard mode -- for `AST_POINTER_
+TYPE(a=AST_ARRAY_TYPE(4, int))`, it would recurse into the array case
+first (`int [4]` in Vircon32 mode, `int` with a deferred suffix in
+standard mode) and then append `*` OR expect the caller to eventually
+append `[4]`, producing `int [4] *name` or a similarly wrong shape --
+neither is `int (*name)[4]`, the correct form, which (like a function
+pointer) needs the name INSIDE parentheses, sitting between the `*`
+and the array bracket, not appended after either one. The exact same
+class of problem the function-pointer fix just solved, but for a
+different type combination this project has simply never produced
+before.
+
+Reported rather than rushed: implementing multi-dimensional array
+parameter decay would mean discovering and fixing this pointer-to-
+array declarator gap at the same time, under the same time pressure
+that already produced one incomplete first attempt this session (the
+original, print_type-only function-pointer fix that missed several
+call sites two rounds back). Better to scope and verify this
+deliberately in its own pass than repeat that pattern. The OTHER
+lingering array item -- the Vircon32-style array-of-function-pointers
+declarator spelling, still unconfirmed against the real compiler --
+isn't something a round of local work can resolve at all; it
+genuinely needs Matthew's own build.
+
+### Verification
+
+Full syntax-check; rebuilt against the real, already-synced grammar
+(no grammar changes this round either). Full 71-sample suite in both
+`vircon32` and `standard` mode, zero regressions. Function-pointer-
+specific standard-mode output read directly, not just checked for a
+clean exit: `int (*fp)(int, int);`, `int (*ops[2])(int, int);`,
+`int (*Shape__area__void)(struct Shape *);`, and
+`(int (*)(struct Shape *))&Circle__area__void` all confirmed correct
+against real standard C declarator/cast rules.
+
+## The one-word parameter/return check -- implemented once the numbers arrived, and a real finding in this project's own existing test suite
+
+Matthew confirmed the array-of-function-pointers spelling (now marked
+CONFIRMED everywhere it was flagged unconfirmed) and supplied exactly
+the numbers the previous round's entry #11 said were missing:
+Vircon32 is 32-bit and word-based, `int`/`float`/pointers are all one
+word, and `char`/`short`/`double`/etc are alias syntactic sugar over
+the same 4-byte word -- meaning EVERY supported primitive type is
+uniformly one word, with no per-type size table needed at all.
+
+### Why this made the check genuinely low-risk to build, not just theoretically possible
+
+A class/struct's own size in words reduces to its `StructLayout`'s own
+field count directly -- no arithmetic, no per-field width lookup. This
+is the exact missing piece the deferral in the previous round was
+about: implementing a size check without confirmed per-primitive sizes
+risked getting the boundary wrong in either direction (false-warning
+valid code, or missing genuine violations) -- with these numbers, the
+computation is simple enough to trust.
+
+### Where it had to live, discovered by checking timing, not assumed
+
+Tried to hook this into `sema.c` first, matching `dynamic_cast`'s own
+established `sema_warning()` precedent -- but `StructLayout` doesn't
+exist yet when `sema.c` runs at all; `compute_struct_layouts` is the
+very first step of `lower_run`, which runs strictly after semantic
+analysis finishes. Moved the check to `lower.c` instead, right after
+`compute_struct_layouts`, and exposed `sema_warning` itself (no longer
+`static`) so `lower.c` could reuse the same counting/formatting
+machinery rather than duplicating it -- the two passes are
+conceptually the same kind of thing (diagnostics about accepted code),
+just needing to run at different points in the pipeline.
+
+### Scope, the same conservative direction as every other best-effort check here
+
+Only a BARE (not pointer, not reference; `const`-qualified still
+counts) class/struct parameter or return type with more than one
+`StructLayout` field triggers the warning. Two deliberate, stated
+gaps: an array- or nested-struct-typed DATA MEMBER only ever
+contributes one to its own class's field count, even though it may
+itself be several words -- a genuine under-count in a narrow case,
+accepted in the same "miss a violation rather than false-warn"
+direction this project already applies elsewhere; and unions aren't
+checked at all, since an ordinary union of primitive members is
+already one word by construction (members overlap, not stack).
+
+### A real finding, not manufactured for the occasion
+
+Running this against the EXISTING 71-sample suite (not a new test
+written to demonstrate the feature) surfaced that `tests/sample9.cpp`
+and `tests/sample15.cpp` -- both exercising operator overloading on a
+two-field `Vector2D` class -- have every one of their `operator+`/
+`operator-`/etc taking or returning `Vector2D` BY VALUE, two words,
+over the limit. Both samples have "passed" throughout this entire
+project's history; this warning is the first thing to ever surface
+that their generated C would not actually compile on real Vircon32
+hardware. Left the samples exactly as they are rather than quietly
+rewriting them to pass by reference -- that's a real, separate
+decision about what those two tests are meant to demonstrate, worth
+Matthew's own call, not something to change as a side effect of
+adding a diagnostic.
+
+### Verification
+
+Full syntax-check; rebuilt against the real, already-synced grammar
+(no grammar changes -- this is a `.c`-file-only diagnostic pass).
+Directly tested all four combinations: a two-word struct by value in
+vircon32 mode (warns, on both the parameter and the return case), a
+one-word struct by value in vircon32 mode (silent), a two-word struct
+by pointer in vircon32 mode (silent), and the same two-word-by-value
+case under `--target=standard` (silent, since the restriction doesn't
+apply there). Full 71-sample suite run in both modes -- same pass/fail
+outcome as before (warnings don't fail a build), with the two new,
+genuine warnings on `sample9`/`sample15` confirmed by reading their
+own source, not just trusted from the tool's own output.
+
 ## Suggested next steps, roughly in order
 
 

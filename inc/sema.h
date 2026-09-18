@@ -318,6 +318,9 @@ const AstNode *find_declaring_class(const AstNode *class_decl, const AstNode *ta
  * reason as everything else in this section -- lower.c's new/delete
  * lowering needs to know which class `new T` allocates. */
 AstNode *type_to_class(const AstNode *type);
+void sema_warning(int line, const char *fmt, ...); /* see its own doc
+    comment in sema.c -- non-fatal, exposed so lower.c can reuse the
+    same counting/formatting machinery for its own diagnostics */
 
 /* Appends every free function/prototype named `name` (ANY arity/
  * signature -- callers filter further themselves) onto `*out`, growing

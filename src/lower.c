@@ -2596,8 +2596,136 @@ static void rewrite_ternary_free_functions(AstList *decls) {
     }
 }
 
+/* ---- word-size check for parameters and return values (vircon32 mode only) ---
+ *
+ * Matthew's own confirmation of the real Vircon32 C compiler's own
+ * limitation: a function's parameters and return value must each be
+ * EXACTLY one word (32 bits). No by-value struct, union, or array
+ * larger than that is accepted at all -- a pointer must be used
+ * instead. Vircon32's own primitive types make the size computation
+ * genuinely simple, not something needing careful arithmetic: `int`,
+ * `float`, and every pointer are already exactly one word, and even
+ * `char`/`short`/`double`/etc (recent-compiler aliases, per Matthew)
+ * are "mere syntactic sugar" over the same 4-byte word underneath --
+ * so EVERY field, of ANY of this project's supported primitive
+ * types, is exactly one word, with no per-type size table to build or
+ * get wrong. A class/struct's own total size in words is therefore
+ * just its StructLayout's own field count (compute_struct_layouts,
+ * just above -- data members plus a vtable pointer, if any, each
+ * counted once, each exactly one word).
+ *
+ * SCOPE, stated plainly: only catches a BARE (not pointer, not
+ * reference -- const-qualified still counts, since `const Shape` is
+ * still passed/returned by value) class or struct type whose own
+ * StructLayout has more than one field. This is a LOWER BOUND, not an
+ * exact byte count -- an array-typed or nested-struct-typed DATA
+ * MEMBER only ever contributes ONE to its own StructLayout's field
+ * count here, even though it may itself be multiple words wide, so a
+ * struct with exactly one such field could still under-count as
+ * "one word" when it's actually more. This is the same conservative
+ * direction as every other best-effort check in this project: better
+ * to miss a genuine violation than to warn on code that's actually
+ * fine. Unions are deliberately NOT checked here at all -- a union's
+ * own members overlap rather than stack, so an ordinary union of
+ * simple primitive members is already exactly one word by
+ * construction, regardless of how many members it has; only a union
+ * containing an array or nested-struct member large enough to itself
+ * exceed one word would violate this, a narrower case not worth this
+ * round's own scope.
+ *
+ * Vircon32 mode only (checked at each call site below, not gated
+ * once at the top of this section) -- standard C has no such
+ * restriction at all, matching this project's own established
+ * "vircon32 mode is the one needing the extra treatment" shape for
+ * every other entry in docs/VIRCON32_QUIRKS.md.
+ */
+
+static AstNode *bare_class_type(const AstNode *type) {
+    /* Unwraps ONLY a const qualifier, never a pointer or reference --
+     * this function exists specifically to identify a BY-VALUE class/
+     * struct type, so a pointer or reference to one (already exactly
+     * one word, matching every other Vircon32-safe value) must NOT
+     * match here. Returns the class's own AST_CLASS_DECL, or NULL if
+     * `type` isn't a bare class/struct reference at all (a primitive,
+     * a pointer, a reference, or an unresolvable name). */
+    while (type != NULL && type->kind == AST_CONST_TYPE) {
+        type = type->a;
+    }
+    if (type == NULL || (type->kind != AST_IDENT && type->kind != AST_QUALIFIED_ID)) {
+        return NULL;
+    }
+    return type_to_class(type);
+}
+
+static void warn_if_multiword_by_value(const AstNode *type, int line, const char *context) {
+    if (g_target != TARGET_VIRCON32) return;
+    AstNode *class_decl = bare_class_type(type);
+    if (class_decl == NULL) return;
+    StructLayout *layout = (StructLayout *)class_decl->lower_info;
+    if (layout != NULL && layout->count > 1) {
+        sema_warning(line,
+                     "'%s' has type '%s', a %d-word struct/class passed or "
+                     "returned BY VALUE -- the real Vircon32 C compiler only "
+                     "supports parameters and return values that are exactly "
+                     "one word (int, float, or a pointer); pass or return a "
+                     "pointer to '%s' instead",
+                     context, class_decl->str1, layout->count, class_decl->str1);
+    }
+}
+
+static void check_word_size_in_func(AstNode *func) {
+    warn_if_multiword_by_value(func->type, func->line, "return value");
+    for (int i = 0; i < func->list.count; i++) {
+        AstNode *param = func->list.items[i];
+        warn_if_multiword_by_value(param->type, param->line, param->str1);
+    }
+}
+
+static void check_word_sizes_classes(AstList *decls) {
+    for (int i = 0; i < decls->count; i++) {
+        AstNode *n = decls->items[i];
+        if (n->kind == AST_CLASS_DECL) {
+            ClassLayout *layout = (ClassLayout *)n->sema_info;
+            if (layout != NULL) {
+                for (int j = 0; j < layout->methods.count; j++) {
+                    check_word_size_in_func(layout->methods.items[j]);
+                }
+            }
+        } else if (n->kind == AST_NAMESPACE_DECL) {
+            check_word_sizes_classes(&n->list);
+        }
+    }
+}
+
+static void check_word_sizes_free_functions(AstList *decls) {
+    for (int i = 0; i < decls->count; i++) {
+        AstNode *n = decls->items[i];
+        if (n->kind == AST_NAMESPACE_DECL) {
+            check_word_sizes_free_functions(&n->list);
+        } else if (n->kind == AST_FUNC_DEF && n->b == NULL) {
+            /* Same "free function, not an out-of-line method
+             * definition" test access_check_free_functions (sema.c)
+             * already uses -- an out-of-line method's own n->b holds
+             * its Class:: qualifier; a free function's is always
+             * NULL. Out-of-line methods are already covered via
+             * check_word_sizes_classes's own walk of layout->methods,
+             * which already includes them -- this avoids checking the
+             * same function's own signature twice. */
+            check_word_size_in_func(n);
+        }
+    }
+}
+
 int lower_run(AstNode *program) {
     compute_struct_layouts(&program->list);
+    check_word_sizes_classes(&program->list); /* reads StructLayout,
+        just computed -- must run after compute_struct_layouts, but
+        before anything mutates a parameter's or return type's own
+        AST_REFERENCE_TYPE (fix_references, phase 5) since a bare
+        class/struct check would otherwise need to account for that
+        mutation too; running this early, right after the layouts it
+        depends on exist, sidesteps the question entirely */
+    check_word_sizes_free_functions(&program->list);
     this_inject_classes(&program->list);
     inject_vtable_init_classes(&program->list);       /* phase 8 -- deliberately
         runs right after this-injection, before anything else touches a

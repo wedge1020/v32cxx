@@ -123,9 +123,24 @@ and transpiles exactly like the other casts, but since it doesn't
 actually perform the RTTI-backed runtime check real `dynamic_cast`
 promises (this project has never supported RTTI, by design), using it
 produces a **warning**, not an error — printed to stderr, never
-blocking the transpile. Warnings are a new, separate diagnostic
-category from this round: `dynamic_cast` is currently the only thing
-that triggers one.
+blocking the transpile. A second warning was added later, `--target=
+vircon32`-only: the real Vircon32 C compiler only accepts parameters
+and return values that are exactly one word (32 bits) — no by-value
+struct, union, or array larger than that, a pointer must be used
+instead (confirmed directly by Matthew, including that `char`/`short`/
+`double`/etc are alias syntactic sugar over the same 4-byte word
+underneath, making every supported primitive type uniformly one word).
+A bare (non-pointer, non-reference) class or struct parameter or
+return type larger than one word — its own field count, via
+`StructLayout` — triggers this warning; running it against this
+project's own existing test suite actually found two real violations
+already in it (`tests/sample9.cpp`, `tests/sample15.cpp`, both passing
+a two-field `Vector2D` by value throughout their own operator
+overloads) — left as-is deliberately, since rewriting them is a
+separate decision about what those tests demonstrate. See
+`docs/VIRCON32_QUIRKS.md`'s own entry #11 for the full reasoning and
+stated scope gaps (an array- or nested-struct-typed field can still
+under-count; unions aren't checked at all).
 
 **Lowering** — transforming the semantically-checked program into
 something code generation can work from directly — runs through eleven
@@ -321,15 +336,6 @@ emitted alongside it.
   declaring a variable is — and a multi-dimensional array of function
   pointers is unsupported, an intentionally rare combination not
   pursued alongside everything else that round already touched.
-- **The Vircon32-style array-of-function-pointers declarator is
-  unconfirmed.** `ReturnType(ParamTypes)* [N] name;` is this project's
-  own extrapolation from its two individually-confirmed patterns (the
-  plain Vircon32 function-pointer form, and the plain Vircon32 array
-  form) — no existing generated output combines them, so this specific
-  spelling hasn't been verified against the real compiler the way
-  everything else Vircon32-specific in this project has been. The
-  standard-C array-of-function-pointers form, and both plain
-  (non-array) function-pointer forms, don't have this caveat.
 
 This is genuinely still growing — expect rough edges, and expect this
 README to need updating again as things change.
@@ -456,11 +462,11 @@ ordinary C++-to-C transpiler on some other system entirely — no cart
 XML or debug map either way for `--target=standard`, since both are
 Vircon32-platform concepts with no meaning outside it (`-x`/`-g` are
 simply ignored in that mode, not an error). One single pipeline
-either way, not two separate compilation passes — see
-`docs/VIRCON32_QUIRKS.md` for the itemized checklist of every place
-this actually branches, and its own status per entry (a few are still
-genuinely Vircon32-only for now, most notably function-pointer
-declarators — a deliberate, stated gap, not an oversight). One real
+either way, not two separate compilation passes — function pointers
+(including arrays of them, and virtual-dispatch vtables) now produce
+correct standard-C declarator/cast syntax in `standard` mode too, not
+just Vircon32's own reversed form — see `docs/VIRCON32_QUIRKS.md` for
+the itemized checklist of every place this actually branches. One real
 behavioral difference worth knowing, not just a syntax swap: `main`'s
 own return type. Vircon32 mode still always forces `void main(void)`,
 discarding whatever the C++ source actually declared (matching the

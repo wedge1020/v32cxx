@@ -275,30 +275,38 @@ static void print_type(FILE *out, const AstNode *type) {
              * then its own " [%d]" is appended, then the ordinary
              * caller-appends-the-name step happens exactly as always.
              *
-             * KNOWN, DELIBERATE GAP for --target=standard: emitted
-             * this same Vircon32-style form UNCONDITIONALLY, even in
-             * standard mode, where it's invalid C. Unlike
+             * KNOWN, DELIBERATE GAP that's since been closed: this
+             * function itself still ALWAYS emits Vircon32's own form
+             * here, unconditionally, regardless of g_target -- unlike
              * AST_ARRAY_TYPE just above, standard C's own function-
              * pointer declarator (`ReturnType (*name)(ParamTypes)`)
              * needs the NAME embedded INSIDE the parens, in the
-             * middle of the type -- not appended afterward the way
+             * middle of the type, not appended afterward the way
              * every other case in this function (arrays included)
-             * works, so the same "print a suffix after the name"
-             * fix that solved arrays doesn't directly apply; it would
-             * need its own prefix/suffix split (print "ReturnType (*"
-             * here, let the caller print the name, then a NEW
-             * "print_func_ptr_suffix" prints ")(ParamTypes)" after
-             * it), at every call site that can reach a function-
-             * pointer-typed declaration. Scoped out of this round
-             * deliberately, not silently: function pointers are rare
-             * enough, and this split genuinely involved enough, that
-             * getting it right under time pressure alongside
-             * everything else this round touched felt riskier than
-             * flagging it clearly and coming back to it. Standard-
-             * mode output involving a function-pointer-typed
-             * variable, parameter, or field is therefore NOT valid
-             * standard C yet -- see docs/VIRCON32_QUIRKS.md and
-             * README.md for this same boundary stated again. */
+             * works, so the same "print a suffix after the name" fix
+             * that solved arrays doesn't apply to this function
+             * itself at all. Solved differently instead: a new
+             * print_type_and_name (below) builds the entire standard-
+             * mode function-pointer declarator (return type, name,
+             * any array dimensions, parameter list) as ONE self-
+             * contained unit at each of the two call sites that can
+             * ever reach a function-pointer-typed declaration
+             * (confirmed directly: only var_decl's own grammar ever
+             * produces one), rather than trying to force this shape
+             * through this function's own single-type-in, single-
+             * string-out, caller-appends-the-name contract. This
+             * function's own AST_FUNC_PTR_TYPE case (right here)
+             * therefore still only ever needs to know Vircon32's own
+             * form -- print_type_and_name's own standard-mode branch
+             * never calls back into this case at all for the OUTER
+             * function-pointer type, only for the return type and
+             * each parameter's own (non-function-pointer) type. See
+             * print_type_and_name's own doc comment for the full
+             * standard-mode shape, and emit_vtable_struct/emit_
+             * vtable_instance for the identical fix applied to their
+             * own separate, inline function-pointer declarator/cast
+             * text (vtable slots are function-pointer-typed by
+             * construction, never routed through print_type at all). */
             print_type(out, type->type);
             fprintf(out, "(");
             for (int i = 0; i < type->list.count; i++) {
@@ -377,6 +385,91 @@ static void print_array_suffix(FILE *out, const AstNode *type) {
         fprintf(out, "[%d]", type->ival);
         type = type->a;
     }
+}
+
+/* Prints "Type name" (or, for a function-pointer type in standard
+ * mode, the fully different declarator shape that requires) for the
+ * two call sites that can ever need it -- print_var_decl_inline
+ * (local and global variables) and emit_struct's own data-field loop
+ * (class members). Confirmed directly, not assumed, that these are
+ * the ONLY two: ast_wrap_func_ptr (ast.c) is only ever called from
+ * var_decl's own grammar productions (parser.y), and var_decl is
+ * what BOTH a local/global variable declaration AND a class member
+ * (`member: ... | var_decl ';'`) reduce to -- no parameter and no
+ * return type can ever be function-pointer-typed in this grammar (no
+ * grammar production wraps a func-ptr type anywhere else), so those
+ * callers correctly never needed this and still don't.
+ *
+ * Vircon32 mode, and standard mode for anything that ISN'T a function
+ * pointer (or an array of them): behaves exactly like the "print_type
+ * then the name then print_array_suffix" pattern this replaces --
+ * print_type already handles the ENTIRE Vircon32-mode declarator
+ * (including function pointers, prefix-style, name appended after by
+ * the caller same as everything else), so nothing about that path
+ * changes at all.
+ *
+ * Standard mode, function-pointer base type (walking through any
+ * wrapping AST_ARRAY_TYPE layers first, the same dimension-collecting
+ * walk print_type's own AST_ARRAY_TYPE case already does, to find out
+ * whether the ELEMENT type -- not the outermost node -- is a function
+ * pointer): standard C needs the name INSIDE the parens
+ * (`ReturnType (*name)(Params);`), with any array dimensions ALSO
+ * inside those same parens, right after the name
+ * (`ReturnType (*name[N])(Params);`, standard C's own syntax for an
+ * array of function pointers -- confirmed against ordinary C
+ * declarator rules, not the real Vircon32 compiler, since this shape
+ * only ever applies to standard-mode output in the first place) --
+ * this function's own "prefix, then caller appends the name" pattern
+ * genuinely can't produce that on its own, since print_type has
+ * already returned (and the name printed) long before the closing
+ * `)(Params)` suffix would need to appear. Built directly here
+ * instead, as one self-contained declarator, rather than trying to
+ * force this shape through print_type's own single-type-in,
+ * single-string-out contract. */
+static void print_type_and_name(FILE *out, const AstNode *type, const char *name) {
+    if (g_target == TARGET_STANDARD) {
+        const AstNode *base = type;
+        int dims[64]; /* see print_type's own identical cap and reasoning
+            in its AST_ARRAY_TYPE case -- same purely local, transient
+            printing operation, same "far beyond anything realistic"
+            justification */
+        int dim_count = 0;
+        while (base != NULL && base->kind == AST_ARRAY_TYPE && dim_count < 64) {
+            dims[dim_count++] = base->ival;
+            base = base->a;
+        }
+        if (base != NULL && base->kind == AST_FUNC_PTR_TYPE) {
+            print_type(out, base->type); /* the function pointer's own return type */
+            fprintf(out, " (*%s", name);
+            for (int i = 0; i < dim_count; i++) {
+                fprintf(out, "[%d]", dims[i]);
+            }
+            fprintf(out, ")(");
+            if (base->list.count == 0) {
+                /* Standard C: empty parens mean UNSPECIFIED parameters,
+                 * not NO parameters -- a real semantic difference this
+                 * project already takes seriously for ordinary function
+                 * signatures (see emit_function_header's own identical
+                 * "func->list.count == 0" check). In practice this
+                 * grammar's own accepted "(void)" spelling already
+                 * produces a one-entry list (a literal `void` type,
+                 * falling through type_spec's own VOID_KW alternative,
+                 * not a dedicated empty-list case) rather than a truly
+                 * empty one, so this branch is a safety net for the
+                 * bare "()" spelling specifically, not the common case. */
+                fprintf(out, "void");
+            }
+            for (int i = 0; i < base->list.count; i++) {
+                if (i > 0) fprintf(out, ", ");
+                print_type(out, base->list.items[i]);
+            }
+            fprintf(out, ")");
+            return;
+        }
+    }
+    print_type(out, type);
+    fprintf(out, " %s", name);
+    print_array_suffix(out, type);
 }
 
 /* ---- typedefs -------------------------------------------------------- */
@@ -558,12 +651,9 @@ static void emit_globals(FILE *out, const AstList *decls) {
  * differs depending on whether this-injection has touched it needs to be
  * checked for that difference explicitly, not assumed uniform.
  *
- * KNOWN, DELIBERATE GAP for --target=standard: builds its own
- * function-pointer declarator text inline, unconditionally in
- * Vircon32's own reversed form, regardless of g_target -- see
- * print_type's own AST_FUNC_PTR_TYPE case (this file) for the full
- * reasoning on why standard-mode function-pointer output was scoped
- * out of this round entirely, which applies here identically.
+ * Function-pointer declarator output for --target=standard: now
+ * IMPLEMENTED, branching internally on g_target -- see the standard-
+ * mode branch's own comment, just below, for the full reasoning.
  */
 static void emit_vtable_struct(FILE *out, const AstNode *class_decl) {
     ClassLayout *layout = (ClassLayout *)class_decl->sema_info;
@@ -579,16 +669,41 @@ static void emit_vtable_struct(FILE *out, const AstNode *class_decl) {
         const AstNode *canonical_class = find_declaring_class(class_decl, canonical);
 
         fprintf(out, "    ");
-        print_type(out, canonical->type);
-        fprintf(out, "(%s *", canonical_class->str1);
-
         int already_this_injected = (canonical->kind == AST_FUNC_DEF);
         int start = already_this_injected ? 1 : 0;
-        for (int p = start; p < canonical->list.count; p++) {
-            fprintf(out, ", ");
-            print_type(out, canonical->list.items[p]->type);
+        if (g_target == TARGET_STANDARD) {
+            /* Standard C's own function-pointer field declarator needs
+             * the name INSIDE the parens -- same reasoning as
+             * print_type_and_name's own doc comment above, applied
+             * here directly since a vtable slot is a function pointer
+             * BY CONSTRUCTION, not something print_type's own general
+             * "prefix, caller appends name" pattern could route
+             * through even with that helper's own array/func-ptr
+             * handling (a struct FIELD name is available here, same
+             * as print_type_and_name's own two call sites, but this
+             * function builds its own declarator text directly rather
+             * than working from an AST_FUNC_PTR_TYPE node at all, so
+             * reuses the same SHAPE of fix inline instead of trying to
+             * force this through that helper's own single-node
+             * contract). */
+            print_type(out, canonical->type);
+            fprintf(out, " (*%s)(", field_name);
+            print_class_type_name(out, canonical_class->str1);
+            fprintf(out, " *");
+            for (int p = start; p < canonical->list.count; p++) {
+                fprintf(out, ", ");
+                print_type(out, canonical->list.items[p]->type);
+            }
+            fprintf(out, ");\n");
+        } else {
+            print_type(out, canonical->type);
+            fprintf(out, "(%s *", canonical_class->str1);
+            for (int p = start; p < canonical->list.count; p++) {
+                fprintf(out, ", ");
+                print_type(out, canonical->list.items[p]->type);
+            }
+            fprintf(out, ")* %s;\n", field_name);
         }
-        fprintf(out, ")* %s;\n", field_name);
     }
     fprintf(out, "};\n\n");
 }
@@ -655,11 +770,9 @@ static void emit_struct(FILE *out, const AstNode *class_decl) {
                 explained_inherited = 1;
             }
             fprintf(out, "    ");
-            print_type(out, f->type);
-            fprintf(out, " %s", f->name);
-            print_array_suffix(out, f->type); /* no-op except in
-                standard mode on an array-typed field -- see its own
-                doc comment */
+            print_type_and_name(out, f->type, f->name); /* handles the
+                function-pointer-in-standard-mode special case
+                internally; see its own doc comment */
             fprintf(out, ";\n");
         }
     }
@@ -711,11 +824,9 @@ static void emit_struct(FILE *out, const AstNode *class_decl) {
  * file: safer, more likely to be supported without needing to confirm
  * a second, independent piece of Vircon32-specific syntax.
  *
- * KNOWN, DELIBERATE GAP for --target=standard: same boundary as
- * emit_vtable_struct just above -- the cast-insertion branch below
- * builds Vircon32's own reversed function-pointer CAST syntax inline,
- * unconditionally, regardless of g_target. See print_type's own
- * AST_FUNC_PTR_TYPE case for the full reasoning.
+ * Function-pointer CAST syntax for --target=standard: now IMPLEMENTED,
+ * branching internally on g_target in the cast-insertion branch below
+ * -- see its own comment there for the full reasoning.
  */
 static void emit_vtable_instance(FILE *out, const AstNode *class_decl) {
     ClassLayout *layout = (ClassLayout *)class_decl->sema_info;
@@ -752,15 +863,35 @@ static void emit_vtable_instance(FILE *out, const AstNode *class_decl) {
             const AstNode *canonical_class = find_declaring_class(class_decl, entry->canonical_method);
             const AstNode *impl_class = find_declaring_class(class_decl, impl);
             if (impl_class != canonical_class) {
+                int start = (entry->canonical_method->kind == AST_FUNC_DEF) ? 1 : 0;
                 fprintf(out, "(");
                 print_type(out, entry->canonical_method->type);
-                fprintf(out, "(%s *", canonical_class->str1);
-                int start = (entry->canonical_method->kind == AST_FUNC_DEF) ? 1 : 0;
-                for (int p = start; p < entry->canonical_method->list.count; p++) {
-                    fprintf(out, ", ");
-                    print_type(out, entry->canonical_method->list.items[p]->type);
+                if (g_target == TARGET_STANDARD) {
+                    /* Standard C's own function-pointer CAST syntax
+                     * has an EMPTY "()" where a declarator's own name
+                     * would go (there's no name to give a cast at
+                     * all) -- `(ReturnType (*)(Params))expr`, not
+                     * Vircon32's `(ReturnType(Params)*)expr`. Same
+                     * "name sits inside the parens, not appended
+                     * after" shape as every other function-pointer
+                     * fix this round, just with the name slot left
+                     * empty since a cast has none. */
+                    fprintf(out, " (*)(");
+                    print_class_type_name(out, canonical_class->str1);
+                    fprintf(out, " *");
+                    for (int p = start; p < entry->canonical_method->list.count; p++) {
+                        fprintf(out, ", ");
+                        print_type(out, entry->canonical_method->list.items[p]->type);
+                    }
+                    fprintf(out, "))&%s", impl_mangled);
+                } else {
+                    fprintf(out, "(%s *", canonical_class->str1);
+                    for (int p = start; p < entry->canonical_method->list.count; p++) {
+                        fprintf(out, ", ");
+                        print_type(out, entry->canonical_method->list.items[p]->type);
+                    }
+                    fprintf(out, ")*)&%s", impl_mangled);
                 }
-                fprintf(out, ")*)&%s", impl_mangled);
             } else {
                 fprintf(out, "&%s", impl_mangled);
             }
@@ -1077,10 +1208,9 @@ static void indent_spaces(FILE *out, int indent) {
  * itself) and a for-loop's init clause (which needs this sitting inline
  * inside the for(...) header instead). */
 static void print_var_decl_inline(FILE *out, const AstNode *n) {
-    print_type(out, n->type);
-    fprintf(out, " %s", n->str1);
-    print_array_suffix(out, n->type); /* no-op except in standard mode
-        on an array-typed declaration -- see its own doc comment */
+    print_type_and_name(out, n->type, n->str1); /* handles the
+        function-pointer-in-standard-mode special case internally;
+        see its own doc comment */
     if (n->a != NULL) {
         fprintf(out, " = ");
         print_expr(out, n->a);
