@@ -520,6 +520,62 @@ static void finalize_call(AstNode *call, AstNode *class_decl, LocalVarType *loca
     FuncSemaInfo *target_info = (FuncSemaInfo *)target->sema_info;
     const char *target_mangled = (target_info != NULL) ? target_info->mangled_name : target->str1;
 
+    /* Reference-parameter arguments need the exact same "not already a
+     * pointer, needs &" treatment address_of_if_needed already gives a
+     * method's own receiver just below -- a real, separate gap found
+     * after that fix shipped: a C++ reference parameter (`int
+     * getArea(Shape &s)`) implicitly takes the address of whatever's
+     * passed, but nothing was ever inserting that address-of at the
+     * CALL SITE once the parameter itself lowers to a plain C pointer
+     * (phase 5, fix_references, only ever rewrites `.` to `->` access
+     * INSIDE the callee's own body -- it has no visibility into any
+     * call site at all). Confirmed directly, not assumed: a plain
+     * pointer parameter (`Shape *s`, called as `getArea(&shape)`)
+     * already lowers correctly; only reference parameters were
+     * affected. Fixed here, deliberately BEFORE any receiver-
+     * prepending below (which would shift call->list's own indices),
+     * and deliberately in THIS phase (3+4) rather than phase 5 itself:
+     * this runs before phase 5 ever mutates any AST_REFERENCE_TYPE to
+     * AST_POINTER_TYPE anywhere in the program, so `target`'s own
+     * parameter types are still their true, original shape here
+     * regardless of iteration order across functions/classes -- phase
+     * 5 mutates them in place, on the SAME shared target node every
+     * call site resolves to, so checking this any later would already
+     * see every reference relabeled away, with no way left to tell a
+     * true `Type *` parameter from a lowered `Type &` one. `this`
+     * itself is always excluded automatically here: this-injection
+     * (phase 2) already ran before this phase does, so a method's own
+     * `target->list` already has its injected `this` as index 0, and
+     * `this` is a plain pointer, never a reference, by construction --
+     * the loop below only ever walks call->list, the CALLER-visible
+     * argument list, and looks up target->list at the matching
+     * OFFSET, never at index 0 for a member call, so it can't
+     * mismatch `this` against a real argument. */
+    {
+        int param_offset = (target->list.count > 0 && callee->kind == AST_MEMBER) ? 1 : 0;
+        /* An AST_MEMBER callee (an ordinary method call, already
+         * rewritten by this-injection into `obj->name(...)` by this
+         * point -- OR an operator-overload rewrite that resolved to a
+         * member, per rewrite_operator_use above, which already built
+         * this same AST_MEMBER shape before calling here) needs the
+         * +1 skip, since `target`'s own list already starts with the
+         * injected `this`. An AST_IDENT callee (a free-function call,
+         * member or not) needs no offset -- target->list already
+         * starts at the real first parameter. This matches the exact
+         * same callee->kind branching finalize_call already does
+         * below, deliberately, not a separate judgment call. */
+        for (int i = 0; i < call->list.count; i++) {
+            int param_idx = i + param_offset;
+            if (param_idx >= target->list.count) break; /* more args than
+                declared params -- shouldn't happen for a resolved call,
+                but fail closed (stop) rather than read out of bounds */
+            AstNode *param = target->list.items[param_idx];
+            if (param->type != NULL && param->type->kind == AST_REFERENCE_TYPE) {
+                call->list.items[i] = address_of_if_needed(call->list.items[i], class_decl, locals);
+            }
+        }
+    }
+
     if (callee->kind == AST_MEMBER) {
         /* A method call -- always explicit `obj->name(...)` by this
          * point, since phase 2 (this-injection) already rewrote every

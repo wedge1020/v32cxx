@@ -335,7 +335,12 @@ propagates: the generated
 parameter for a const method is
 .RI ( "const ClassName *" ,
 not a plain pointer with the qualifier silently dropped (see BUGS
-below for the exact boundary on what this doesn't cover);
+below for the exact boundary on what this doesn't cover); a
+reference-typed parameter's own call sites, which correctly insert the
+implicit address-of a C++ reference argument needs once it lowers to a
+plain C pointer
+.RI ( "getArea(shape)" " becomes " "getArea__Shape_ref((&shape))" ,
+including through a dereferenced pointer argument);
 global (file-scope) variables;
 base-class constructor delegation, both EXPLICIT (
 .I ": Base(args)"
@@ -779,22 +784,17 @@ function, the generated
 parameter's own type \(em with real violations left for the downstream
 C/C++ compiler to catch.
 .PP
-A function taking a plain reference parameter
-.RI ( "int getArea(Shape &s)" )
-generates a call site that passes the argument directly instead of
-inserting the address-of a C++ reference implicitly needs when lowered
-to a C pointer \(em a real type mismatch that won't compile as real C.
-The equivalent POINTER parameter lowers correctly; only reference
-parameters are affected. Not yet fixed.
-.PP
 No direct-initialization with constructor arguments on a
 stack-allocated local
-.RI ( "Shape shape(7);" ).
+.RI ( "Shape shape(7);" ,
+valid, idiomatic C++, confirmed a real gap rather than a rejected
+feature).
 Only an explicit
 .B =
 initializer or no initializer at all (triggering this project's own
-zero-argument-constructor injection) are accepted. Workaround:
-default-construct, then set public fields directly.
+zero-argument-constructor injection) are accepted. Workaround in the
+meantime: default-construct, then set public fields directly. On the
+list for an upcoming round.
 .PP
 Report issues, including anything this tool transpiles incorrectly or
 any real C++ feature you'd like to see prioritized, via the project

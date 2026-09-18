@@ -1022,6 +1022,40 @@ AstNode *infer_expr_type(const AstNode *expr, AstNode *current_class, LocalVarTy
             }
             return NULL;
         }
+        case AST_UNOP: {
+            /* Same reasoning as AST_SUBSCRIPT just above -- without
+             * this, `*p` and `&x` both silently fell through to
+             * "unknown" here, discovered when a dereferenced pointer
+             * passed as a reference-parameter argument
+             * (`getArea(*shape)`) went unwrapped by
+             * address_of_if_needed (lower.c) because THIS function
+             * told it "unknown type, don't guess" for `*shape` --
+             * exactly the same failure mode AST_SUBSCRIPT's own
+             * comment already describes, just a different expression
+             * kind hitting it. `deref` (`*p`) unwraps one level of
+             * AST_POINTER_TYPE (the pointee type) -- NULL if the
+             * operand's own type wasn't a pointer (best-effort: don't
+             * guess a type for what's already invalid code). `addr`
+             * (`&x`) does the reverse: wraps the operand's own type in
+             * a fresh AST_POINTER_TYPE. Every other AST_UNOP kind this
+             * project produces (`neg`, `not`, `bitnot`, `preinc`, ...)
+             * falls through to the default "unknown" case below,
+             * unchanged -- none of them change an expression's own
+             * static type from its operand's. */
+            if (expr->str1 != NULL && strcmp(expr->str1, "deref") == 0) {
+                const AstNode *operand_type = infer_expr_type(expr->a, current_class, locals);
+                return (operand_type != NULL && operand_type->kind == AST_POINTER_TYPE)
+                       ? operand_type->a : NULL;
+            }
+            if (expr->str1 != NULL && strcmp(expr->str1, "addr") == 0) {
+                AstNode *operand_type = infer_expr_type(expr->a, current_class, locals);
+                if (operand_type == NULL) return NULL;
+                AstNode *ptr = ast_new(AST_POINTER_TYPE, expr->line);
+                ptr->a = operand_type;
+                return ptr;
+            }
+            return NULL;
+        }
         default:
             return NULL;
     }

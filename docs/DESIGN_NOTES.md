@@ -4775,6 +4775,82 @@ grammar -- every sample passes or fails exactly as expected (the same
 complete, unblocked green run since function pointers first
 introduced grammar risk several rounds back.
 
+## Reference-parameter call-site lowering, fixed for real -- and a second, narrower gap found while fixing it
+
+Matthew asked for exactly what was flagged: address the reference-
+lowering bug directly, rather than leaving it noted. VERSION bumped to
+`20260918-dev` in `inc/v32cxx.h` alongside this.
+
+### Root cause, confirmed by reading the actual pipeline, not guessed
+
+`fix_references` (phase 5, lower.c) relabels a reference PARAMETER's
+own AST_REFERENCE_TYPE to AST_POINTER_TYPE and fixes `.`-vs-`->`
+access -- but only ever walks the CALLEE's own body. It has no
+visibility into any call site that passes an argument TO that
+parameter. Nothing else ever inserted the implicit address-of a C++
+reference argument needs once its own parameter becomes a plain C
+pointer. `address_of_if_needed` (lower.c) already existed and already
+solved the structurally identical problem for a method's own RECEIVER
+(`sprite.setx(320)` needing `(&sprite)`, a bug an earlier round already
+found and fixed) -- the missing piece was applying that same helper to
+ORDINARY call arguments too, not inventing new machinery.
+
+### Where the fix had to live, and why timing mattered
+
+`finalize_call` (phase 3+4) runs entirely BEFORE `fix_references`
+(phase 5) ever mutates any AST_REFERENCE_TYPE anywhere in the program
+-- confirmed by reading the actual phase ordering in lower_run(), not
+assumed. This is why the new logic belongs in `finalize_call`, not in
+phase 5 itself: at the point a call resolves (`CallResolution-
+>resolved_target`), the resolved function's OWN parameter types are
+still their true, original shape, regardless of which function gets
+processed by phase 5 first -- phase 5 mutates a parameter's type in
+place, on the SAME shared node every call site resolves to, so
+checking this any later would already see every reference relabeled
+away program-wide, with no way left to distinguish a true `Type *`
+parameter from a lowered `Type &` one. For each argument in `call-
+>list` (walked BEFORE any receiver-prepending below, which would shift
+indices), if the matching parameter in the resolved target was
+declared as a reference, wrap it via `address_of_if_needed` -- the
+`this`-offset (+1 for a method call, whose own `target->list` already
+has this-injection's `this` at index 0; +0 for a free function) keyed
+off the exact same `callee->kind` branch `finalize_call` already used
+below it, not a separate judgment call risking disagreement between
+the two.
+
+### A second, real gap found WHILE fixing the first -- checked before assuming it was covered
+
+Testing surfaced `getArea(*shape)` (a dereferenced pointer passed as a
+reference argument) NOT getting wrapped, while a plain variable
+argument correctly was. Traced directly rather than assumed: `infer_
+expr_type` (sema.c), which `address_of_if_needed` calls to decide
+"is this already a pointer", never had a case for `AST_UNOP` at all
+(`*p`, `&x`) -- every dereference or address-of expression fell
+through to the function's own `default: return NULL;`, and `address_
+of_if_needed`'s OWN best-effort philosophy ("couldn't determine its
+type -- don't guess") then left it unwrapped, exactly the wrong call
+for a genuinely determinable case. This is the same class of gap
+AST_SUBSCRIPT's own comment in this same function already describes
+(a real correctness hole silently doing nothing until something
+exercised it) -- fixed the same way, with `deref` unwrapping one level
+of AST_POINTER_TYPE and `addr` wrapping the operand's own type in a
+fresh one. This fix improves BOTH the new reference-argument logic and
+the older, pre-existing receiver-address logic equally, since both
+route through the same `address_of_if_needed`/`infer_expr_type` pair.
+
+### Verification
+
+Full syntax-check; rebuilt against the real, regenerated grammar
+(already synced this session, not the stale one); confirmed directly,
+not just reasoned through -- a plain reference argument
+(`getSize(a)` -> `getSize__Shape_ref((&a))`), a dereferenced-pointer
+reference argument (`getSizeViaDeref(*b)` -> `getSizeViaDeref__
+Shape_ref((&(*b)))`), and `sample68`'s own const-reference case
+(`getArea__Shape_ref((&shape))`) all now lower correctly. Full
+70-sample suite (`sample70.cpp` new, covering both of the above
+directly) run end to end with zero regressions -- the same 13
+deliberately-invalid samples, nothing else.
+
 ## Suggested next steps, roughly in order
 
 

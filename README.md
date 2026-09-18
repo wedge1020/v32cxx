@@ -106,7 +106,11 @@ trailing qualifier on member functions too (`int getValue() const {
 actually propagates: the generated `this` parameter for a const method
 is `const ClassName *`, not a plain pointer with the qualifier
 silently dropped. This project doesn't enforce const-correctness
-itself anywhere, though; see the note below for the exact boundary.
+itself anywhere, though; see the note below for the exact boundary. A
+reference-typed parameter's own call sites correctly insert the
+implicit address-of a C++ reference argument needs once it lowers to a
+plain C pointer (`getArea(shape)` → `getArea__Shape_ref((&shape))`),
+including through a dereferenced pointer argument (`getArea(*ptr)`).
 The usual
 statement/expression language is covered throughout. Access control
 is enforced (including through inheritance); overload resolution uses
@@ -300,26 +304,15 @@ emitted alongside it.
   method through a const reference — the syntax is accepted and
   correctly emitted in generated C, with real violations left for the
   downstream C/C++ compiler to catch.
-- **A real, pre-existing bug in reference-parameter call sites**,
-  unrelated to `const` or anything else recent — found while fixing
-  unrelated test files, confirmed with and without `const` involved at
-  all. A function taking a plain reference parameter (`int getArea(Shape
-  &s)`) generates a call site that passes the argument directly
-  (`getArea__Shape_ref(shape)`) even though the parameter itself lowers
-  to a pointer (`Shape * s`) — a type mismatch that won't compile as
-  real C. The equivalent POINTER parameter (`Shape *s`, called as
-  `getArea(&shape)`) lowers correctly. Whatever inserts `&` at a call
-  site only fires when the source itself wrote `&` explicitly, not as
-  part of reference-to-pointer lowering itself, which never inserts it
-  implicitly the way a C++ reference requires. Not yet fixed — flagged
-  here for prioritization.
 - **No direct-initialization with constructor arguments on a
-  stack-allocated local** (`Shape shape(7);`). Only two forms exist for
-  a class-typed local: an explicit initializer via `=`, or no
+  stack-allocated local** (`Shape shape(7);` — valid, idiomatic C++,
+  confirmed a real gap, not a rejected feature). Only two forms exist
+  for a class-typed local: an explicit initializer via `=`, or no
   initializer at all (which triggers this project's own zero-argument-
   constructor injection). `opt_initializer` has no grammar shape for
-  constructor arguments in parentheses. Workaround: default-construct,
-  then set public fields directly (`Shape shape; shape.size = 7;`).
+  constructor arguments in parentheses. Workaround in the meantime:
+  default-construct, then set public fields directly (`Shape shape;
+  shape.size = 7;`). **On the list for an upcoming round.**
 - **Two narrower, deliberate scope boundaries from the multi-
   dimensional array work specifically**: a function PARAMETER's own
   array-to-pointer decay (`void foo(int arr[8])`) stays single-
