@@ -444,6 +444,25 @@ static void prepend_arg(AstList *list, AstNode *arg) {
     *list = new_list;
 }
 
+/* True if `type` denotes a const-qualified object the way a receiver's
+ * own declared type would carry it in this project's grammar -- a bare
+ * AST_CONST_TYPE, or one level through AST_REFERENCE_TYPE/
+ * AST_POINTER_TYPE (`const Shape &`, `const Shape *`), matching exactly
+ * the wrapper shape this_inject_method builds for a const method's own
+ * injected `this` parameter (see its own comment, above) and the shape
+ * a `const T &`/`const T *` parameter already has as written. Doesn't
+ * chase typedefs -- a receiver's own declared type is never itself a
+ * typedef name anywhere this project's own machinery produces one. */
+static int receiver_type_is_const(const AstNode *type) {
+    if (type == NULL) return 0;
+    if (type->kind == AST_CONST_TYPE) return 1;
+    if ((type->kind == AST_REFERENCE_TYPE || type->kind == AST_POINTER_TYPE)
+        && type->a != NULL && type->a->kind == AST_CONST_TYPE) {
+        return 1;
+    }
+    return 0;
+}
+
 /* Wraps `obj_expr` in an explicit cast to `expected_class`'s own pointer
  * type, if its OWN static type (`actual_class`) differs from what the
  * callee actually declared its receiver parameter as. Needed because
@@ -458,16 +477,46 @@ static void prepend_arg(AstList *list, AstNode *arg) {
  * Vircon32 syntax, which is what makes this fix possible at all rather
  * than just a documented risk.
  *
- * Returns `obj_expr` UNCHANGED if no cast is needed (same class, or not
- * enough information to know either way -- best-effort, never inserts a
- * cast on a guess). */
+ * `needs_const_strip` is a SECOND, independent reason to cast, found
+ * only by an actual Vircon32 compiler run (not gcc): calling a
+ * non-const method through a const object (`const Shape &s` calling
+ * `s.area()`, where `area()` isn't itself declared `const`) forwards a
+ * `const Shape *` receiver into a method whose own injected `this` is
+ * plain `Shape *` -- real C++ would refuse to even COMPILE this (a
+ * const reference can't call a non-const method), but this project
+ * deliberately doesn't enforce const-correctness anywhere (see the
+ * README's own stated scope boundary) and gcc only ever WARNED about
+ * it (`-Wdiscarded-qualifiers`); the real Vircon32 C compiler makes it
+ * a hard error instead ("cannot assign const struct Shape* to struct
+ * Shape*: discards const qualifier"). Since this project has chosen
+ * not to enforce const-correctness, the honest fix is to make the
+ * permitted-but-unchecked case actually COMPILE, the same way a caller
+ * writing an explicit `const_cast` would in real C++ -- not to start
+ * rejecting code this project has never rejected before. Caller
+ * computes `needs_const_strip` from the object's own inferred type
+ * AND the target's own receiver-parameter type together (a const
+ * object calling a method that's ALSO const needs no cast at all --
+ * both sides already agree).
+ *
+ * Returns `obj_expr` UNCHANGED only when NEITHER reason applies (same
+ * class AND no const to strip, or not enough information to know
+ * either way -- best-effort, never inserts a cast on a guess). */
 static AstNode *cast_receiver_if_needed(AstNode *obj_expr, const AstNode *actual_class,
-                                        const AstNode *expected_class) {
-    if (expected_class == NULL || actual_class == expected_class) {
-        return obj_expr;
+                                        const AstNode *expected_class, int needs_const_strip) {
+    int class_mismatch = (expected_class != NULL && actual_class != expected_class);
+    if (!class_mismatch && !needs_const_strip) {
+        return obj_expr; /* neither reason to cast applies */
+    }
+    const AstNode *cast_class = (expected_class != NULL) ? expected_class : actual_class;
+    if (cast_class == NULL) {
+        return obj_expr; /* needs_const_strip but no class known to cast
+            to at all -- best-effort, same "never cast on a guess"
+            principle as everywhere else in this file; shouldn't happen
+            in practice since actual_class is always known whenever a
+            call resolved to a member at all */
     }
     AstNode *cast = ast_new(AST_CAST, obj_expr->line);
-    cast->type = ast_wrap_pointer(ast_ident(expected_class->str1, obj_expr->line), obj_expr->line);
+    cast->type = ast_wrap_pointer(ast_ident(cast_class->str1, obj_expr->line), obj_expr->line);
     cast->a = obj_expr;
     return cast;
 }
@@ -615,6 +664,19 @@ static void finalize_call(AstNode *call, AstNode *class_decl, LocalVarType *loca
          * guaranteed to be pointer-typed, unlike `obj_expr` itself. */
         AstNode *receiver = address_of_if_needed(obj_expr, class_decl, locals);
 
+        /* See cast_receiver_if_needed's own doc comment above for the
+         * real-Vircon32-compiler bug this closes: forwarding a const
+         * object as a non-const method's receiver. Checked against
+         * `obj_expr`'s OWN declared type (before address_of_if_needed
+         * above may have wrapped it in `&`, which doesn't change the
+         * pointee's own constness either way) and `target`'s own
+         * injected `this` parameter (index 0 -- always present for a
+         * resolved method call, this-injection already having run). */
+        AstNode *obj_static_type = infer_expr_type(obj_expr, class_decl, locals);
+        int target_this_const = (target->list.count > 0)
+            ? receiver_type_is_const(target->list.items[0]->type) : 0;
+        int needs_const_strip = receiver_type_is_const(obj_static_type) && !target_this_const;
+
         if (target->ival == 1) {
             /* Virtual: dispatch through the vtable. */
             AstNode *canonical = NULL;
@@ -645,11 +707,11 @@ static void finalize_call(AstNode *call, AstNode *class_decl, LocalVarType *loca
             call->a = slot_ref;
 
             const AstNode *canonical_class = (obj_class != NULL) ? find_declaring_class(obj_class, canonical) : NULL;
-            prepend_arg(&call->list, cast_receiver_if_needed(receiver, obj_class, canonical_class));
+            prepend_arg(&call->list, cast_receiver_if_needed(receiver, obj_class, canonical_class, needs_const_strip));
         } else {
             /* Non-virtual: direct call to the mangled function. */
             const AstNode *target_class = (obj_class != NULL) ? find_declaring_class(obj_class, target) : NULL;
-            AstNode *arg = cast_receiver_if_needed(receiver, obj_class, target_class);
+            AstNode *arg = cast_receiver_if_needed(receiver, obj_class, target_class, needs_const_strip);
             call->a = ast_ident(target_mangled, call->line);
             prepend_arg(&call->list, arg);
         }
@@ -2136,7 +2198,7 @@ static void inject_base_ctor_calls_classes(AstList *decls) {
                         /* explicit_args stays empty -- a zero-arg call */
                     }
 
-                    AstNode *receiver = cast_receiver_if_needed(ast_ident("this", m->line), n, layout->base_class_decl);
+                    AstNode *receiver = cast_receiver_if_needed(ast_ident("this", m->line), n, layout->base_class_decl, 0 /* this is never const -- see this_inject_method */);
 
                     AstNode *call = ast_new(AST_CALL, m->line);
                     call->a = ast_ident(mangled, m->line);
@@ -2687,28 +2749,63 @@ static void insert_pointer_cast_free_functions(AstList *decls) {
  * a CHAIN of these three shapes keeps unwinding one level at a time
  * until nothing ternary-shaped remains.
  *
- * SCOPE, deliberate and stated plainly: only a ternary that is
- * DIRECTLY the initializer of a var_decl, DIRECTLY the rhs of a plain
- * `=` assignment to a bare identifier, or DIRECTLY a return
- * expression is rewritten -- CHAINED that way (the recursion just
- * above), not nested any other way. A ternary nested INSIDE a call
- * argument, as part of a larger arithmetic expression, inside a
- * for-loop's own init/cond/incr clauses, or assigned through anything
- * other than a bare identifier (`arr[i] = cond ? a : b;`,
- * `obj.field = cond ? a : b;`) -- is left completely untouched and
- * will not compile on the real Vircon32 toolchain. Two real reasons
- * for this boundary, not just running out of time: (1) a fully
- * general rewrite needs to hoist arbitrary sub-expressions into
- * temporaries while preserving evaluation order, sequencing this
- * project doesn't have any machinery for yet (no comma operator,
- * itself a separate, already-tracked gap); (2) the assignment case
- * specifically needed a NARROWER check than "any assignment" even
- * within this scope -- an arbitrary lvalue duplicated across both an
- * if-branch and an else-branch would double-evaluate any side effect
- * inside it (`arr[i++] = cond ? a : b;` would increment `i` in
- * whichever branch runs, but a general lvalue could appear in code
- * generated for BOTH branches if this were done carelessly); a bare
- * identifier has no such risk, so that's the line drawn here.
+ * SCOPE, as it stood before the round documented below: only a ternary
+ * that is DIRECTLY the initializer of a var_decl, DIRECTLY the rhs of a
+ * plain `=` assignment to a bare identifier, or DIRECTLY a return
+ * expression got the no-temp treatment above -- CHAINED that way (the
+ * recursion just above), not nested any other way. A ternary nested
+ * INSIDE a call argument, as part of a larger arithmetic expression, or
+ * assigned through anything other than a bare identifier
+ * (`arr[i] = cond ? a : b;`, `obj.field = cond ? a : b;`) fell through
+ * completely untouched and did not compile on the real Vircon32
+ * toolchain -- confirmed directly: `add(x > y ? x : y, 1)`, a ternary
+ * used as a call argument, transpiled with the literal `?`/`:`
+ * characters still in it, and the real Vircon32 C lexer doesn't even
+ * recognize `?` as a valid token ("character '?' is not a valid
+ * identifier start"), so this wasn't merely a missed optimization, it
+ * was a straightforward, previously-undiscovered miscompile once a
+ * ternary appeared literally anywhere else.
+ *
+ * FIXED in a later round: `hoist_ternaries_in_expr` (below) generically
+ * walks the REMAINING expression shapes this phase's own three direct
+ * cases don't already cover (call arguments -- including the callee
+ * expression itself, in case it's ever a function-pointer value, binary
+ * operators, subscripts, member access, casts, sizeof, `new`'s own
+ * constructor arguments and array-size expression, and an assignment to
+ * anything other than the bare-identifier shape already handled
+ * directly) and hoists any ternary it finds into a freshly-declared
+ * temporary, set via an ordinary if/else inserted immediately before
+ * the CURRENT statement in its enclosing block -- e.g.
+ * `add(x > y ? x : y, 1);` becomes
+ * `int __v32_tern_tmp0; if (x > y) { __v32_tern_tmp0 = x; } else {
+ * __v32_tern_tmp0 = y; } add(__v32_tern_tmp0, 1);`. Applied ONLY when
+ * the statement's own top-level shape ISN'T already one of the three
+ * direct, no-temp cases above (so `int x = cond ? a : b;` still gets
+ * the cleaner direct rewrite it always did, not an unnecessary temp);
+ * recurses post-order into a ternary's own condition/branches first, so
+ * a ternary nested inside ANOTHER ternary's own branches (reachable
+ * through a call argument or similar, not just the "chained" a?b:c?d:e
+ * shape the direct rewrite already handles) is hoisted from the inside
+ * out, each one becoming its own preceding temp. The temp's own type is
+ * inferred from the ternary's then-branch (falling back to the
+ * else-branch, then to `int` as a last-resort default when neither can
+ * be determined -- best-effort, matching this project's own established
+ * fallback elsewhere rather than leaving the temp's type unresolved).
+ *
+ * Two boundaries remain, both still real and stated plainly rather than
+ * silently missed: (1) a ternary inside a for-loop's own init/cond/incr
+ * clauses is still untouched -- those clauses aren't a real statement
+ * list to splice extra statements into, and hoisting one would need to
+ * restructure the loop itself (e.g. into an equivalent `while`), which
+ * this project doesn't attempt; (2) a ternary reachable only through a
+ * single, brace-less statement slot (`if (cond) foo(cond2 ? a : b);`
+ * with no block around the call) can't be hoisted either, for the exact
+ * same structural reason var_decl's own direct rewrite was already
+ * documented as unable to reach that shape -- inserting a preceding
+ * temp declaration needs a real list to insert into, which only a
+ * block provides. Ordinary, brace-using code (the overwhelmingly common
+ * style, and the only shape this project's own test suite has ever
+ * written) is unaffected by either boundary.
  *
  * Runs only when g_target == TARGET_VIRCON32 (lower_run's own call
  * site below) -- standard C supports the ternary operator natively,
@@ -2733,7 +2830,111 @@ static AstNode *build_ternary_if_else(AstNode *cond, AstNode *then_stmt, AstNode
     return if_node;
 }
 
-static void rewrite_ternary_block(AstNode *block);
+/* Generic fallback for every ternary the three direct, no-temp shapes
+ * above don't reach -- see this whole phase's own doc comment for the
+ * real bug this closes and the reasoning behind hoisting into a temp
+ * here specifically. `locals` is threaded through (and grown, via
+ * *locals) the same way finalize_calls_stmt's own does: a temp this
+ * call introduces is pushed onto it immediately, so a LATER ternary
+ * hoisted from the same expression (or a type lookup for one) can see
+ * it, and a plain, ordinary var_decl elsewhere in the same block still
+ * needs registering by THIS phase's own caller (rewrite_ternary_block)
+ * for the exact same reason -- this phase keeps its own, independent
+ * locals list rather than sharing finalize_calls_stmt's (phase 3/4's),
+ * matching the same "independently reasoned about" principle
+ * seed_locals_from_params's own doc comment already states for why
+ * fix_references_in_method keeps its own separate list too. */
+static void hoist_ternaries_in_expr(AstNode **slot, AstNode *class_decl, LocalVarType **locals,
+                                     int *tmp_counter, AstList *out) {
+    AstNode *n = *slot;
+    if (n == NULL) return;
+    switch (n->kind) {
+        case AST_TERNARY: {
+            /* Post-order: hoist anything nested inside the condition or
+             * either branch FIRST, so each nested ternary becomes its
+             * own preceding temp before this one is hoisted into its
+             * own -- covers both a plain chained ternary reached this
+             * way (rather than through the direct rewrite's own
+             * recursion) and one buried behind a call/binop/etc inside
+             * a branch. */
+            hoist_ternaries_in_expr(&n->a, class_decl, locals, tmp_counter, out);
+            hoist_ternaries_in_expr(&n->b, class_decl, locals, tmp_counter, out);
+            hoist_ternaries_in_expr(&n->c, class_decl, locals, tmp_counter, out);
+
+            AstNode *ty = infer_expr_type(n->b, class_decl, *locals);
+            if (ty == NULL) ty = infer_expr_type(n->c, class_decl, *locals);
+            if (ty == NULL) ty = ast_ident("int", n->line); /* best-effort
+                default when neither branch's type can be determined --
+                see this phase's own doc comment above */
+
+            char tmp_name[40];
+            snprintf(tmp_name, sizeof(tmp_name), "__v32_tern_tmp%d", (*tmp_counter)++);
+
+            AstNode *decl = ast_new(AST_VAR_DECL, n->line);
+            decl->str1 = strdup(tmp_name);
+            decl->type = ty;
+            ast_list_append(out, decl);
+
+            AstNode *then_assign = ast_new(AST_ASSIGN, n->line);
+            then_assign->str1 = strdup("=");
+            then_assign->a = ast_ident(tmp_name, n->line);
+            then_assign->b = n->b;
+            AstNode *then_stmt = ast_new(AST_EXPR_STMT, n->line);
+            then_stmt->a = then_assign;
+
+            AstNode *else_assign = ast_new(AST_ASSIGN, n->line);
+            else_assign->str1 = strdup("=");
+            else_assign->a = ast_ident(tmp_name, n->line);
+            else_assign->b = n->c;
+            AstNode *else_stmt = ast_new(AST_EXPR_STMT, n->line);
+            else_stmt->a = else_assign;
+
+            ast_list_append(out, build_ternary_if_else(n->a, then_stmt, else_stmt, n->line));
+
+            LocalVarType *lv = calloc(1, sizeof(LocalVarType));
+            lv->name = decl->str1;
+            lv->type = ty;
+            lv->next = *locals;
+            *locals = lv;
+
+            *slot = ast_ident(tmp_name, n->line);
+            break;
+        }
+        case AST_CALL:
+            hoist_ternaries_in_expr(&n->a, class_decl, locals, tmp_counter, out); /* the
+                callee itself, in case it's ever a function-pointer VALUE
+                expression rather than a plain name -- harmless no-op for
+                the ordinary AST_IDENT/AST_MEMBER callee shape */
+            for (int i = 0; i < n->list.count; i++) {
+                hoist_ternaries_in_expr(&n->list.items[i], class_decl, locals, tmp_counter, out);
+            }
+            break;
+        case AST_BINOP:
+        case AST_ASSIGN:
+        case AST_SUBSCRIPT:
+            hoist_ternaries_in_expr(&n->a, class_decl, locals, tmp_counter, out);
+            hoist_ternaries_in_expr(&n->b, class_decl, locals, tmp_counter, out);
+            break;
+        case AST_MEMBER:
+        case AST_UNOP:
+        case AST_CAST:
+            hoist_ternaries_in_expr(&n->a, class_decl, locals, tmp_counter, out);
+            break;
+        case AST_SIZEOF:
+            hoist_ternaries_in_expr(&n->a, class_decl, locals, tmp_counter, out); /* NULL-safe for the type-taking form */
+            break;
+        case AST_NEW:
+            for (int i = 0; i < n->list.count; i++) {
+                hoist_ternaries_in_expr(&n->list.items[i], class_decl, locals, tmp_counter, out);
+            }
+            hoist_ternaries_in_expr(&n->a, class_decl, locals, tmp_counter, out); /* array-new's own size expression */
+            break;
+        default:
+            break;
+    }
+}
+
+static void rewrite_ternary_block(AstNode *block, AstNode *class_decl, LocalVarType **locals, int *tmp_counter);
 
 /* Handles the two REPLACEMENT shapes (assign, return) that can stand
  * in for a single statement slot even OUTSIDE a block's own list --
@@ -2746,26 +2947,28 @@ static void rewrite_ternary_block(AstNode *block);
  * do; a var_decl reaching this function (as a bare if/while/for body
  * with no surrounding block) is left unrewritten, the same documented
  * boundary this whole phase's own doc comment already states for
- * anything a plain slot-replacement can't safely reach. */
-static void rewrite_ternary_stmt(AstNode **slot) {
+ * anything a plain slot-replacement can't safely reach -- the same is
+ * now true of the generic hoist (this phase's own doc comment states
+ * that boundary too). */
+static void rewrite_ternary_stmt(AstNode **slot, AstNode *class_decl, LocalVarType **locals, int *tmp_counter) {
     AstNode *s = *slot;
     if (s == NULL) return;
     switch (s->kind) {
         case AST_BLOCK:
-            rewrite_ternary_block(s);
+            rewrite_ternary_block(s, class_decl, locals, tmp_counter);
             break;
         case AST_IF:
-            rewrite_ternary_stmt(&s->b);
-            rewrite_ternary_stmt(&s->c);
+            rewrite_ternary_stmt(&s->b, class_decl, locals, tmp_counter);
+            rewrite_ternary_stmt(&s->c, class_decl, locals, tmp_counter);
             break;
         case AST_WHILE:
-            rewrite_ternary_stmt(&s->b);
+            rewrite_ternary_stmt(&s->b, class_decl, locals, tmp_counter);
             break;
         case AST_FOR:
-            rewrite_ternary_stmt(&s->d);
+            rewrite_ternary_stmt(&s->d, class_decl, locals, tmp_counter);
             break;
         case AST_LABEL:
-            rewrite_ternary_stmt(&s->a);
+            rewrite_ternary_stmt(&s->a, class_decl, locals, tmp_counter);
             break;
         case AST_RETURN:
             if (s->a != NULL && s->a->kind == AST_TERNARY) {
@@ -2786,8 +2989,8 @@ static void rewrite_ternary_stmt(AstNode **slot) {
                  * shape this case already handles, so it either
                  * rewrites it again (another nested ternary) or does
                  * nothing (a plain expression, the base case). */
-                rewrite_ternary_stmt(&then_ret);
-                rewrite_ternary_stmt(&else_ret);
+                rewrite_ternary_stmt(&then_ret, class_decl, locals, tmp_counter);
+                rewrite_ternary_stmt(&else_ret, class_decl, locals, tmp_counter);
                 *slot = build_ternary_if_else(t->a, then_ret, else_ret, s->line);
             }
             break;
@@ -2819,8 +3022,8 @@ static void rewrite_ternary_stmt(AstNode **slot) {
                  * another AST_TERNARY, and each recursive call sees
                  * the exact AST_EXPR_STMT(AST_ASSIGN(...)) shape this
                  * case already knows how to rewrite. */
-                rewrite_ternary_stmt(&then_stmt);
-                rewrite_ternary_stmt(&else_stmt);
+                rewrite_ternary_stmt(&then_stmt, class_decl, locals, tmp_counter);
+                rewrite_ternary_stmt(&else_stmt, class_decl, locals, tmp_counter);
                 *slot = build_ternary_if_else(t->a, then_stmt, else_stmt, s->line);
             }
             break;
@@ -2829,7 +3032,7 @@ static void rewrite_ternary_stmt(AstNode **slot) {
     }
 }
 
-static void rewrite_ternary_block(AstNode *block) {
+static void rewrite_ternary_block(AstNode *block, AstNode *class_decl, LocalVarType **locals, int *tmp_counter) {
     AstList new_list = ast_list_new();
     for (int i = 0; i < block->list.count; i++) {
         AstNode *stmt = block->list.items[i];
@@ -2865,21 +3068,96 @@ static void rewrite_ternary_block(AstNode *block) {
              * recursive call sees the exact AST_EXPR_STMT(AST_ASSIGN
              * (...)) shape rewrite_ternary_stmt already knows how to
              * rewrite. */
-            rewrite_ternary_stmt(&then_stmt);
-            rewrite_ternary_stmt(&else_stmt);
+            rewrite_ternary_stmt(&then_stmt, class_decl, locals, tmp_counter);
+            rewrite_ternary_stmt(&else_stmt, class_decl, locals, tmp_counter);
 
             ast_list_append(&new_list, build_ternary_if_else(t->a, then_stmt, else_stmt, stmt->line));
-        } else {
-            rewrite_ternary_stmt(&stmt);
-            ast_list_append(&new_list, stmt);
+
+            LocalVarType *lv = calloc(1, sizeof(LocalVarType));
+            lv->name = decl_only->str1;
+            lv->type = decl_only->type;
+            lv->next = *locals;
+            *locals = lv;
+            continue;
+        }
+
+        /* Generic fallback: hoist any ternary reachable from this
+         * statement's own top-level expression slot(s) that ISN'T
+         * already one of the three direct, no-temp shapes handled
+         * above/below -- see this whole phase's own doc comment for
+         * exactly what this covers (a call argument, arithmetic, an
+         * if/while condition, an assignment to anything other than a
+         * bare identifier) and the real bug it closes. Skipped
+         * entirely for a slot that IS already a direct-shape ternary
+         * (checked by kind alone -- cheap, and avoids hoisting into a
+         * needless temp for the common case rewrite_ternary_stmt,
+         * called below, already rewrites more cleanly with none). */
+        AstList hoisted = ast_list_new();
+        switch (stmt->kind) {
+            case AST_VAR_DECL:
+                if (stmt->a != NULL && stmt->a->kind != AST_TERNARY) {
+                    hoist_ternaries_in_expr(&stmt->a, class_decl, locals, tmp_counter, &hoisted);
+                }
+                break;
+            case AST_RETURN:
+                if (stmt->a != NULL && stmt->a->kind != AST_TERNARY) {
+                    hoist_ternaries_in_expr(&stmt->a, class_decl, locals, tmp_counter, &hoisted);
+                }
+                break;
+            case AST_EXPR_STMT:
+                if (!(stmt->a != NULL && stmt->a->kind == AST_ASSIGN
+                      && stmt->a->str1 != NULL && strcmp(stmt->a->str1, "=") == 0
+                      && stmt->a->a != NULL && stmt->a->a->kind == AST_IDENT
+                      && stmt->a->b != NULL && stmt->a->b->kind == AST_TERNARY)) {
+                    hoist_ternaries_in_expr(&stmt->a, class_decl, locals, tmp_counter, &hoisted);
+                }
+                break;
+            case AST_IF:
+                hoist_ternaries_in_expr(&stmt->a, class_decl, locals, tmp_counter, &hoisted);
+                break;
+            case AST_WHILE:
+                hoist_ternaries_in_expr(&stmt->a, class_decl, locals, tmp_counter, &hoisted);
+                break;
+            /* AST_FOR's own init/cond/incr clauses, and any other
+             * statement kind, are left alone here -- see this phase's
+             * own doc comment for the stated boundary on for-loop
+             * clauses; every other kind either has no top-level
+             * expression of its own (AST_BLOCK, AST_LABEL) or is
+             * handled by rewrite_ternary_stmt's own recursion below. */
+            default:
+                break;
+        }
+        for (int j = 0; j < hoisted.count; j++) {
+            ast_list_append(&new_list, hoisted.items[j]);
+        }
+
+        rewrite_ternary_stmt(&stmt, class_decl, locals, tmp_counter);
+        ast_list_append(&new_list, stmt);
+
+        if (stmt->kind == AST_VAR_DECL) {
+            /* Keep the locals list current for every OTHER var_decl
+             * shape too (not just the direct-ternary one handled
+             * above), so a LATER ternary hoisted from elsewhere in
+             * this same block can resolve this one's type -- mirrors
+             * finalize_calls_stmt's own bookkeeping (phase 3/4), kept
+             * as this phase's own separate list for the same
+             * "independently reasoned about" reason given on
+             * hoist_ternaries_in_expr's own doc comment above. */
+            LocalVarType *lv = calloc(1, sizeof(LocalVarType));
+            lv->name = stmt->str1;
+            lv->type = stmt->type;
+            lv->next = *locals;
+            *locals = lv;
         }
     }
     block->list = new_list;
 }
 
-static void rewrite_ternary_in_method(AstNode *method) {
+static void rewrite_ternary_in_method(AstNode *method, AstNode *class_decl) {
     if (method->kind != AST_FUNC_DEF) return;
-    rewrite_ternary_stmt(&method->a);
+    LocalVarType *locals = seed_locals_from_params(method);
+    int tmp_counter = 0;
+    rewrite_ternary_stmt(&method->a, class_decl, &locals, &tmp_counter);
 }
 
 static void rewrite_ternary_classes(AstList *decls) {
@@ -2889,7 +3167,7 @@ static void rewrite_ternary_classes(AstList *decls) {
             ClassLayout *layout = (ClassLayout *)n->sema_info;
             if (layout != NULL) {
                 for (int j = 0; j < layout->methods.count; j++) {
-                    rewrite_ternary_in_method(layout->methods.items[j]);
+                    rewrite_ternary_in_method(layout->methods.items[j], n);
                 }
             }
         } else if (n->kind == AST_NAMESPACE_DECL) {
@@ -2904,7 +3182,7 @@ static void rewrite_ternary_free_functions(AstList *decls) {
         if (n->kind == AST_NAMESPACE_DECL) {
             rewrite_ternary_free_functions(&n->list);
         } else if (n->kind == AST_FUNC_DEF && n->b == NULL) {
-            rewrite_ternary_in_method(n);
+            rewrite_ternary_in_method(n, NULL);
         }
     }
 }

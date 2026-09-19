@@ -5674,3 +5674,170 @@ things to fix." Recorded here as that priority note; not addressed as
 part of this round, which was scoped to the real-compiler-confirmed
 function-pointer bug specifically. See README.md's own "What doesn't
 exist yet" list for the tracked item.
+
+## Round: two more real-compiler-confirmed bugs -- const receiver casting, and ternaries nested anywhere but the three "direct" shapes
+
+The user rearranged their own copy of this project (renamed
+`tests/sample##.cpp` to `##sample.cpp`, renamed transpiled output by
+STATUS -- `##program.c` for working code, `##partial.c` for code
+without `main()`, `##failure.c` for expected failures -- and added a
+new `archive` Makefile target of their own for bundling the project
+state for these updates) and ran the CURRENT project's own test suite
+(`68sample.cpp`/`71sample.cpp`/`73sample.cpp`/`74sample.cpp`, i.e. this
+project's own `sample68`/`71`/`73`/`74`) through a REAL Vircon32
+compiler again. Two real compile failures came back, on files the
+user expected to be genuinely working code (`##program.c`, not
+`##failure.c`):
+
+```
+68program.c:108:48: error: cannot assign const struct Shape* to struct Shape*: discards const qualifier
+71program.c:66:42: fatal error: character '?' is not a valid identifier start
+```
+
+Neither was a regression from anything recent -- both were
+previously-DOCUMENTED, but previously believed either harmless
+(the const one, gcc-only-warns) or fully out of scope (the ternary
+one, only the "direct" three shapes were ever rewritten) -- exactly
+the same pattern as the function-pointer `&`-insertion bug in the
+round above: gcc's own leniency masked a real Vircon32-only rejection
+that only an actual compiler run could surface.
+
+### Bug 1: forwarding a const object as a non-const method's receiver
+
+`tests/sample68.cpp`'s `getArea(const Shape &s) { return s.area(); }`
+(`area()` itself NOT declared `const`) is exactly the scenario
+`docs/VIRCON32_QUIRKS.md` entry #12 had already flagged as a KNOWN,
+left-open gap: this project doesn't enforce const-correctness
+anywhere (a deliberate, stated scope boundary -- no error for calling
+a non-const method through a const reference, the way real C++ would
+refuse to even compile it), so it happily generates
+`Shape__area__void(s)` with `s` still `const Shape *` where the
+callee's own injected `this` is a plain, non-const `Shape *`. gcc only
+ever gave this a `-Wdiscarded-qualifiers` WARNING; the real Vircon32
+compiler makes it a hard type ERROR instead.
+
+Root cause, once traced: `cast_receiver_if_needed` (`lower.c`), the
+function ALREADY responsible for inserting an explicit cast when a
+receiver's own static class differs from the callee's declaring class
+(a base/derived mismatch), only ever checked for THAT one reason to
+cast -- `actual_class == expected_class` (both `Shape` here, since
+`getArea` and `area()` are both dealing with the same class, no
+base/derived relationship involved at all) short-circuited straight to
+"no cast needed," never even looking at constness.
+
+Fixed by giving `cast_receiver_if_needed` a second, independent reason
+to cast: a new `receiver_type_is_const()` helper recognizes the exact
+wrapper shape a const receiver's declared type has in this project's
+own grammar (a bare `AST_CONST_TYPE`, or one level through
+`AST_REFERENCE_TYPE`/`AST_POINTER_TYPE`) -- exactly the shape
+`this_inject_method` already builds for a const method's own injected
+`this` parameter (`PointerType(ConstType(ClassName))`), so the same
+predicate answers both "is the object I'm passing const" and "is the
+callee's own `this` const" with no new type-shape knowledge needed.
+`finalize_call` now computes `needs_const_strip = object_is_const &&
+!target_this_const` (a const object calling an ALSO-const method needs
+no cast at all -- both sides already agree) and threads it into both
+existing `cast_receiver_if_needed` call sites (virtual and non-virtual
+dispatch). The function casts to the callee's OWN expected class
+(stripping const in the process, since the cast target type is built
+plain, un-const) whenever EITHER the original class-mismatch reason OR
+this new const-mismatch reason applies -- `Shape__area__void((Shape
+*)s)` in the concrete case, matching exactly what a caller writing an
+explicit `const_cast` would produce in real C++. This is the honest
+fix given this project's own already-chosen stance of not enforcing
+const-correctness: making the permitted-but-unchecked case actually
+COMPILE, not starting to reject code this project has never rejected
+before.
+
+### Bug 2: a ternary nested anywhere but the three "direct" statement shapes
+
+`tests/sample71.cpp`'s `add(x > y ? x : y, 1)` -- a ternary used as a
+CALL ARGUMENT -- was an already-DOCUMENTED scope boundary (phase 10's
+own doc comment, `lower.c`, and `VIRCON32_QUIRKS.md` entry #10 both
+stated plainly that only a ternary DIRECTLY initializing a var_decl,
+DIRECTLY assigned to a bare identifier, or DIRECTLY a return
+expression ever got rewritten -- anything nested any other way was
+left completely untouched). The real Vircon32 C compiler doesn't
+merely reject `?:` with a parse error the way a stricter grammar
+might -- its own LEXER doesn't recognize `?` as a valid character at
+all ("character '?' is not a valid identifier start"), confirming this
+was never a style nicety to skip.
+
+Fixed with a new, generic hoisting pass (`hoist_ternaries_in_expr`,
+`lower.c`) that runs as a per-statement fallback inside the existing
+`rewrite_ternary_block`, for any ternary NOT already reachable by the
+three original direct, no-temp shapes: it walks the remaining
+expression shapes those three cases don't cover (a call's own
+arguments and callee expression, binary operators, subscripts, member
+access, casts, sizeof, `new`'s constructor arguments and array-size
+expression, and an assignment to anything other than a bare
+identifier) and, for each `AST_TERNARY` it finds, hoists it into a
+freshly-declared temporary (`__v32_tern_tmpN`, a per-method counter
+matching the existing `__v32_ret_tmpN` naming convention) set via an
+ordinary `if`/`else` spliced in immediately before the current
+statement in its enclosing block -- e.g. `add(x > y ? x : y, 1);`
+becomes `int __v32_tern_tmp0; if (x > y) { __v32_tern_tmp0 = x; } else
+{ __v32_tern_tmp0 = y; } add(__v32_tern_tmp0, 1);`. Recursion is
+post-order (a ternary's own condition/branches are hoisted first), so
+a ternary buried inside ANOTHER ternary's own branch (reachable
+through a call argument, not just the already-handled "chained"
+`a?b:c?d:e` shape) unwinds correctly, innermost first.
+
+This needed threading `AstNode *class_decl` and `LocalVarType
+**locals` through the WHOLE phase 10 call chain
+(`rewrite_ternary_free_functions`/`rewrite_ternary_classes` ->
+`rewrite_ternary_in_method` -> `rewrite_ternary_stmt` ->
+`rewrite_ternary_block`), which never needed either before (a
+`build_ternary_if_else`-based rewrite never needed to know an
+expression's TYPE) -- the generic hoist needs both, to look up the
+temp's own type via `infer_expr_type` (given a ternary's then-branch,
+falling back to the else-branch, then to `int` as a last resort) the
+same way `finalize_calls_stmt` (phase 3/4) already does, seeded from
+`seed_locals_from_params` and grown on every `var_decl` encountered so
+far in the same block -- kept as its OWN independent locals list
+rather than sharing phase 3/4's (matching the same "independently
+reasoned about" principle already established for
+`fix_references_in_method`'s own separate list). A small, related fix
+was needed in `sema.c` too: `infer_expr_type` had no `AST_TERNARY`
+case at all (fell through to "unknown"), so a ternary's own type could
+never be inferred even when both branches WERE resolvable -- added,
+same then-branch-first, else-branch-fallback logic.
+
+Two boundaries remain, and are now stated explicitly in this phase's
+own doc comment rather than left to be rediscovered the same way: a
+ternary inside a for-loop's own init/cond/incr clauses (not a real
+statement list to splice into; would need restructuring the loop
+itself into an equivalent `while`, not attempted), and one reachable
+only through a brace-less single-statement slot (`if (cond) foo(cond2
+? a : b);` with no block around it) -- inserting a preceding temp
+declaration needs a real list to insert into, the same structural
+reason `var_decl`'s own direct rewrite was already documented as
+unable to reach that shape.
+
+### Verification
+
+Full clean rebuild, zero warnings. `tests/sample68.cpp` (Vircon32
+mode) now reads `Shape__area__void(((Shape *)s))`; `tests/sample71.cpp`
+now reads with zero `?`/`:` characters anywhere in its own generated
+output (grepped directly, not just spot-checked), including the new
+`__v32_tern_tmp0` hoist for the call-argument case. A suite-wide grep
+for `?` across every Vircon32-mode `out/*.c` file (all 74 samples)
+came back with ZERO matches, confirming this isn't just the two
+targeted samples. Full `make test`: no new failures -- every flagged
+sample cross-referenced against the Makefile's own `-$(BIN)`
+expected-fail entries, matching exactly (10 fewer manual checks than
+last round, same discipline). Full `--target=standard` +
+`gcc -fsyntax-only` sweep across all 74 samples: still exactly 34
+pre-existing failures, re-diffed against the already-documented
+`<stdbool.h>`/enum-union gaps -- `sample68` is among them for that
+same already-known reason (confirmed by manually adding
+`#include <stdbool.h>` and recompiling, which then succeeds cleanly),
+not a new one. Both fixes additionally verified by actually RUNNING
+the standard-mode output: `sample68` prints `sum=8 value=42
+classValue=7` (all three matching the test's own documented expected
+values) once `<stdbool.h>` is added; `sample71` prints `bigger=10
+assigned=100 classified=1 viaCall=11` (the test file's own header
+comment had `viaCall = 6`, stale from an earlier draft of the test
+predating this fix -- corrected in the test file to the actual,
+verified-correct value of 11: `x=5, y=10`, so the ternary picks `y`,
+`add(10, 1) = 11`).

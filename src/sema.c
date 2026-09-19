@@ -1066,6 +1066,24 @@ AstNode *infer_expr_type(const AstNode *expr, AstNode *current_class, LocalVarTy
             }
             return NULL;
         }
+        case AST_TERNARY: {
+            /* A ternary's own static type is whichever of its two
+             * branches actually resolves -- real C++ requires both
+             * branches to have a common type and would pick the more
+             * general of the two, but this project's own best-effort
+             * philosophy (matching every other case here) is simpler:
+             * try the then-branch first, fall back to the else-branch
+             * only if the then-branch's own type couldn't be
+             * determined at all. Added specifically so lower.c's
+             * ternary-hoisting phase (10) can declare a correctly-typed
+             * temporary for a ternary nested somewhere a direct if/else
+             * rewrite can't reach (a call argument, an arbitrary
+             * subexpression) -- without this, EVERY such ternary fell
+             * through to the default "unknown" case below. */
+            AstNode *t = infer_expr_type(expr->b, current_class, locals);
+            if (t != NULL) return t;
+            return infer_expr_type(expr->c, current_class, locals);
+        }
         default:
             return NULL;
     }

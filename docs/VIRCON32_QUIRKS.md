@@ -309,38 +309,51 @@ important default to protect.
 - **Standard C**: supports the ternary operator natively; standard-mode
   output keeps `cond ? a : b` exactly as the C++ source wrote it, no
   rewriting at all.
-- **Status**: Reported directly by Matthew, not yet independently
-  confirmed against the real compiler the way most of this list's
-  other entries have been (no test transpiled and compiled end to end
-  specifically to trigger the rejection) -- treated as reliable given
-  the source, but worth noting the asymmetry with the rest of this
-  list's own evidentiary standard.
+- **Status**: Reported directly by Matthew, and independently
+  CONFIRMED by an actual Vircon32 compiler run: a ternary nested inside
+  a call argument (`add(x > y ? x : y, 1)`) transpiled with the literal
+  `?`/`:` characters still in it, and the real Vircon32 C compiler
+  rejected it with "character '?' is not a valid identifier start" --
+  its own lexer doesn't even recognize the character, confirming this
+  is a hard, unconditional rejection, not merely a parser-level one.
 - **Where**: a new, dedicated lowering phase (`lower.c`, phase 10,
   `rewrite_ternary_*`) rather than a `codegen.c` conditional -- this is
   a genuine AST-level rewrite (ternary expression -> if/else
   statement), not a printing choice, so it couldn't live in codegen.c
   the way every other entry's own fix does.
-- **For Vircon32 mode**: **IMPLEMENTED**, with a real, stated scope
-  boundary -- only a ternary that is DIRECTLY a var_decl's own
-  initializer, DIRECTLY the rhs of a plain `=` assignment to a bare
-  identifier, or DIRECTLY a return expression gets rewritten (each of
-  these three shapes already has a natural place to put the value, so
-  no temporary variable is ever needed). Chained/nested ternaries
-  within that same set of shapes (`cond1 ? a : cond2 ? b : c`, a
-  common, idiomatic pattern, not a rare edge case -- confirmed via
-  `tests/sample58.cpp`'s own `classify`, already in this project's
+- **For Vircon32 mode**: **IMPLEMENTED**, now covering every position a
+  ternary can appear in, in two tiers. A ternary that is DIRECTLY a
+  var_decl's own initializer, DIRECTLY the rhs of a plain `=`
+  assignment to a bare identifier, or DIRECTLY a return expression is
+  rewritten with NO temporary variable at all (each of these three
+  shapes already has a natural place to put the value). Chained/nested
+  ternaries within that same set of shapes (`cond1 ? a : cond2 ? b :
+  c`, a common, idiomatic pattern, not a rare edge case -- confirmed
+  via `tests/sample58.cpp`'s own `classify`, already in this project's
   suite before this phase existed) are fully unwound via recursion on
-  each newly-built branch, not just the outermost level -- a real gap
-  caught by actually testing that existing sample, not anticipated
-  from the plan alone. A ternary nested any OTHER way -- inside a call
-  argument, as part of a larger arithmetic expression, inside a
-  for-loop's own clauses, assigned through anything other than a bare
-  identifier -- is left completely untouched and will not compile on
-  the real Vircon32 toolchain; see `rewrite_ternary_stmt`'s own doc
-  comment in lower.c for the full reasoning, including why the
-  assignment case specifically needed a narrower check than "any
+  each newly-built branch, not just the outermost level. Every OTHER
+  position -- inside a call argument, as part of a larger arithmetic/
+  subscript/member expression, assigned through anything other than a
+  bare identifier -- is now ALSO handled, by hoisting the ternary into
+  its own freshly-declared temporary (`__v32_tern_tmpN`), set via an
+  ordinary if/else inserted immediately before the current statement;
+  confirmed end to end against `tests/sample71.cpp`'s own `add(x > y ?
+  x : y, 1)`, which now transpiles with zero `?`/`:` characters
+  anywhere in the output and, run in standard mode, computes the
+  correct value (11). Two narrow boundaries remain, stated plainly
+  rather than silently missed: a ternary inside a for-loop's own init/
+  cond/incr clauses (restructuring the loop itself, e.g. into an
+  equivalent `while`, isn't attempted); and one reachable only through
+  a brace-less single-statement slot (`if (cond) foo(cond2 ? a : b);`
+  with no block around it) -- inserting a preceding temp declaration
+  needs a real statement list to splice into, which only a block
+  provides. See `hoist_ternaries_in_expr`'s own doc comment in
+  `lower.c` for the full reasoning, including why the direct-assignment
+  shape specifically still needs a narrower check than "any
   assignment" (an arbitrary lvalue duplicated across both branches
-  would risk double-evaluating a side effect inside it).
+  would risk double-evaluating a side effect inside it -- the generic
+  hoist sidesteps this entirely, since it introduces a fresh temp
+  rather than duplicating the original lvalue).
 
 ---
 
@@ -486,15 +499,34 @@ important default to protect.
     `tests/sample15.cpp`'s generated C. Fixed by also treating
     `AST_REFERENCE_TYPE` as "already pointer-bound" in
     `address_of_if_needed`.
-  - A leftover from this same investigation, **not yet fixed**: this
-    project doesn't model const-correctness on a method's own `this`
-    receiver, so forwarding a `const Vector2D &` as a method receiver
-    (same `sample15.cpp` scenario above) still produces a
+  - A leftover from this same investigation, left open at the time --
+    **since FIXED, in a later round, after an actual Vircon32 compiler
+    run turned it from a gcc warning into a real bug report**: this
+    project still doesn't MODEL const-correctness on a method's own
+    `this` receiver (no error for calling a non-const method through a
+    const reference in the first place -- see entry on `const` in the
+    README's own "what doesn't exist yet" list), but forwarding a
+    `const Shape &`/`const Shape *` as a non-const method's receiver
+    now gets an explicit const-stripping cast inserted
+    (`Shape__area__void((Shape *)s)`) rather than a plain, uncasted
+    pointer assignment. gcc only ever gave this a
     `-Wdiscarded-qualifiers` WARNING (`const struct Vector2D *` passed
-    where a plain `struct Vector2D *this` is expected) -- not a hard
-    type error like the double-pointer bug was, and unrelated to
-    return types specifically, so left open rather than folded into
-    this entry's own scope.
+    where a plain `struct Vector2D *this` is expected); the real
+    Vircon32 compiler rejects it OUTRIGHT ("cannot assign const struct
+    Shape* to struct Shape*: discards const qualifier"), a hard type
+    error, confirmed directly against `tests/sample68.cpp`'s own
+    `getArea(const Shape &s) { return s.area(); }`. Fixed in
+    `cast_receiver_if_needed` (`lower.c`): the cast this function
+    already inserted for a base/derived class MISMATCH is now ALSO
+    inserted whenever the object being forwarded is const-qualified but
+    the target method's own injected `this` isn't (a const method
+    receiving a const object needs no cast at all -- both sides already
+    agree, checked via the target's own `this`-parameter type,
+    `receiver_type_is_const`). This is the honest fix given this
+    project's own deliberate choice not to enforce const-correctness --
+    it makes the permitted-but-unchecked case actually COMPILE, the
+    same way an explicit `const_cast` would in real C++, rather than
+    starting to reject code this project has never rejected before.
 - **Verified end-to-end**, not just parse-checked: with a real
   bison+flex toolchain built from source in this round's own sandbox
   (flex wasn't previously available here; see `docs/DESIGN_NOTES.md`),

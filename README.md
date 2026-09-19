@@ -366,7 +366,16 @@ emitted alongside it.
   reassigning a const variable, no error for calling a non-const
   method through a const reference — the syntax is accepted and
   correctly emitted in generated C, with real violations left for the
-  downstream C/C++ compiler to catch.
+  downstream C/C++ compiler to catch. What IS fixed, found only by an
+  actual Vircon32 compiler run (not gcc, which only ever warned):
+  forwarding a `const T &`/`const T *` as a non-const method's receiver
+  now gets an explicit const-stripping cast inserted at the call site
+  (`(Shape *)s`) rather than a plain, uncasted pointer assignment —
+  gcc only ever gave this a `-Wdiscarded-qualifiers` warning, but the
+  real Vircon32 compiler rejects it outright ("cannot assign const
+  struct Shape* to struct Shape*: discards const qualifier"), a hard
+  error, not a warning. See `cast_receiver_if_needed`'s own doc
+  comment in `lower.c` and `docs/DESIGN_NOTES.md` for the full account.
 - ~~No function anywhere can return a pointer or reference type at
   all~~ — **FIXED**: `func_header` and `out_of_line_def` both now
   accept a `pointer_opt` between the return type and the function
@@ -376,11 +385,7 @@ emitted alongside it.
   function's own return-type relabeling) is done too. See
   `docs/VIRCON32_QUIRKS.md`'s entry #12 for the full, bison-and-gcc-
   verified account, including two adjacent pre-existing bugs this fix
-  surfaced along the way. One related, narrower gap remains open: this
-  project still doesn't model const-correctness on a method's own
-  `this` receiver, so forwarding a `const T &` as a method receiver can
-  produce a `-Wdiscarded-qualifiers` warning in the generated C (a
-  warning, not a hard type error) — see entry #12's own note on this.
+  surfaced along the way.
 - **No direct-initialization with constructor arguments on a
   stack-allocated local** (`Shape shape(7);` — valid, idiomatic C++,
   confirmed a real gap, not a rejected feature). Only two forms exist
@@ -562,17 +567,30 @@ real hardware's own requirement); standard mode honors it, typically
 `int`, with real `return` statements preserved rather than stripped.
 
 Vircon32 mode ALSO rewrites the ternary operator (`cond ? a : b`) into
-an equivalent `if`/`else` wherever it directly initializes a variable,
-is directly assigned to a bare identifier, or is directly a `return`
-expression (including a chain of these, `cond1 ? a : cond2 ? b : c`,
-fully unwound) — the real Vircon32 C compiler doesn't support the
-ternary operator at all. Standard mode keeps it exactly as written,
-since real standard C supports it natively. A ternary nested any other
-way (a call argument, part of a larger expression, a for-loop's own
-clauses, assigned through anything but a bare identifier) is left
-untouched in either mode — a stated scope boundary, not silently
-mishandled; see `docs/VIRCON32_QUIRKS.md`'s own entry #10 for the full
-reasoning.
+an equivalent `if`/`else` — the real Vircon32 C compiler doesn't
+support the ternary operator at all, and its own lexer doesn't even
+recognize `?` as a token, so this isn't a style preference, an
+untranspiled ternary is a hard compile error there. Directly
+initializing a variable, being directly assigned to a bare identifier,
+or being a direct `return` expression (including a chain of these,
+`cond1 ? a : cond2 ? b : c`, fully unwound) rewrites with no temporary
+variable needed at all. Every OTHER position a ternary can appear in —
+a call argument, part of a larger arithmetic/subscript/member
+expression, assigned through anything but a bare identifier — is
+handled too, by hoisting it into its own preceding temporary set via
+an ordinary `if`/`else`; this was a real, previously-undiscovered
+miscompile, found only by an actual Vircon32 compiler run
+(`add(x > y ? x : y, 1)` transpiled with the literal `?`/`:` still in
+it and failed to even lex). Standard mode keeps every ternary exactly
+as written in every position, since real standard C supports it
+natively. Two narrow boundaries remain, stated plainly: a ternary
+inside a for-loop's own init/cond/incr clauses (would need restructuring
+the loop itself, not attempted), and one reachable only through a
+brace-less single-statement slot (`if (cond) foo(cond2 ? a : b);` with
+no block around it — inserting a preceding temp declaration needs a
+real statement list to insert into). See
+`hoist_ternaries_in_expr`'s own doc comment in `lower.c` and
+`docs/VIRCON32_QUIRKS.md`'s own entry #10 for the full reasoning.
 
 A large set of example inputs lives in `tests/`, including a couple that
 are *deliberately* invalid (an undeclared type, an out-of-line

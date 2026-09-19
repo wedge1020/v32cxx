@@ -8,8 +8,22 @@
 // the syntax and emits it correctly in generated C, but does NOT
 // enforce const-correctness anywhere (no error for reassigning a
 // const variable, no error for calling a non-const method through a
-// const reference) -- see AST_CONST_TYPE's own doc comment in ast.h
-// for the full, deliberate scope boundary.
+// const reference, like getArea's own s.area() below, where area()
+// isn't itself declared const) -- see AST_CONST_TYPE's own doc
+// comment in ast.h for the full, deliberate scope boundary.
+//
+// getArea's own s.area() call is also what exercises a real,
+// previously-undiscovered bug found only by an actual Vircon32
+// compiler run (not gcc, which only ever WARNED about this with
+// -Wdiscarded-qualifiers): forwarding a const object as a non-const
+// method's receiver generated a plain, uncasted `Shape__area__void(s)`
+// call, which the real Vircon32 compiler rejects outright ("cannot
+// assign const struct Shape* to struct Shape*: discards const
+// qualifier") -- a hard error, not a warning. Fixed by inserting an
+// explicit const-stripping cast at exactly this point (matching what
+// an explicit const_cast would do in real C++, since this project has
+// chosen not to enforce const-correctness in the first place) -- see
+// cast_receiver_if_needed's own doc comment in lower.c.
 //
 // Shape is default-constructed then has its own public `size` field
 // set directly (`shape.size = 7;`), NOT constructed as `Shape
