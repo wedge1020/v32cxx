@@ -318,6 +318,19 @@ const AstNode *find_declaring_class(const AstNode *class_decl, const AstNode *ta
  * reason as everything else in this section -- lower.c's new/delete
  * lowering needs to know which class `new T` allocates. */
 AstNode *type_to_class(const AstNode *type);
+
+/* Follows an AST_IDENT that names a registered typedef through to its
+ * underlying type (chasing a typedef-of-typedef chain), stopping at the
+ * first non-typedef node -- see its own doc comment in sema.c for the full
+ * rationale and bounds. Exposed for the same reuse reason as everything
+ * else in this section -- lower.c's function-pointer-initializer lowering
+ * needs to know whether a VarDecl/Assign's TARGET type is (possibly via a
+ * typedef chain, e.g. "typedef int(int)* Callback;") an AST_FUNC_PTR_TYPE,
+ * to decide whether a bare function-name value on the other side needs an
+ * explicit address-of inserted (see finalize_calls_stmt/finalize_calls_expr
+ * in lower.c). */
+const AstNode *resolve_typedef_chain(const AstNode *type);
+
 void sema_warning(int line, const char *fmt, ...); /* see its own doc
     comment in sema.c -- non-fatal, exposed so lower.c can reuse the
     same counting/formatting machinery for its own diagnostics */

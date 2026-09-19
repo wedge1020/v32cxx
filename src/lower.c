@@ -729,10 +729,121 @@ static void rewrite_operator_use(AstNode **slot, AstNode *lhs_or_operand, AstNod
     finalize_call(call, class_decl, locals);
 }
 
+/*
+ * Real Vircon32 C, unlike standard C, does NOT implicitly decay a bare
+ * function name to a function-pointer VALUE -- confirmed against the
+ * actual Vircon32 C compiler (not just gcc), which rejects
+ * `Callback cb = doubleIt__int;` with "types are not compatible: cannot
+ * assign int(int) to int(int)*": it treats a bare function name as
+ * having plain function type `int(int)`, not pointer type `int(int)*`,
+ * and requires an explicit `&` to form the pointer value. Standard C
+ * treats a bare function name and `&functionName` as EXACTLY the same
+ * pointer value in this position (the implicit decay and the explicit
+ * address-of produce an identical result), so always emitting the
+ * explicit `&` form is correct and portable across BOTH of this
+ * project's target dialects -- there's no need to special-case this on
+ * g_target.
+ *
+ * These two helpers below detect exactly the narrow case that needs the
+ * `&` inserted: a VarDecl initializer or a plain `=` assignment whose
+ * TARGET is (possibly through a typedef chain) a function-pointer type,
+ * and whose SOURCE expression, as the user actually wrote it, is a bare
+ * identifier naming a free function. Anything else -- copying one
+ * function-pointer-typed variable into another (`Callback cb2 = cb;`),
+ * an already-explicit `&doubleIt`, a call result, ... -- is left alone.
+ * Checked and wrapped in `&` BEFORE finalize_calls_expr ever recurses
+ * into the identifier, so the existing AST_IDENT case below (which
+ * mangles a bare free-function name to its real symbol) runs exactly
+ * once, inside the new AST_UNOP wrapper, with no risk of a bare name
+ * getting wrapped twice or a variable reference getting wrapped at all.
+ */
+static int is_bare_free_function_ref(const AstNode *expr, LocalVarType *locals) {
+    if (expr == NULL || expr->kind != AST_IDENT) return 0;
+    if (find_local(locals, expr->str1) != NULL) return 0; /* a local/param
+        of this name always wins, matching the AST_IDENT case below */
+    AstNode **candidates = NULL;
+    int count = 0, cap = 0;
+    collect_free_function_candidates(expr->str1, &candidates, &count, &cap);
+    free(candidates);
+    return count == 1; /* same "unambiguous or don't touch it" rule as the
+        AST_IDENT case below */
+}
+
+static int type_is_func_ptr(const AstNode *type) {
+    if (type == NULL) return 0;
+    return resolve_typedef_chain(type)->kind == AST_FUNC_PTR_TYPE;
+}
+
+/* Wraps `*slot` in an explicit `&expr` UnOp, IN PLACE -- same AST_UNOP
+ * shape ("addr") that a user-written `&x` already parses to, so nothing
+ * downstream (codegen's print_unop, or a later lowering pass) needs to
+ * know this address-of was inserted rather than written by the user. */
+static void wrap_addr_of(AstNode **slot) {
+    AstNode *inner = *slot;
+    AstNode *addr = ast_new(AST_UNOP, inner->line);
+    addr->str1 = strdup("addr");
+    addr->a = inner;
+    *slot = addr;
+}
+
 static void finalize_calls_expr(AstNode **slot, AstNode *class_decl, LocalVarType *locals) {
     AstNode *n = *slot;
     if (n == NULL) return;
     switch (n->kind) {
+        case AST_IDENT: {
+            /* A bare identifier used as a plain VALUE -- not a call's own
+             * callee (finalize_call, below, resolves that separately via
+             * the call's own CallResolution, unconditionally overwriting
+             * call->a with the mangled name regardless of what ran here
+             * first, so no ordering conflict with this case) and not a
+             * local/parameter name (find_local, checked first, always
+             * wins -- matching real C++ scoping, where a local hides a
+             * same-named free function). This is the "function used as a
+             * VALUE" case a function pointer initialization/assignment
+             * needs (`Callback cb = doubleIt;`, or `&doubleIt`) -- a
+             * real, previously-undiscovered gap, found only by actually
+             * compiling (not just transpiling) tests/sample64.cpp's own
+             * function-pointer test, already in this project's suite and
+             * "passing" in the sense of transpiling without error: every
+             * function gets a mangled name regardless of whether it's
+             * overloaded (mangle()'s own doc comment, sema.c), but
+             * nothing was ever rewriting a bare function-NAME reference
+             * the way a call's own callee already is -- `fp = add;`
+             * transpiled to the literal, unmangled `(fp = add);`, which
+             * doesn't compile (confirmed directly with gcc against
+             * --target=standard output: "'add' undeclared" -- only
+             * `add__int_int` actually exists in the generated C).
+             *
+             * Deliberately conservative, matching this project's own
+             * established "miss a case rather than guess wrong"
+             * direction: only rewritten when EXACTLY ONE free function
+             * is registered under this name
+             * (collect_free_function_candidates, the same primitive
+             * sema.c's own call resolution already uses for this exact
+             * kind of lookup) -- an overloaded function used as a bare
+             * value has no argument list here to disambiguate against,
+             * and real C++'s own rule for that (matching against the
+             * function pointer's own declared type) isn't modeled
+             * anywhere in this project, so an ambiguous case is left
+             * completely untouched rather than guessing which overload
+             * was meant. A name that isn't a free function at all
+             * (a global variable, an enumerator, a class name reached
+             * some other way) simply gets zero candidates back and is
+             * left exactly as it was -- this case is a strict no-op for
+             * every identifier that isn't unambiguously a free
+             * function's own name. */
+            if (find_local(locals, n->str1) != NULL) break;
+            AstNode **candidates = NULL;
+            int count = 0, cap = 0;
+            collect_free_function_candidates(n->str1, &candidates, &count, &cap);
+            if (count == 1) {
+                FuncSemaInfo *info = (FuncSemaInfo *)candidates[0]->sema_info;
+                const char *mangled = (info != NULL) ? info->mangled_name : candidates[0]->str1;
+                *slot = ast_ident(mangled, n->line);
+            }
+            free(candidates);
+            break;
+        }
         case AST_MEMBER:
             finalize_calls_expr(&n->a, class_decl, locals);
             break;
@@ -802,6 +913,21 @@ static void finalize_calls_expr(AstNode **slot, AstNode *class_decl, LocalVarTyp
             break;
         case AST_ASSIGN:
             finalize_calls_expr(&n->a, class_decl, locals);
+            /* Plain `fp = someFunctionName;` needs the same implicit
+             * `&` that a VarDecl initializer needs -- see the doc
+             * comment on is_bare_free_function_ref/type_is_func_ptr
+             * above. Checked (and n->a already finalized, so
+             * infer_expr_type sees a real, resolvable LHS) before
+             * n->b is recursed into, so the wrap happens exactly once,
+             * around the user's original bare identifier. Scoped to
+             * plain "=" only -- a compound assignment on a function
+             * pointer isn't meaningful and isn't supported anywhere
+             * else in this project either. */
+            if (n->str1 != NULL && strcmp(n->str1, "=") == 0 &&
+                is_bare_free_function_ref(n->b, locals) &&
+                type_is_func_ptr(infer_expr_type(n->a, class_decl, locals))) {
+                wrap_addr_of(&n->b);
+            }
             finalize_calls_expr(&n->b, class_decl, locals);
             rewrite_operator_use(slot, n->a, n->b, class_decl, locals);
             break;
@@ -887,6 +1013,17 @@ static void finalize_calls_stmt(AstNode **slot, AstNode *class_decl, LocalVarTyp
             finalize_calls_expr(&n->a, class_decl, *locals);
             break;
         case AST_VAR_DECL: {
+            /* `Callback cb = doubleIt;` needs the same implicit `&`
+             * as the AST_ASSIGN case above -- see the doc comment on
+             * is_bare_free_function_ref/type_is_func_ptr in
+             * finalize_calls_expr. Checked against n->type (this
+             * VarDecl's own declared type, resolved through any
+             * typedef chain) BEFORE recursing into the initializer,
+             * same reasoning as the AST_ASSIGN case: exactly one
+             * wrap, around the user's original bare identifier. */
+            if (is_bare_free_function_ref(n->a, *locals) && type_is_func_ptr(n->type)) {
+                wrap_addr_of(&n->a);
+            }
             finalize_calls_expr(&n->a, class_decl, *locals);
             LocalVarType *lv = calloc(1, sizeof(LocalVarType)); /* calloc: zero-inits was_reference too */
             lv->name = n->str1;

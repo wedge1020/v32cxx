@@ -5393,3 +5393,284 @@ Makefile's own `-`-prefix list exactly, zero new regressions.
     question it deliberately doesn't resolve). NOT yet done: method/
     function body emission, and vtable static instance emission — both
     substantial enough for their own round.
+
+## Function-pointer typedefs and multi-declarator statements -- plus a real, previously-undiscovered gap found and fixed while verifying both end to end
+
+Two items from the "second round of basic C gaps" fresh-audit list,
+tackled together: function-pointer `typedef`s and multiple declarators
+in one statement (`int a, b, c;`).
+
+### Function-pointer typedefs: a small, surgical addition
+
+Two new `typedef_decl` grammar productions in `parser.y`, mirroring
+`var_decl`'s own two function-pointer declarator alternatives exactly
+(standard-C `typedef ReturnType (*Name)(ParamTypes);` and Vircon32-
+native `typedef ReturnType(ParamTypes)* Name;`), reusing the existing
+`AST_FUNC_PTR_TYPE`/`ast_wrap_func_ptr` machinery with zero new AST
+work. The only codegen change needed: `emit_typedefs` was calling
+plain `print_type` (which always emits Vircon32's own form,
+unconditionally, per its own doc comment) directly followed by the
+name -- routed through `print_type_and_name` instead (the same helper
+`print_var_decl_inline`/`emit_struct` already use for this exact
+reason), which already handles the standard-mode "name inside the
+parens" shape correctly. A typedef is simply the THIRD place a
+function-pointer type can be named, `print_type_and_name`'s own doc
+comment having already confirmed (a previous round) that only two call
+sites could ever reach one -- that comment is now stale in the narrow
+sense that a third exists, but the function's own logic needed no
+change at all to handle it, since it dispatches on the TYPE node, not
+on which caller invoked it.
+
+### Multi-declarator statements: a parser-internal carrier, not a new AST shape reaching sema/lower/codegen
+
+`int a, b, c;` needs ONE grammar reduction to produce MULTIPLE
+AST_VAR_DECL nodes -- not possible directly, since a bison action
+produces exactly one `$$`. Solved with a new, deliberately narrow
+`AST_VAR_DECL_GROUP` node (list of AST_VAR_DECLs, see its own doc
+comment in `ast.h`) that never survives past parsing: every caller
+that folds a `var_decl` into a surrounding list (`top_decl_list`, a
+block's own `stmt_list`, `member_list`, `union_member_list`) now uses
+a new `ast_list_append_flatten` (`ast.c`) instead of a plain
+`ast_list_append`, expanding the group back into its own several
+entries in the SAME action that built it. sema.c/lower.c/codegen.c
+never gain a case for this node kind at all, because they never see
+one.
+
+Scoped deliberately narrow, matching this project's own established
+pattern: only a PLAIN declarator (bare or pointer/reference-wrapped)
+can follow the first comma -- an array or function-pointer declarator
+mixed into a multi-declarator statement is not supported, and a
+for-loop's own init clause (`for (int i = 0, j = 0; ...)`) is a
+separate, stated gap, reported directly (`YYERROR` from within
+`for_init`'s own grammar action -- this grammar has no `error`-token
+recovery production anywhere, so this makes `yyparse()` itself fail
+immediately, the same real, build-stopping outcome an ordinary syntax
+error already has) rather than silently dropping every declarator but
+the first, which a mere warn-and-degrade response would have done.
+
+A new nonterminal, `more_plain_declarators`, hands back each
+additional declarator as a bare, UNRESOLVED carrier (reusing the
+`AST_VAR_DECL` node shape purely as a 3-field carrier: name, the raw
+`pointer_opt` value in `->ival`, and the initializer) rather than a
+resolved type, because a bison nonterminal can't see a PARENT rule's
+own symbols -- `var_decl`'s own base `type_spec` isn't visible from a
+separate production. `var_decl`'s own plain-declarator action, which
+DOES have the base type in hand, resolves each carrier into a real
+`AST_VAR_DECL` afterward, using the identical `pointer_opt`-to-type
+logic the primary declarator already had.
+
+### A stale-build false alarm, caught before it was reported as a real regression
+
+Adding the typedef productions alone (bisected in isolation, before
+the multi-declarator work was even added) appeared to break
+`tests/sample1.cpp` with a completely unrelated semantic error
+("'Entity' has no default constructor...") on a file containing no
+typedefs at all -- alarming, since it suggested a grammar change was
+somehow corrupting unrelated parsing. Investigated with an actual
+bisect (copying changed files one at a time into a fresh pristine
+checkout) before concluding anything, and `bison -Wcounterexamples`
+confirmed the conflict structure was BYTE-IDENTICAL (same md5sum)
+before and after the typedef change -- ruling out a grammar-ambiguity
+explanation outright. The real cause: an incremental `make -j4` had
+left a stale, ABI-mismatched object file linked into the test binary
+(this project's own Makefile doesn't declare every `.c` file as
+depending on `inc/parser.h`, so a header-only change doesn't always
+trigger every dependent recompile). A full `make clean && make`
+reproduced nothing -- the "regression" never existed. Recorded here
+specifically because it's a real trap for future verification work in
+this project: an incremental rebuild after a grammar/header change is
+not sufficient evidence a change is safe or unsafe; a clean rebuild is
+required before trusting either a pass or a failure.
+
+### A real, previously-undiscovered gap found and fixed: function pointers never actually compiled when assigned a bare function name
+
+Verifying the new typedef feature end to end (writing a test that
+assigns a real function to a typedef'd function pointer, then actually
+compiling the generated C with `gcc --target=standard`, not just
+transpiling it) surfaced that this NEVER worked, typedef or not:
+`Callback cb = doubleIt;` transpiled to the literal, unmangled
+`(cb = doubleIt);`, but every function gets a mangled name regardless
+of whether it's overloaded (`mangle()`'s own doc comment) -- only
+`doubleIt__int` actually exists in the generated C, so this is a real
+compile error (`'doubleIt' undeclared`), confirmed directly with gcc.
+Reproduced on `tests/sample64.cpp` too, already in this project's
+suite and "passing" in the sense of transpiling without error for its
+entire history -- nothing had ever actually COMPILED it until this
+round did.
+
+Root cause: `finalize_calls_expr` (`lower.c`, phase 3/4) already
+rewrites a CALL's own callee to its mangled name (via the call's own
+`CallResolution`), but nothing rewrote a bare function-NAME reference
+used as a plain VALUE -- the overwhelmingly common way to initialize
+or assign a function pointer at all. Fixed with a new `AST_IDENT` case
+in `finalize_calls_expr` itself: a local/parameter of the same name
+(`find_local`) always wins first, matching real C++ scoping; otherwise
+`collect_free_function_candidates` (the same primitive sema.c's own
+call resolution already uses) is checked, and the identifier is
+rewritten to the sole match's mangled name ONLY when exactly one
+candidate exists -- an overloaded function used as a bare value has no
+argument list here to disambiguate against, and real C++'s own rule
+for that (matching against the function pointer's own declared type)
+isn't modeled anywhere in this project, so an ambiguous case is left
+completely untouched rather than guessed at. A name that isn't a free
+function at all (a global variable, an enumerator) gets zero
+candidates back and is left exactly as it was -- a strict no-op for
+every identifier that isn't unambiguously a free function's own name.
+
+### Verification
+
+Full clean rebuild (`make clean && make`, not incremental -- see the
+stale-build false alarm above), bison run confirming the exact same
+`%expect 25`/zero-reduce-reduce baseline (no new conflicts from either
+feature). Full 72-sample suite (`make test`), zero regressions --
+diffed byte-for-byte against a pre-round baseline, confirming the
+ONLY generated-output changes were the three function-pointer samples
+now correctly mangled (`sample64`/`65`/`66`) and the deliberately new
+ones added this round. `tests/sample73.cpp` (function-pointer
+typedefs, both spellings, actually assigned and called through) and
+`tests/sample74.cpp` (multi-declarator locals/globals/members, mixed
+initializers, a pointer among plain declarators) both confirmed
+correct in BOTH targets: read directly for correct declarator shape,
+and (`--target=standard`) compiled with `gcc -fsyntax-only` (zero
+errors) and actually RUN, producing the expected computed result in
+each case (25 and 146 respectively) -- genuine end-to-end
+verification, not just a clean parse.
+
+### A separate, pre-existing `--target=standard` gap found while auditing, not fixed this round
+
+Running the full test suite's own `--target=standard` output through
+`gcc` (not just this round's own two new samples) surfaced that
+`--target=standard` doesn't compile for almost any class-having
+program in this project's ENTIRE existing suite: the `bool`/`true`/
+`false` runtime boilerplate every class triggers has no
+`#include <stdbool.h>` in standard mode. Separately,
+`tests/sample60.cpp`/`sample61.cpp` (already in the suite) confirmed a
+second, related gap: an `enum`/`union` type referenced by name outside
+its own definition never gets its keyword back in standard mode the
+way a class/struct reference already correctly does (`type_to_class`,
+which `print_type`'s own standard-mode fix relies on, has no notion of
+enums/unions -- only the class registry). Neither gap touches
+Vircon32-mode output (this project's actual primary target) at all,
+and neither is caused by or related to this round's own two features
+-- reported here, not fixed, since `--target=standard`'s own maturity
+is a separate concern from what this round was asked to do.
+
+## Round: real-compiler-confirmed bug -- Vircon32 C does not implicitly decay a function name to a function pointer
+
+The previous round's `AST_IDENT`-mangling fix (above) was verified
+only against `gcc --target=standard` output, which made
+`Callback cb = doubleIt__int;` look completely correct: standard C
+implicitly decays a bare function name to its own address in this
+position, so a mangled-but-unwrapped identifier compiles and runs
+fine there. The user rebuilt this project themselves (their own
+bison 3.8.2, since the delivered zip didn't include generated
+parser/lexer output) and ran the ACTUAL Vircon32 C compiler against
+`tests/sample73.cpp`'s Vircon32-mode output, which rejected exactly
+those two lines:
+
+```
+sample73.c:31:17: error: types are not compatible: cannot assign int(int) to int(int)*
+sample73.c:32:24: error: types are not compatible: cannot assign int(int) to int(int)*
+```
+
+This is a genuine, previously-unknown Vircon32 C quirk, invisible to
+every check this project had run up to that point (gcc's own decay
+rule papers directly over it): a bare function name in Vircon32 C has
+plain function type (`int(int)`), not pointer-to-function type
+(`int(int)*`), and does NOT implicitly convert between the two the
+way standard C does -- an explicit `&` is required to actually form
+the pointer value. Since the earlier fix only mangled the identifier
+without ever taking its address, EVERY function-pointer
+initialization/assignment this project had ever generated in
+Vircon32 mode was broken this same way, not just the two new lines
+the user happened to report -- including `tests/sample64.cpp`,
+`sample65.cpp`, and `sample66.cpp`'s own `fp = add;`-style plain
+assignments (already in the suite, "fixed" only in the gcc-verifiable
+sense) and `sample66.cpp`'s array-of-function-pointers case
+(`ops[0] = add;`).
+
+Confirmed, before writing any fix, that this asymmetry between the
+two dialects is actually safe to resolve by ALWAYS emitting the
+explicit `&` form regardless of target: standard C treats a bare
+function name and `&functionName` as identical pointer values in
+this position (the implicit decay and the explicit address-of
+produce the same result), so there's no dialect split to encode here
+-- `Callback cb = &doubleIt__int;` is exactly as valid, idiomatic
+standard C as the bare form, and is what real Vircon32 C requires.
+
+Fixed in `lower.c` with two small, narrowly-scoped checks (not a
+generic "always wrap a function reference in `&`" rule, which would
+have double-wrapped a user-written `&doubleIt` -- see the reasoning
+below):
+
+- `finalize_calls_stmt`'s `AST_VAR_DECL` case: before recursing into
+  the initializer, if the initializer (as the user actually wrote it)
+  is a bare identifier naming exactly one free function
+  (`is_bare_free_function_ref`, factoring out the same
+  `find_local`-then-`collect_free_function_candidates` check the
+  existing `AST_IDENT` case already used) AND the VarDecl's own
+  declared type resolves, through any typedef chain
+  (`resolve_typedef_chain`, newly exposed from `sema.c` for this --
+  same reuse pattern as `type_to_class`/`sema_warning`/
+  `collect_free_function_candidates` before it), to `AST_FUNC_PTR_TYPE`
+  (`type_is_func_ptr`), the initializer is wrapped in an explicit
+  `&` (`wrap_addr_of`, same "addr" `AST_UNOP` shape a user-written
+  `&x` already parses to) BEFORE `finalize_calls_expr` recurses into
+  it.
+- `finalize_calls_expr`'s `AST_ASSIGN` case: same check, but against
+  the LHS's INFERRED type (`infer_expr_type`, already exposed) rather
+  than a VarDecl's own declared type -- covers `fp = add;` and
+  `ops[0] = add;` alike, since `infer_expr_type` already resolves an
+  `AST_SUBSCRIPT` target's element type. Scoped to plain `=` only
+  (`n->str1 == "="`) -- compound assignment on a function pointer
+  isn't meaningful and isn't supported anywhere else in this project.
+
+Doing the check BEFORE recursing into the initializer/RHS (rather
+than inspecting the result AFTER `finalize_calls_expr` already
+mangled it) is what avoids the double-wrap risk: the check runs
+against the ORIGINAL AST shape, so a user-written `&doubleIt`
+(already an `AST_UNOP`, not a bare `AST_IDENT`) is correctly left
+alone -- `finalize_calls_expr`'s existing `AST_UNOP` case recurses
+into it exactly once, hitting the `AST_IDENT` case exactly once, with
+no wrapping added by this round's new checks at all. Likewise, `is_bare_free_function_ref` reuses the EXACT same
+"not a local, exactly one free-function candidate" test the existing
+mangling case uses, so copying one function-pointer variable into
+another (`Callback cb2 = cb;`) is correctly left untouched -- `cb` is
+a local, not a free function, so no `&` is added and `cb2` still
+correctly ends up holding the same pointer value `cb` does, not the
+address of the variable `cb`.
+
+### Verification
+
+Full clean rebuild (`make clean`, remove all generated parser/lexer
+output, `make -j4`) -- zero warnings. `tests/sample73.cpp` regenerated
+in Vircon32 mode now reads
+`Callback cb = (&doubleIt__int); NativeCallback ncb = (&tripleIt__int);`,
+directly matching what the real Vircon32 compiler rejected before and
+requires now. `sample64`/`65`/`66` (Vircon32 mode) all now correctly
+read `(fp = (&add__int_int));`-shaped assignments, including
+`sample66`'s array-of-function-pointers case
+(`(ops[0] = (&add__int_int));`). Full `make test` (74 samples): no new
+failures -- every flagged sample matches this project's own
+already-expected-to-fail negative tests (the `-$(BIN)` Makefile
+entries), confirmed by cross-referencing the Makefile itself, not
+just eyeballing the log. Full `--target=standard` + `gcc -fsyntax-only`
+sweep across all 74 samples: 34 pre-existing failures, all confirmed
+to be the already-documented `<stdbool.h>`/enum-union-keyword
+standard-mode gaps above (re-diffed each failure's actual gcc error
+text against that known cause, not just counted) -- zero NEW
+`--target=standard` failures from this round's own change, and
+`sample64`/`65`/`66`/`73` specifically confirmed gcc-clean in standard
+mode too (the inserted `&` is valid, idiomatic standard C, as
+reasoned above).
+
+### Priority-list update, per explicit user request
+
+The user's report that surfaced this bug also asked, in the same
+message, that the pre-existing `--target=standard` class-compilation
+gap (documented in the round above -- missing `<stdbool.h>`, missing
+enum/union keyword-on-reference) be added to "the priority list of
+things to fix." Recorded here as that priority note; not addressed as
+part of this round, which was scoped to the real-compiler-confirmed
+function-pointer bug specifically. See README.md's own "What doesn't
+exist yet" list for the tracked item.

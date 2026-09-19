@@ -478,9 +478,24 @@ static void emit_typedefs(FILE *out, const AstList *decls) {
     for (int i = 0; i < decls->count; i++) {
         const AstNode *n = decls->items[i];
         if (n->kind == AST_TYPEDEF_DECL) {
+            /* Routed through print_type_and_name (not plain print_type)
+             * specifically so a function-pointer typedef gets the
+             * correct declarator shape for whichever target is active --
+             * plain print_type's own AST_FUNC_PTR_TYPE case always
+             * emits Vircon32's own "name appended after" form (see its
+             * own doc comment), which is wrong for standard mode's
+             * "name INSIDE the parens" requirement. print_type_and_name
+             * already handles exactly this distinction (originally
+             * built for var_decl/emit_struct's own function-pointer
+             * declarations -- a typedef is simply the third place one
+             * can appear). A no-op behavior change for every other
+             * typedef kind: print_type_and_name falls back to plain
+             * "print_type, then the name" for anything that isn't a
+             * function-pointer type in standard mode, identical to what
+             * this loop did directly before this routing existed. */
             fprintf(out, "typedef ");
-            print_type(out, n->type);
-            fprintf(out, " %s;\n", n->str1);
+            print_type_and_name(out, n->type, n->str1);
+            fprintf(out, ";\n");
         } else if (n->kind == AST_NAMESPACE_DECL) {
             emit_typedefs(out, &n->list);
         }

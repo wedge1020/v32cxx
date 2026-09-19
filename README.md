@@ -89,10 +89,41 @@ live class-typed local — see the note below), and function pointers —
 **both** Vircon32's own quirky declarator style (`ReturnType(ParamTypes)*
 name;`) and standard C's (`ReturnType (*name)(ParamTypes);`) are
 accepted as input, including arrays of either
-(`ReturnType (*name[N])(ParamTypes);` and, less certainly — see below —
-`ReturnType(ParamTypes)* [N] name;`); output is always Vircon32's own
-required form regardless of which one the source used, the same
-dual-acceptance treatment array declarators already have. Arrays can
+(`ReturnType (*name[N])(ParamTypes);` and, confirmed against the real
+compiler, `ReturnType(ParamTypes)* [N] name;`); output is always
+Vircon32's own required form regardless of which one the source used,
+the same dual-acceptance treatment array declarators already have. A
+function-pointer `typedef` (both spellings) is supported too. A real,
+previously-undiscovered gap was found and fixed while verifying this
+end to end (actually compiling generated output with `gcc`, not just
+transpiling it): a bare function NAME used as a plain value — the
+overwhelmingly common way to initialize a function pointer at all
+(`Callback cb = doubleIt;`) — was never rewritten to that function's
+own mangled name the way a CALL's callee already is, so the generated
+C referenced a symbol (`doubleIt`) that doesn't exist (only
+`doubleIt__int` does); fixed in `lower.c`'s `finalize_calls_expr`,
+deliberately conservative (only rewritten when exactly one free
+function matches the name — an overloaded function used as a bare
+value has no argument list here to disambiguate against, so an
+ambiguous case is left untouched rather than guessed at). A second,
+separate gap in the same area was found only by an actual Vircon32 C
+compiler run (not `gcc`): unlike standard C, Vircon32 C does NOT
+implicitly decay a bare function name to a function-pointer value —
+`Callback cb = doubleIt__int;` is rejected outright ("types are not
+compatible: cannot assign int(int) to int(int)*"), requiring an
+explicit `&`. Fixed in `lower.c` by inserting that `&` automatically,
+in exactly the two places a bare function name can end up as a
+function-pointer value — a `VarDecl` initializer and a plain `=`
+assignment (including into an array element, e.g.
+`ops[0] = add;`) — checked against the target's declared/inferred
+type (through any typedef chain) before the identifier is even
+mangled, so a user-written `&doubleIt` is never double-wrapped and a
+plain function-pointer-to-function-pointer variable copy
+(`Callback cb2 = cb;`) is correctly left alone. The inserted `&` is
+valid, idiomatic standard C too (`&funcname` and a bare `funcname`
+are identical pointer values there), so this fix applies unconditionally in both targets rather than
+being gated on `--target`. See `docs/DESIGN_NOTES.md` for the full
+verification. Arrays can
 be multi-dimensional too (`int grid[8][4];` or `int [8][4] grid;`,
 dimensions nested outermost-first, matching real C exactly), with
 chained subscripting (`grid[i][j]`) needing no new work at all since
@@ -301,17 +332,32 @@ emitted alongside it.
   assumed) turned up a further, separate list of common C features
   still missing — see the next bullet.
 - **A second round of basic C gaps, found by a fresh audit**: `const`
-  is now supported (see below) — `volatile`, `static`, `extern`,
-  `inline`, and `register` are not (none of these keywords are
-  recognized at all); no multiple declarators in one statement
-  (`int a, b, c;` — only one variable per declaration is currently
-  accepted); no function-pointer `typedef` (`typedef int
-  (*Callback)(int);` — `typedef_decl` doesn't accept the function-
-  pointer declarator shape); no adjacent string-literal concatenation
-  (`"foo" "bar"` does not become `"foobar"`); no bit-fields
-  (`unsigned x : 4;` inside a `struct`/`union`); no comma operator
-  (`a, b, c` as a single expression, e.g. in a `for` loop's own
-  increment clause). None of these are implemented yet.
+  is now supported (see below), and so are multiple declarators in one
+  statement and function-pointer `typedef`s (both also below) —
+  `volatile`, `static`, `extern`, `inline`, and `register` are still
+  not (none of these keywords are recognized at all); no adjacent
+  string-literal concatenation (`"foo" "bar"` does not become
+  `"foobar"`); no bit-fields (`unsigned x : 4;` inside a `struct`/
+  `union`); no comma operator (`a, b, c` as a single expression, e.g.
+  in a `for` loop's own increment clause). None of these remaining
+  ones are implemented yet.
+- **Multiple declarators in one statement** (`int a, b, c;`,
+  `int a, *b, c = 5;`) are now accepted — pointer-ness is genuinely
+  PER-declarator, matching real C++ (`int *a, b;` makes `a` a pointer
+  and `b` a plain int, not two pointers). Deliberately narrower than
+  real C++'s full declarator grammar: only a PLAIN declarator (bare or
+  pointer/reference-wrapped) can appear in a multi-declarator
+  statement — an array or function-pointer declarator mixed in
+  (`int a, arr[8];`) isn't supported. Works for locals, globals, and
+  class members; a for-loop's own init clause deliberately does NOT
+  support it (`for (int i = 0, j = 0; ...)` is a real, stated gap —
+  reported directly at parse time rather than silently mishandled).
+- **Function-pointer `typedef`s** (`typedef int (*Callback)(int);`,
+  and Vircon32's own `typedef int(int)* Callback;` spelling — both
+  accepted, the same dual-acceptance treatment every other
+  function-pointer declarator in this project already has) are now
+  supported, emitting the correct declarator shape for either
+  `--target`.
 - **`const` doesn't cover a const POINTER itself** — only `const T`
   and `const T *` (pointer to const, the pointee can't change) are
   accepted; `T * const p` (the pointer itself can't be reassigned) is
@@ -352,6 +398,32 @@ emitted alongside it.
   declaring a variable is — and a multi-dimensional array of function
   pointers is unsupported, an intentionally rare combination not
   pursued alongside everything else that round already touched.
+- **`--target=standard` doesn't compile for almost any class-having
+  program yet, found by actually running `gcc` against a full sweep of
+  this project's own test suite, not assumed from the plan on paper**:
+  the `bool`/`true`/`false` runtime-helper boilerplate every class
+  triggers (`v32_new_arr_bool` and friends) uses `bool`/`true`/`false`
+  unconditionally without `#include <stdbool.h>` in standard mode
+  (Vircon32 mode doesn't need this — `bool` is a native keyword
+  there); confirmed to break the standard-mode build of nearly every
+  class-having sample in this project's own suite. Separately, a plain
+  C-style `enum` or `union` type referenced by NAME anywhere other
+  than its own definition (a parameter, a variable) never gets its
+  `enum`/`union` keyword back in standard mode the way a `class`/
+  `struct` reference already correctly does (`print_type`'s own
+  `AST_IDENT` case only checks the class registry via `type_to_class`,
+  which has no notion of enums/unions at all) — confirmed directly
+  (`tests/sample60.cpp`/`sample61.cpp`, an enum parameter and a union
+  variable, both fail standard-mode compilation: "unknown type name
+  'Color'"/"'Value'; use 'union' keyword"). Neither of these affects
+  Vircon32-mode output (this project's actual primary target) at all;
+  found while auditing `--target=standard`'s own maturity, not fixed
+  yet, and not something either of this round's own two features
+  (function-pointer typedefs, multi-declarator statements) touches or
+  causes. **Flagged by the user as a priority to fix in an upcoming
+  round** (raised alongside their own real-Vircon32-compiler report
+  that led to the function-pointer address-of fix above) — not
+  addressed yet, but explicitly no longer just a passively-noted gap.
 
 This is genuinely still growing — expect rough edges, and expect this
 README to need updating again as things change.

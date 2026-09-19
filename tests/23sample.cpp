@@ -11,6 +11,8 @@
 // select_texture/select_region/draw_region_at are deliberately never
 // declared anywhere in this file, same reasoning as sample22.cpp.
 
+#include "video.h"
+
 class Player {
     public:
         Player();

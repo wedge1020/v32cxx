@@ -49,6 +49,36 @@ typedef enum {
                               ACC_PRIVATE per `class`'s C++ default when no
                               marker precedes it). Meaningless/unset on a
                               free (non-member) variable declaration. */
+    AST_VAR_DECL_GROUP,   /* list=two or more AST_VAR_DECL entries, sharing
+                              one base type -- the real C/C++ "multiple
+                              declarators in one statement" idiom
+                              (`int a, b, c;`, `int a, *b, c = 5;`).
+                              PURELY A PARSER-INTERNAL CARRIER: var_decl's
+                              own plain-declarator production (parser.y)
+                              is the only thing that ever builds one, and
+                              every one of its own callers that folds a
+                              var_decl into a surrounding list (top_decl_
+                              list, a block's own statement list, member_
+                              list, union_member_list) uses ast_list_
+                              append_flatten (ast.c) instead of a plain
+                              ast_list_append specifically so this node
+                              expands back into its own several entries
+                              right there, in the SAME grammar action that
+                              built it -- no node of this kind ever
+                              survives into the tree sema.c/lower.c/
+                              codegen.c actually see, so none of those
+                              files need a case for it at all. Deliberately
+                              narrower than real C++'s own full declarator
+                              grammar: only a PLAIN (pointer_opt-wrapped or
+                              bare) declarator can appear after the first
+                              comma -- an array or function-pointer
+                              declarator mixed into a multi-declarator
+                              statement (`int a, arr[8];`, `int a, (*fp)
+                              (int);`) is a real, stated scope boundary,
+                              not supported, matching this project's own
+                              "narrower, deliberate boundary" pattern used
+                              throughout (see var_decl's own grammar
+                              comment in parser.y for the full reasoning). */
     AST_TYPEDEF_DECL,     /* str1=new name, type=underlying type */
     AST_ENUM_DECL,        /* str1=name, list=AST_ENUM_VALUE entries.
                               Top-level/namespace-level only -- NOT
@@ -673,6 +703,9 @@ struct AstNode {
 
 AstList ast_list_new(void);
 void ast_list_append(AstList *list, AstNode *node);
+void ast_list_append_flatten(AstList *list, AstNode *node); /* see its own
+    doc comment in ast.c -- expands an AST_VAR_DECL_GROUP into its own
+    entries instead of appending it as one */
 
 AstNode *ast_new(AstKind kind, int line);
 AstNode *ast_ident(const char *name, int line);

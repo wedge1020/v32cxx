@@ -19,6 +19,27 @@ void ast_list_append(AstList *list, AstNode *node) {
     list->items[list->count++] = node;
 }
 
+/* Like ast_list_append, except an AST_VAR_DECL_GROUP node (see its own
+ * doc comment in ast.h) is expanded into its own several entries instead
+ * of being appended as one -- the multi-declarator statement support
+ * var_decl's own plain-declarator production adds (parser.y) needs every
+ * caller that folds a var_decl into a surrounding list to use this
+ * instead of a plain ast_list_append, specifically so `int a, b, c;`
+ * lands as three separate AST_VAR_DECL entries in that list, not one
+ * mis-shapen node wrapping three. A strict no-op passthrough to the
+ * plain function above for anything that isn't a group -- every existing
+ * caller of the ordinary ast_list_append this replaces sees zero
+ * behavior change for every node kind it already handled. */
+void ast_list_append_flatten(AstList *list, AstNode *node) {
+    if (node != NULL && node->kind == AST_VAR_DECL_GROUP) {
+        for (int i = 0; i < node->list.count; i++) {
+            ast_list_append(list, node->list.items[i]);
+        }
+    } else {
+        ast_list_append(list, node);
+    }
+}
+
 AstNode *ast_new(AstKind kind, int line) {
     AstNode *n = calloc(1, sizeof(AstNode));
     n->kind = kind;
@@ -92,6 +113,12 @@ static const char *kind_name(AstKind k) {
         case AST_CLASS_DECL: return "ClassDecl";
         case AST_ACCESS_SPEC: return "AccessSpec";
         case AST_VAR_DECL: return "VarDecl";
+        case AST_VAR_DECL_GROUP: return "VarDeclGroup"; /* should never
+            actually be dumped -- flattened away by ast_list_append_flatten
+            before it ever lands in a list a dump would walk -- named here
+            anyway so a bug that DID let one survive would be obvious
+            (a labeled, if unexpected, node) rather than falling through to
+            this function's own "?" fallback for a truly unknown kind */
         case AST_TYPEDEF_DECL: return "TypedefDecl";
         case AST_ENUM_DECL: return "EnumDecl";
         case AST_ENUM_VALUE: return "EnumValue";

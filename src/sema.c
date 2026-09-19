@@ -279,7 +279,7 @@ static void collect_declarations(AstList *decls) {
  * happen -- A would have to already exist, as something other than B,
  * before the second line could even parse.
  */
-static const AstNode *resolve_typedef_chain(const AstNode *type) {
+const AstNode *resolve_typedef_chain(const AstNode *type) {
     int guard = 0;
     while (type != NULL && type->kind == AST_IDENT && guard < 64) {
         AstNode *target = find_typedef_target(type->str1);

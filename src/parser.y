@@ -201,6 +201,7 @@
 %type <list> param_list opt_param_list arg_list opt_arg_list qname_prefix
 %type <list> member_init_list
 %type <list> switch_body enumerator_list union_member_list func_ptr_param_list opt_func_ptr_param_list array_bracket_list
+%type <list> more_plain_declarators
 
 %type <str> name_tok func_name operator_symbol
 %type <access> access_spec
@@ -238,7 +239,7 @@ program:
 
 top_decl_list:
       /* empty */               { $$ = ast_list_new(); }
-    | top_decl_list top_decl    { $$ = $1; ast_list_append(&$$, $2); }
+    | top_decl_list top_decl    { $$ = $1; ast_list_append_flatten(&$$, $2); }
     ;
 
 top_decl:
@@ -386,7 +387,7 @@ opt_base:
 
 member_list:
       /* empty */          { $$ = ast_list_new(); }
-    | member_list member   { $$ = $1; ast_list_append(&$$, $2); }
+    | member_list member   { $$ = $1; ast_list_append_flatten(&$$, $2); }
     ;
 
 member:
@@ -877,15 +878,67 @@ qualified_id_expr:
 /* ---- declarations ------------------------------------------------------ */
 
 var_decl:
-    type_spec pointer_opt IDENTIFIER opt_initializer
+    type_spec pointer_opt IDENTIFIER opt_initializer more_plain_declarators
         {
+            /* The plain declarator, now with an optional comma-separated
+             * tail of MORE plain declarators sharing this SAME base type
+             * -- real C/C++'s own "multiple declarators in one
+             * statement" idiom (`int a, b, c;`, `int a, *b, c = 5;`,
+             * pointer-ness genuinely PER-declarator, matching real C++:
+             * `int *a, b;` declares a pointer and a plain int, not two
+             * pointers). Deliberately narrower than real C++'s full
+             * declarator grammar: an array or function-pointer
+             * declarator can't appear after the first comma here (or as
+             * the first declarator when a comma follows) -- see
+             * AST_VAR_DECL_GROUP's own doc comment in ast.h for the full
+             * reasoning on that scope boundary; those shapes keep using
+             * this production's own sibling alternatives below,
+             * unchanged, exactly as before this round.
+             *
+             * more_plain_declarators can't see `$1` (a separate
+             * nonterminal only ever sees its own RHS symbols in bison,
+             * never a parent rule's), so it hands back each additional
+             * declarator as a bare, UNRESOLVED carrier (name + pointer_
+             * opt value in ->ival + initializer -- see its own comment)
+             * for THIS action, which does have `$1`, to finish
+             * resolving into a real AST_VAR_DECL each, the same
+             * pointer_opt-to-type resolution the primary declarator just
+             * below already does. */
             symtab_insert(g_symtab, g_symtab->current, $3, SYM_VAR);
-            $$ = ast_new(AST_VAR_DECL, @3.first_line);
-            $$->str1 = strdup($3);
-            $$->type = ($2 == 1) ? ast_wrap_pointer($1, @1.first_line)
-                     : ($2 == 2) ? ast_wrap_reference($1, @1.first_line)
-                     : $1;
-            $$->a = $4;
+            AstNode *first = ast_new(AST_VAR_DECL, @3.first_line);
+            first->str1 = strdup($3);
+            first->type = ($2 == 1) ? ast_wrap_pointer($1, @1.first_line)
+                        : ($2 == 2) ? ast_wrap_reference($1, @1.first_line)
+                        : $1;
+            first->a = $4;
+
+            if ($5.count == 0) {
+                /* The overwhelmingly common case -- no comma continuation
+                 * at all -- produces EXACTLY the same single AST_VAR_DECL
+                 * this production always has, so every existing caller
+                 * (top_decl, member, stmt, for_init, union_member_list)
+                 * sees zero change in shape for the case it already
+                 * handles; only a NEW comma continuation ever produces
+                 * the new AST_VAR_DECL_GROUP node below. */
+                $$ = first;
+            } else {
+                $$ = ast_new(AST_VAR_DECL_GROUP, @1.first_line);
+                ast_list_append(&$$->list, first);
+                for (int i = 0; i < $5.count; i++) {
+                    AstNode *spec = $5.items[i]; /* unresolved carrier --
+                        see more_plain_declarators's own comment */
+                    symtab_insert(g_symtab, g_symtab->current, spec->str1, SYM_VAR);
+                    AstNode *resolved = ast_new(AST_VAR_DECL, spec->line);
+                    resolved->str1 = spec->str1; /* ownership transferred
+                        (not re-strdup'd) -- spec itself is a throwaway
+                        carrier, never referenced again after this loop */
+                    resolved->type = (spec->ival == 1) ? ast_wrap_pointer($1, @1.first_line)
+                                   : (spec->ival == 2) ? ast_wrap_reference($1, @1.first_line)
+                                   : $1;
+                    resolved->a = spec->a;
+                    ast_list_append(&$$->list, resolved);
+                }
+            }
         }
     | type_spec pointer_opt IDENTIFIER array_bracket_list opt_array_initializer
         {
@@ -1020,6 +1073,37 @@ var_decl:
         }
     ;
 
+/* ---- additional plain declarators, for the multi-declarator statement
+ * form (`int a, b, c;`) ---------------------------------------------------
+ *
+ * Deliberately produces bare, UNRESOLVED carrier nodes rather than real
+ * AST_VAR_DECLs: a nonterminal can't see a PARENT rule's own symbols in
+ * bison (var_decl's own `$1`, the shared base type, isn't visible here),
+ * so each entry defers its own pointer_opt-to-type resolution to
+ * var_decl's own plain-declarator action, which does have `$1` in hand.
+ * Reuses the AST_VAR_DECL node shape purely as a convenient carrier
+ * (str1=name, ival=pointer_opt's raw 0/1/2 value, a=initializer,
+ * type=NULL -- the "not yet resolved" signal) rather than inventing a
+ * separate struct/node kind just to pass three values up one level; the
+ * carrier itself is discarded the moment var_decl's action finishes
+ * reading it (see that action's own comment). Only a PLAIN declarator is
+ * accepted here -- no array or function-pointer shape -- matching
+ * AST_VAR_DECL_GROUP's own stated scope boundary (ast.h).
+ */
+more_plain_declarators:
+      /* empty */
+        { $$ = ast_list_new(); }
+    | more_plain_declarators ',' pointer_opt IDENTIFIER opt_initializer
+        {
+            $$ = $1;
+            AstNode *spec = ast_new(AST_VAR_DECL, @4.first_line);
+            spec->str1 = strdup($4);
+            spec->ival = $3;
+            spec->a = $5;
+            ast_list_append(&$$, spec);
+        }
+    ;
+
 /* ---- function-pointer parameter-type lists -----------------------------
  *
  * Deliberately separate from this file's own existing param_list/
@@ -1131,6 +1215,54 @@ typedef_decl:
                      : ($3 == 2) ? ast_wrap_reference($2, @2.first_line)
                      : $2;
         }
+    | TYPEDEF type_spec pointer_opt '(' '*' IDENTIFIER ')' '(' opt_func_ptr_param_list ')'
+        {
+            /* Standard-C function-pointer typedef --
+             * `typedef ReturnType (*Name)(ParamTypes);`. Reuses
+             * AST_FUNC_PTR_TYPE/ast_wrap_func_ptr exactly as var_decl's
+             * own standard-C function-pointer declarator does (see
+             * var_decl's own comment on that production) -- a typedef
+             * is just another place a function-pointer TYPE can be
+             * named, and print_type_and_name (codegen.c) already
+             * builds the correct declarator for either target from
+             * this same AST shape, so no new codegen case was needed,
+             * only routing emit_typedefs through print_type_and_name
+             * instead of the plain print_type it used before this
+             * production existed (print_type alone can't place a name
+             * INSIDE the parens the standard-C form needs). Disambiguated
+             * from the plain alternative above by the '(' immediately
+             * after pointer_opt (an IDENTIFIER can't also be a '('), and
+             * from the Vircon32-style alternative just below by the next
+             * token after that same '(' -- a bare '*' can only ever start
+             * THIS form, since type_spec's own first-set never includes
+             * '*' (identical reasoning to var_decl's own two function-
+             * pointer productions, not re-derived from scratch here). */
+            symtab_insert(g_symtab, g_symtab->current, $6, SYM_TYPEDEF);
+            $$ = ast_new(AST_TYPEDEF_DECL, @6.first_line);
+            $$->str1 = strdup($6);
+            AstNode *ret = ($3 == 1) ? ast_wrap_pointer($2, @2.first_line)
+                         : ($3 == 2) ? ast_wrap_reference($2, @2.first_line)
+                         : $2;
+            $$->type = ast_wrap_func_ptr(ret, $9, @2.first_line);
+        }
+    | TYPEDEF type_spec pointer_opt '(' opt_func_ptr_param_list ')' '*' IDENTIFIER
+        {
+            /* Vircon32-native function-pointer typedef --
+             * `typedef ReturnType(ParamTypes)* Name;` -- see the
+             * standard-C alternative just above for the full reasoning
+             * (shared between both). Both alternatives build the
+             * identical AST_FUNC_PTR_TYPE regardless of which one
+             * matched, the same "AST carries no memory of which
+             * spelling was used" treatment every other dual-accepted
+             * declarator in this grammar already has. */
+            symtab_insert(g_symtab, g_symtab->current, $8, SYM_TYPEDEF);
+            $$ = ast_new(AST_TYPEDEF_DECL, @8.first_line);
+            $$->str1 = strdup($8);
+            AstNode *ret = ($3 == 1) ? ast_wrap_pointer($2, @2.first_line)
+                         : ($3 == 2) ? ast_wrap_reference($2, @2.first_line)
+                         : $2;
+            $$->type = ast_wrap_func_ptr(ret, $5, @2.first_line);
+        }
     ;
 
 /* ---- enums -----------------------------------------------------------
@@ -1202,7 +1334,7 @@ union_decl:
 
 union_member_list:
       /* empty */                          { $$ = ast_list_new(); }
-    | union_member_list var_decl ';'        { $$ = $1; ast_list_append(&$$, $2); }
+    | union_member_list var_decl ';'        { $$ = $1; ast_list_append_flatten(&$$, $2); }
     ;
 
 /* ---- statements --------------------------------------------------------- */
@@ -1218,7 +1350,7 @@ block:
 
 stmt_list:
       /* empty */        { $$ = ast_list_new(); }
-    | stmt_list stmt      { $$ = $1; ast_list_append(&$$, $2); }
+    | stmt_list stmt      { $$ = $1; ast_list_append_flatten(&$$, $2); }
     ;
 
 stmt:
@@ -1334,7 +1466,48 @@ stmt:
 
 for_init:
       /* empty */  { $$ = NULL; }
-    | var_decl      { $$ = $1; }
+    | var_decl      {
+            /* A deliberate, stated scope boundary: multi-declarator
+             * support (AST_VAR_DECL_GROUP -- see its own doc comment in
+             * ast.h) is for an ORDINARY statement/member/global, whose
+             * caller flattens the group back into several list entries
+             * (ast_list_append_flatten). A for-loop's own init clause
+             * isn't a list entry at all -- it's AST_FOR's own single `a`
+             * slot -- so a group reaching here unflattened would either
+             * silently corrupt the AST (nothing downstream has a case
+             * for this node kind) or need real, separate codegen work
+             * teaching the for-loop's own init-clause printer the C
+             * comma-declarator syntax it doesn't have today
+             * (`for (int i = 0, j = 0; ...)`). Reported directly rather
+             * than silently mishandled: real C++ multi-declarator
+             * for-loop inits (`for (int i = 0, j = 0; ...; ...)`) are
+             * NOT supported yet -- only the first declarator is kept,
+             * with a clear parse-time error naming the file/line, the
+             * same diagnostic shape yyerror (below) already uses. */
+            if ($1->kind == AST_VAR_DECL_GROUP) {
+                /* YYERROR (not just a printed message) -- this grammar
+                 * has no `error`-token recovery production anywhere, so
+                 * this makes yyparse() itself return failure immediately,
+                 * the same real, build-stopping outcome an ordinary
+                 * syntax error already has, rather than silently
+                 * DROPPING every declarator but the first the way a mere
+                 * warning-and-degrade response would -- dropping a
+                 * user-written declaration is a correctness problem, not
+                 * a style nit sema_warning's own non-fatal treatment
+                 * elsewhere in this project is right for. Bison's own
+                 * default "syntax error" follows this message on the
+                 * same line-numbered basis, which is fine -- a second,
+                 * generic line is a small redundancy, not a wrong one. */
+                fprintf(stderr, "%s:%d: error: a for-loop's own init clause"
+                    " doesn't support multiple declarators yet"
+                    " (`for (int i = 0, j = 0; ...)`) -- split this into"
+                    " one declarator here plus assignment(s) in the loop"
+                    " body, or separate statements before the loop\n",
+                    g_current_filename, $1->line);
+                YYERROR;
+            }
+            $$ = $1;
+        }
     | expr
         {
             $$ = ast_new(AST_EXPR_STMT, @1.first_line);
