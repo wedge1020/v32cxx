@@ -836,6 +836,38 @@ param:
                      : ($2 == 2) ? ast_wrap_reference($1, @1.first_line)
                      : $1;
         }
+    | type_spec pointer_opt IDENTIFIER '=' expr
+        {
+            /* Default parameter value -- `void greet(int x, int y = 5);`
+             * -- stored in AST_PARAM's own previously-unused `a` slot
+             * (see its own doc comment in ast.h). Reuses `expr` directly
+             * rather than a narrower "constant-expression-only"
+             * production: real C++ allows any expression here (a call,
+             * another parameter... no, not another parameter, but a
+             * global, a class's own static member, etc.), and this
+             * grammar has no comma operator at the `expr` level at all
+             * (confirmed before relying on it -- see `expr`'s own
+             * production further down), so there's no ambiguity between
+             * this default value and `param_list`'s own comma
+             * separators the way there would be in a grammar that DID
+             * have one. No arity/ordering validation happens here (real
+             * C++ requires every parameter AFTER the first defaulted one
+             * to also have a default) -- sema.c's own overload-resolution
+             * arity check is where a call missing a required, non-
+             * defaulted argument gets caught; a malformed declaration
+             * that defaults an EARLIER parameter but not a later one is
+             * accepted rather than specially diagnosed, matching this
+             * project's own "miss a case rather than guess wrong"
+             * philosophy for a pattern no real intro-level test is
+             * likely to hit deliberately. */
+            symtab_insert(g_symtab, g_symtab->current, $3, SYM_PARAM);
+            $$ = ast_new(AST_PARAM, @3.first_line);
+            $$->str1 = strdup($3);
+            $$->type = ($2 == 1) ? ast_wrap_pointer($1, @1.first_line)
+                     : ($2 == 2) ? ast_wrap_reference($1, @1.first_line)
+                     : $1;
+            $$->a = $5;
+        }
     | type_spec pointer_opt IDENTIFIER '[' ']'
         {
             /* Array PARAMETER syntax, `void foo(int arr[])` -- matches

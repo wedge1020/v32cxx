@@ -255,7 +255,18 @@ typedef enum {
                               AST_MEMBER_INIT below for what it holds, and
                               sema.c's resolve_member_init_list for how each
                               entry gets validated and resolved. */
-    AST_PARAM,            /* str1=name, type=param type */
+    AST_PARAM,            /* str1=name, type=param type, a=default value
+                              expression or NULL -- `int y = 5` in a
+                              parameter list. Not itself an assignment
+                              (AST_ASSIGN would be the wrong shape here --
+                              there's no lvalue being assigned to at the
+                              declaration site, just a value recorded for
+                              call sites that omit this argument); `a`'s
+                              value is only ever READ, never itself
+                              lowered/codegen'd in place -- see
+                              fill_default_args's own doc comment
+                              (lower.c) for where and how a call missing
+                              this argument gets it spliced in. */
     AST_MEMBER_INIT_LIST, /* list=AST_MEMBER_INIT entries, in the order
                               written -- only ever appears in an
                               AST_FUNC_DEF's own `c` slot (see there); never

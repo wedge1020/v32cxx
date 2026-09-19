@@ -484,12 +484,70 @@ first written (see docs/DESIGN_NOTES.md for both); the rest are listed
 here so they're visible rather than silently discovered one at a time
 later.
 
-- **Default parameter values** (`void greet(int x, int y = 5);`) —
-  not accepted at all: `param` has no grammar shape for `= expr` after
-  a parameter's name, so this is a parse-time rejection ("syntax error,
-  unexpected '=', expecting ')'"), not a silent gap. One of the most
-  common things an intro course teaches early (a function callable with
-  fewer arguments than it declares).
+- **FIXED — default parameter values** (`void greet(int x, int y =
+  5);`) **used to be a flat parse rejection.** Found trying to
+  transpile a larger, real-world test file (a freestanding "Space
+  Invaders" demo) whose very first blocker was `Random(unsigned int
+  seed = 0x1234ABCDu) : mState(seed) {}` — `param` had no grammar
+  shape for `= expr` after a parameter's name at all ("syntax error,
+  unexpected '=', expecting ')'" for a plain function, or, thanks to
+  this grammar's own GLR ambiguity resolution picking a different
+  parse path first, the somewhat more confusing "unexpected INT_KW,
+  expecting COLONCOLON" for a constructor). One of the most common
+  things an intro course teaches early (a function callable with fewer
+  arguments than it declares), and by far the most involved single fix
+  on this list: a real default value has to work everywhere real C++
+  allows a call to omit a trailing argument, not just the one obvious
+  case.
+
+  Fixed in four layers:
+  - **Grammar** (`parser.y`): a new `param` alternative accepts `type_spec
+    pointer_opt IDENTIFIER '=' expr`, storing the default expression in
+    `AST_PARAM`'s own previously-unused `a` field. No arity/ordering
+    validation happens here (real C++ requires every parameter after
+    the first defaulted one to also be defaulted) — a malformed
+    declaration that defaults an earlier parameter but not a later one
+    is accepted rather than specially diagnosed, this project's usual
+    "miss a case rather than guess wrong" stance for a pattern no real
+    test is likely to hit by accident.
+  - **Semantic analysis** (`sema.c`): overload resolution's own arity
+    check, previously a single exact count, is now a RANGE — from
+    `min_required_args()` (the count of leading non-defaulted
+    parameters) up to the full declared parameter count — for both the
+    single-candidate and genuinely-overloaded resolution paths.
+  - **Lowering** (`lower.c`): Vircon32 C, like plain C, has no
+    default-argument mechanism at all, so every call the generated code
+    makes must supply every argument explicitly — `fill_default_args`
+    splices cloned copies of the missing trailing parameters' own
+    default-value expressions (`clone_default_expr`) into a resolved
+    call's argument list. Hooked into every place this project builds a
+    call against a possibly-defaulted target: an ordinary function or
+    method call (`finalize_call`), a constructor invoked via
+    direct-initialization or `new` (the shared `fixup_ctor_reference_args`
+    both go through), and — found only by then actually testing the
+    "declare a var with no args at all" case — the *implicit*
+    zero-argument constructor call a plain `ClassName var;` declaration
+    triggers, both for a single stack local and for a stack array's own
+    per-element constructor loop, and a derived class's own implicit
+    call to its base's constructor when no member-initializer list
+    names the base at all. Real C++ treats a constructor whose real
+    parameters are all defaulted as just as much a "default
+    constructor" as one declaring none at all, and this project's own
+    `find_zero_arg_constructor` (the single lookup all four of those
+    call sites already shared) needed the identical widening
+    `sema.c`'s own arity check got, plus a matching widening to
+    `check_implicit_base_construction`'s independent copy of the same
+    "does the base have a default constructor" question.
+
+  Verified against tests/81sample.cpp, which exercises all four
+  argument-filling shapes above end to end: not just a clean
+  `--target=standard` + gcc compile, but an actual run of the compiled
+  binary, whose exit code was checked against the exact expected value
+  computed independently in Python (accounting for 32-bit signed
+  overflow in the LCG arithmetic one of the test's own default-valued
+  constructors uses) — confirming every filled-in default argument
+  carries the right value at runtime, not just that the generated C
+  happens to compile.
 - **Static members** (`static int count;` inside a class body) — also
   a flat parse rejection ("syntax error, unexpected INT_KW, expecting
   COLONCOLON") — `member` has no grammar shape recognizing the `static`

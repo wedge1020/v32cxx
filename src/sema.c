@@ -1322,6 +1322,26 @@ void collect_free_function_candidates(const char *name, AstNode ***out, int *out
  * and no existing test in this project's suite had ever declared BOTH a
  * copy constructor AND another overload of the same class before this
  * round's own audit specifically went looking for one. */
+/* The fewest arguments a call to `func` can supply and still be valid
+ * -- the count of LEADING parameters with no default value (`a ==
+ * NULL`). Real C++ requires every parameter after the first defaulted
+ * one to also be defaulted, so in a well-formed declaration this is
+ * simply the index of the first defaulted parameter; this doesn't
+ * itself enforce that ordering (see the grammar's own comment on
+ * `param`'s default-value alternative for why), it just counts
+ * forward from the start and stops at the first one that has a
+ * default -- for a malformed declaration that defaults an earlier
+ * parameter but not a later one, this undercounts the true minimum
+ * rather than rejecting the declaration, matching this project's own
+ * "miss a case rather than guess wrong" philosophy. */
+static int min_required_args(const AstNode *func) {
+    int n = 0;
+    for (; n < func->list.count; n++) {
+        if (func->list.items[n]->a != NULL) break;
+    }
+    return n;
+}
+
 static int type_matches_param(const AstNode *param_type, const AstNode *arg_type) {
     if (types_equal(param_type, arg_type)) return 1;
     const AstNode *p = param_type;
@@ -1377,13 +1397,29 @@ static void resolve_overload_generic(AstNode *site, const char *name, AstNode **
          * should be. Still worth checking arity even here, though --
          * real C++ would reject a call with the wrong number of
          * arguments even when there's only one candidate to consider. */
-        if (candidates[0]->list.count == arg_count) {
+        /* Default parameter values (AST_PARAM's own `a` slot) widen this
+         * from a single exact arity to a RANGE -- anywhere from
+         * min_required_args(candidates[0]) (every non-defaulted leading
+         * parameter, minimum) up to the full declared parameter count
+         * (maximum, every parameter supplied explicitly). A call falling
+         * in that range still resolves to this candidate; lower.c's own
+         * fill_default_args splices in the missing trailing arguments'
+         * default-value expressions later, once this CallResolution
+         * exists for it to consult. */
+        if (arg_count <= candidates[0]->list.count && arg_count >= min_required_args(candidates[0])) {
             CallResolution *cr = calloc(1, sizeof(CallResolution));
             cr->resolved_target = candidates[0];
             site->sema_info = cr;
-        } else {
+        } else if (min_required_args(candidates[0]) == candidates[0]->list.count) {
+            /* No default parameters at all on this candidate -- keep the
+             * exact, pre-existing error message unchanged rather than
+             * introducing "at least N" phrasing for the overwhelmingly
+             * common case that never involves a default value. */
             sema_error(site->line, "'%s' expects %d argument(s), but %d were given",
                        name, candidates[0]->list.count, arg_count);
+        } else {
+            sema_error(site->line, "'%s' expects between %d and %d argument(s), but %d were given",
+                       name, min_required_args(candidates[0]), candidates[0]->list.count, arg_count);
         }
         free(candidates);
         return;
@@ -1411,9 +1447,20 @@ static void resolve_overload_generic(AstNode *site, const char *name, AstNode **
     int match_count = 0;
     for (int i = 0; i < count; i++) {
         AstNode *cand = candidates[i];
-        if (cand->list.count != arg_count) continue;
+        /* Same widened-arity-range check as the single-candidate branch
+         * above (see min_required_args's own doc comment) -- a
+         * candidate with trailing default parameters can match a call
+         * supplying FEWER arguments than it declares. Only the first
+         * `arg_count` parameters are actually type-checked below
+         * (`arg_types` itself only has `arg_count` entries -- a
+         * defaulted, omitted trailing parameter has no supplied
+         * argument to compare against, or a type to even need
+         * comparing: its own default expression is what will fill it
+         * in later, unconditionally, not something overload resolution
+         * needs to weigh in on). */
+        if (arg_count > cand->list.count || arg_count < min_required_args(cand)) continue;
         int ok = 1;
-        for (int j = 0; j < cand->list.count; j++) {
+        for (int j = 0; j < arg_count; j++) {
             if (!type_matches_param(cand->list.items[j]->type, arg_types[j])) { ok = 0; break; }
         }
         if (ok) { match = cand; match_count++; }
@@ -2053,11 +2100,21 @@ static void check_implicit_base_construction(AstNode *func, AstNode *current_cla
         AstNode *m = base_layout->methods.items[i];
         if (strcmp(m->str1, base_class->str1) != 0) continue; /* not a constructor */
         base_has_any_ctor = 1;
-        if (m->kind == AST_FUNC_DEF && m->list.count == 0) { /* has a body, zero
-            explicit params -- at sema time, before this-injection, so no
-            "this" to account for yet (unlike lower.c's own equivalent
-            check, which runs after this-injection and so compares
-            against 1, not 0) */
+        if (m->kind != AST_FUNC_DEF) continue; /* no body */
+        /* Zero explicit params -- at sema time, before this-injection, so
+         * no "this" to account for yet (unlike lower.c's own equivalent
+         * check, find_zero_arg_constructor, which runs after
+         * this-injection and so compares against 1, not 0) -- OR every
+         * explicit param has a default value (min_required_args(m) == 0),
+         * the same "callable with zero arguments" widening
+         * find_zero_arg_constructor's own doc comment describes; real
+         * C++ calls both shapes a "default constructor" equally, so this
+         * check needs the identical widening lower.c's own copy of this
+         * logic already got, or a base class whose only constructor is,
+         * say, `Base(int x = 7)` would wrongly be reported as having "no
+         * default constructor" here despite compiling as one via
+         * lower.c's own already-widened find_zero_arg_constructor. */
+        if (m->list.count == 0 || min_required_args(m) == 0) {
             base_has_zero_arg_ctor = 1;
             break;
         }

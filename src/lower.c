@@ -723,6 +723,15 @@ static AstNode *address_of_if_needed(AstNode *obj_expr, AstNode *class_decl, Loc
     return addr;
 }
 
+/* Forward declarations -- both are defined further down this file
+ * (clone_default_expr and fill_default_args, right before
+ * finalize_call's own definition), but fixup_ctor_reference_args
+ * (just below) needs to call fill_default_args, and C requires a
+ * declaration before use. See fill_default_args's own doc comment,
+ * at its actual definition, for what these do and why. */
+static AstNode *clone_default_expr(const AstNode *n);
+static void fill_default_args(AstList *call_args, AstNode *target, int param_offset);
+
 /* A real, previously-undiscovered bug found alongside the copy-
  * constructor overload-matching fix in sema.c (type_matches_param):
  * once a copy constructor (`Shape(const Shape &other);`) actually
@@ -751,6 +760,23 @@ static AstNode *address_of_if_needed(AstNode *obj_expr, AstNode *class_decl, Loc
  * identical reason. */
 static void fixup_ctor_reference_args(AstList *args, AstNode *ctor, AstNode *class_decl, LocalVarType *locals) {
     int param_offset = (ctor->list.count > 0) ? 1 : 0;
+    /* Same default-argument splice finalize_call's own AST_MEMBER/
+     * AST_IDENT call path applies (see fill_default_args's own doc
+     * comment) -- constructors need it too (`Random(unsigned int seed
+     * = 0x1234ABCDu)` is itself a constructor), and this is the one
+     * shared choke point both AST_NEW and AST_DIRECT_INIT already run
+     * their constructor calls through, so fixing it here covers both
+     * without duplicating the call. Deliberately before the reference-
+     * argument loop just below, same ordering reason as finalize_call's
+     * own call to fill_default_args. `fill_default_args` itself is
+     * defined further up this file, just above this function's own
+     * forward-declared use of it here -- both were factored out
+     * together since they solve the same "every call needs every
+     * argument explicit" constraint for the same two constructor call
+     * shapes (forward-declared just above this function; its real
+     * definition, and clone_default_expr's, sit further down this
+     * file, right before finalize_call). */
+    fill_default_args(args, ctor, param_offset);
     for (int i = 0; i < args->count; i++) {
         int param_idx = i + param_offset;
         if (param_idx >= ctor->list.count) break; /* more args than declared
@@ -762,6 +788,119 @@ static void fixup_ctor_reference_args(AstList *args, AstNode *ctor, AstNode *cla
         if (param->type != NULL && param->type->kind == AST_REFERENCE_TYPE) {
             args->items[i] = address_of_if_needed(args->items[i], class_decl, locals);
         }
+    }
+}
+
+/* A best-effort, shallow-recursive clone of a default-parameter-value
+ * expression (AST_PARAM's own `a` slot) -- needed because the SAME
+ * default-value node would otherwise end up aliased into every call
+ * site that omits that argument (`fill_default_args`, just below,
+ * would append the identical `AstNode *` into two different calls'
+ * own `list`s), and while that's harmless for a pass that only ever
+ * READS an expression (codegen, most of this file's own recursive
+ * walks), a handful of phases mutate a node's own fields in place
+ * (ternary-hoisting being the clearest example -- see
+ * hoist_ternaries_in_expr's own doc comment on why this file already
+ * keeps several independently-reasoned-about locals lists rather than
+ * share one) -- a default value visited via two different call sites
+ * could then be double-transformed. Covers the expression shapes a
+ * default parameter value is overwhelmingly likely to actually be in
+ * practice (a literal, an identifier, a unary/binary operator
+ * expression, a member access, a qualified name) -- deliberately NOT
+ * exhaustive over every AST_* expression kind this project has (a
+ * default value that's itself a ternary, a `new`, or a lambda-shaped
+ * anything is vanishingly rare and this project doesn't even parse
+ * some of those at all); an unhandled kind falls through to reusing
+ * the SAME node unchanged, a documented, honest aliasing risk rather
+ * than a crash, matching this project's own "miss a case rather than
+ * guess wrong" philosophy everywhere else. */
+static AstNode *clone_default_expr(const AstNode *n) {
+    if (n == NULL) return NULL;
+    switch (n->kind) {
+        case AST_INT_LIT:
+        case AST_FLOAT_LIT:
+        case AST_CHAR_LIT:
+        case AST_BOOL_LIT:
+        case AST_NULL_LIT:
+        case AST_IDENT:
+        case AST_THIS: {
+            AstNode *c = ast_new(n->kind, n->line);
+            c->str1 = (n->str1 != NULL) ? strdup(n->str1) : NULL;
+            c->ival = n->ival;
+            c->fval = n->fval;
+            return c;
+        }
+        case AST_STRING_LIT: {
+            AstNode *c = ast_new(n->kind, n->line);
+            c->str1 = (n->str1 != NULL) ? strdup(n->str1) : NULL;
+            return c;
+        }
+        case AST_UNOP:
+        case AST_CAST:
+        case AST_SIZEOF: {
+            AstNode *c = ast_new(n->kind, n->line);
+            c->str1 = (n->str1 != NULL) ? strdup(n->str1) : NULL;
+            c->type = n->type; /* a type node, not a value -- shared by
+                reference everywhere else in this file too (see, e.g.,
+                AST_NEW's own `type` field), never mutated in place */
+            c->a = clone_default_expr(n->a);
+            return c;
+        }
+        case AST_BINOP: {
+            AstNode *c = ast_new(n->kind, n->line);
+            c->str1 = (n->str1 != NULL) ? strdup(n->str1) : NULL;
+            c->a = clone_default_expr(n->a);
+            c->b = clone_default_expr(n->b);
+            return c;
+        }
+        case AST_MEMBER: {
+            AstNode *c = ast_new(n->kind, n->line);
+            c->str1 = (n->str1 != NULL) ? strdup(n->str1) : NULL;
+            c->str2 = (n->str2 != NULL) ? strdup(n->str2) : NULL;
+            c->a = clone_default_expr(n->a);
+            return c;
+        }
+        case AST_QUALIFIED_ID: {
+            AstNode *c = ast_new(n->kind, n->line);
+            for (int i = 0; i < n->list.count; i++) {
+                ast_list_append(&c->list, clone_default_expr(n->list.items[i]));
+            }
+            return c;
+        }
+        default:
+            /* See this function's own doc comment -- reused unchanged,
+             * a documented aliasing risk, not a crash. */
+            return (AstNode *)n;
+    }
+}
+
+/* Splices default-value expressions (cloned via clone_default_expr) in
+ * for every trailing parameter `target` declares beyond what
+ * `call_args` actually supplies -- the C-side counterpart to real
+ * C++'s own default-argument mechanism, which Vircon32 C (and even
+ * plain C) has no equivalent for at all: every call this project
+ * generates must supply every argument explicitly, so the ones a
+ * user's call site omitted have to be filled in somewhere, and this is
+ * that somewhere. `param_offset` is the same "does target->list start
+ * with an injected `this`" skip finalize_call's own reference-argument
+ * fixup already computes just below -- passed in rather than
+ * recomputed so the two stay trivially in sync.
+ *
+ * A resolved call is guaranteed (by sema.c's own widened arity check,
+ * resolve_overload_generic's own doc comment) to have called with at
+ * least `min_required_args(target)` arguments -- every parameter this
+ * loop reaches is therefore guaranteed to have a non-NULL default
+ * value (`param->a`) UNLESS the call somehow reached here unresolved
+ * against that guarantee; `param->a == NULL` is treated as "stop,
+ * nothing more to fill" rather than a crash, matching this file's own
+ * "fail closed" discipline elsewhere (see fixup_ctor_reference_args's
+ * own identical stance on an out-of-range index). */
+static void fill_default_args(AstList *call_args, AstNode *target, int param_offset) {
+    int total_params = target->list.count - param_offset;
+    for (int i = call_args->count; i < total_params; i++) {
+        AstNode *param = target->list.items[i + param_offset];
+        if (param->a == NULL) break;
+        ast_list_append(call_args, clone_default_expr(param->a));
     }
 }
 
@@ -808,6 +947,17 @@ static void finalize_call(AstNode *call, AstNode *class_decl, LocalVarType *loca
      * mismatch `this` against a real argument. */
     {
         int param_offset = (target->list.count > 0 && callee->kind == AST_MEMBER) ? 1 : 0;
+        /* Fill in any trailing default-value arguments the call site
+         * itself omitted BEFORE the reference-argument fixup loop just
+         * below runs -- deliberately in this order, not the reverse:
+         * a freshly-spliced-in default-value expression needs that
+         * same &-insertion treatment if the parameter it fills happens
+         * to be a reference parameter too (`void f(Shape &s = x)` is
+         * unusual but not disallowed), and running this first means
+         * the loop below sees it as just another argument at its own
+         * index, with no separate case needed for "was it originally
+         * supplied or just filled in". */
+        fill_default_args(&call->list, target, param_offset);
         /* An AST_MEMBER callee (an ordinary method call, already
          * rewritten by this-injection into `obj->name(...)` by this
          * point -- OR an operator-overload rewrite that resolved to a
@@ -2113,11 +2263,27 @@ static void new_delete_rewrite_free_functions(AstList *decls) {
  * statement list first.
  */
 
-/* Finds `class_decl`'s own zero-argument constructor, if one exists and
- * has a body -- see this phase's own doc comment above for exactly why
- * both conditions matter. Constructors are never inherited in C++, so
- * this only ever needs to check `class_decl`'s OWN methods list, unlike
- * find_declaring_class's ancestor-walking elsewhere in this file. */
+/* Finds `class_decl`'s own constructor that's CALLABLE with zero
+ * arguments -- either it truly declares none at all (`m->list.count ==
+ * 1`, just the injected "this"), or every one of its real parameters
+ * has a default value (default parameter values, this project's own
+ * later addition -- see AST_PARAM's own doc comment in ast.h and
+ * min_required_args's own doc comment in sema.c). Real C++ calls both
+ * shapes a "default constructor" for exactly this reason: `Random()`
+ * and `Random(int seed = 1234)` are equally valid for `Random r;` to
+ * resolve against. Has a body -- see this phase's own doc comment
+ * above for why that matters. Constructors are never inherited in
+ * C++, so this only ever needs to check `class_decl`'s OWN methods
+ * list, unlike find_declaring_class's ancestor-walking elsewhere in
+ * this file.
+ *
+ * A caller building a call to whatever this returns must NOT assume
+ * "zero arguments" any more, now that the second shape is possible --
+ * `this` still needs to be passed, and building a correct call also
+ * means splicing in the constructor's own default-value expressions
+ * for any real parameter beyond `this`, exactly the way
+ * fill_default_args already does for an ordinary resolved call. Every
+ * call site below that uses this function's result does so. */
 static AstNode *find_zero_arg_constructor(AstNode *class_decl) {
     ClassLayout *layout = (ClassLayout *)class_decl->sema_info;
     if (layout == NULL) return NULL;
@@ -2126,6 +2292,11 @@ static AstNode *find_zero_arg_constructor(AstNode *class_decl) {
         if (strcmp(m->str1, class_decl->str1) != 0) continue; /* not a constructor at all */
         if (m->kind != AST_FUNC_DEF) continue; /* no body -- see doc comment */
         if (m->list.count == 1) return m; /* just the injected "this" -- zero explicit params */
+        int all_defaulted = 1;
+        for (int p = 1; p < m->list.count; p++) {
+            if (m->list.items[p]->a == NULL) { all_defaulted = 0; break; }
+        }
+        if (all_defaulted) return m;
     }
     return NULL;
 }
@@ -2202,9 +2373,24 @@ static AstNode *build_array_ctor_loop(AstNode *stmt, AstNode *var_class, int *ar
     addr->str1 = strdup("addr");
     addr->a = subscript;
 
+    /* fill_default_args (see its own doc comment) expects an argument
+     * list that does NOT include the receiver -- exactly like
+     * fixup_ctor_reference_args's own `args` parameter -- so it's
+     * called on an EMPTY temporary list here (this call site always
+     * supplies zero explicit real arguments, by construction: see
+     * find_zero_arg_constructor's own doc comment on why that no
+     * longer means the constructor takes none at all), and the
+     * receiver is prepended into `call->list` separately, after. */
+    AstList real_args = ast_list_new();
+    fill_default_args(&real_args, ctor, 1); /* offset 1 -- ctor->list
+        starts with the injected "this" */
+
     AstNode *call = ast_new(AST_CALL, stmt->line);
     call->a = ast_ident(mangled, stmt->line);
     ast_list_append(&call->list, addr);
+    for (int k = 0; k < real_args.count; k++) {
+        ast_list_append(&call->list, real_args.items[k]);
+    }
 
     AstNode *call_stmt = ast_new(AST_EXPR_STMT, stmt->line);
     call_stmt->a = call;
@@ -2275,9 +2461,18 @@ static void inject_ctor_calls_block(AstNode *block, AstNode *class_decl, LocalVa
                     addr->str1 = strdup("addr");
                     addr->a = ast_ident(stmt->str1, stmt->line);
 
+                    /* Same "fill into an empty, receiver-free list
+                     * first" ordering as build_array_ctor_loop's own
+                     * identical case -- see its doc comment for why. */
+                    AstList real_args = ast_list_new();
+                    fill_default_args(&real_args, ctor, 1);
+
                     AstNode *call = ast_new(AST_CALL, stmt->line);
                     call->a = ast_ident(mangled, stmt->line);
                     ast_list_append(&call->list, addr);
+                    for (int k = 0; k < real_args.count; k++) {
+                        ast_list_append(&call->list, real_args.items[k]);
+                    }
 
                     AstNode *expr_stmt = ast_new(AST_EXPR_STMT, stmt->line);
                     expr_stmt->a = call;
@@ -2696,6 +2891,16 @@ static void inject_base_ctor_calls_classes(AstList *decls) {
                         FuncSemaInfo *base_info = (FuncSemaInfo *)base_ctor->sema_info;
                         mangled = (base_info != NULL) ? base_info->mangled_name : base_ctor->str1;
                         explicit_args = base_entry->list;
+                        /* `: Base(1)` written against a base constructor
+                         * that declares MORE parameters than were
+                         * written, the rest defaulted (`Base(int a, int
+                         * b = 2)`) -- sema.c's own widened arity check
+                         * (resolve_overload_generic) already allows this
+                         * to resolve; splice the missing trailing
+                         * defaults in here, same as everywhere else a
+                         * CallResolution against a defaulted constructor
+                         * gets acted on. */
+                        fill_default_args(&explicit_args, base_ctor, 1);
                     } else {
                         /* Implicit -- no explicit delegation named the
                          * base at all. Find its own zero-arg constructor
@@ -2709,7 +2914,15 @@ static void inject_base_ctor_calls_classes(AstList *decls) {
                         if (implicit_ctor == NULL) continue;
                         FuncSemaInfo *implicit_info = (FuncSemaInfo *)implicit_ctor->sema_info;
                         mangled = (implicit_info != NULL) ? implicit_info->mangled_name : implicit_ctor->str1;
-                        /* explicit_args stays empty -- a zero-arg call */
+                        /* explicit_args starts empty, but the base's own
+                         * constructor may still declare real parameters
+                         * that all have defaults (see
+                         * find_zero_arg_constructor's own doc comment) --
+                         * fill_default_args (offset 1, past the base
+                         * ctor's own injected "this") splices those in,
+                         * a no-op appending nothing when the base ctor
+                         * truly takes no parameters at all. */
+                        fill_default_args(&explicit_args, implicit_ctor, 1);
                     }
 
                     AstNode *receiver = cast_receiver_if_needed(ast_ident("this", m->line), n, layout->base_class_decl, 0 /* this is never const -- see this_inject_method */);

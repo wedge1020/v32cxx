@@ -6401,3 +6401,123 @@ prefixed expected-fail entries, no regressions -- this fix only adds a
 field where a class's struct had none at all; every class with at
 least one data member or a vtable is completely unaffected (`layout->
 count == 0` is the only branch that changed).
+
+## Round: default parameter values, found trying to transpile a real-world file
+
+Triggered by the user attempting to transpile a large (~1060-line), real-
+world freestanding C++ "Space Invaders" demo. The very first blocker was
+line 116: `Random(unsigned int seed = 0x1234ABCDu) : mState(seed) {}`,
+reported as `syntax error, unexpected INT_KW, expecting COLONCOLON`. That
+one line actually combines two separate, independent gaps (default
+parameter values, and `unsigned int` -- the latter not yet addressed, see
+README's own still-open gaps list); this round closes the first.
+
+Default parameter values (`README.md`'s own former "flat parse rejection"
+entry) needed changes at every stage of the pipeline, not just the parser,
+because the *reason* real C++ can get away with them -- the compiler
+fills in the missing arguments as part of overload resolution, invisibly
+-- has no equivalent at all in the C this project generates. Something
+downstream has to do that filling-in explicitly, in the generated code
+itself, for every single place a call can be made against a function or
+constructor that declares more parameters than the call supplies.
+
+**Grammar** (`parser.y`): one new `param` alternative, `type_spec
+pointer_opt IDENTIFIER '=' expr`, storing the default value in
+`AST_PARAM`'s own previously-unused `a` field. Verified conflict-free via
+a standalone `bison -v` run before touching anything else -- this
+grammar already runs GLR with `%expect 27`, and a new alternative on an
+existing, heavily-reused nonterminal (`param`) is exactly the kind of
+change likeliest to introduce a new conflict silently.
+
+**Semantic analysis** (`sema.c`): `min_required_args()` computes the
+fewest arguments a call can supply and still resolve (the count of
+leading non-defaulted parameters -- it doesn't itself enforce that only
+TRAILING parameters may be defaulted; a malformed declaration that
+defaults an earlier one but not a later one just undercounts rather than
+being specially diagnosed, this project's usual stance for a pattern no
+real test is likely to hit by accident). `resolve_overload_generic`'s
+arity check, in both its single-candidate and genuinely-overloaded
+branches, widened from a single required count to a range. Along the
+way, fixed a latent out-of-bounds read in the overloaded branch's own
+type-matching loop: it iterated up to `cand->list.count` against
+`arg_types`, an array only ever sized to `arg_count` -- harmless while
+every candidate's arity had to exactly equal `arg_count` anyway (the loop
+bound and the array size were accidentally always equal), but a real
+bug the moment a candidate could have MORE declared parameters than
+supplied arguments, which default values now make possible.
+
+**Lowering** (`lower.c`) is where most of the actual complexity lives:
+`fill_default_args(call_args, target, param_offset)` splices cloned
+copies (`clone_default_expr` -- shallow-recursive, covers the common
+expression shapes a default value is realistically ever written as, and
+falls back to reusing the same node unchanged for anything else, a
+documented aliasing risk rather than a crash) of a resolved call's
+missing trailing default-value expressions into its own argument list.
+Cloning matters, not just convenience: the *same* default-value AST node
+is shared across every call site that omits that argument, and a later
+phase that mutates a node's own fields in place (ternary-hoisting, most
+notably) visiting it twice through two different call sites would
+otherwise double-transform it.
+
+Getting every call site that needed this right took more than one pass:
+
+- The obvious one, `finalize_call` (ordinary function/method calls) and
+  `fixup_ctor_reference_args` (the shared helper both `new T(args)` and
+  stack direct-initialization already funnel constructor calls through)
+  were both straightforward -- called with the receiver/`this` NOT yet
+  in the argument list, matching this project's own existing convention
+  for both functions.
+- Testing surfaced a second, less obvious case almost immediately: a
+  bare `Random r1;` (no parentheses, no arguments at all) against a
+  constructor whose only parameter has a default (`Random(int seed =
+  1234)`) produced a call with ZERO arguments in the generated C against
+  a function declared with one -- a real, silent bug this round's own
+  new feature introduced, not merely inherited. Root cause:
+  `find_zero_arg_constructor` (this file's own phase 7, the "does this
+  stack local need an implicit constructor call" lookup, shared by the
+  plain-scalar case, the stack-array-of-objects per-element loop, and
+  the implicit base-class constructor call) only ever matched a
+  constructor declaring literally zero parameters (`m->list.count ==
+  1`, just the injected `this`) -- exactly correct before this round,
+  now too narrow, since real C++ calls a constructor whose real
+  parameters are ALL defaulted equally "default-constructible." Widened
+  to accept that shape too, and fixed all three of its own call sites to
+  build their (previously always-empty) argument list by calling
+  `fill_default_args` into a temporary, receiver-free list FIRST, then
+  prepending the receiver -- discovered because the first attempt called
+  `fill_default_args` directly on `call->list` AFTER the receiver was
+  already appended, silently miscounting how many "real" arguments had
+  already been supplied by one (the receiver itself), which produced a
+  call short by exactly one argument in every case -- caught immediately
+  by actually gcc-compiling the output rather than just inspecting the
+  AST dump, which looked entirely plausible at first glance.
+- The equivalent "does the base have a default constructor" question is
+  answered a SECOND time, independently, in `sema.c`
+  (`check_implicit_base_construction`, which runs before lowering and
+  has to decide whether to emit a real error, not just whether to insert
+  a call) -- it had the exact same "zero parameters, not zero-or-all-
+  defaulted" narrowness, caught by testing a `Derived` class with no
+  explicit `: Base(...)` delegation against a `Base(int x = 7)`, which
+  wrongly reported "no default constructor" despite one now genuinely
+  existing. Widened with the same `min_required_args(m) == 0` check.
+- Both the implicit AND explicit base-constructor-delegation call sites
+  in `lower.c` (`inject_base_ctor_calls_classes`) also needed
+  `fill_default_args` -- an explicit `: Base(1)` against a
+  `Base(int a, int b = 2)` needs the same missing-trailing-argument
+  splice a direct-initialized local does.
+
+Verified with a new permanent regression test, `tests/81sample.cpp`,
+covering all four shapes end to end (an ordinary function call, a
+direct-initialized constructor call, an implicit zero-argument
+constructor call on both a scalar local and a stack array, and an
+implicit base-class constructor call) -- not just a clean
+`--target=standard` + gcc compile, but the compiled binary actually RUN,
+its exit code checked against the exact value computed independently in
+Python (working through the same 32-bit signed-integer-overflow
+arithmetic the test's own LCG-based default-valued constructor uses),
+confirming every filled-in default argument is not just present but
+carries the correct value at runtime. Full `make test`: still exactly 14
+deliberately-`-`-prefixed expected-fail entries (now 81 total samples).
+A full `--target=standard` + gcc sweep across every sample: the same 5
+pre-existing, already-documented `video.h`/`audio.h`-missing-header
+failures as before this round, nothing new.
