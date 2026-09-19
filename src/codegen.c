@@ -125,6 +125,39 @@ static int tracked_fprintf(FILE *out, const char *fmt, ...) {
  *    rather than emitting nothing and leaving a syntax error with no
  *    explanation.
  */
+/* Standard mode's own counterpart to type_to_class -- answers "does
+ * `name` refer to a top-level (or namespace-level) enum or union
+ * declaration", the same question type_to_class already answers for
+ * classes, but for the two OTHER kinds of tagged type this project
+ * accepts. No registry exists for these the way sema.c's own class
+ * registry does (enums/unions are never looked up for any semantic
+ * reason -- they're passed through to codegen as literal, unmodified
+ * declarations, per AST_ENUM_DECL/AST_UNION_DECL's own doc comments in
+ * ast.h), so this walks the top-level declaration list directly,
+ * mirroring program_has_any_class's own walk (further down this file)
+ * rather than adding a whole new sema.c-side registry for a lookup
+ * this project only ever needs from codegen, in standard mode, for
+ * this one purpose. Returns AST_ENUM_DECL, AST_UNION_DECL, or NULL (not
+ * found -- a primitive keyword, a class, or a typedef name, any of
+ * which print_type's own AST_IDENT case already handles correctly
+ * without this). `g_program` (driver.h) is this project's single,
+ * already-parsed AST root -- the same global sema.c's own registries
+ * are built from and lower.c's phases walk, so reusing it here needs
+ * no new plumbing into print_type's own single-type-in signature. */
+static AstNode *find_enum_or_union_decl(const AstList *decls, const char *name) {
+    for (int i = 0; i < decls->count; i++) {
+        AstNode *n = decls->items[i];
+        if ((n->kind == AST_ENUM_DECL || n->kind == AST_UNION_DECL) && strcmp(n->str1, name) == 0) {
+            return n;
+        }
+        if (n->kind == AST_NAMESPACE_DECL) {
+            AstNode *found = find_enum_or_union_decl(&n->list, name);
+            if (found != NULL) return found;
+        }
+    }
+    return NULL;
+}
+
 static void print_type(FILE *out, const AstNode *type) {
     if (type == NULL) {
         fprintf(out, "void");
@@ -133,23 +166,41 @@ static void print_type(FILE *out, const AstNode *type) {
     switch (type->kind) {
         case AST_IDENT:
             /* Vircon32 mode: bare, always -- a primitive keyword, a
-             * class name, or a typedef name are all just bare
-             * identifiers in valid C, and Vircon32 specifically
-             * rejects `struct Name` as a type REFERENCE (see the
-             * quirks doc). Standard mode: a CLASS name (confirmed via
-             * type_to_class, the same lookup sema.c itself already
-             * uses for this -- find_class is static to sema.c, so
-             * this reuses the already-public wrapper rather than
-             * exposing a second entry point for the same lookup)
-             * needs the `struct` keyword real, portable C requires
-             * for referencing a struct tag with no typedef of its
-             * own; a primitive or a typedef name (type_to_class
-             * returns NULL for either) stays bare either way. */
-            if (g_target == TARGET_STANDARD && type_to_class(type) != NULL) {
-                fprintf(out, "struct %s", type->str1);
-            } else {
-                fprintf(out, "%s", type->str1);
+             * class name, a typedef name, an enum name, or a union
+             * name are all just bare identifiers in valid Vircon32 C,
+             * which specifically rejects `struct`/`enum`/`union Name`
+             * as a type REFERENCE (see the quirks doc). Standard mode
+             * needs the matching tag keyword for whichever of the
+             * three kinds this name actually is: a CLASS name
+             * (confirmed via type_to_class, the same lookup sema.c
+             * itself already uses for this -- find_class is static to
+             * sema.c, so this reuses the already-public wrapper rather
+             * than exposing a second entry point for the same lookup)
+             * needs `struct`; an ENUM or UNION name (confirmed via
+             * find_enum_or_union_decl, just above -- no sema.c
+             * registry exists for either, unlike classes, so this
+             * walks the top-level declaration list directly) needs
+             * `enum`/`union` respectively -- a real, previously-
+             * undiscovered gap, confirmed directly against
+             * tests/60sample.cpp/61sample.cpp (an enum parameter and a
+             * union variable), both of which failed standard-mode gcc
+             * compilation ("unknown type name 'Color'"/"'Value'; use
+             * 'union' keyword") before this fix, since this case only
+             * ever checked the class registry. A primitive or a
+             * typedef name (none of the three lookups match) stays
+             * bare either way, in both targets. */
+            if (g_target == TARGET_STANDARD) {
+                if (type_to_class(type) != NULL) {
+                    fprintf(out, "struct %s", type->str1);
+                    break;
+                }
+                AstNode *tag = find_enum_or_union_decl(&g_program->list, type->str1);
+                if (tag != NULL) {
+                    fprintf(out, "%s %s", tag->kind == AST_ENUM_DECL ? "enum" : "union", type->str1);
+                    break;
+                }
             }
+            fprintf(out, "%s", type->str1);
             break;
         case AST_QUALIFIED_ID:
             if (type->list.count > 0) {
@@ -2018,7 +2069,9 @@ static void emit_delete_runtime(FILE *out, const AstNode *class_decl) {
         const AstNode *canonical_class = find_declaring_class(class_decl, dtor_canonical);
         if (canonical_class != NULL && canonical_class != class_decl) {
             explain(out, 1, "virtual destructor: dispatched through the vtable, not called by a fixed name -- this is what makes 'delete basePtr' correctly run the DERIVED class's destructor when basePtr actually points at a derived object");
-            fprintf(out, "    ptr->vtable->%s((%s *)ptr);\n", field_name, canonical_class->str1);
+            fprintf(out, "    ptr->vtable->%s((", field_name);
+            print_class_type_name(out, canonical_class->str1);
+            fprintf(out, " *)ptr);\n");
         } else {
             explain(out, 1, "virtual destructor: dispatched through the vtable, not called by a fixed name -- this is what makes 'delete basePtr' correctly run the DERIVED class's destructor when basePtr actually points at a derived object");
             fprintf(out, "    ptr->vtable->%s(ptr);\n", field_name);
@@ -2102,6 +2155,37 @@ void codegen_run(const AstNode *program, FILE *out, int verbose_comments) {
     g_verbose_comments = verbose_comments;
     emit_preprocessor_passthrough(out);
     emit_cart_hint_defines(out);
+    if (g_target == TARGET_STANDARD) {
+        /* `bool` is a native keyword in Vircon32 C (confirmed by
+         * Matthew), needing nothing extra there, but standard C only
+         * gets it from <stdbool.h> -- and this project's own generated
+         * code uses the bare word `bool` in more places than just a
+         * program that itself declares a bool variable: every class
+         * unconditionally gets a `v32_new_arr_bool` allocator helper
+         * (emit_primitive_array_new_runtime, used or not, the same
+         * "over-generate rather than under-generate" trade-off this
+         * file already makes for every other runtime helper), and
+         * `true`/`false` literals print as the bare words regardless
+         * of target. A real, confirmed gap, not a hypothetical:
+         * running this project's own test suite's --target=standard
+         * output through gcc showed this broke standard-mode
+         * compilation for nearly every class-having sample, not just
+         * ones that happened to declare a `bool` themselves. Emitted
+         * unconditionally in standard mode (not gated on "does this
+         * program actually use bool anywhere", the way misc.h/
+         * stdlib.h's own inclusion below is gated on "does this
+         * program have a class") -- a program with NO class and no
+         * `new`/`delete` at all can still declare a plain `bool` local
+         * with nothing else pulling stdlib.h in (tests/48sample.cpp,
+         * `58sample.cpp`, `59sample.cpp` all do exactly this), so
+         * gating this on the same `needs_misc` check just below would
+         * have missed them; <stdbool.h> is a small, always-safe
+         * standard header with no real cost to including even when
+         * genuinely unused, unlike misc.h's own much larger Vircon32-
+         * specific runtime surface, so there's no real trade-off here
+         * to gate on in the first place. */
+        fprintf(out, "#include <stdbool.h>\n");
+    }
     /* misc.h (Vircon32's real malloc()/free(), among other things) is
      * only included when the program has at least one class -- every
      * class gets a v32_new_* allocator (even one never actually used

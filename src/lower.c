@@ -1,9 +1,70 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <stdarg.h>
 #include "lower.h"
 #include "sema.h"
 #include "driver.h" /* g_uses_new_or_delete -- see its own doc comment there */
+
+/* ---- quirk-rewrite notes log --------------------------------------------
+ *
+ * A handful of lowering phases exist ONLY because Vircon32's C compiler
+ * (or, for the ternary case, its lexer) rejects something ordinary,
+ * standards-conforming C would accept outright -- an implicit upcast, a
+ * bare function-name-as-value, a const-discarding assignment, a `?:`
+ * expression anywhere but the three "direct" shapes. Each of those
+ * phases silently rewrites the AST to route around the quirk; from the
+ * generated output alone there is no way to tell that a rewrite even
+ * happened, let alone why. This log exists purely to surface that at
+ * `-vvv`: every site that inserts one of these quirk-driven rewrites
+ * calls lower_note() with a one-line, human-readable description (source
+ * line number included), and main.c prints the whole log after
+ * lower_dump() whenever verbosity >= 3. Best-effort and diagnostic only
+ * -- nothing here is read by codegen or by any other phase, so a dropped
+ * or truncated note (the fixed-size array below silently stops
+ * accepting new notes past its capacity) never changes what the
+ * transpiler actually emits, only what it reports about itself. */
+#define LOWER_NOTES_MAX 512
+static char *g_lower_notes[LOWER_NOTES_MAX];
+static int g_lower_notes_count = 0;
+
+static void lower_notes_reset(void) {
+    for (int i = 0; i < g_lower_notes_count; i++) {
+        free(g_lower_notes[i]);
+        g_lower_notes[i] = NULL;
+    }
+    g_lower_notes_count = 0;
+}
+
+static void lower_note(int line, const char *fmt, ...) {
+    if (g_lower_notes_count >= LOWER_NOTES_MAX) return; /* best-effort --
+        see doc comment above; silently drop rather than grow unbounded */
+    char buf[512];
+    int prefix_len = snprintf(buf, sizeof(buf), "line %d: ", line);
+    if (prefix_len < 0) prefix_len = 0;
+    if ((size_t)prefix_len < sizeof(buf)) {
+        va_list args;
+        va_start(args, fmt);
+        vsnprintf(buf + prefix_len, sizeof(buf) - (size_t)prefix_len, fmt, args);
+        va_end(args);
+    }
+    g_lower_notes[g_lower_notes_count] = strdup(buf);
+    g_lower_notes_count++;
+}
+
+/* Called from main.c at verbosity >= 3, right after lower_dump(). Reset
+ * happens at the top of lower_run() itself (not here), so the log always
+ * reflects the single most recent lowering pass. */
+void lower_notes_print(void) {
+    printf("---- lowering notes (quirk-driven rewrites) ----\n");
+    if (g_lower_notes_count == 0) {
+        printf("(none -- no quirk-driven rewrite fired for this program)\n");
+        return;
+    }
+    for (int i = 0; i < g_lower_notes_count; i++) {
+        printf("%s\n", g_lower_notes[i]);
+    }
+}
 
 /* ---- building a StructLayout ------------------------------------------- */
 
@@ -518,6 +579,16 @@ static AstNode *cast_receiver_if_needed(AstNode *obj_expr, const AstNode *actual
     AstNode *cast = ast_new(AST_CAST, obj_expr->line);
     cast->type = ast_wrap_pointer(ast_ident(cast_class->str1, obj_expr->line), obj_expr->line);
     cast->a = obj_expr;
+    if (needs_const_strip && !class_mismatch) {
+        lower_note(obj_expr->line, "inserted (%s *) cast to strip a const "
+            "receiver -- Vircon32 rejects passing a const object to a "
+            "non-const method outright (\"discards const qualifier\"), and "
+            "this project doesn't enforce const-correctness of its own", cast_class->str1);
+    } else if (class_mismatch) {
+        lower_note(obj_expr->line, "inserted (%s *) receiver cast for a base/"
+            "derived method call%s", cast_class->str1,
+            needs_const_strip ? " (also stripping const)" : "");
+    }
     return cast;
 }
 
@@ -842,6 +913,9 @@ static int type_is_func_ptr(const AstNode *type) {
  * know this address-of was inserted rather than written by the user. */
 static void wrap_addr_of(AstNode **slot) {
     AstNode *inner = *slot;
+    lower_note(inner->line, "inserted implicit &%s -- Vircon32 doesn't decay "
+        "a bare function name to a function pointer the way standard C does",
+        (inner->kind == AST_IDENT && inner->str1 != NULL) ? inner->str1 : "<function>");
     AstNode *addr = ast_new(AST_UNOP, inner->line);
     addr->str1 = strdup("addr");
     addr->a = inner;
@@ -2668,6 +2742,11 @@ static void insert_pointer_cast_stmt(AstNode **slot, AstNode *class_decl, LocalV
                      * if either side can't be resolved at all, don't
                      * guess by inserting a cast that might be wrong. */
                     if (init_class != NULL && init_class != declared_class) {
+                        lower_note(n->a->line, "inserted (%s *) upcast for "
+                            "`%s`'s initializer -- Vircon32 rejects an "
+                            "implicit pointer upcast that real C++ allows "
+                            "freely (\"cannot assign struct %s* to struct %s*\")",
+                            declared_class->str1, n->str1, init_class->str1, declared_class->str1);
                         AstNode *cast = ast_new(AST_CAST, n->a->line);
                         cast->type = ast_wrap_pointer(ast_ident(declared_class->str1, n->a->line), n->a->line);
                         cast->a = n->a;
@@ -2870,6 +2949,12 @@ static void hoist_ternaries_in_expr(AstNode **slot, AstNode *class_decl, LocalVa
             char tmp_name[40];
             snprintf(tmp_name, sizeof(tmp_name), "__v32_tern_tmp%d", (*tmp_counter)++);
 
+            lower_note(n->line, "hoisted a `?:` ternary into a temporary "
+                "(%s) plus an if/else -- Vircon32's lexer doesn't recognize "
+                "the '?' character as a valid identifier start at all, so "
+                "no ternary can survive to codegen in Vircon32-mode output",
+                tmp_name);
+
             AstNode *decl = ast_new(AST_VAR_DECL, n->line);
             decl->str1 = strdup(tmp_name);
             decl->type = ty;
@@ -2972,6 +3057,9 @@ static void rewrite_ternary_stmt(AstNode **slot, AstNode *class_decl, LocalVarTy
             break;
         case AST_RETURN:
             if (s->a != NULL && s->a->kind == AST_TERNARY) {
+                lower_note(s->line, "rewrote `return cond ? a : b;` into an "
+                    "if/else returning from each branch -- Vircon32's lexer "
+                    "doesn't recognize '?' at all, so no ternary can reach codegen");
                 AstNode *t = s->a;
                 AstNode *then_ret = ast_new(AST_RETURN, s->line);
                 then_ret->a = t->b;
@@ -3002,6 +3090,11 @@ static void rewrite_ternary_stmt(AstNode **slot, AstNode *class_decl, LocalVarTy
                 AstNode *assign = s->a;
                 AstNode *t = assign->b;
                 const char *name = assign->a->str1;
+
+                lower_note(s->line, "rewrote `%s = cond ? a : b;` into an "
+                    "if/else assigning each branch -- Vircon32's lexer "
+                    "doesn't recognize '?' at all, so no ternary can reach codegen",
+                    name);
 
                 AstNode *then_assign = ast_new(AST_ASSIGN, s->line);
                 then_assign->str1 = strdup("=");
@@ -3308,6 +3401,8 @@ static void check_word_sizes_free_functions(AstList *decls) {
 }
 
 int lower_run(AstNode *program) {
+    lower_notes_reset(); /* always start this run's log empty -- see
+        lower_notes_print's own doc comment */
     compute_struct_layouts(&program->list);
     check_word_sizes_classes(&program->list); /* reads StructLayout,
         just computed -- must run after compute_struct_layouts, but

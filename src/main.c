@@ -262,7 +262,10 @@ int main(int argc, char **argv) {
              * lower.h. */
             if (verbosity >= 1) printf("stage 3: running lowering\n");
             lower_run(g_program);
-            if (verbosity >= 3) lower_dump(g_program);
+            if (verbosity >= 3) {
+                lower_dump(g_program);
+                lower_notes_print();
+            }
             /* codegen_run() only ever reads PER-NODE annotations
              * (sema_info/lower_info) already attached directly to the
              * tree -- never the global class/typedef/free-function

@@ -9,7 +9,6 @@
 // version="0.9" />, with exactly one <texture> and one <sound>.
 
 #include "video.h"
-#include "audio.h"
 
 #title "Vircon32 BIOS Test"
 #version 0.9

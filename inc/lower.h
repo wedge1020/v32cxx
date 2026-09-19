@@ -361,4 +361,13 @@ int lower_run(AstNode *program);
  * role sema_dump() plays for semantic analysis. */
 void lower_dump(const AstNode *program);
 
+/* Prints the log of quirk-driven rewrites this lowering run performed --
+ * ternary hoisting, the implicit function-pointer `&`-insertion, the
+ * const-discarding receiver cast, the base/derived pointer upcast -- one
+ * line per rewrite site, each naming the specific quirk it exists to
+ * route around. Call this after lower_dump() at the same -vvv verbosity
+ * level; see this log's own doc comment in lower.c for why it exists and
+ * what it does and doesn't cover. */
+void lower_notes_print(void);
+
 #endif /* LOWER_H */

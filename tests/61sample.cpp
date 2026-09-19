@@ -11,6 +11,13 @@
 // computes. The point is confirming the declaration and member access
 // both parse and transpile correctly, verified by reading the
 // generated C directly (a real `union Value { ... };`, not a struct).
+//
+// Also the standard-mode union regression test: `Value v;` inside
+// main() references `Value` by name outside its own definition, which
+// used to emit a bare `Value` in --target=standard output -- real gcc
+// rejected it ("unknown type name 'Value'; use 'union' keyword"), the
+// same class-of-bug as tests/60sample.cpp's enum case, fixed by the
+// same find_enum_or_union_decl helper.
 
 union Value {
     int i;

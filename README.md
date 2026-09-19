@@ -165,7 +165,7 @@ A bare (non-pointer, non-reference) class or struct parameter or
 return type larger than one word — its own field count, via
 `StructLayout` — triggers this warning; running it against this
 project's own existing test suite actually found two real violations
-already in it (`tests/sample9.cpp`, `tests/sample15.cpp`, both passing
+already in it (`tests/09sample.cpp`, `tests/15sample.cpp`, both passing
 a two-field `Vector2D` by value throughout their own operator
 overloads). Both have since been rewritten to return `Vector2D *`
 instead (heap-allocated via `new`), once entry #12 below made that
@@ -394,7 +394,8 @@ emitted alongside it.
   constructor injection). `opt_initializer` has no grammar shape for
   constructor arguments in parentheses. Workaround in the meantime:
   default-construct, then set public fields directly (`Shape shape;
-  shape.size = 7;`). **On the list for an upcoming round.**
+  shape.size = 7;`). **Flagged by the user as a priority to fix in an
+  upcoming round.**
 - **Two narrower, deliberate scope boundaries from the multi-
   dimensional array work specifically**: a function PARAMETER's own
   array-to-pointer decay (`void foo(int arr[8])`) stays single-
@@ -403,32 +404,39 @@ emitted alongside it.
   declaring a variable is — and a multi-dimensional array of function
   pointers is unsupported, an intentionally rare combination not
   pursued alongside everything else that round already touched.
-- **`--target=standard` doesn't compile for almost any class-having
-  program yet, found by actually running `gcc` against a full sweep of
-  this project's own test suite, not assumed from the plan on paper**:
-  the `bool`/`true`/`false` runtime-helper boilerplate every class
-  triggers (`v32_new_arr_bool` and friends) uses `bool`/`true`/`false`
-  unconditionally without `#include <stdbool.h>` in standard mode
-  (Vircon32 mode doesn't need this — `bool` is a native keyword
-  there); confirmed to break the standard-mode build of nearly every
-  class-having sample in this project's own suite. Separately, a plain
-  C-style `enum` or `union` type referenced by NAME anywhere other
-  than its own definition (a parameter, a variable) never gets its
-  `enum`/`union` keyword back in standard mode the way a `class`/
-  `struct` reference already correctly does (`print_type`'s own
-  `AST_IDENT` case only checks the class registry via `type_to_class`,
-  which has no notion of enums/unions at all) — confirmed directly
-  (`tests/sample60.cpp`/`sample61.cpp`, an enum parameter and a union
-  variable, both fail standard-mode compilation: "unknown type name
-  'Color'"/"'Value'; use 'union' keyword"). Neither of these affects
-  Vircon32-mode output (this project's actual primary target) at all;
-  found while auditing `--target=standard`'s own maturity, not fixed
-  yet, and not something either of this round's own two features
-  (function-pointer typedefs, multi-declarator statements) touches or
-  causes. **Flagged by the user as a priority to fix in an upcoming
-  round** (raised alongside their own real-Vircon32-compiler report
-  that led to the function-pointer address-of fix above) — not
-  addressed yet, but explicitly no longer just a passively-noted gap.
+- ~~`--target=standard` doesn't compile for almost any class-having
+  program yet~~ — **FIXED**: the `bool`/`true`/`false` runtime-helper
+  boilerplate every class triggers (`v32_new_arr_bool` and friends) uses
+  `bool`/`true`/`false` unconditionally, which standard C only gets from
+  `<stdbool.h>` (Vircon32 mode doesn't need this — `bool` is a native
+  keyword there, confirmed by Matthew); `codegen_run` now emits
+  `#include <stdbool.h>` unconditionally in standard mode, deliberately
+  NOT gated on the same `needs_misc` check that guards `<stdlib.h>` —
+  some samples declare a plain `bool` local with no class and no
+  `new`/`delete` anywhere in the program at all (`tests/48sample.cpp`,
+  `58sample.cpp`, `59sample.cpp`), so gating on `needs_misc` would have
+  missed exactly those. Separately, a plain C-style `enum` or `union`
+  type referenced by NAME anywhere other than its own definition (a
+  parameter, a variable) never got its `enum`/`union` keyword back in
+  standard mode the way a `class`/`struct` reference already correctly
+  does — fixed with a new `find_enum_or_union_decl` helper (mirrors
+  `program_has_any_class`'s recursive top-level/namespace scan, since
+  sema.c keeps no enum/union registry the way it does for classes) that
+  `print_type`'s `AST_IDENT` case now consults; confirmed directly
+  (`tests/60sample.cpp`/`61sample.cpp`, an enum parameter and a union
+  variable, both now compile under `--target=standard`). A full
+  `--target=standard` + real-`gcc` sweep across every one of this
+  project's 74 test samples now passes with zero failures (excluding
+  three samples that intentionally `#include "video.h"`, Vircon32's own
+  hardware API, which standard C obviously has no counterpart for and
+  was never in scope here). One more real bug turned up by that same
+  sweep, unrelated to either fix above: virtual-destructor dispatch's
+  own base-class receiver cast (`v32_delete_ClassName`, `codegen.c`) hand
+  -rolled `(ClassName *)` instead of going through the same
+  `print_class_type_name` helper every OTHER class-typed cast in this
+  file already uses, so it silently produced a bare, un-prefixed cast in
+  standard mode (`(Shape *)ptr` instead of `(struct Shape *)ptr`) —
+  fixed by routing it through that same helper like everywhere else.
 
 This is genuinely still growing — expect rough edges, and expect this
 README to need updating again as things change.
@@ -486,6 +494,22 @@ lowering dumps, useful for following along with what the tool
 understood and how it transformed your code. Use `-c` if your input is
 a library/module fragment without its own `main`.
 
+`-vvv` also prints a **lowering notes log**, right after the lowering
+dump: one line per site where a lowering phase rewrote your code
+specifically to route around a Vircon32 quirk, rather than for any
+ordinary C++-to-C reason — a `?:` ternary hoisted into a temporary plus
+an if/else (Vircon32's lexer doesn't recognize `?` at all), an implicit
+`&function` inserted where standard C would decay the bare name on its
+own, a const-discarding receiver cast, a base/derived pointer upcast.
+Each line names the source line and the specific quirk behind it,
+distinct from `-vv`'s inline comments above: those explain ordinary
+C++-to-C mechanics (vtables, `this`, `new`/`delete`) inline in the
+generated file itself, while this log is diagnostic-only output on
+stdout, purely about the handful of rewrites this project's own
+quirk-workarounds perform. `./bin/v32c++ -vvv -c tests/71sample.cpp`
+(ternary rewrites) or `tests/73sample.cpp` (function-pointer
+address-of) are good ones to try this on first.
+
 With `-vv` (or higher — `-vvv` includes everything `-vv` does), the
 generated C explains itself at the points where the C++-to-C
 transformation is least obvious — a vtable's own struct and instance,
@@ -493,7 +517,7 @@ the explicit `this` parameter every method gets, what `new`/`delete`
 actually become, a destructor invoked automatically at scope exit, a
 virtual call dispatched through the vtable. Worth reading through on
 its own, not just a build artifact — the C generated for
-`tests/sample32.cpp` (vtables, a virtual destructor, `new`/`delete`) is
+`tests/32sample.cpp` (vtables, a virtual destructor, `new`/`delete`) is
 a good one to try this on first. Pure commentary: never changes what
 code is emitted, only whether a comment explaining it comes with it.
 

@@ -5841,3 +5841,105 @@ comment had `viaCall = 6`, stale from an earlier draft of the test
 predating this fix -- corrected in the test file to the actual,
 verified-correct value of 11: `x=5, y=10`, so the ternary picks `y`,
 `add(10, 1) = 11`).
+
+## Round: --target=standard's stdbool.h/enum-union gaps closed, a third bug they surfaced along the way, and a -vvv quirk-notes log
+
+Continuation of the prior round's own real-Vircon32-compiler-driven
+work, picking up the two gaps that round's own `--target=standard`
+audit had flagged but not yet fixed (both explicitly called out as a
+user-stated priority): `<stdbool.h>` never included in standard-mode
+output despite every class unconditionally emitting `bool`/`true`/
+`false`-using runtime helper boilerplate, and a bare `enum`/`union`
+type reference never getting its keyword back in standard mode
+(`print_type`'s `AST_IDENT` case only ever consulted the class
+registry via `type_to_class`, which has no notion of enums or unions
+at all -- sema.c keeps no registry for either, both are passed through
+as literal, unmodified declarations).
+
+### stdbool.h
+
+First attempt gated the new `#include <stdbool.h>` inside the existing
+`needs_misc`-gated block, alongside `<stdlib.h>` -- reasoning that the
+`bool`-using boilerplate (`v32_new_arr_bool` and friends) is itself
+gated on `needs_misc`. Caught before shipping by actually checking:
+`tests/48sample.cpp`, `58sample.cpp`, and `59sample.cpp` all declare a
+plain `bool` local with zero classes and zero `new`/`delete` anywhere
+in the program, so `needs_misc` is false for exactly these -- gating
+the include on it would have silently kept them broken. Fixed by
+emitting `#include <stdbool.h>` unconditionally in `codegen_run`
+whenever `g_target == TARGET_STANDARD`, independent of `needs_misc`
+entirely; a small, always-safe standard header costs nothing to
+include even on the rare program that turns out not to need it.
+
+### enum/union keyword
+
+New `find_enum_or_union_decl` helper added to codegen.c, deliberately
+mirroring `program_has_any_class`'s own recursive top-level/namespace
+scan shape rather than inventing a new traversal pattern -- the same
+reasoning that helper was written with applies unchanged here.
+`print_type`'s `AST_IDENT` case now falls through to this check
+whenever the class-registry check misses, in standard mode only
+(Vircon32 mode already gets its `enum`/`union` keyword from the
+declaration's own auto-typedef, an entirely separate, Vircon32-only
+mechanism unaffected by any of this). Verified directly against
+`tests/60sample.cpp`/`61sample.cpp`.
+
+### The third bug: virtual-destructor dispatch's own hand-rolled cast
+
+A full `--target=standard` + real-`gcc` sweep across all 74 samples
+(re-run after both fixes above, to actually confirm the previously-
+documented pre-existing failure count dropped to zero rather than
+assuming it from the diagnosis alone) turned up four remaining
+failures. Three (`28sample`, `33sample`, `34sample`) are legitimately
+out of scope -- all three `#include "video.h"`, Vircon32's own hardware
+API, which has no standard-C counterpart and was never going to
+compile there regardless of anything this round touches. The fourth
+(`32sample`, virtual destructor dispatch through a base pointer) was a
+real, previously-undiscovered bug: `emit_delete_runtime` (codegen.c)
+builds the vtable-dispatched destructor call's own receiver cast by
+hand, `fprintf(out, "(%s *)ptr", canonical_class->str1)`, instead of
+going through `print_class_type_name` the way every OTHER class-typed
+cast in this file already does -- so it silently produced a bare
+`(Shape *)ptr` in standard mode instead of `(struct Shape *)ptr`,
+undetected until now because nothing exercising THIS specific cast
+path had ever been run through the standard-mode sweep before (the
+enum/union fix, unrelated to destructors at all, is what got this test
+compiling far enough to actually reach this line and expose it).
+Fixed by routing that one `fprintf` through `print_class_type_name`
+like everywhere else in the file.
+
+### -vvv lowering-notes log
+
+Separately requested: surfacing, in `-vvv` output, which lowering
+rewrites happened specifically to route around a Vircon32 quirk (as
+opposed to `-vv`'s existing inline-comment mechanism, which explains
+ordinary C++-to-C mechanics in the GENERATED file itself -- vtables,
+`this`, `new`/`delete` -- and was never about quirk-workarounds at
+all). Added a small fixed-capacity notes log local to lower.c
+(`lower_note(line, fmt, ...)`, a 512-entry cap, best-effort and
+diagnostic-only -- nothing reads it back, so a dropped note past
+capacity never changes generated output, only what gets reported about
+it), reset at the top of every `lower_run()` call and printed by a new
+`lower_notes_print()` from main.c right after the existing
+`lower_dump()` call, same `-vvv` gate. Wired into the four sites that
+actually perform a quirk-driven rewrite: `cast_receiver_if_needed`
+(const-strip and base/derived receiver casts), `wrap_addr_of`
+(function-pointer implicit `&`), `insert_pointer_cast_stmt` (the
+base/derived VarDecl-initializer upcast), and all three ternary-
+rewrite paths (`hoist_ternaries_in_expr`'s generic hoist, plus the two
+direct `return`/assignment shapes in `rewrite_ternary_stmt`). Verified
+against `tests/32sample.cpp`, `68sample.cpp`, `71sample.cpp`, and
+`73sample.cpp` -- one sample per quirk category -- each producing the
+expected, correctly-attributed note lines with no false positives or
+misses.
+
+### Verification
+
+Full clean rebuild, zero warnings, for every change in this round.
+Full `--target=standard` + `gcc -fsyntax-only` sweep across all 74
+samples: zero failures once the three video.h/hardware-API samples are
+excluded (never in scope for standard mode) -- down from the
+previously-documented 34, then down further from the 4 remaining after
+the two originally-scoped fixes, to 0. Full `make test` (Vircon32
+mode): zero unexpected failures, the same 13 deliberately-`-`-prefixed
+expected-fail entries as before, none of them new.
