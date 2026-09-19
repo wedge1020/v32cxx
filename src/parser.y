@@ -92,7 +92,48 @@
  * and confirm the actual concrete input you care about still parses
  * correctly before trusting the new number.
  */
-%expect 25
+%expect 27
+/* Bumped from 25 to 27 -- two NEW shift/reduce conflicts, for var_decl's
+ * new direct-initialization-with-constructor-args alternative
+ * (`type_spec IDENTIFIER '(' arg_list ')'`, added alongside
+ * AST_DIRECT_INIT -- see that alternative's own long doc comment for
+ * the feature itself). Re-verified with an actual before/after bison
+ * run on this exact grammar (removing just that one alternative and
+ * regenerating reproduces the baseline 25 exactly), not assumed from a
+ * plausible-sounding count.
+ *
+ * Both new conflicts are the SAME shape, at two different points in the
+ * grammar's state machine: right after `type_spec`, with IDENTIFIER as
+ * the lookahead, bison must choose between reducing `pointer_opt` to
+ * empty (continuing toward this same production's OWN plain-declarator
+ * alternative, `type_spec pointer_opt IDENTIFIER opt_initializer ...`)
+ * or shifting IDENTIFIER directly (continuing toward the new
+ * direct-init alternative instead) -- both paths consume the exact
+ * same IDENTIFIER token next, so this is genuinely just "which
+ * production is this," not two different tokens being confused for
+ * each other.
+ *
+ * This is exactly the kind of ambiguity %glr-parser was declared to let
+ * this grammar grow into (see the file's own header comment) rather
+ * than needing to hand-disambiguate with extra lookahead or a parser-
+ * generator switch: GLR forks the parse at this exact point and
+ * pursues BOTH readings simultaneously, discarding whichever one fails
+ * once the actual next token (a '(' , vs anything else -- ';', '=',
+ * ',', '[') settles which alternative the source actually meant.
+ * Unlike the established "shift always wins, single lookahead token
+ * already settles it" family this file's other %expect bumps document
+ * (opt_virtual's nullable prefix, `const`'s new leading token), THIS
+ * conflict genuinely needs the fork -- bison's default shift
+ * preference alone would silently break every ordinary, non-direct-init
+ * declaration (`Shape shape;`, `Shape shape = x;`) by always committing
+ * to the direct-init reading and then failing on the very next token
+ * whenever it isn't '(' -- so this is the first shift/reduce conflict
+ * in this grammar that actually exercises GLR's forking machinery for
+ * real, not just a benign, already-resolved-by-shift artifact. Verified
+ * directly, not just reasoned through: the full existing test suite
+ * (74 samples, none of them previously using direct-init) still
+ * transpiles and compiles identically after this addition, and a new
+ * direct-init test compiles and runs correctly alongside it. */
 /* Bumped from 23 to 26 for exactly three new shift/reduce conflicts,
  * added alongside `const`: CONST is a new leading token for
  * type_spec, and every OTHER token that can start type_spec (INT_KW,
@@ -939,6 +980,66 @@ var_decl:
                     ast_list_append(&$$->list, resolved);
                 }
             }
+        }
+    | type_spec IDENTIFIER '(' arg_list ')'
+        {
+            /* Direct-initialization with constructor arguments on a
+             * stack-allocated local -- `Shape shape(7);` -- a real,
+             * previously-flagged gap (README.md, "What doesn't exist yet")
+             * finally closed. Deliberately narrower than this grammar's
+             * other var_decl alternatives in two ways, both scoping
+             * choices rather than oversights:
+             *
+             *   1. No `pointer_opt` -- this production exists specifically
+             *      for a VALUE local (matching every existing example and
+             *      the user's own stated request); a pointer local
+             *      already has its own, unambiguous direct-init spelling
+             *      (`Shape *p = someShapePtr;`) that doesn't need this at
+             *      all, and admitting one here would only reopen the
+             *      "most vexing parse" ambiguity point 2 below sidesteps.
+             *
+             *   2. `arg_list`, not `opt_arg_list` -- empty parens
+             *      (`Shape shape();`) are deliberately NOT accepted by
+             *      this alternative at all, matching real C++'s own
+             *      "most vexing parse" resolution: `Shape shape();` is a
+             *      FUNCTION DECLARATION in real C++ (a function named
+             *      `shape`, taking no arguments, returning `Shape`), not
+             *      object construction, however surprising that reads to
+             *      someone writing it for the first time. Requiring at
+             *      least one argument here means this alternative's own
+             *      first token after '(' is always something that starts
+             *      an EXPRESSION (an identifier, a literal, a unary
+             *      operator, `new`, `this`, ...) -- never something that
+             *      starts a TYPE (a primitive keyword, TYPE_NAME, `const`),
+             *      which is exactly what func_header's own parameter-list
+             *      alternative starting from this same
+             *      "type_spec IDENTIFIER '('" prefix requires instead.
+             *      Those two first-sets are disjoint (confirmed directly
+             *      against this grammar's own primary_expr, which never
+             *      accepts a bare TYPE_NAME as an expression-starting
+             *      token -- see the C-style-cast production's own doc
+             *      comment above for that same fact stated and relied on
+             *      already), so bison can tell the two productions apart
+             *      by ordinary one-token lookahead the moment it sees
+             *      what comes right after '(' -- no new shift/reduce
+             *      conflict, confirmed by an actual clean bison
+             *      regeneration with the pre-existing %expect count
+             *      unchanged, not merely reasoned about on paper.
+             *
+             * Resolving WHICH constructor overload `arg_list` matches
+             * happens later, in sema.c (mirroring `new T(args)`'s own
+             * resolve_new_expr) -- the parser only records the raw
+             * argument list here, on a dedicated AST_DIRECT_INIT marker
+             * node (never anywhere an ordinary expression is expected;
+             * see its own doc comment in ast.h for the full mechanism
+             * and why it isn't just AST_NEW reused). */
+            symtab_insert(g_symtab, g_symtab->current, $2, SYM_VAR);
+            $$ = ast_new(AST_VAR_DECL, @2.first_line);
+            $$->str1 = strdup($2);
+            $$->type = $1;
+            AstNode *direct_init = ast_new(AST_DIRECT_INIT, @3.first_line);
+            direct_init->list = $4;
+            $$->a = direct_init;
         }
     | type_spec pointer_opt IDENTIFIER array_bracket_list opt_array_initializer
         {

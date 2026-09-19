@@ -263,6 +263,14 @@ static void rewrite_expr(AstNode **slot, AstNode *class_decl, LocalVarType *loca
             rewrite_expr(&n->b, class_decl, locals);
             rewrite_expr(&n->c, class_decl, locals);
             break;
+        case AST_DIRECT_INIT:
+            /* Same reasoning as AST_NEW just below -- `Shape shape(x,
+             * this->y);`'s own constructor arguments can just as easily
+             * contain a bare `this` or implicit member reference. */
+            for (int i = 0; i < n->list.count; i++) {
+                rewrite_expr(&n->list.items[i], class_decl, locals);
+            }
+            break;
         case AST_NEW:
             /* Constructor arguments (if any) can absolutely contain a
              * bare `this` or an implicit member reference -- `new
@@ -654,6 +662,48 @@ static AstNode *address_of_if_needed(AstNode *obj_expr, AstNode *class_decl, Loc
         already knows "addr" means "(&expr)"; no new AST kind needed */
     addr->a = obj_expr;
     return addr;
+}
+
+/* A real, previously-undiscovered bug found alongside the copy-
+ * constructor overload-matching fix in sema.c (type_matches_param):
+ * once a copy constructor (`Shape(const Shape &other);`) actually
+ * resolved at all, its argument still didn't get the implicit `&` a
+ * reference parameter needs -- `Shape c(a);`/`new Shape(a)` both
+ * transpiled `a` completely unchanged, passing a bare `struct Shape`
+ * value where the lowered `const struct Shape *` parameter expects a
+ * pointer (confirmed directly against real gcc output: "incompatible
+ * type for argument... expected 'const struct Shape *' but argument is
+ * of type 'struct Shape'"). finalize_call (above) already solves this
+ * EXACT problem for an ordinary function/method call's own arguments --
+ * but a constructor invoked via `new T(args)` or this project's own
+ * direct-initialization syntax never goes through finalize_call at all
+ * (constructor calls are built directly by new_delete_rewrite_expr's
+ * AST_NEW case and inject_ctor_calls_block's AST_DIRECT_INIT case,
+ * neither of which touches finalize_call's machinery), so neither one
+ * ever got this fix. Factored out here so both call sites share
+ * exactly one implementation rather than reimplementing the same
+ * offset-by-`this` reference-parameter walk twice.
+ *
+ * `ctor`'s own parameter list always starts with an injected `this`
+ * (phase 2, this-injection, already ran on every constructor same as
+ * every other method) -- `args` (the constructor CALL's own argument
+ * list) never includes it, so every index needs the same +1 offset
+ * finalize_call's own AST_MEMBER-callee branch already applies for the
+ * identical reason. */
+static void fixup_ctor_reference_args(AstList *args, AstNode *ctor, AstNode *class_decl, LocalVarType *locals) {
+    int param_offset = (ctor->list.count > 0) ? 1 : 0;
+    for (int i = 0; i < args->count; i++) {
+        int param_idx = i + param_offset;
+        if (param_idx >= ctor->list.count) break; /* more args than declared
+            params -- shouldn't happen for a resolved call, but fail
+            closed (stop) rather than read out of bounds, same
+            discipline finalize_call's own identical loop already
+            follows */
+        AstNode *param = ctor->list.items[param_idx];
+        if (param->type != NULL && param->type->kind == AST_REFERENCE_TYPE) {
+            args->items[i] = address_of_if_needed(args->items[i], class_decl, locals);
+        }
+    }
 }
 
 static void finalize_call(AstNode *call, AstNode *class_decl, LocalVarType *locals) {
@@ -1098,6 +1148,58 @@ static void finalize_calls_expr(AstNode **slot, AstNode *class_decl, LocalVarTyp
                 own size expression -- e.g. `new int[getCount()]` needs
                 THAT call resolved too; NULL for the ordinary,
                 single-object form, a harmless no-op in that case */
+            /* A reference-parameter constructor argument (a copy
+             * constructor's own `other`, most commonly) needs the same
+             * implicit `&` this phase's own AST_CALL case already
+             * inserts for an ordinary call's reference arguments
+             * (finalize_call, above) -- a real, previously-undiscovered
+             * bug found alongside the copy-constructor overload-matching
+             * fix in sema.c (type_matches_param): confirmed directly
+             * against real gcc output ("incompatible type for
+             * argument... expected 'const struct Shape *' but argument
+             * is of type 'struct Shape'"). MUST run here, in THIS phase,
+             * not in new_delete_rewrite_expr (phase 6) where the actual
+             * allocator call gets built -- by phase 6, fix_references
+             * (phase 5) has already relabeled the resolved constructor's
+             * own AST_REFERENCE_TYPE parameter to AST_POINTER_TYPE
+             * in-place on the shared target node (finalize_call's own
+             * doc comment, above, already states and relies on this
+             * exact ordering constraint for the identical reason), so
+             * fixup_ctor_reference_args's own "is this parameter still a
+             * reference" check would silently never fire that late --
+             * confirmed the hard way, by watching this exact fix fail
+             * silently when first placed in phase 6 instead. sema.c's
+             * resolve_new_expr has already run (sema_run always
+             * completes before lower_run starts at all), so
+             * `n->sema_info` is already populated here despite this
+             * being the very first lowering phase to touch expressions
+             * at all. */
+            {
+                CallResolution *cr = (CallResolution *)n->sema_info;
+                if (cr != NULL && cr->resolved_target != NULL) {
+                    fixup_ctor_reference_args(&n->list, cr->resolved_target, class_decl, locals);
+                }
+            }
+            break;
+        case AST_DIRECT_INIT:
+            /* Same reasoning as AST_NEW just above: only the constructor
+             * arguments (`Shape shape(getSize());`) can contain a nested
+             * call needing finalization -- there's no separate "type
+             * being allocated" or array-size expression to also walk
+             * here, unlike AST_NEW. Same reference-parameter `&`-
+             * insertion fix too, same ordering requirement (must run
+             * before phase 5 relabels the resolved constructor's own
+             * reference parameter away) -- see the identical comment on
+             * AST_NEW's own case just above for the full account. */
+            for (int i = 0; i < n->list.count; i++) {
+                finalize_calls_expr(&n->list.items[i], class_decl, locals);
+            }
+            {
+                CallResolution *cr = (CallResolution *)n->sema_info;
+                if (cr != NULL && cr->resolved_target != NULL) {
+                    fixup_ctor_reference_args(&n->list, cr->resolved_target, class_decl, locals);
+                }
+            }
             break;
         case AST_DELETE:
         case AST_CAST:
@@ -1413,6 +1515,11 @@ static void fix_reference_access_expr(AstNode **slot, LocalVarType *locals) {
             fix_reference_access_expr(&n->a, locals); /* array-new's own
                 size expression, if any */
             break;
+        case AST_DIRECT_INIT:
+            for (int i = 0; i < n->list.count; i++) {
+                fix_reference_access_expr(&n->list.items[i], locals);
+            }
+            break;
         default:
             break;
     }
@@ -1663,6 +1770,15 @@ static void new_delete_rewrite_expr(AstNode **slot, AstNode *class_decl, LocalVa
                  * to disambiguate between. */
                 FuncSemaInfo *ctor_info = (FuncSemaInfo *)cr->resolved_target->sema_info;
                 if (ctor_info != NULL) suffix = ctor_info->mangled_name;
+                /* Reference-parameter arguments (a copy constructor's
+                 * own `other`, most commonly) already got their implicit
+                 * `&` inserted earlier, in finalize_calls_expr's own
+                 * AST_NEW case (phase 3/4) -- see that case's own doc
+                 * comment for exactly why it has to happen THERE and not
+                 * here (phase 5 has already relabeled the resolved
+                 * constructor's own reference parameter to a plain
+                 * pointer by the time this phase runs, so the same check
+                 * repeated here would silently never fire). */
             }
 
             size_t len = strlen("v32_new_") + strlen(suffix) + 1;
@@ -1740,6 +1856,15 @@ static void new_delete_rewrite_expr(AstNode **slot, AstNode *class_decl, LocalVa
             break;
         case AST_SIZEOF:
             new_delete_rewrite_expr(&n->a, class_decl, locals); /* NULL-safe for the type-taking form, same as AST_CAST's own case just above */
+            break;
+        case AST_DIRECT_INIT:
+            /* `Shape shape(new Widget);` -- a stack local's own direct-
+             * init constructor arguments can themselves contain a
+             * nested `new`/`delete` needing this same rewriting, same
+             * as any other argument list this phase already walks. */
+            for (int i = 0; i < n->list.count; i++) {
+                new_delete_rewrite_expr(&n->list.items[i], class_decl, locals);
+            }
             break;
         default:
             break;
@@ -1892,17 +2017,32 @@ static AstNode *find_zero_arg_constructor(AstNode *class_decl) {
     return NULL;
 }
 
-static void inject_ctor_calls_stmt(AstNode **slot);
+static void inject_ctor_calls_stmt(AstNode **slot, AstNode *class_decl, LocalVarType **locals);
 
 /* Rebuilds `block`'s own statement list, inserting a constructor call
  * immediately after any VarDecl that needs one. Recurses into each
  * statement FIRST (so a nested block's own VarDecls get handled too)
- * before appending it -- and any inserted call -- to the new list. */
-static void inject_ctor_calls_block(AstNode *block) {
+ * before appending it -- and any inserted call -- to the new list.
+ *
+ * `class_decl`/`locals` were added alongside this project's own
+ * direct-initialization support specifically so fixup_ctor_reference_
+ * args (called from the AST_DIRECT_INIT branch below) has what it
+ * needs to call infer_expr_type on a constructor argument -- this
+ * phase never needed either one before, since the pre-existing zero-
+ * argument case has no arguments to inspect at all. `*locals` is kept
+ * current across the whole block (every VarDecl this phase sees, not
+ * just the direct-init ones), the same "independently reasoned about"
+ * per-phase locals list this project already keeps in several other
+ * phases (see hoist_ternaries_in_expr's own doc comment for that
+ * established pattern) -- needed so a LATER direct-init in the same
+ * block can correctly infer an EARLIER local's type when it's passed
+ * as a reference-parameter constructor argument (`Shape a(5); Shape
+ * c(a);`, exactly tests/76sample.cpp's own shape). */
+static void inject_ctor_calls_block(AstNode *block, AstNode *class_decl, LocalVarType **locals) {
     AstList new_list = ast_list_new();
     for (int i = 0; i < block->list.count; i++) {
         AstNode *stmt = block->list.items[i];
-        inject_ctor_calls_stmt(&stmt);
+        inject_ctor_calls_stmt(&stmt, class_decl, locals);
         ast_list_append(&new_list, stmt);
 
         if (stmt->kind == AST_VAR_DECL && stmt->a == NULL) {
@@ -1923,36 +2063,109 @@ static void inject_ctor_calls_block(AstNode *block) {
 
                     AstNode *expr_stmt = ast_new(AST_EXPR_STMT, stmt->line);
                     expr_stmt->a = call;
-
                     ast_list_append(&new_list, expr_stmt);
                 }
             }
+        } else if (stmt->kind == AST_VAR_DECL && stmt->a != NULL
+                   && stmt->a->kind == AST_DIRECT_INIT) {
+            /* Direct-initialization with constructor arguments on a
+             * stack local -- `Shape shape(7);` -- the counterpart to the
+             * zero-argument case just above, sharing everything except
+             * WHICH constructor overload gets called and WHAT arguments
+             * it's given. sema.c's check_node already resolved this
+             * against `var_class`'s own constructor overloads (attached
+             * as a CallResolution on stmt->a->sema_info, exactly the
+             * same mechanism resolve_new_expr uses for `new T(args)` --
+             * see AST_DIRECT_INIT's own doc comment in ast.h). A NULL
+             * resolution here means either the class genuinely has no
+             * matching constructor (already reported as a sema error by
+             * that point -- nothing more to do) or has no declared
+             * constructor at all (not an error -- there's simply nothing
+             * to call, mirroring the zero-arg case's own "no ctor
+             * exists" no-op just above). */
+            AstNode *direct_init = stmt->a;
+            CallResolution *cr = (CallResolution *)direct_init->sema_info;
+            stmt->a = NULL; /* clear the marker regardless of whether a
+                constructor was actually resolved -- codegen has no idea
+                what an AST_DIRECT_INIT node is and was never meant to
+                see one; leaving it in place would print as this
+                VarDecl's own (nonsensical) initializer expression */
+            if (cr != NULL && cr->resolved_target != NULL) {
+                AstNode *ctor = cr->resolved_target;
+                FuncSemaInfo *info = (FuncSemaInfo *)ctor->sema_info;
+                const char *mangled = (info != NULL) ? info->mangled_name : ctor->str1;
+
+                AstNode *addr = ast_new(AST_UNOP, stmt->line);
+                addr->str1 = strdup("addr");
+                addr->a = ast_ident(stmt->str1, stmt->line);
+
+                /* Reference-parameter arguments (a copy constructor's
+                 * own `other`, most commonly) already got their implicit
+                 * `&` inserted earlier, in finalize_calls_expr's own
+                 * AST_DIRECT_INIT case (phase 3/4) -- MUST happen there,
+                 * not here: phase 5 (fix_references, already run by this
+                 * point) relabels the resolved constructor's own
+                 * AST_REFERENCE_TYPE parameter to a plain pointer
+                 * in-place on the shared target node, so the identical
+                 * "is this parameter still a reference" check would
+                 * silently never fire this late -- see
+                 * fixup_ctor_reference_args's own doc comment, and
+                 * finalize_calls_expr's AST_NEW case's identical
+                 * reasoning, for the full account. */
+
+                AstNode *call = ast_new(AST_CALL, stmt->line);
+                call->a = ast_ident(mangled, stmt->line);
+                ast_list_append(&call->list, addr);
+                for (int j = 0; j < direct_init->list.count; j++) {
+                    ast_list_append(&call->list, direct_init->list.items[j]);
+                }
+
+                AstNode *expr_stmt = ast_new(AST_EXPR_STMT, stmt->line);
+                expr_stmt->a = call;
+                ast_list_append(&new_list, expr_stmt);
+            }
+        }
+
+        if (stmt->kind == AST_VAR_DECL) {
+            /* Keep `*locals` current for every VarDecl this phase sees
+             * (not just the ones needing a constructor call), the same
+             * bookkeeping several other phases already do independently
+             * for their own purposes (see hoist_ternaries_in_expr's own
+             * doc comment) -- needed here so a LATER direct-init in this
+             * same block can have an EARLIER local's type correctly
+             * inferred when it's passed as a reference-parameter
+             * constructor argument. */
+            LocalVarType *lv = calloc(1, sizeof(LocalVarType));
+            lv->name = stmt->str1;
+            lv->type = stmt->type;
+            lv->next = *locals;
+            *locals = lv;
         }
     }
     block->list = new_list;
 }
 
-static void inject_ctor_calls_stmt(AstNode **slot) {
+static void inject_ctor_calls_stmt(AstNode **slot, AstNode *class_decl, LocalVarType **locals) {
     AstNode *s = *slot;
     if (s == NULL) return;
     switch (s->kind) {
         case AST_BLOCK:
-            inject_ctor_calls_block(s);
+            inject_ctor_calls_block(s, class_decl, locals);
             break;
         case AST_IF:
-            inject_ctor_calls_stmt(&s->b);
-            inject_ctor_calls_stmt(&s->c);
+            inject_ctor_calls_stmt(&s->b, class_decl, locals);
+            inject_ctor_calls_stmt(&s->c, class_decl, locals);
             break;
         case AST_LABEL:
-            inject_ctor_calls_stmt(&s->a);
+            inject_ctor_calls_stmt(&s->a, class_decl, locals);
             break;
         case AST_WHILE:
-            inject_ctor_calls_stmt(&s->b);
+            inject_ctor_calls_stmt(&s->b, class_decl, locals);
             break;
         case AST_FOR:
             /* Deliberately NOT recursing into s->a (the for-loop's own
              * init clause) -- see this phase's own doc comment above. */
-            inject_ctor_calls_stmt(&s->d);
+            inject_ctor_calls_stmt(&s->d, class_decl, locals);
             break;
         default:
             break;
@@ -1967,7 +2180,10 @@ static void inject_ctor_calls_classes(AstList *decls) {
             if (layout != NULL) {
                 for (int j = 0; j < layout->methods.count; j++) {
                     AstNode *m = layout->methods.items[j];
-                    if (m->kind == AST_FUNC_DEF) inject_ctor_calls_stmt(&m->a);
+                    if (m->kind == AST_FUNC_DEF) {
+                        LocalVarType *locals = seed_locals_from_params(m);
+                        inject_ctor_calls_stmt(&m->a, n, &locals);
+                    }
                 }
             }
         } else if (n->kind == AST_NAMESPACE_DECL) {
@@ -1982,7 +2198,8 @@ static void inject_ctor_calls_free_functions(AstList *decls) {
         if (n->kind == AST_NAMESPACE_DECL) {
             inject_ctor_calls_free_functions(&n->list);
         } else if (n->kind == AST_FUNC_DEF && n->b == NULL) {
-            inject_ctor_calls_stmt(&n->a);
+            LocalVarType *locals = seed_locals_from_params(n);
+            inject_ctor_calls_stmt(&n->a, NULL, &locals);
         }
     }
 }
@@ -3013,6 +3230,17 @@ static void hoist_ternaries_in_expr(AstNode **slot, AstNode *class_decl, LocalVa
                 hoist_ternaries_in_expr(&n->list.items[i], class_decl, locals, tmp_counter, out);
             }
             hoist_ternaries_in_expr(&n->a, class_decl, locals, tmp_counter, out); /* array-new's own size expression */
+            break;
+        case AST_DIRECT_INIT:
+            /* `Shape shape(cond ? a : b);` -- same reasoning as AST_NEW
+             * just above, minus the array-size expression it doesn't
+             * have. Reached via the AST_VAR_DECL case in this phase's
+             * own block-splicing loop (rewrite_ternary_block), which
+             * hands this node in as `stmt->a` exactly like it would any
+             * other initializer expression. */
+            for (int i = 0; i < n->list.count; i++) {
+                hoist_ternaries_in_expr(&n->list.items[i], class_decl, locals, tmp_counter, out);
+            }
             break;
         default:
             break;

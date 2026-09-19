@@ -5943,3 +5943,231 @@ previously-documented 34, then down further from the 4 remaining after
 the two originally-scoped fixes, to 0. Full `make test` (Vircon32
 mode): zero unexpected failures, the same 13 deliberately-`-`-prefixed
 expected-fail entries as before, none of them new.
+
+## Round: direct-initialization with constructor arguments on a stack local
+
+Closes a gap flagged (twice, by the user) in README.md's own "What
+doesn't exist yet" list: `Shape shape(7);` had no grammar shape at
+all -- `opt_initializer` only ever accepted `= expr` or nothing, so a
+class-typed local's only paths were an explicit `=` initializer or
+implicit zero-argument construction (phase 7's pre-existing
+`find_zero_arg_constructor`/`inject_ctor_calls_block`).
+
+### Design: a new AST_DIRECT_INIT marker node, not AST_NEW reused
+
+`new T(args)` was the obvious template to reuse -- it already resolves
+constructor overloads (`resolve_new_expr`) and carries an argument
+list. But AST_NEW is fundamentally a HEAP-allocation node: lower.c's
+phase 6 (`new_delete_rewrite_expr`) unconditionally rewrites it into a
+`v32_new_ClassName(...)` allocator call returning a pointer -- exactly
+the wrong shape for a value that already has its own storage on the
+stack. Reusing AST_NEW's *kind* directly would have meant either
+teaching phase 6 to special-case "this AST_NEW is actually a stack
+local, don't heap-allocate it" (fragile, and conflating two genuinely
+different operations under one node kind), or duplicating phase 6's
+entire naming logic. Instead: a new node kind, AST_DIRECT_INIT,
+existing ONLY as an AST_VAR_DECL's own `a` slot value (never anywhere
+an ordinary expression is expected), carrying just `list` (the
+arguments) and, once sema.c fills it in, `type` (the var's own class)
+and `sema_info` (a CallResolution, same as AST_NEW gets). Because
+`resolve_new_expr` only ever reads `node->type`/`node->list`/
+`node->sema_info` and never inspects `node->kind`, it works completely
+UNCHANGED for this new node kind too -- zero new resolution logic
+needed, only a new case in sema.c's `check_node` that calls it (after
+the enclosing AST_VAR_DECL case fills in `type`, which AST_NEW never
+needed since the parser already puts the allocated type directly on
+the AST_NEW node itself at parse time -- this node's own type isn't
+known until its ENCLOSING declaration's type is, which parses AFTER
+this node in some sense, so it has to be threaded in from outside
+rather than set at construction).
+
+Every expression-walking lowering phase that already had an AST_NEW
+case (to recurse into `new T(args)`'s own argument list, in case an
+argument itself contains a nested call/ternary/new/delete needing that
+phase's own rewriting) needed the identical AST_DIRECT_INIT case added
+alongside it: `finalize_calls_expr` (phase 3/4), `rewrite_expr`
+(phase 2, this-injection), `fix_reference_access_expr` (phase 5),
+`new_delete_rewrite_expr` (phase 6), and `hoist_ternaries_in_expr`
+(phase 10, Vircon32-only). Missing any ONE of these would have meant a
+constructor argument containing, say, a nested ternary or an implicit
+`this->` reference silently failing to get that phase's own treatment
+-- found by working through each phase's existing AST_NEW case
+deliberately, not by trial and error against a failing test.
+
+Phase 7 itself (`inject_ctor_calls_block`) got a new `else if` branch
+alongside its existing zero-argument case: same receiver (`&varname`),
+same call-injection shape, just reading the resolved constructor and
+forwarding `AST_DIRECT_INIT`'s own argument list instead of an empty
+one, then clearing the VarDecl's `a` slot back to NULL regardless of
+whether a constructor was actually found (codegen has no idea what an
+AST_DIRECT_INIT node is and was never meant to see one).
+
+### The grammar: a genuine GLR fork, not another benign shift/reduce conflict
+
+The new production, `type_spec IDENTIFIER '(' arg_list ')'`,
+deliberately omits `pointer_opt` (this is for a VALUE local
+specifically) and requires a NON-EMPTY `arg_list` (not `opt_arg_list`)
+-- the latter is what keeps `Shape shape();` correctly OUT of this
+alternative, matching real C++'s own "most vexing parse" resolution
+(that spelling means a function declaration, not construction; this
+project's grammar doesn't even support local function declarations
+inside a block at all, so it now reports a plain syntax error there,
+which is honest rather than silently misinterpreting it).
+
+First attempt assumed this would add ZERO new conflicts: FIRST(expr)
+(what can follow the '(' for direct-init) and FIRST(param) (what can
+follow it for an ordinary parameter list) are genuinely disjoint --
+confirmed directly against this grammar's own primary_expr, which
+never accepts a bare TYPE_NAME as an expression-starting token (an
+existing fact already relied on and documented by the C-style-cast
+production nearby). That reasoning was RIGHT about there being no
+ambiguity in what a human -- or a non-GLR parser with full
+lookahead -- would understand `Shape shape(7);` to mean, but WRONG
+about bison's conflict table: an actual `bison -Wcounterexamples` run
+(re-verified by literally removing the new alternative and confirming
+the baseline 25-conflict count comes back exactly) showed the real
+count landing at 27, two more, not zero.
+
+The actual conflict: right after `type_spec`, with IDENTIFIER as the
+lookahead, bison must choose between REDUCING `pointer_opt` to empty
+(continuing toward every OTHER var_decl alternative, all of which
+start `type_spec pointer_opt IDENTIFIER ...`) or SHIFTING IDENTIFIER
+directly (continuing toward this new alternative, which has no
+`pointer_opt` to reduce at all) -- both paths consume the exact same
+next token, so the ambiguity is genuinely "which grammar rule is this"
+at the point IDENTIFIER is seen, one token BEFORE the real
+disambiguator (`(` vs anything else) is even reached. Unlike every
+other shift/reduce conflict this grammar has accumulated so far (all
+of them resolved correctly by bison's own default shift preference,
+confirmed and documented at each %expect bump), THIS one cannot be
+safely left to default shift alone: shift always winning would mean
+committing to the direct-init reading unconditionally the moment an
+IDENTIFIER follows a type, then failing outright on the very next
+token for every ORDINARY declaration (`Shape shape;`, `Shape shape =
+x;`) the instant it isn't `(`. This is exactly the situation
+%glr-parser was declared for in this file's own header comment
+("genuinely ambiguous C++ declarator territory... without needing a
+parser-generator switch") -- and, per that same comment, the first
+conflict in this grammar that actually exercises GLR's forking
+machinery for real, rather than being a single-lookahead-token
+artifact bison's default already resolves correctly on its own.
+
+### Verification
+
+Full clean rebuild, zero warnings. `bison -Wcounterexamples`
+re-verified the exact conflict delta (removing the new alternative
+reproduces the prior 25-conflict baseline exactly; adding it back
+reproduces 27, matching the updated %expect). New test
+`tests/75sample.cpp`: single-argument constructor (`Shape shape(7);`),
+multi-argument constructor (`Rect r(3, 4);`), and overload resolution
+reached through this path specifically (`Rect square(5);`, a SEPARATE
+one-argument overload, not the two-argument one `r` used) -- `-vvv`
+confirms all three resolve to the correct mangled constructor
+(`Shape__Shape__int`, `Rect__Rect__int_int`, `Rect__Rect__int`
+respectively). Full `--target=standard` + real-`gcc` sweep across all
+75 samples (the new one included): zero failures. The transpiled
+standard-mode output was additionally actually COMPILED AND RUN (not
+just syntax-checked) with a printf appended: `shapeArea=49 rectArea=12
+squareArea=25` -- all three matching the test's own documented
+expected values, confirming the receiver and arguments both reach the
+constructor correctly, not just that it compiles. Full `make test`
+(Vircon32 mode, all 75 samples): zero unexpected failures, the same 13
+deliberately-`-`-prefixed expected-fail entries as before. Two
+additional hand-written probes, not part of the permanent suite:
+`Shape shape();` still correctly rejected (a plain syntax error, not
+silently misparsed as construction); `Shape shape(1, 2, 3);` against a
+one-argument constructor still reports the same "'Shape' expects 1
+argument(s), but 3 were given" diagnostic `new T(args)` already gives
+for the identical mismatch.
+
+## Round: copy-constructor overload resolution and argument passing, found by an intro-OOP audit
+
+Deliberately went looking for gaps a student in an intro C++ course
+might hit early -- not prompted by a failing existing test, since
+nothing in this suite had ever combined the two ingredients needed to
+expose this. Found two SEPARATE bugs stacked on top of each other, both
+affecting one of the single most common patterns in introductory
+OOP: a copy constructor, `Shape(const Shape &other);`.
+
+### Bug 1: overload resolution rejected the copy constructor outright
+
+`Shape b(a);` (direct-init) and `new Shape(a)` both failed with "no
+matching overload of 'Shape' for this call" the moment `Shape` declared
+more than one constructor (an ordinary one PLUS the copy constructor).
+Root cause: resolve_overload_generic's own type-matching loop used
+plain `types_equal`, which requires identical AST shapes -- a
+`const Shape &` parameter is AST_REFERENCE_TYPE wrapping AST_IDENT
+("Shape"), while a plain `Shape` argument's inferred type is bare
+AST_IDENT("Shape"), different kinds. Real C++ freely binds a value to a
+const-reference parameter -- that binding IS the entire mechanism a
+copy constructor uses to receive its own argument -- so this was a
+flatly wrong rejection, not a missing feature. Went unnoticed until now
+because the ONLY code path that ever compares full argument types is
+the "genuinely overloaded" branch (more than one candidate exists); an
+unambiguous, non-overloaded constructor only ever checks arity. Fixed
+with a new `type_matches_param` helper (sema.c) used in place of
+`types_equal` in that one loop: falls back to comparing the reference's
+own referent type when exact equality fails and the parameter side
+resolves (through const-stripping and typedef-resolution) to
+AST_REFERENCE_TYPE. Deliberately one-directional -- a reference-typed
+argument isn't accepted for a plain value parameter this same way,
+matching this project's "miss a case rather than guess wrong"
+philosophy rather than modeling every nuance of real C++ overload
+resolution.
+
+### Bug 2: the resolved call still didn't pass the argument correctly
+
+Fixing bug 1 surfaced a SECOND, independent bug immediately: even once
+the copy constructor resolved, its argument still transpiled
+unchanged -- `Shape__Shape__Shape_ref((&c), a)`, passing a bare
+`struct Shape` where the lowered `const struct Shape *` parameter
+needs a pointer (confirmed directly against real gcc output:
+"incompatible type for argument... expected 'const struct Shape *' but
+argument is of type 'struct Shape'"). finalize_call (lower.c) already
+solves this EXACT problem for an ordinary function/method call's own
+reference-parameter arguments -- but a constructor invoked via
+`new T(args)` or this project's own direct-initialization syntax never
+goes through finalize_call at all; both build their constructor calls
+through entirely separate code (new_delete_rewrite_expr's AST_NEW case,
+inject_ctor_calls_block's AST_DIRECT_INIT case), neither of which had
+ever needed this fix before because no prior test had a multi-argument
+OR reference-parameter constructor invoked through either path.
+
+Fixed with a new shared helper, `fixup_ctor_reference_args` (lower.c),
+factored out so both call sites share one implementation of the same
+"is this parameter a reference, if so wrap the argument in `&`" walk
+finalize_call already does, offset by 1 for the constructor's own
+injected `this`.
+
+First placement attempt put this call in new_delete_rewrite_expr
+(phase 6) and inject_ctor_calls_block (phase 7) -- exactly where each
+one builds its actual call -- and it silently did nothing. Root cause,
+caught by actually testing rather than assuming the fix worked: phase 5
+(fix_references) already runs before phases 6 and 7, and it relabels a
+resolved target's own AST_REFERENCE_TYPE parameter to AST_POINTER_TYPE
+IN PLACE on the shared method node (finalize_call's own long-standing
+doc comment already states and relies on this exact ordering
+constraint, for the identical reason) -- so by phase 6/7, the check
+"is this parameter still a reference" can never see a reference
+anymore, regardless of what the source actually declared. Fixed by
+moving the call to finalize_calls_expr's own AST_NEW/AST_DIRECT_INIT
+cases instead (phase 3/4, which already runs before phase 5) -- exactly
+mirroring where finalize_call's own identical fix already lives, for
+exactly the same reason. sema.c's resolution has already completed in
+full before ANY lowering phase runs (a documented precondition, see
+lower.h), so `n->sema_info` is already a valid CallResolution even at
+this, the very first lowering phase to touch expressions at all.
+
+### Verification
+
+Full clean rebuild, zero warnings. New test `tests/76sample.cpp`:
+a copy constructor invoked through BOTH supported paths (`new
+Shape(a)` and this project's own new direct-init syntax, `Shape
+c(a);`), confirming the fix isn't specific to either one. The
+transpiled standard-mode output was actually COMPILED AND RUN (not
+just syntax-checked): `aArea=25 bArea=25 cArea=25` -- all three equal,
+confirming the copy actually carries the right value through both
+paths, not just that the generated code happens to compile. Full
+`--target=standard` + real-`gcc` sweep across all 76 samples: zero
+failures. Full `make test` (Vircon32 mode): zero unexpected failures,
+same 13 deliberately-`-`-prefixed expected-fail entries as before.

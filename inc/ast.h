@@ -456,6 +456,47 @@ typedef enum {
                               anything array-specific (no per-element
                               destructor invocation exists for either
                               new[] or delete[] yet). */
+    AST_DIRECT_INIT,      /* Marker node ONLY ever found sitting in an
+                              AST_VAR_DECL's own `a` slot (never anywhere
+                              an ordinary expression is expected) --
+                              `Shape shape(7);`'s constructor-argument
+                              list, `list=(7)`, type=NULL until sema.c's
+                              overload resolution fills it in (see below).
+                              Distinct from AST_NEW specifically because
+                              this is a STACK-allocated local's direct-
+                              initialization, not a heap allocation --
+                              new_delete_rewrite_expr's whole allocator-
+                              naming machinery doesn't apply here at all,
+                              there's no pointer being returned, so this
+                              needed its own node kind rather than reusing
+                              AST_NEW's (which lower.c's phase 6
+                              unconditionally rewrites into a
+                              "v32_new_ClassName" heap-allocator call --
+                              exactly the wrong shape for a value that
+                              already has its own storage on the stack).
+                              sema.c's check_node fills in `type` with the
+                              VAR_DECL's own declared class type (needed
+                              because resolve_new_expr/resolve_overload_
+                              generic, reused unchanged for this node kind
+                              too, reads the class to resolve constructor
+                              overloads against from `node->type`, exactly
+                              like it does for an AST_NEW) and attaches a
+                              CallResolution* to `sema_info` exactly like
+                              AST_NEW does, resolving which constructor
+                              overload these arguments match -- same
+                              diagnostics, same "no matching overload"/
+                              "ambiguous" errors. lower.c's phase 7
+                              (inject_ctor_calls) reads this resolution
+                              and emits a direct call to that constructor's
+                              own mangled name with `&shape` as the
+                              receiver, then clears the VAR_DECL's `a`
+                              slot back to NULL (this node never survives
+                              to codegen -- there's nothing for codegen to
+                              print here, the initializer becomes a
+                              separate statement immediately after the
+                              declaration, the same shape phase 7's
+                              existing zero-argument constructor injection
+                              already produces). */
     AST_POINTER_TYPE,     /* a=pointee type -- represents "T *" */
     AST_REFERENCE_TYPE,   /* a=referent type -- represents "T &" */
     AST_CONST_TYPE,       /* a=underlying type -- represents "const T"

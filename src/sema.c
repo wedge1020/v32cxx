@@ -1182,6 +1182,57 @@ void collect_free_function_candidates(const char *name, AstNode ***out, int *out
     }
 }
 
+/* Real, previously-undiscovered bug found while auditing common intro-
+ * course OOP patterns, not by a failing existing test: a COPY
+ * CONSTRUCTOR (`Shape(const Shape &other)`) -- or any reference
+ * parameter, const or not -- never actually got called through
+ * overload resolution the moment its class had more than one
+ * constructor. `Shape b(a);`/`new Shape(a)` (a plain, by-value `Shape`
+ * passed where the only matching declared constructor takes
+ * `const Shape &`) reported "no matching overload", flatly wrong --
+ * real C++ freely binds a plain value to a const-reference parameter
+ * (that's the entire mechanism a copy constructor relies on to receive
+ * its own argument at all). The root cause: resolve_overload_generic's
+ * matching loop used plain types_equal, which requires the exact same
+ * AST_KIND on both sides -- a `const Shape &` parameter type is
+ * AST_REFERENCE_TYPE wrapping AST_IDENT("Shape"), while a plain `Shape`
+ * argument's inferred type is bare AST_IDENT("Shape"); different kinds,
+ * so types_equal correctly (for what IT is meant to check -- literal
+ * type identity) said no. Overload matching needs a DIFFERENT, looser
+ * question than type identity: "can this argument be passed to this
+ * parameter", not "are these the same type" -- exactly real C++'s own
+ * reference-binding rule for the one-argument-away case this project
+ * actually needs to support. This went unnoticed until now because the
+ * ONLY prior code path that ever compared full argument types at all is
+ * the "genuinely overloaded" branch just below (more than one candidate
+ * by that name) -- an unambiguous, non-overloaded constructor never hits
+ * this check (arity alone suffices, see the `count == 1` branch above),
+ * and no existing test in this project's suite had ever declared BOTH a
+ * copy constructor AND another overload of the same class before this
+ * round's own audit specifically went looking for one. */
+static int type_matches_param(const AstNode *param_type, const AstNode *arg_type) {
+    if (types_equal(param_type, arg_type)) return 1;
+    const AstNode *p = param_type;
+    while (p != NULL && p->kind == AST_CONST_TYPE) p = p->a;
+    p = resolve_typedef_chain(p);
+    if (p != NULL && p->kind == AST_REFERENCE_TYPE) {
+        /* A plain value (or another reference to the same thing) binds
+         * to a (const) reference parameter -- check the referent's type,
+         * not the reference wrapper itself. Deliberately one-directional:
+         * a REFERENCE-typed argument isn't accepted for a plain VALUE
+         * parameter here (real C++ would still need to actually copy it,
+         * which is exactly the overload-resolution question a value
+         * parameter, not this reference-binding shortcut, should
+         * settle) -- best-effort, matching this project's own
+         * established "miss a case rather than guess wrong" philosophy,
+         * scoped to the one real, confirmed gap (a copy constructor
+         * failing to resolve at all) rather than modeling every nuance
+         * of real C++ overload resolution's reference-binding rules. */
+        return types_equal(p->a, arg_type);
+    }
+    return 0;
+}
+
 /* The name-matching/arity/type-matching/diagnostic core shared by every
  * kind of "which overload does this refer to" resolution in this
  * project: an explicit call (resolve_call), a constructor invoked via
@@ -1251,7 +1302,7 @@ static void resolve_overload_generic(AstNode *site, const char *name, AstNode **
         if (cand->list.count != arg_count) continue;
         int ok = 1;
         for (int j = 0; j < cand->list.count; j++) {
-            if (!types_equal(cand->list.items[j]->type, arg_types[j])) { ok = 0; break; }
+            if (!type_matches_param(cand->list.items[j]->type, arg_types[j])) { ok = 0; break; }
         }
         if (ok) { match = cand; match_count++; }
     }
@@ -1698,6 +1749,22 @@ static void check_node(AstNode *n, AstNode *current_class, LocalVarType **locals
             check_node(n->a, current_class, locals);
             break;
         case AST_VAR_DECL: {
+            if (n->a != NULL && n->a->kind == AST_DIRECT_INIT) {
+                /* `Shape shape(7);` -- the AST_DIRECT_INIT marker doesn't
+                 * carry its own type from the parser (it's built before
+                 * this VarDecl's own type is in scope -- see var_decl's
+                 * new production in parser.y), so this is the one place
+                 * that fills it in: exactly this VarDecl's own declared
+                 * type, the class whose constructor overloads the
+                 * argument list needs to be resolved against. Filled in
+                 * BEFORE check_node recurses into it, since
+                 * resolve_new_expr (reused unchanged here -- it only
+                 * ever reads node->type/node->list, never node->kind, so
+                 * it doesn't care that this is an AST_DIRECT_INIT rather
+                 * than the AST_NEW it was originally written for) needs
+                 * this->type already set to look up the class. */
+                n->a->type = n->type;
+            }
             check_node(n->a, current_class, locals); /* initializer, if any */
             LocalVarType *lv = calloc(1, sizeof(LocalVarType)); /* calloc: zero-inits was_reference too */
             lv->name = n->str1;
@@ -1742,6 +1809,19 @@ static void check_node(AstNode *n, AstNode *current_class, LocalVarType **locals
         case AST_NEW:
             for (int i = 0; i < n->list.count; i++) check_node(n->list.items[i], current_class, locals);
             check_node(n->a, current_class, locals); /* array-new's own size expression, if any (NULL otherwise) */
+            resolve_new_expr(n, current_class, *locals);
+            break;
+        case AST_DIRECT_INIT:
+            /* `Shape shape(7);` -- see this node kind's own doc comment
+             * in ast.h. `type` was already filled in by the enclosing
+             * AST_VAR_DECL case just above (this node never appears
+             * anywhere else, so there's no other caller to fill it in
+             * for). resolve_new_expr is reused completely unchanged --
+             * it resolves a constructor overload from a `type`+`list`
+             * pair and attaches a CallResolution to `sema_info`,
+             * exactly what's needed here too, and it never inspects
+             * `node->kind` at all. */
+            for (int i = 0; i < n->list.count; i++) check_node(n->list.items[i], current_class, locals);
             resolve_new_expr(n, current_class, *locals);
             break;
         case AST_INIT_LIST:
@@ -2248,6 +2328,12 @@ static void dump_calls_in_node(const AstNode *n) {
         case AST_NEW:
             /* A constructor call, resolved by sema.c's resolve_new_expr --
              * same treatment. */
+            for (int i = 0; i < n->list.count; i++) dump_calls_in_node(n->list.items[i]);
+            print_resolution_if_any(n);
+            break;
+        case AST_DIRECT_INIT:
+            /* `Shape shape(7);` -- resolved by the exact same
+             * resolve_new_expr as AST_NEW, same treatment here too. */
             for (int i = 0; i < n->list.count; i++) dump_calls_in_node(n->list.items[i]);
             print_resolution_if_any(n);
             break;

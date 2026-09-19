@@ -11,6 +11,7 @@
 // order, with their extensions swapped to .vtex/.vsnd.
 
 #include "video.h"
+#include "audio.h"
 
 #texture Background "background.png"
 #texture player "player.png"

@@ -386,16 +386,38 @@ emitted alongside it.
   `docs/VIRCON32_QUIRKS.md`'s entry #12 for the full, bison-and-gcc-
   verified account, including two adjacent pre-existing bugs this fix
   surfaced along the way.
-- **No direct-initialization with constructor arguments on a
-  stack-allocated local** (`Shape shape(7);` — valid, idiomatic C++,
-  confirmed a real gap, not a rejected feature). Only two forms exist
-  for a class-typed local: an explicit initializer via `=`, or no
-  initializer at all (which triggers this project's own zero-argument-
-  constructor injection). `opt_initializer` has no grammar shape for
-  constructor arguments in parentheses. Workaround in the meantime:
-  default-construct, then set public fields directly (`Shape shape;
-  shape.size = 7;`). **Flagged by the user as a priority to fix in an
-  upcoming round.**
+- ~~No direct-initialization with constructor arguments on a
+  stack-allocated local~~ — **FIXED**: `Shape shape(7);` now parses and
+  transpiles, alongside `new T(args)`'s own already-existing constructor-
+  argument support. A new var_decl alternative
+  (`type_spec IDENTIFIER '(' arg_list ')'`) accepts it, deliberately
+  narrower than this grammar's other declarator forms in two ways: no
+  `pointer_opt` (this is specifically for a VALUE local — a pointer
+  local already has its own unambiguous spelling), and a REQUIRED,
+  non-empty argument list — `Shape shape();` is deliberately still
+  rejected, matching real C++'s own "most vexing parse" resolution
+  (that spelling is a function declaration, not object construction).
+  Constructor arguments parse onto a new `AST_DIRECT_INIT` marker node,
+  resolved against the class's own constructor overloads by the exact
+  same `resolve_new_expr` machinery `new T(args)` already uses (same
+  "no matching overload"/"ambiguous" diagnostics, confirmed directly —
+  a 3-argument call against a 1-argument constructor reports "'Shape'
+  expects 1 argument(s), but 3 were given", same wording `new` already
+  gives), then lowered by phase 7 into a direct call to that
+  constructor with `&shape` as the receiver — the exact same shape
+  phase 7's pre-existing zero-argument-constructor injection already
+  produces, just with real arguments now. This needed a genuine, GLR-
+  forking shift/reduce conflict (not one of this grammar's usual
+  "bison's default shift already resolves it, single lookahead token is
+  enough" conflicts) — right after `type_spec`, with an IDENTIFIER
+  lookahead, deciding between this new alternative and every OTHER
+  var_decl alternative starting `type_spec pointer_opt IDENTIFIER ...`
+  genuinely needs more than one token of lookahead to settle (whatever
+  comes right after the name — `(` vs `;`/`=`/`,`/`[`), which is exactly
+  what `%glr-parser` was declared, at this file's very top, to let this
+  grammar grow into. See `tests/75sample.cpp` for a worked example
+  (single- and multi-argument constructors, plus overload resolution
+  reached through this path specifically, not just through `new`).
 - **Two narrower, deliberate scope boundaries from the multi-
   dimensional array work specifically**: a function PARAMETER's own
   array-to-pointer decay (`void foo(int arr[8])`) stays single-
@@ -437,6 +459,89 @@ emitted alongside it.
   file already uses, so it silently produced a bare, un-prefixed cast in
   standard mode (`(Shape *)ptr` instead of `(struct Shape *)ptr`) —
   fixed by routing it through that same helper like everywhere else.
+- ~~A copy constructor (`Shape(const Shape &other);`) never actually
+  resolved, and — once fixed — never actually received its argument
+  correctly either~~ — **FIXED**, two stacked bugs found by an audit
+  deliberately looking for gaps a student early in an intro OOP course
+  might hit, not by a failing existing test. See `docs/DESIGN_NOTES.md`
+  for the full account (overload resolution's `types_equal` requiring
+  exact AST-shape identity instead of real C++'s own reference-binding
+  rule; then, once that resolved, the argument itself still not getting
+  the implicit `&` a reference parameter needs, because the one place
+  that fix belonged needed to run BEFORE phase 5 relabels a resolved
+  reference parameter to a plain pointer, not after). Exercised by
+  `tests/76sample.cpp`, through both `new Shape(a)` and this round's own
+  direct-init syntax.
+
+## Gaps found auditing common intro-OOP patterns (not yet fixed)
+
+A deliberate audit, going looking for the kind of thing a student early
+in a C++ course tries first, turned up several more gaps beyond the
+copy-constructor one above (which WAS fixed this round) — confirmed
+directly by actually compiling each one, not assumed from reading the
+grammar. None of these are fixed yet; listed here so they're visible
+rather than silently discovered one at a time later.
+
+- **Default parameter values** (`void greet(int x, int y = 5);`) —
+  not accepted at all: `param` has no grammar shape for `= expr` after
+  a parameter's name, so this is a parse-time rejection ("syntax error,
+  unexpected '=', expecting ')'"), not a silent gap. One of the most
+  common things an intro course teaches early (a function callable with
+  fewer arguments than it declares).
+- **Static members** (`static int count;` inside a class body) — also
+  a flat parse rejection ("syntax error, unexpected INT_KW, expecting
+  COLONCOLON") — `member` has no grammar shape recognizing the `static`
+  keyword at all, only ordinary instance fields/methods. A common
+  early-OOP pattern (a class-wide counter, a singleton-style instance
+  pointer) with no workaround in this project today.
+- **A stack array of class objects gets NO per-element constructor
+  call at all — SILENT, not a rejection.** `Shape shapes[3];` parses
+  and transpiles without any error, but the generated code is just
+  `struct Shape shapes[3];` with nothing else — confirmed directly by
+  reading the generated C, not assumed: if `Shape` has a real
+  constructor body, every element is left with genuinely uninitialized
+  memory, not the zero-argument-constructed objects real C++ would
+  produce. Phase 7's own per-element machinery only ever handles a
+  single, scalar `AST_VAR_DECL` (`find_zero_arg_constructor`/
+  `inject_ctor_calls_block`, both this round's own direct-init work
+  extended) — arrays were never in that phase's scope, matching the
+  exact same already-documented "no per-element analogue" limitation
+  `new T[N]` has (see the note on `new`/`delete` above), just for a
+  stack array instead of a heap one. This is the most dangerous gap on
+  this list precisely because nothing about it looks wrong until the
+  program runs.
+- **An in-class default member initializer (`int size = 5;` written
+  directly on a class's own field declaration) is also SILENTLY
+  dropped, not rejected.** `class Shape { public: int size = 5; };`
+  parses without error, but confirmed directly by reading the generated
+  C: the `= 5` simply never appears anywhere, and if the class has no
+  other constructor, a `Shape` local is left with genuinely
+  uninitialized memory instead of `size == 5`. A member's own
+  `AST_VAR_DECL` keeps its initializer expression exactly like an
+  ordinary local's would (the parser doesn't reject it, and doesn't
+  even warn), but nothing downstream ever reads a MEMBER's initializer
+  the way a zero-argument-constructor injection reads a class's actual
+  constructor body — this project's whole member-initialization story
+  runs entirely through explicit constructors (member-initializer
+  lists, ordinary assignment in a constructor body); a bare default
+  value on the field declaration itself was never wired into either.
+- **`nullptr` is accepted but transpiles as the literal, unmangled
+  word `nullptr`, not Vircon32's own required `NULL`.** Confirmed
+  directly: `Shape *p = nullptr;` produces `Shape * p = nullptr;`
+  unchanged in Vircon32-mode output. `nullptr` isn't a keyword in C at
+  all (it's C++11), so Vircon32's own C compiler would reject this
+  outright as an undeclared identifier — the exact same "NULL, not a
+  bare identifier" quirk this project already handles correctly for a
+  literal `0` (see `docs/VIRCON32_QUIRKS.md`) was never extended to
+  this newer C++ spelling of the same idea.
+- **Range-based `for` (`for (int x : arr)`) is a flat parse
+  rejection** — `for_init`'s own grammar has no colon-based alternative
+  at all, only the classic three-clause C-style form. A C++11 feature,
+  increasingly taught early alongside ordinary arrays.
+- **`friend` (a friend function or friend class declaration inside a
+  class body) is also a flat parse rejection** — `member` has no
+  grammar shape recognizing the `friend` keyword. Less core to a FIRST
+  OOP course than the items above, but common soon after.
 
 This is genuinely still growing — expect rough edges, and expect this
 README to need updating again as things change.

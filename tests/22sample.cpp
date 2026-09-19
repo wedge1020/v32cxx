@@ -13,6 +13,8 @@
 // through unchanged rather than erroring, which is what let this file
 // compile via v32c++ at all despite that gap.
 
+#include "video.h"
+
 class Player {
     public:
         Player();
