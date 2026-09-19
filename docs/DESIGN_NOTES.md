@@ -6171,3 +6171,233 @@ paths, not just that the generated code happens to compile. Full
 `--target=standard` + real-`gcc` sweep across all 76 samples: zero
 failures. Full `make test` (Vircon32 mode): zero unexpected failures,
 same 13 deliberately-`-`-prefixed expected-fail entries as before.
+
+## Round: a real Vircon32-compiler bug report, `nullptr`, and closing the stack-array-of-class-objects gap
+
+Follow-up round, triggered by the user actually running a real Vircon32
+compiler against the previous round's own `tests/76sample.cpp` output
+and reporting back a genuine compiler error this project's own gcc-based
+checking never could have caught.
+
+**`tests/22/23/33/34sample.cpp` includes.** Added `#include "video.h"`
+to 22/23sample.cpp and `#include "audio.h"` (below the existing
+`video.h` include) to 33/34sample.cpp, so these samples' generated C
+actually resolves the Vircon32 SDK functions they call once run through
+the real Vircon32 toolchain -- this project's own preprocessor
+pass-through (lexer.l) re-emits any `#`-line verbatim without resolving
+it itself, so the include has to already be there in the source for the
+downstream compiler to see it.
+
+**Real bug: `cannot assign const int to int: discards const qualifier`
+at `76program.c:87`.** The copy constructor fixed last round
+(`Shape__Shape__Shape_ref`) generates `this->size = other->size;`,
+where `other` is `const Shape *`. This is an ordinary scalar VALUE copy
+-- real C freely allows assigning a const-qualified value into a
+plain one (`const int y = 5; int x = y;` compiles clean under
+`-Wall -Wextra`), and gcc agreed, raising nothing. Vircon32's own
+compiler is simply stricter here than either gcc or the C standard
+requires, treating this the same way it already treats a const-pointer-
+to-non-const-pointer assignment (this project's own earlier
+`cast_receiver_if_needed` fix, for method receivers). Since this
+project has already chosen not to enforce const-correctness of its own,
+the same fix applies: a new `strip_const_member_read` helper (lower.c)
+wraps a member read taken through a const receiver in an explicit
+`(int)`-style cast, matching what a real `const_cast`-equivalent read
+would look like in C by hand. Applied at every "value read" position
+this project's own lowering pipeline funnels through
+`finalize_calls_expr`/`finalize_calls_stmt`: an assignment's RHS, a
+`return` expression, and a VarDecl's own initializer (skipped for a
+reference-typed local, which needs an addressable lvalue, not a cast
+rvalue) -- deliberately NOT applied to a plain call argument, since
+`finalize_call`'s own separate reference-argument `&`-wrap (already in
+this file) needs the bare, uncast member expression to take its
+address; wrapping first would make that address-of target an rvalue.
+Verified against a real compile+run of the fixed `76program.c`
+(`--target=standard` + gcc): `aArea=25 bArea=25 cArea=25`, matching the
+unmodified copy-constructor behavior from before this fix, and the
+`-vvv` lowering log confirms the cast fires exactly once across the
+entire 78-sample suite (only at the one call site that actually needed
+it).
+
+**`nullptr` → `NULL`.** A new `AST_NULL_LIT` literal kind (ast.h),
+recognized by a new `nullptr` lexer keyword and grammar alternative
+(mirroring `TRUE_KW`/`FALSE_KW`'s own existing shape exactly), carrying
+no payload fields at all. `infer_expr_type` returns NULL for it
+(matching real C++'s own `std::nullptr_t`, which has no single pointer
+type of its own until context supplies one -- and matching this
+function's own established "NULL means no information, don't guess"
+convention everywhere else). codegen.c prints it as the literal word
+`NULL` in BOTH target dialects, since `NULL` is already unconditionally
+in scope either way (misc.h for Vircon32-mode, `<stdlib.h>` for
+`--target=standard`, both already `#include`d for `new`/`delete`'s own
+allocator calls). See tests/77sample.cpp.
+
+**Closing the stack-array-of-class-objects gap.** `Shape shapes[3];`
+used to transpile with zero errors but zero constructor calls, leaving
+every element as genuinely uninitialized memory whenever `Shape` had a
+real constructor body -- the single most dangerous gap this project's
+own intro-OOP audit had surfaced, precisely because nothing about it
+looked wrong until the program actually ran. Turned out to need no new
+AST node kind and no new lowering phase: phase 7's own existing
+`inject_ctor_calls_block` (lower.c) already handles the scalar case
+(`Shape shape;` calling `Shape`'s zero-arg constructor); a new
+`build_array_ctor_loop` helper gives that same phase one more shape to
+build for an `AST_ARRAY_TYPE`-typed VarDecl with a class element type:
+a synthesized `for` loop --
+
+```c
+for (int __v32_ctor_arr_i0 = 0; __v32_ctor_arr_i0 < 3; __v32_ctor_arr_i0++)
+    Shape__Shape__void(&shapes[__v32_ctor_arr_i0]);
+```
+
+-- built entirely from AST node kinds this project already produces
+elsewhere (`AST_FOR`, `AST_SUBSCRIPT`, `post++`), inserted right after
+the array's own declaration exactly the way the scalar case's own
+constructor call already is. The synthesized loop index variable is
+named with a per-FUNCTION counter (`__v32_ctor_arr_iN`), threaded
+through this phase's own call chain by pointer, the same established
+pattern this file already uses for `__v32_ret_tmpN`
+(`destruct_scope_*`) and `__v32_tern_tmpN` (`hoist_ternaries_in_expr`)
+-- needed the moment two such arrays appear in the same function.
+Scope limitations, matching the pre-existing scalar case's own: only a
+BLOCK-statement-level array declaration is handled (not one inside a
+for-loop's own init clause), and a multi-dimensional array only gets
+its outer dimension's elements constructed (the inner `AST_ARRAY_TYPE`
+never resolves to a class via `type_to_class`, so this whole path is
+simply never triggered for that case -- a "miss a case rather than
+guess wrong" no-op, not a silent half-fix). Array-`new` (`new T[N]`)
+remains a separate, unfixed gap -- entirely different code path, no
+machinery shared with this fix. Verified via an actual compile+run
+(`--target=standard` + gcc): three `Shape` elements, each constructed
+with `size=10`, area 100 apiece -- confirming real per-element
+construction, not just clean-looking generated C. Full `--target=
+standard` + real-gcc sweep and full `make test` (Vircon32 mode): zero
+unexpected failures across all 78 samples, and the new `-vvv`
+lowering-notes log confirms the const-strip fix above fires exactly
+once, only where it's actually needed.
+
+## Round: `friend` (friend class and friend function)
+
+The last item on the intro-OOP audit's own gap list, and the one the
+user explicitly asked for by name.
+
+Two new grammar alternatives on `member` (parser.y): `FRIEND CLASS
+IDENTIFIER ';'` and `FRIEND func_header ';'`. The class-name token is
+deliberately a bare `IDENTIFIER`, not `TYPE_NAME` -- unlike
+`opt_base`'s own class-name reference (which DOES require a
+pre-registered `TYPE_NAME`), a friend declaration very commonly names a
+class not yet defined anywhere earlier in the file (the classic
+mutually-friending pair), so requiring `TYPE_NAME` here would reject
+exactly the pattern the feature exists for. Resolution is deferred
+entirely to sema.c's `compute_layout` (pass 2), by which point the
+whole program's class registry (`collect_declarations`, pass 1) is
+already complete and order no longer matters -- an unresolved name at
+that point is a real, reported sema error, not a silent no-op.
+
+The friend function alternative reuses `func_header` completely
+unchanged (identical AST shape to an ordinary bodyless method
+prototype), then relabels the node's own `kind` to a new
+`AST_FRIEND_FUNC_DECL` -- a deliberately DIFFERENT kind rather than an
+`AST_FUNC_DECL` with a flag bit, so that every existing pass which
+walks a class's own MEMBERS (`compute_layout`'s `methods` list,
+this-injection, mangling, vtable-building, codegen's struct/field
+emission, ...) simply never sees it at all, with no new "skip this if
+it's a friend" check needed anywhere in any of them -- a friend
+function is not a member, full stop: no `this`, no `ClassName__`
+mangled prefix, no vtable slot.
+
+Access-control fix: a new `is_friend_of()` helper (sema.c), consulted
+by the pre-existing `check_member_access` before either the private or
+protected check, covers both grant shapes:
+- **Friend class** -- checked by class IDENTITY against a new
+  `ClassLayout.friend_classes` list (an `AST_CLASS_DECL*` list,
+  resolved once in `compute_layout`), the same identity-based check
+  `is_same_or_descendant` already uses for the protected-access rule.
+- **Friend function** -- checked by NAME ONLY against a new
+  `ClassLayout.friend_function_names` list, via a new
+  `g_current_function_being_checked` global tracking which function's
+  body `check_function_body` currently has open. Threading this as an
+  ordinary parameter through `check_node` would have meant touching
+  ~20 existing recursive call sites for a value only the access-check
+  sites actually read; a single global is safe here specifically
+  because this pass is single-threaded and never checks one function's
+  body while already inside another's (C++ has no nested function
+  definitions) -- the same kind of narrow, deliberate global
+  `g_symtab`/`g_class_registry` already are elsewhere in this file.
+  Name-only matching (not full signature matching) is a real,
+  documented scope limit: two free functions sharing a friend-granted
+  name would both get access, even if only one was actually written
+  `friend`. Accepted rather than building real per-overload friend
+  resolution for an intro-level feature -- this project's own
+  free-function candidate registry (`collect_free_function_candidates`)
+  is already name-keyed everywhere else, so this matches the existing
+  precision level rather than introducing a new one just for this.
+
+A friend function's own declaration is ALSO registered into the
+existing free-function registry (`register_free_function`, the exact
+mechanism an ordinary out-of-class prototype already uses) --
+`register_free_function`'s own pre-existing prototype-vs-definition
+dedup (matching name + parameter signature, preferring whichever has a
+body) handles the friend declaration and its later out-of-class
+definition merging into one candidate for free, with no changes needed
+there at all.
+
+Verified directly: tests/79sample.cpp (a friend class' method and a
+friend free function both successfully reading a private member) and
+tests/80sample.cpp (a companion negative test -- a THIRD class, not
+named as a friend, still gets the pre-existing "is a private member...
+and cannot be accessed here" error, confirming friendship wasn't
+accidentally broadened to everyone). Both transpile/fail exactly as
+expected under `make test` (14 deliberately-`-`-prefixed expected-fail
+entries now, one more than before, for tests/80sample.cpp's own new
+negative case), and tests/79sample.cpp's own generated
+`--target=standard` output compiles clean under real gcc
+(`-Wall -Wextra`, no errors, only the same class of pre-existing
+"unused variable"/`void main`-return-type warnings every other test in
+this suite already has). Bison's own `%expect 27` needed no change --
+`FRIEND` is an unambiguous leading token, introducing no new
+shift/reduce conflicts anywhere in this grammar.
+
+## Round: empty-struct rejection, found by a real compile of `friend`'s own new test
+
+The user regenerated lexer/parser from the previous round's delivered
+source and ran the real Vircon32 compiler against `tests/79sample.cpp`
+(this project's own new `friend` test), surfacing a genuine, real-
+compiler-only error this project's `--target=standard` + gcc
+verification sweep could never have caught: `79program.c:12:1: error:
+structures must have at least 1 member`.
+
+Root cause: `BoxPrinter` (the friend-granted accessor class in
+`tests/79sample.cpp`) has a method but no data members and no virtual
+methods -- so its `StructLayout` (`lower.c`) has zero fields, and
+`emit_struct` (`codegen.c`) printed a genuinely empty `struct
+BoxPrinter {\n};\n`. gcc accepts an empty struct as a silent, well-
+known extension (no warning even under `-Wall -Wextra`), which is
+exactly why every `--target=standard`-based check this project runs
+missed it -- the real Vircon32 compiler is stricter than either gcc or
+the C standard requires here, the same shape of gap as the const-
+discard bug and the receiver-cast bug documented earlier in this file:
+Vircon32 enforcing something neither gcc nor the language itself does.
+
+Fixed the same way those were: `emit_struct` now checks
+`layout->count == 0` and, when true, inserts a single unused `char
+__v32_empty_struct_pad;` placeholder field before the (now non-empty)
+struct's closing brace -- never referenced by name anywhere else in
+the generated code, purely there to satisfy the "at least one member"
+requirement. Applied in BOTH target dialects rather than gated to
+Vircon32-mode only, since a struct valid in one of this project's own
+output modes and not the other, for a difference the user never wrote
+themselves, would be a confusing, purely accidental divergence between
+the two modes -- consistent with how this project already treats
+dialect differences it introduces deliberately (see `VIRCON32_QUIRKS.md`
+entry #13, added alongside this fix) versus differences that would
+just be an implementation accident.
+
+Verified: `tests/79sample.cpp` now generates `struct BoxPrinter { char
+__v32_empty_struct_pad; };` in Vircon32 mode, and the equivalent under
+`--target=standard` compiles clean under real gcc (`-Wall -Wextra`, no
+new warnings). Full `make test`: still exactly 14 deliberately-`-`-
+prefixed expected-fail entries, no regressions -- this fix only adds a
+field where a class's struct had none at all; every class with at
+least one data member or a vtable is completely unaffected (`layout->
+count == 0` is the only branch that changed).

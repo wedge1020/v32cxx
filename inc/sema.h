@@ -142,6 +142,55 @@ typedef struct ClassLayout {
                                  * repointed at this class's own
                                  * implementation and new virtual methods
                                  * appended after. */
+    AstList friend_classes;     /* AST_CLASS_DECL nodes named by a `friend
+                                 * class X;` declaration inside this
+                                 * class's own body -- every method of a
+                                 * listed class may access this class's
+                                 * private/protected members, checked by
+                                 * class IDENTITY (pointer equality against
+                                 * find_class()'s own result), not by name,
+                                 * matching how base_class_decl above is
+                                 * resolved. A friend declaration naming a
+                                 * class that isn't defined anywhere is
+                                 * simply never added here (find_class
+                                 * returns NULL) -- reported as an ordinary
+                                 * "unknown class" sema error at the
+                                 * declaration site itself (see
+                                 * check_node's own AST_FRIEND_CLASS case),
+                                 * not silently ignored. Deliberately NOT
+                                 * transitive (a friend of a friend is NOT
+                                 * a friend, matching real C++ exactly) and
+                                 * NOT inherited by a derived class
+                                 * (also matching real C++: `friend`
+                                 * grants access to the exact class named,
+                                 * nothing more). */
+    AstList friend_function_names; /* plain (unmangled) names, as `char *`
+                                 * cast through AstNode's own list storage
+                                 * -- actually stored as owning AST_IDENT
+                                 * placeholder nodes purely for AstList's
+                                 * own "list of AstNode*" shape, str1 is
+                                 * the only field that matters. A `friend`
+                                 * function declared inside this class's
+                                 * body (`friend int compare(const Box &,
+                                 * const Box &);`) is checked by NAME
+                                 * only, not by full signature match --
+                                 * deliberately narrower than the class
+                                 * case above (which uses real identity):
+                                 * this project's free-function overload
+                                 * registry is already name-keyed
+                                 * everywhere else (collect_free_function_
+                                 * candidates), and disambiguating access
+                                 * grants per-OVERLOAD would need
+                                 * machinery nothing else in this file has
+                                 * -- documented scope limit, not a
+                                 * silent one: two free functions sharing
+                                 * a friend-granted name would BOTH get
+                                 * access, even if only one was actually
+                                 * named `friend`. Uncommon enough for an
+                                 * intro-level feature that this project
+                                 * accepts the imprecision rather than
+                                 * building real per-signature friend
+                                 * matching for it. */
 } ClassLayout;
 
 /* Attached to a node's sema_info once overload resolution determines

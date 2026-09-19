@@ -87,36 +87,38 @@ extern int yydebug;
     VIRTUAL = 293,                 /* VIRTUAL  */
     TRUE_KW = 294,                 /* TRUE_KW  */
     FALSE_KW = 295,                /* FALSE_KW  */
-    OPERATOR = 296,                /* OPERATOR  */
-    SIZEOF = 297,                  /* SIZEOF  */
-    CONST = 298,                   /* CONST  */
-    STATIC_CAST = 299,             /* STATIC_CAST  */
-    DYNAMIC_CAST = 300,            /* DYNAMIC_CAST  */
-    CONST_CAST = 301,              /* CONST_CAST  */
-    REINTERPRET_CAST = 302,        /* REINTERPRET_CAST  */
-    COLONCOLON = 303,              /* COLONCOLON  */
-    ARROW = 304,                   /* ARROW  */
-    EQ = 305,                      /* EQ  */
-    NE = 306,                      /* NE  */
-    LE = 307,                      /* LE  */
-    GE = 308,                      /* GE  */
-    ANDAND = 309,                  /* ANDAND  */
-    OROR = 310,                    /* OROR  */
-    PLUSEQ = 311,                  /* PLUSEQ  */
-    MINUSEQ = 312,                 /* MINUSEQ  */
-    STAREQ = 313,                  /* STAREQ  */
-    SLASHEQ = 314,                 /* SLASHEQ  */
-    INC = 315,                     /* INC  */
-    DEC = 316,                     /* DEC  */
-    SHL = 317,                     /* SHL  */
-    SHR = 318,                     /* SHR  */
-    ANDEQ = 319,                   /* ANDEQ  */
-    OREQ = 320,                    /* OREQ  */
-    XOREQ = 321,                   /* XOREQ  */
-    SHLEQ = 322,                   /* SHLEQ  */
-    SHREQ = 323,                   /* SHREQ  */
-    SIZEOF_TYPE_PREC = 324,        /* SIZEOF_TYPE_PREC  */
-    LOWER_THAN_ELSE = 325          /* LOWER_THAN_ELSE  */
+    NULLPTR_KW = 296,              /* NULLPTR_KW  */
+    OPERATOR = 297,                /* OPERATOR  */
+    SIZEOF = 298,                  /* SIZEOF  */
+    CONST = 299,                   /* CONST  */
+    FRIEND = 300,                  /* FRIEND  */
+    STATIC_CAST = 301,             /* STATIC_CAST  */
+    DYNAMIC_CAST = 302,            /* DYNAMIC_CAST  */
+    CONST_CAST = 303,              /* CONST_CAST  */
+    REINTERPRET_CAST = 304,        /* REINTERPRET_CAST  */
+    COLONCOLON = 305,              /* COLONCOLON  */
+    ARROW = 306,                   /* ARROW  */
+    EQ = 307,                      /* EQ  */
+    NE = 308,                      /* NE  */
+    LE = 309,                      /* LE  */
+    GE = 310,                      /* GE  */
+    ANDAND = 311,                  /* ANDAND  */
+    OROR = 312,                    /* OROR  */
+    PLUSEQ = 313,                  /* PLUSEQ  */
+    MINUSEQ = 314,                 /* MINUSEQ  */
+    STAREQ = 315,                  /* STAREQ  */
+    SLASHEQ = 316,                 /* SLASHEQ  */
+    INC = 317,                     /* INC  */
+    DEC = 318,                     /* DEC  */
+    SHL = 319,                     /* SHL  */
+    SHR = 320,                     /* SHR  */
+    ANDEQ = 321,                   /* ANDEQ  */
+    OREQ = 322,                    /* OREQ  */
+    XOREQ = 323,                   /* XOREQ  */
+    SHLEQ = 324,                   /* SHLEQ  */
+    SHREQ = 325,                   /* SHREQ  */
+    SIZEOF_TYPE_PREC = 326,        /* SIZEOF_TYPE_PREC  */
+    LOWER_THAN_ELSE = 327          /* LOWER_THAN_ELSE  */
   };
   typedef enum yytokentype yytoken_kind_t;
 #endif
@@ -134,7 +136,7 @@ union YYSTYPE
     double fval;
     AccessSpec access;
 
-#line 138 "inc/parser.h"
+#line 140 "inc/parser.h"
 
 };
 typedef union YYSTYPE YYSTYPE;

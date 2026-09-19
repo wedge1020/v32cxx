@@ -155,6 +155,7 @@ static const char *kind_name(AstKind k) {
         case AST_STRING_LIT: return "StringLit";
         case AST_CHAR_LIT: return "CharLit";
         case AST_BOOL_LIT: return "BoolLit";
+        case AST_NULL_LIT: return "NullLit";
         case AST_THIS: return "This";
         case AST_NEW: return "New";
         case AST_DIRECT_INIT: return "DirectInit";
@@ -167,6 +168,8 @@ static const char *kind_name(AstKind k) {
         case AST_INIT_LIST: return "InitList";
         case AST_CAST: return "Cast";
         case AST_SIZEOF: return "Sizeof";
+        case AST_FRIEND_CLASS: return "FriendClass";
+        case AST_FRIEND_FUNC_DECL: return "FriendFuncDecl";
     }
     return "?";
 }

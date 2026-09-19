@@ -40,6 +40,52 @@ typedef enum {
                               methods/constructors to begin with, not on
                               which keyword declared it. */
     AST_ACCESS_SPEC,      /* access=the new default access for what follows */
+    AST_FRIEND_CLASS,     /* str1=friended class's name, as written --
+                              `friend class X;` inside a class body. A
+                              member-list entry, same as AST_ACCESS_SPEC
+                              just above, but unlike it carries no access
+                              level of its own and doesn't change
+                              current_access for what follows -- friend
+                              declarations are access-level-independent in
+                              real C++ (writing one under `private:` vs
+                              `public:` makes no difference at all), so
+                              compute_layout() (sema.c) special-cases this
+                              kind before it ever reaches the ordinary
+                              "does this change current_access" branch.
+                              Resolved to an actual AST_CLASS_DECL (via
+                              find_class) and appended to the enclosing
+                              class's own ClassLayout.friend_classes --
+                              see that field's own doc comment (sema.h)
+                              for exactly what granting friendship means
+                              and its deliberate scope limits (not
+                              transitive, not inherited). */
+    AST_FRIEND_FUNC_DECL,  /* str1=name, type=return type, list=params --
+                              `friend ReturnType f(params);` inside a
+                              class body. Shares func_header's own AST
+                              shape exactly (same fields an ordinary
+                              AST_FUNC_DECL/AST_FUNC_DEF would have) --
+                              deliberately a DIFFERENT AST kind rather
+                              than an AST_FUNC_DECL with a "friend" flag
+                              bit, so every existing switch in this
+                              project that walks a class's own MEMBERS
+                              (compute_layout, layout->methods,
+                              this-injection, mangling, vtable-building,
+                              ...) simply never sees it at all without
+                              needing a new "is this a friend, skip it"
+                              check bolted onto each one -- a friend
+                              function is emphatically NOT a member: it
+                              gets no `this` parameter, no mangled
+                              ClassName__ prefix, no vtable slot, nothing.
+                              Registered instead as an ordinary global
+                              free-function declaration/candidate (the
+                              exact same registry an out-of-class
+                              `ReturnType f(params);` prototype already
+                              populates) and, separately, by NAME, in the
+                              enclosing class's own ClassLayout.
+                              friend_function_names for access-checking
+                              purposes -- see that field's own doc
+                              comment (sema.h) for the name-only-matching
+                              scope limit this implies. */
     AST_VAR_DECL,         /* str1=name, type=declared type, a=initializer or NULL.
                               access: meaningful only once sema.c has run and
                               this is a class member -- see compute_layout()
@@ -423,6 +469,25 @@ typedef enum {
     AST_STRING_LIT,       /* str1=text (raw, unescaped as lexed) */
     AST_CHAR_LIT,         /* ival=char code */
     AST_BOOL_LIT,         /* ival=0/1 */
+    AST_NULL_LIT,         /* `nullptr` -- no payload fields at all, same as
+                              AST_THIS just below. A distinct kind from
+                              AST_INT_LIT (rather than reusing it with
+                              ival=0) for the same reason AST_BOOL_LIT is
+                              its own kind and not just an AST_INT_LIT
+                              with ival 0/1: codegen needs to print this
+                              one specific value differently from an
+                              ordinary integer zero -- Vircon32's own C
+                              compiler requires the literal word `NULL`
+                              for a null pointer constant and rejects a
+                              bare `0` in pointer context outright (see
+                              docs/VIRCON32_QUIRKS.md), so `nullptr`
+                              always prints as `NULL` (misc.h's own
+                              macro, already `#include`d unconditionally
+                              for every Vircon32-mode program) regardless
+                              of what pointer type it's initializing --
+                              exactly mirroring real C++'s own nullptr,
+                              which likewise carries no type of its own
+                              until context supplies one. */
     AST_THIS,
     AST_NEW,              /* type=type being allocated, list=constructor
                               arguments (may be empty -- `new T` and

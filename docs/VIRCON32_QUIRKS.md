@@ -551,6 +551,35 @@ important default to protect.
 
 ---
 
+## 13. Empty structs are rejected outright -- FIXED
+
+- **Vircon32 requires**: every `struct` definition to have at least
+  one member. A class with no data members and no vtable of its own --
+  a method-only "verb" class with no state, such as a `friend`-granted
+  accessor/helper class (`tests/79sample.cpp`'s own `BoxPrinter`) --
+  otherwise lowers to a genuinely empty `struct BoxPrinter {\n};\n`.
+- **Standard C**: an empty struct is a well-known, silent gcc extension
+  -- accepted with no warning at all even under `-Wall -Wextra`, which
+  is exactly why this project's own `--target=standard` + gcc
+  verification sweeps never caught it; only a real Vircon32 compile
+  run did.
+- **Status**: Reported directly by the user, quoting the real
+  compiler's own error verbatim: `structures must have at least 1
+  member`.
+- **Where**: `emit_struct` (`codegen.c`).
+- **Fix**: when a class's own `StructLayout` has zero fields (no data
+  members, no vtable pointer), `emit_struct` inserts a single unused
+  `char __v32_empty_struct_pad;` placeholder field -- never referenced
+  by name anywhere else in the generated code, purely there to give
+  the struct one member. Applied in BOTH target dialects, not gated to
+  Vircon32-mode only: a struct that's valid in one of this project's
+  own output modes and not the other, for a difference the user never
+  wrote themselves, would be a confusing, purely accidental divergence
+  between the two.
+- **IMPLEMENTED** for both `--target=vircon32` and `--target=standard`.
+
+---
+
 ## What this list does NOT cover
 
 - Anything this project hasn't discovered yet -- this is a record of

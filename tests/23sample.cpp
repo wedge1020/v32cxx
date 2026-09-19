@@ -8,9 +8,9 @@
 // actually call the constructor" path rather than the "no constructor
 // has a body, just allocate" fallback.
 //
-// select_texture/select_region/draw_region_at are deliberately never
-// declared anywhere in this file, same reasoning as sample22.cpp.
-
+// select_texture/select_region/draw_region_at come from Vircon32's own
+// video.h SDK header, `#include`d below -- same reasoning as
+// tests/22sample.cpp's own identical comment.
 #include "video.h"
 
 class Player {

@@ -6,13 +6,19 @@
 // uninitialized stack garbage. See docs/DESIGN_NOTES.md for the full
 // story.
 //
-// select_texture/select_region/draw_region_at are deliberately never
-// declared anywhere in this file (they'd normally come from a Vircon32
-// SDK header via #include, which this project's preprocessor gap drops
-// silently) -- confirms calls to an unresolved free function still pass
-// through unchanged rather than erroring, which is what let this file
-// compile via v32c++ at all despite that gap.
-
+// select_texture/select_region/draw_region_at come from Vircon32's own
+// video.h SDK header, `#include`d below -- this project's own
+// preprocessor gap (no macro expansion, no #include RESOLUTION) means
+// v32c++ itself never sees what these functions actually look like, but
+// the `#include` line itself is still captured and re-emitted verbatim
+// at the top of the generated C (lexer.l's own pass-through), so the
+// REAL Vircon32 C compiler resolves them exactly as it would for
+// hand-written C. Confirms v32c++'s own call resolution correctly
+// leaves an unresolved free function's call unchanged rather than
+// erroring (there's no declaration for it anywhere v32c++ itself can
+// see), which is what lets this file transpile at all despite the
+// preprocessor gap -- the real compilation check happens downstream,
+// on the Vircon32 toolchain, once the include actually resolves.
 #include "video.h"
 
 class Player {

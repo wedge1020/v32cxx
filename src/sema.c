@@ -717,6 +717,8 @@ static void compute_layout(AstNode *class_decl) {
     ClassLayout *layout = calloc(1, sizeof(ClassLayout));
     layout->data_members = ast_list_new();
     layout->methods = ast_list_new();
+    layout->friend_classes = ast_list_new();
+    layout->friend_function_names = ast_list_new();
 
     /* C++'s default access before any explicit public:/private:/
      * protected: label: private for `class`, public for `struct` --
@@ -747,6 +749,52 @@ static void compute_layout(AstNode *class_decl) {
                  * still fine to mangle a bodyless prototype). */
                 member->sema_info = make_func_info(class_decl->str1, member->str1, &member->list, 0);
             }
+        } else if (member->kind == AST_FRIEND_CLASS) {
+            /* `friend class X;` -- deliberately NOT gated on
+             * current_access at all (unlike every other member kind
+             * handled above): real C++ friendship doesn't have an
+             * access level of its own, so this doesn't read OR update
+             * current_access the way AST_ACCESS_SPEC does just above --
+             * see AST_FRIEND_CLASS's own doc comment (ast.h). Resolved
+             * by NAME, now, since the whole program's class registry
+             * (collect_declarations, pass 1) is already complete by the
+             * time compute_layouts (pass 2) runs -- this is exactly why
+             * the grammar accepted a bare, unresolved IDENTIFIER rather
+             * than requiring a TYPE_NAME (see that grammar rule's own
+             * comment): a class can friend another class defined later
+             * in the same file, and by THIS point "later in the file"
+             * no longer matters. An unknown name is reported here, at
+             * the friend declaration's own line, rather than silently
+             * granting no one anything. */
+            AstNode *friended = find_class(member->str1);
+            if (friended == NULL) {
+                sema_error(member->line, "friend declaration names unknown class '%s'", member->str1);
+            } else {
+                ast_list_append(&layout->friend_classes, friended);
+            }
+        } else if (member->kind == AST_FRIEND_FUNC_DECL) {
+            /* `friend ReturnType f(params);` -- registered as an
+             * ordinary global free-function candidate (exactly what
+             * mangle_free_functions/register_free_function already do
+             * for every OTHER free-function declaration in this
+             * project, just reached here instead of there because this
+             * one lives inside a class body's own member list, which
+             * mangle_free_functions never walks into at all -- see
+             * AST_FRIEND_FUNC_DECL's own doc comment for why it's kept
+             * out of `layout->methods` entirely). Mangled with
+             * class_name=NULL, same as every other free function
+             * (mangle()'s own class_name==NULL convention) -- a friend
+             * function is emphatically not this class's OWN function,
+             * it's an ordinary free function that merely has extra
+             * access. Also recorded by name in friend_function_names
+             * for check_member_access's own lookup -- see that field's
+             * doc comment (sema.h) for the name-only-matching scope
+             * limit this implies. */
+            if (member->sema_info == NULL) {
+                member->sema_info = make_func_info(NULL, member->str1, &member->list, 0);
+            }
+            register_free_function(member);
+            ast_list_append(&layout->friend_function_names, ast_ident(member->str1, member->line));
         }
     }
 
@@ -914,11 +962,61 @@ static int is_same_or_descendant(AstNode *class_decl, AstNode *ancestor) {
     return 0;
 }
 
+/* Set by check_function_body (below) for exactly the duration of
+ * walking one function's own body -- the only way this pass has of
+ * answering "which free function's body is currently being checked",
+ * needed by is_friend_of below for a `friend` FUNCTION grant (a
+ * friend CLASS grant needs no such thing; current_class already
+ * answers the analogous question for that case). Not threaded through
+ * check_node as an ordinary parameter -- that would mean touching
+ * every one of its ~20 recursive call sites for a value only ONE of
+ * them (the AST_MEMBER/AST_CALL access-check sites) actually reads --
+ * a single global is safe here because this project's own sema pass
+ * is single-threaded and never checks one function's body while
+ * already in the middle of checking another (C++ has no nested
+ * function definitions), matching the same "narrow, deliberate global"
+ * shape g_symtab/g_class_registry already use elsewhere in this
+ * file. */
+static AstNode *g_current_function_being_checked = NULL;
+
+/* True if `accessor_class` (the class whose method body access is
+ * happening from, or NULL for a free function) OR the free function
+ * currently recorded in g_current_function_being_checked has been
+ * granted friendship by `owner`'s own `friend` declarations. See
+ * ClassLayout's own friend_classes/friend_function_names doc comments
+ * (sema.h) for exactly what's checked (identity for a friend class,
+ * name only for a friend function) and their deliberate scope limits.
+ * `owner` having no ClassLayout yet (shouldn't happen -- compute_layout
+ * always runs before this) is treated as "no friends", not a crash. */
+static int is_friend_of(const AstNode *owner, AstNode *accessor_class) {
+    ClassLayout *owner_layout = (ClassLayout *)owner->sema_info;
+    if (owner_layout == NULL) return 0;
+    if (accessor_class != NULL) {
+        for (int i = 0; i < owner_layout->friend_classes.count; i++) {
+            if (owner_layout->friend_classes.items[i] == accessor_class) return 1;
+        }
+    }
+    if (g_current_function_being_checked != NULL) {
+        for (int i = 0; i < owner_layout->friend_function_names.count; i++) {
+            if (strcmp(owner_layout->friend_function_names.items[i]->str1,
+                       g_current_function_being_checked->str1) == 0) {
+                return 1;
+            }
+        }
+    }
+    return 0;
+}
+
 static void check_member_access(int line, const char *member_name, const AstNode *member,
                                  AstNode *owner, AstNode *current_class) {
     if (member->access == ACC_PUBLIC) {
         return;
     }
+    if (is_friend_of(owner, current_class)) return; /* checked once, ahead
+        of both the private and protected cases below -- real C++'s own
+        `friend` grants the SAME full access regardless of which of the
+        two the member actually is, so there's nothing case-specific
+        left for either branch below to add on top of this. */
     if (member->access == ACC_PRIVATE) {
         if (current_class == owner) return;
         sema_error(line, "'%s' is a private member of class '%s' and cannot be accessed here",
@@ -965,6 +1063,20 @@ AstNode *infer_expr_type(const AstNode *expr, AstNode *current_class, LocalVarTy
         case AST_INT_LIT: return ast_ident("int", expr->line);
         case AST_FLOAT_LIT: return ast_ident("float", expr->line);
         case AST_BOOL_LIT: return ast_ident("bool", expr->line);
+        case AST_NULL_LIT:
+            /* `nullptr` has no static type of its own -- same as real
+             * C++'s own std::nullptr_t, which converts to any pointer
+             * type but isn't itself one. Returning NULL here (meaning
+             * "unknown/no opinion", this function's own established
+             * convention for "can't say" everywhere else) rather than
+             * guessing some specific pointer type is deliberate: every
+             * caller of infer_expr_type already treats a NULL result as
+             * "no information available, don't act on a guess" (see,
+             * e.g., address_of_if_needed's and type_matches_param's own
+             * doc comments), which is exactly the right behavior for a
+             * literal that's equally at home assigned to a `Shape *`, an
+             * `int *`, or any other pointer type whatsoever. */
+            return NULL;
         case AST_CHAR_LIT: return ast_ident("char", expr->line);
         case AST_THIS:
             return (current_class != NULL) ? ast_ident(current_class->str1, expr->line) : NULL;
@@ -1980,7 +2092,15 @@ static void check_function_body(AstNode *func, AstNode *current_class) {
      * direction. */
     resolve_member_init_list(func, current_class, locals);
     check_implicit_base_construction(func, current_class);
+    /* Save/restore rather than a bare assignment: check_function_body
+     * is only ever called non-reentrantly in practice (see
+     * g_current_function_being_checked's own doc comment), but
+     * save/restore costs nothing and documents that non-reentrancy
+     * assumption explicitly rather than leaving it merely implied. */
+    AstNode *prev_function = g_current_function_being_checked;
+    g_current_function_being_checked = func;
     check_node(func->a, current_class, &locals);
+    g_current_function_being_checked = prev_function;
     /* `locals` is deliberately never freed -- single-shot CLI tool, same
      * memory philosophy as the rest of this project (see e.g.
      * symtab_destroy's doc comment). */

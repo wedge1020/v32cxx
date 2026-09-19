@@ -205,6 +205,8 @@ ALNUM   [A-Za-z0-9_]
 "sizeof"     { g_last_ident_sym = NULL; return SIZEOF; }
 "true"       { g_last_ident_sym = NULL; return TRUE_KW; }
 "false"      { g_last_ident_sym = NULL; return FALSE_KW; }
+"nullptr"    { g_last_ident_sym = NULL; return NULLPTR_KW; }
+"friend"     { g_last_ident_sym = NULL; return FRIEND; }
 
 "::"  {
     /* Arm (or clear) the qualifier context for the *next* token, using

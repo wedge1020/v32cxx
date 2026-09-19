@@ -473,14 +473,16 @@ emitted alongside it.
   `tests/76sample.cpp`, through both `new Shape(a)` and this round's own
   direct-init syntax.
 
-## Gaps found auditing common intro-OOP patterns (not yet fixed)
+## Gaps found auditing common intro-OOP patterns
 
 A deliberate audit, going looking for the kind of thing a student early
 in a C++ course tries first, turned up several more gaps beyond the
-copy-constructor one above (which WAS fixed this round) — confirmed
-directly by actually compiling each one, not assumed from reading the
-grammar. None of these are fixed yet; listed here so they're visible
-rather than silently discovered one at a time later.
+copy-constructor one above — confirmed directly by actually compiling
+each one, not assumed from reading the grammar. The stack-array and
+`nullptr` gaps below were fixed in the round right after this list was
+first written (see docs/DESIGN_NOTES.md for both); the rest are listed
+here so they're visible rather than silently discovered one at a time
+later.
 
 - **Default parameter values** (`void greet(int x, int y = 5);`) —
   not accepted at all: `param` has no grammar shape for `= expr` after
@@ -494,22 +496,27 @@ rather than silently discovered one at a time later.
   keyword at all, only ordinary instance fields/methods. A common
   early-OOP pattern (a class-wide counter, a singleton-style instance
   pointer) with no workaround in this project today.
-- **A stack array of class objects gets NO per-element constructor
-  call at all — SILENT, not a rejection.** `Shape shapes[3];` parses
-  and transpiles without any error, but the generated code is just
-  `struct Shape shapes[3];` with nothing else — confirmed directly by
-  reading the generated C, not assumed: if `Shape` has a real
-  constructor body, every element is left with genuinely uninitialized
-  memory, not the zero-argument-constructed objects real C++ would
-  produce. Phase 7's own per-element machinery only ever handles a
-  single, scalar `AST_VAR_DECL` (`find_zero_arg_constructor`/
-  `inject_ctor_calls_block`, both this round's own direct-init work
-  extended) — arrays were never in that phase's scope, matching the
-  exact same already-documented "no per-element analogue" limitation
-  `new T[N]` has (see the note on `new`/`delete` above), just for a
-  stack array instead of a heap one. This is the most dangerous gap on
-  this list precisely because nothing about it looks wrong until the
-  program runs.
+- **FIXED — a stack array of class objects used to get NO per-element
+  constructor call at all (SILENT, not a rejection).** `Shape
+  shapes[3];` parsed and transpiled without any error, but the
+  generated code was just `struct Shape shapes[3];` with nothing else
+  — confirmed directly by reading the generated C, not assumed: if
+  `Shape` had a real constructor body, every element was left with
+  genuinely uninitialized memory, not the zero-argument-constructed
+  objects real C++ would produce. This was the most dangerous gap on
+  this list precisely because nothing about it looked wrong until the
+  program ran. Fixed by extending phase 7's own existing per-element
+  machinery (`inject_ctor_calls_block`, lower.c — the same phase this
+  round's own direct-init work already extended once) with one more
+  shape to build: a `for` loop over the array, calling the element
+  class's own zero-argument constructor on `&arr[i]` for every index,
+  built entirely out of AST node kinds this project already produces
+  elsewhere (`AST_FOR`, `AST_SUBSCRIPT`, `post++`) — no new AST kind
+  and no new lowering phase needed. Array-`new` (`new T[N]`) is a
+  separate, still-open gap (see the note on `new`/`delete` above) —
+  fixing the stack case didn't fix the heap one, since they're
+  entirely different code paths with no shared machinery between them.
+  See tests/78sample.cpp and docs/DESIGN_NOTES.md for the full story.
 - **An in-class default member initializer (`int size = 5;` written
   directly on a class's own field declaration) is also SILENTLY
   dropped, not rejected.** `class Shape { public: int size = 5; };`
@@ -525,23 +532,45 @@ rather than silently discovered one at a time later.
   runs entirely through explicit constructors (member-initializer
   lists, ordinary assignment in a constructor body); a bare default
   value on the field declaration itself was never wired into either.
-- **`nullptr` is accepted but transpiles as the literal, unmangled
-  word `nullptr`, not Vircon32's own required `NULL`.** Confirmed
-  directly: `Shape *p = nullptr;` produces `Shape * p = nullptr;`
-  unchanged in Vircon32-mode output. `nullptr` isn't a keyword in C at
-  all (it's C++11), so Vircon32's own C compiler would reject this
-  outright as an undeclared identifier — the exact same "NULL, not a
-  bare identifier" quirk this project already handles correctly for a
-  literal `0` (see `docs/VIRCON32_QUIRKS.md`) was never extended to
-  this newer C++ spelling of the same idea.
+- **FIXED — `nullptr` used to transpile as the literal, unmangled word
+  `nullptr`, not Vircon32's own required `NULL`.** Confirmed directly:
+  `Shape *p = nullptr;` produced `Shape * p = nullptr;` unchanged in
+  Vircon32-mode output. `nullptr` isn't a keyword in C at all (it's
+  C++11), so Vircon32's own C compiler would reject this outright as an
+  undeclared identifier — the exact same "NULL, not a bare identifier"
+  quirk this project already handled correctly for a literal `0` (see
+  `docs/VIRCON32_QUIRKS.md`) had never been extended to this newer C++
+  spelling of the same idea. Fixed with a new `AST_NULL_LIT` literal
+  kind (mirroring `AST_BOOL_LIT`'s own existing shape) recognized by
+  the lexer/grammar and printed as `NULL` by the code generator in
+  BOTH target dialects — `NULL` is already in scope everywhere either
+  one can reach: misc.h for `--target=vircon32`, `<stdlib.h>` for
+  `--target=standard`. See tests/77sample.cpp.
 - **Range-based `for` (`for (int x : arr)`) is a flat parse
   rejection** — `for_init`'s own grammar has no colon-based alternative
   at all, only the classic three-clause C-style form. A C++11 feature,
   increasingly taught early alongside ordinary arrays.
-- **`friend` (a friend function or friend class declaration inside a
-  class body) is also a flat parse rejection** — `member` has no
-  grammar shape recognizing the `friend` keyword. Less core to a FIRST
-  OOP course than the items above, but common soon after.
+- **FIXED — `friend` (a friend function or friend class declaration
+  inside a class body) used to be a flat parse rejection**, `member`
+  having no grammar shape recognizing the `friend` keyword at all. Both
+  forms are now supported: `friend class X;` (a bare, unresolved
+  `IDENTIFIER`, deliberately not requiring `X` to already be a known
+  type — friending a class not yet defined earlier in the same file is
+  the whole point) and `friend ReturnType f(params);` (reusing
+  `func_header` unchanged, then given its own `AST_FRIEND_FUNC_DECL`
+  kind rather than an ordinary method, so it's registered as a plain
+  free function — no `this`, no mangled `ClassName__` prefix, no vtable
+  slot — while still granting the class's own private/protected access
+  to it). `sema.c`'s existing `check_member_access` now consults a new
+  `is_friend_of()` before enforcing access at all: a friend class is
+  checked by class identity, a friend function by name only (a
+  deliberately narrower, documented match than full signature
+  resolution — see `ClassLayout.friend_function_names`'s own doc
+  comment in `inc/sema.h`). Neither transitive nor inherited, matching
+  real C++. See tests/79sample.cpp (a friend class and a friend
+  function both granted access) and tests/80sample.cpp (a companion
+  negative test confirming a non-friend class still gets the ordinary
+  private-access error).
 
 This is genuinely still growing — expect rough edges, and expect this
 README to need updating again as things change.

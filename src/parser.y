@@ -224,7 +224,7 @@
 %token RETURN IF ELSE DO WHILE FOR BREAK CONTINUE GOTO
 %token SWITCH CASE DEFAULT
 %token INT_KW FLOAT_KW VOID_KW BOOL_KW CHAR_KW
-%token NEW DELETE THIS VIRTUAL TRUE_KW FALSE_KW OPERATOR SIZEOF CONST
+%token NEW DELETE THIS VIRTUAL TRUE_KW FALSE_KW NULLPTR_KW OPERATOR SIZEOF CONST FRIEND
 %token STATIC_CAST DYNAMIC_CAST CONST_CAST REINTERPRET_CAST
 %token COLONCOLON ARROW EQ NE LE GE ANDAND OROR
 %token PLUSEQ MINUSEQ STAREQ SLASHEQ INC DEC
@@ -440,6 +440,53 @@ member:
     | func_decl ';'   { $$ = $1; }
     | func_def        { $$ = $1; }
     | var_decl ';'     { $$ = $1; }
+    | FRIEND CLASS IDENTIFIER ';'
+        {
+            /* `friend class X;` -- plain IDENTIFIER, deliberately NOT
+             * TYPE_NAME: X is very commonly a class this file hasn't
+             * DEFINED yet at this point in the source (the classic
+             * mutually-friending pair, each one naming the other before
+             * either body has been fully parsed), so it can't possibly
+             * have been registered as a TYPE_NAME by the time this rule
+             * fires -- see class_decl's own header-line action for
+             * where that registration actually happens, always no
+             * earlier than the friended class's own definition. Left
+             * entirely unresolved here; sema.c's compute_layout does
+             * the actual find_class lookup once the WHOLE program's
+             * class registry is known, order-independent, exactly like
+             * every other "class named before it's necessarily been
+             * seen" case in this project (a base class named in
+             * `opt_base` is the one existing precedent, though that one
+             * DOES require a prior TYPE_NAME -- friendship is looser
+             * than inheritance in real C++ specifically to allow this). */
+            $$ = ast_new(AST_FRIEND_CLASS, @1.first_line);
+            $$->str1 = strdup($3);
+        }
+    | FRIEND func_header ';'
+        {
+            /* `friend ReturnType f(params);` -- reuses func_header
+             * completely unchanged (same AST_FUNC_DECL shape an
+             * ordinary bodyless method prototype would get), then
+             * relabels the node's own `kind` to AST_FRIEND_FUNC_DECL --
+             * see that kind's own doc comment (ast.h) for why a
+             * DIFFERENT kind, not a flag bit on AST_FUNC_DECL, is the
+             * right shape here. `opt_virtual` deliberately NOT allowed
+             * in front (unlike func_decl's own `opt_virtual func_header`)
+             * -- a friend function isn't a member at all, so "virtual"
+             * has no meaning on one; real C++ rejects this combination
+             * outright, and this project matches that by simply never
+             * offering the grammar shape rather than parsing it and
+             * discarding the keyword silently. */
+            $$ = $2;
+            $$->kind = AST_FRIEND_FUNC_DECL;
+            symtab_pop_scope(g_symtab); /* func_header pushed a param
+                scope at '(' (see its own header comment) that only
+                func_decl's/func_def's own actions normally pop --
+                bypassing both of those here (this is neither: no body,
+                and not itself a member), so this rule pops it directly,
+                same as func_decl's own action does for an ordinary
+                bodyless prototype. */
+        }
     ;
 
 access_spec:
@@ -1673,6 +1720,7 @@ primary_expr:
     | CHAR_LITERAL            { $$ = ast_new(AST_CHAR_LIT, @1.first_line); $$->ival = $1; }
     | TRUE_KW                  { $$ = ast_new(AST_BOOL_LIT, @1.first_line); $$->ival = 1; }
     | FALSE_KW                  { $$ = ast_new(AST_BOOL_LIT, @1.first_line); $$->ival = 0; }
+    | NULLPTR_KW                 { $$ = ast_new(AST_NULL_LIT, @1.first_line); }
     | THIS                        { $$ = ast_new(AST_THIS, @1.first_line); }
     | qualified_id_expr             { $$ = $1; }
     | '(' expr ')'                    { $$ = $2; }

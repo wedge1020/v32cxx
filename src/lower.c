@@ -600,6 +600,65 @@ static AstNode *cast_receiver_if_needed(AstNode *obj_expr, const AstNode *actual
     return cast;
 }
 
+/* Wraps a member-access READ (`other->size`, `other.size`) in an
+ * explicit cast to the member's own (unqualified) type, when the
+ * member is being read THROUGH a const-qualified receiver (`other` is
+ * `const Shape &`/`const Shape *`) -- a second, independent instance
+ * of the exact same real-Vircon32-compiler-only bug class
+ * cast_receiver_if_needed's own doc comment already describes for
+ * method receivers, just found on a plain data-member read instead: a
+ * real Vircon32 compiler run against tests/76sample.cpp's own
+ * generated copy constructor --
+ *
+ *   void Shape__Shape__Shape_ref(Shape *this, const Shape *other) {
+ *       (this->size = other->size);
+ *   }
+ *
+ * -- reported "cannot assign const int to int: discards const
+ * qualifier" at the assignment, even though this is an ordinary
+ * scalar VALUE copy (not a pointer assignment) that real C freely
+ * allows without so much as a warning (`const int y = 5; int x = y;`
+ * compiles clean under `-Wall -Wextra`); gcc agreed with real C here
+ * and raised nothing for this file either. Vircon32's own compiler is
+ * simply stricter about propagating a const qualifier through a
+ * member read than either gcc or the C standard requires. Since this
+ * project has already chosen, elsewhere, not to enforce const-
+ * correctness of its own (see cast_receiver_if_needed's own doc
+ * comment), the same fix applies here: insert the explicit cast a
+ * user would write by hand to silence this, matching what a real
+ * `const_cast`-equivalent read already looks like in C.
+ *
+ * Deliberately narrow: only fires on a BARE `AST_MEMBER` value (never
+ * wraps the member's own object sub-expression, and is only called at
+ * specific "this is a value being READ" call sites below -- an
+ * assignment's RHS, a call argument -- never at a position that could
+ * be an LVALUE, such as an assignment's LHS or the operand of `&`,
+ * where wrapping in a cast would produce an unassignable rvalue and
+ * silently break the very code this is meant to fix). Returns `expr`
+ * unchanged whenever there's nothing to strip (not a member access at
+ * all, the receiver isn't const, or the member's own type can't be
+ * determined -- best-effort, matching this file's "never insert a fix
+ * on a guess" rule everywhere else). */
+static AstNode *strip_const_member_read(AstNode *expr, AstNode *class_decl, LocalVarType *locals) {
+    if (expr == NULL || expr->kind != AST_MEMBER) return expr;
+    AstNode *obj_type = infer_expr_type(expr->a, class_decl, locals);
+    if (!receiver_type_is_const(obj_type)) return expr;
+    AstNode *member_type = infer_expr_type(expr, class_decl, locals);
+    if (member_type == NULL) return expr;
+    AstNode *cast = ast_new(AST_CAST, expr->line);
+    cast->type = member_type; /* reused by reference, not deep-copied --
+        same convention as every other cast built in this file */
+    cast->a = expr;
+    const char *type_name = (member_type->kind == AST_IDENT && member_type->str1 != NULL)
+        ? member_type->str1 : "value";
+    lower_note(expr->line, "inserted a (%s) cast around a member read "
+        "through a const receiver -- Vircon32 rejects assigning a "
+        "const-qualified value into a plain one outright (\"discards "
+        "const qualifier\"), unlike gcc, which only ever warns, and "
+        "this project doesn't enforce const-correctness of its own", type_name);
+    return cast;
+}
+
 /* Wraps `obj_expr` in an explicit address-of (&) if its OWN declared
  * type isn't already a pointer -- needed because a method's receiver
  * parameter is always `ClassName *`, but the object expression a method
@@ -1038,8 +1097,22 @@ static void finalize_calls_expr(AstNode **slot, AstNode *class_decl, LocalVarTyp
             for (int i = 0; i < n->list.count; i++) {
                 finalize_calls_expr(&n->list.items[i], class_decl, locals);
             }
-            /* Post-order: arguments (including any nested calls used as
-             * arguments) are finalized above before this call itself. */
+            /* Deliberately NOT applying strip_const_member_read to call
+             * arguments here, unlike AST_ASSIGN's RHS and AST_VAR_DECL's
+             * initializer just below: finalize_call (called right after
+             * this loop) still needs to inspect a REFERENCE argument's
+             * own bare expression to decide whether to wrap it in `&`
+             * (address_of_if_needed) -- wrapping it in a cast first
+             * would turn it into an rvalue, and taking the address of a
+             * cast expression isn't valid C. A by-VALUE argument reading
+             * a const member (not a reference one) could in principle
+             * hit the same "discards const qualifier" error this fixes
+             * elsewhere, but no test in this project has actually
+             * surfaced that case against a real Vircon32 compiler run
+             * yet -- left as a known, honestly-stated gap rather than
+             * guessed at, matching this project's own established
+             * practice (see this file's many other "found only by an
+             * actual compiler run" comments). */
             finalize_call(n, class_decl, locals);
             /* Reference-RETURN calls need a deref inserted at their use
              * site -- symmetric to reference-PARAMETER arguments needing
@@ -1115,6 +1188,22 @@ static void finalize_calls_expr(AstNode **slot, AstNode *class_decl, LocalVarTyp
                 wrap_addr_of(&n->b);
             }
             finalize_calls_expr(&n->b, class_decl, locals);
+            /* A bare member read on the RHS through a const receiver
+             * (`this->size = other->size;`, a copy constructor's own
+             * canonical body) needs the same const-strip cast
+             * cast_receiver_if_needed already gives method receivers --
+             * see strip_const_member_read's own doc comment for the
+             * real Vircon32-compiler error this closes. Applied here,
+             * to the RHS only (never n->a, the assignment's own LHS --
+             * see strip_const_member_read's doc comment for why an
+             * lvalue position must never be wrapped), after n->b's own
+             * calls are already finalized but before any operator-
+             * overload rewrite below, so rewrite_operator_use always
+             * sees the same shape it already expected (this is scoped
+             * to `AST_MEMBER` only, so it's a no-op for every
+             * operator-overload case, which never produces a bare
+             * AST_MEMBER on this side). */
+            n->b = strip_const_member_read(n->b, class_decl, locals);
             rewrite_operator_use(slot, n->a, n->b, class_decl, locals);
             break;
         case AST_SUBSCRIPT:
@@ -1247,6 +1336,16 @@ static void finalize_calls_stmt(AstNode **slot, AstNode *class_decl, LocalVarTyp
             finalize_calls_stmt(&n->d, class_decl, locals);
             break;
         case AST_RETURN:
+            finalize_calls_expr(&n->a, class_decl, *locals);
+            /* `return other.size;`, reading a const member value back
+             * out of a const-reference parameter, hits the exact same
+             * real-Vircon32-compiler-only error strip_const_member_read
+             * closes for an assignment's RHS -- see its own doc comment.
+             * Applied here too since a function's return value is
+             * exactly as much a value-read position as an assignment's
+             * RHS is. */
+            n->a = strip_const_member_read(n->a, class_decl, *locals);
+            break;
         case AST_EXPR_STMT:
             finalize_calls_expr(&n->a, class_decl, *locals);
             break;
@@ -1263,6 +1362,20 @@ static void finalize_calls_stmt(AstNode **slot, AstNode *class_decl, LocalVarTyp
                 wrap_addr_of(&n->a);
             }
             finalize_calls_expr(&n->a, class_decl, *locals);
+            /* `int size = other.size;`, the intro-level "copy a const
+             * reference's field into a plain local" pattern -- same
+             * const-strip fix as the AST_ASSIGN/AST_RETURN cases, see
+             * strip_const_member_read's own doc comment. Skipped for a
+             * REFERENCE-typed local (`int &r = ...`): a reference needs
+             * an addressable lvalue to bind to, not a cast rvalue, and
+             * this project's reference-local support is already its own
+             * separate, incomplete area (see finalize_calls_expr's own
+             * AST_CALL case comment on reference-return derefs, above,
+             * for the established precedent of leaving that case alone
+             * rather than guessing at it here too). */
+            if (n->type == NULL || n->type->kind != AST_REFERENCE_TYPE) {
+                n->a = strip_const_member_read(n->a, class_decl, *locals);
+            }
             LocalVarType *lv = calloc(1, sizeof(LocalVarType)); /* calloc: zero-inits was_reference too */
             lv->name = n->str1;
             lv->type = n->type;
@@ -2017,7 +2130,95 @@ static AstNode *find_zero_arg_constructor(AstNode *class_decl) {
     return NULL;
 }
 
-static void inject_ctor_calls_stmt(AstNode **slot, AstNode *class_decl, LocalVarType **locals);
+static void inject_ctor_calls_stmt(AstNode **slot, AstNode *class_decl, LocalVarType **locals, int *arr_ctor_counter);
+
+/* Builds the per-element constructor-call loop a stack array of class
+ * objects needs -- `Shape shapes[3];` -- the array counterpart to the
+ * scalar case just above (inject_ctor_calls_block's own `stmt->a ==
+ * NULL` branch): once VIRCON32_QUIRKS.md's own README entry on this
+ * ("the most dangerous gap on this list precisely because nothing
+ * about it looks wrong until the program runs") was actually looked
+ * at, closing it turned out to need no new AST node kind and no new
+ * lowering phase at all -- just one more shape for this EXISTING
+ * phase to build, reusing machinery (AST_FOR, AST_SUBSCRIPT, ordinary
+ * `post++`) this project already has everywhere else.
+ *
+ * Produces:
+ *   for (int __v32_ctor_arr_iN = 0; __v32_ctor_arr_iN < LEN; __v32_ctor_arr_iN++)
+ *       ClassName__ClassName__void(&arrayName[__v32_ctor_arr_iN]);
+ *
+ * `arr_ctor_counter` gives each such loop its own uniquely-numbered
+ * index variable within the enclosing function -- the same "per-
+ * function counter, threaded through by pointer, incremented on use"
+ * pattern this file already uses for __v32_ret_tmpN (destruct_scope_*)
+ * and __v32_tern_tmpN (hoist_ternaries_in_expr); needed the moment two
+ * such arrays appear in the same function, which no single-array test
+ * alone would ever catch.
+ *
+ * Scope limitations, matching the zero-arg scalar case's own (see this
+ * phase's top-of-file doc comment): only a stack array declared
+ * directly as a BLOCK statement is handled, not one appearing in a
+ * for-loop's own init clause (vanishingly rare for an array anyway);
+ * a multi-dimensional array (`Shape grid[2][2];`, itself not otherwise
+ * exercised by this project's test suite for CLASS element types) only
+ * gets its OUTER dimension's elements constructed, since `LEN` here is
+ * simply `stmt->type->ival` and this project's own AST_ARRAY_TYPE
+ * nesting for a multi-dimensional array means the "element type" at
+ * this level is itself another AST_ARRAY_TYPE, not a class -- so
+ * type_to_class on it already returns NULL and this whole function is
+ * never even called for that case, a "miss a case rather than guess
+ * wrong" no-op matching everything else in this file, not a silent
+ * half-fix. */
+static AstNode *build_array_ctor_loop(AstNode *stmt, AstNode *var_class, int *arr_ctor_counter) {
+    AstNode *ctor = find_zero_arg_constructor(var_class);
+    if (ctor == NULL) return NULL;
+    FuncSemaInfo *info = (FuncSemaInfo *)ctor->sema_info;
+    const char *mangled = (info != NULL) ? info->mangled_name : ctor->str1;
+
+    char idx_name[64];
+    snprintf(idx_name, sizeof(idx_name), "__v32_ctor_arr_i%d", (*arr_ctor_counter)++);
+
+    AstNode *idx_decl = ast_new(AST_VAR_DECL, stmt->line);
+    idx_decl->str1 = strdup(idx_name);
+    idx_decl->type = ast_ident("int", stmt->line);
+    idx_decl->a = ast_new(AST_INT_LIT, stmt->line);
+    idx_decl->a->ival = 0;
+
+    AstNode *cond = ast_new(AST_BINOP, stmt->line);
+    cond->str1 = strdup("<");
+    cond->a = ast_ident(idx_name, stmt->line);
+    cond->b = ast_new(AST_INT_LIT, stmt->line);
+    cond->b->ival = stmt->type->ival;
+
+    AstNode *step = ast_new(AST_UNOP, stmt->line);
+    step->str1 = strdup("post++");
+    step->a = ast_ident(idx_name, stmt->line);
+
+    AstNode *subscript = ast_new(AST_SUBSCRIPT, stmt->line);
+    subscript->a = ast_ident(stmt->str1, stmt->line);
+    subscript->b = ast_ident(idx_name, stmt->line);
+
+    AstNode *addr = ast_new(AST_UNOP, stmt->line);
+    addr->str1 = strdup("addr");
+    addr->a = subscript;
+
+    AstNode *call = ast_new(AST_CALL, stmt->line);
+    call->a = ast_ident(mangled, stmt->line);
+    ast_list_append(&call->list, addr);
+
+    AstNode *call_stmt = ast_new(AST_EXPR_STMT, stmt->line);
+    call_stmt->a = call;
+
+    AstNode *body = ast_new(AST_BLOCK, stmt->line);
+    ast_list_append(&body->list, call_stmt);
+
+    AstNode *loop = ast_new(AST_FOR, stmt->line);
+    loop->a = idx_decl;
+    loop->b = cond;
+    loop->c = step;
+    loop->d = body;
+    return loop;
+}
 
 /* Rebuilds `block`'s own statement list, inserting a constructor call
  * immediately after any VarDecl that needs one. Recurses into each
@@ -2038,14 +2239,31 @@ static void inject_ctor_calls_stmt(AstNode **slot, AstNode *class_decl, LocalVar
  * block can correctly infer an EARLIER local's type when it's passed
  * as a reference-parameter constructor argument (`Shape a(5); Shape
  * c(a);`, exactly tests/76sample.cpp's own shape). */
-static void inject_ctor_calls_block(AstNode *block, AstNode *class_decl, LocalVarType **locals) {
+static void inject_ctor_calls_block(AstNode *block, AstNode *class_decl, LocalVarType **locals, int *arr_ctor_counter) {
     AstList new_list = ast_list_new();
     for (int i = 0; i < block->list.count; i++) {
         AstNode *stmt = block->list.items[i];
-        inject_ctor_calls_stmt(&stmt, class_decl, locals);
+        inject_ctor_calls_stmt(&stmt, class_decl, locals, arr_ctor_counter);
         ast_list_append(&new_list, stmt);
 
-        if (stmt->kind == AST_VAR_DECL && stmt->a == NULL) {
+        if (stmt->kind == AST_VAR_DECL && stmt->a == NULL && stmt->type != NULL
+            && stmt->type->kind == AST_ARRAY_TYPE) {
+            /* `Shape shapes[3];` -- see build_array_ctor_loop's own doc
+             * comment for the full story on this branch. Checked ahead
+             * of the plain-scalar branch just below (both conditions
+             * start with `stmt->a == NULL`, but AST_ARRAY_TYPE and a
+             * class-named AST_IDENT are mutually exclusive shapes for
+             * stmt->type, so ordering between the two branches doesn't
+             * actually matter -- kept first here only because it's the
+             * newer, less-established case, easier to spot at the top). */
+            AstNode *elem_class = type_to_class(stmt->type->a);
+            if (elem_class != NULL) {
+                AstNode *loop = build_array_ctor_loop(stmt, elem_class, arr_ctor_counter);
+                if (loop != NULL) {
+                    ast_list_append(&new_list, loop);
+                }
+            }
+        } else if (stmt->kind == AST_VAR_DECL && stmt->a == NULL) {
             AstNode *var_class = type_to_class(stmt->type);
             if (var_class != NULL) {
                 AstNode *ctor = find_zero_arg_constructor(var_class);
@@ -2145,27 +2363,27 @@ static void inject_ctor_calls_block(AstNode *block, AstNode *class_decl, LocalVa
     block->list = new_list;
 }
 
-static void inject_ctor_calls_stmt(AstNode **slot, AstNode *class_decl, LocalVarType **locals) {
+static void inject_ctor_calls_stmt(AstNode **slot, AstNode *class_decl, LocalVarType **locals, int *arr_ctor_counter) {
     AstNode *s = *slot;
     if (s == NULL) return;
     switch (s->kind) {
         case AST_BLOCK:
-            inject_ctor_calls_block(s, class_decl, locals);
+            inject_ctor_calls_block(s, class_decl, locals, arr_ctor_counter);
             break;
         case AST_IF:
-            inject_ctor_calls_stmt(&s->b, class_decl, locals);
-            inject_ctor_calls_stmt(&s->c, class_decl, locals);
+            inject_ctor_calls_stmt(&s->b, class_decl, locals, arr_ctor_counter);
+            inject_ctor_calls_stmt(&s->c, class_decl, locals, arr_ctor_counter);
             break;
         case AST_LABEL:
-            inject_ctor_calls_stmt(&s->a, class_decl, locals);
+            inject_ctor_calls_stmt(&s->a, class_decl, locals, arr_ctor_counter);
             break;
         case AST_WHILE:
-            inject_ctor_calls_stmt(&s->b, class_decl, locals);
+            inject_ctor_calls_stmt(&s->b, class_decl, locals, arr_ctor_counter);
             break;
         case AST_FOR:
             /* Deliberately NOT recursing into s->a (the for-loop's own
              * init clause) -- see this phase's own doc comment above. */
-            inject_ctor_calls_stmt(&s->d, class_decl, locals);
+            inject_ctor_calls_stmt(&s->d, class_decl, locals, arr_ctor_counter);
             break;
         default:
             break;
@@ -2182,7 +2400,11 @@ static void inject_ctor_calls_classes(AstList *decls) {
                     AstNode *m = layout->methods.items[j];
                     if (m->kind == AST_FUNC_DEF) {
                         LocalVarType *locals = seed_locals_from_params(m);
-                        inject_ctor_calls_stmt(&m->a, n, &locals);
+                        int arr_ctor_counter = 0; /* fresh per function, matching
+                            __v32_ret_tmpN/__v32_tern_tmpN's own established
+                            "per-function counter" convention elsewhere in
+                            this file */
+                        inject_ctor_calls_stmt(&m->a, n, &locals, &arr_ctor_counter);
                     }
                 }
             }
@@ -2199,7 +2421,8 @@ static void inject_ctor_calls_free_functions(AstList *decls) {
             inject_ctor_calls_free_functions(&n->list);
         } else if (n->kind == AST_FUNC_DEF && n->b == NULL) {
             LocalVarType *locals = seed_locals_from_params(n);
-            inject_ctor_calls_stmt(&n->a, NULL, &locals);
+            int arr_ctor_counter = 0;
+            inject_ctor_calls_stmt(&n->a, NULL, &locals, &arr_ctor_counter);
         }
     }
 }

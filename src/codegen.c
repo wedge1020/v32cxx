@@ -790,6 +790,32 @@ static void emit_struct(FILE *out, const AstNode *class_decl) {
 
     int explained_inherited = 0;
     fprintf(out, "struct %s {\n", class_decl->str1);
+    if (layout->count == 0) {
+        /* A class with no data members and no vtable (every method,
+         * nothing else -- tests/79sample.cpp's own BoxPrinter is
+         * exactly this shape: a `friend`-granted accessor class with
+         * only a method body, holding no state of its own) would
+         * otherwise emit a genuinely empty `struct BoxPrinter {\n};\n`.
+         * gcc accepts that (a well-known extension, silent even under
+         * `-Wall -Wextra`), which is exactly why this went unnoticed by
+         * every `--target=standard`-based check this project's own
+         * verification sweeps run -- but the real Vircon32 compiler
+         * rejects it outright: "structures must have at least 1
+         * member". Confirmed directly against a real compile of
+         * tests/79sample.cpp's own generated output, not assumed from
+         * a spec reading. Fixed the same way this project already
+         * fixes every other "Vircon32 is stricter than either gcc or
+         * the C standard requires" case (see cast_receiver_if_needed's
+         * and strip_const_member_read's own doc comments in lower.c
+         * for two others): insert a single unused placeholder byte
+         * field so the struct is never empty, in BOTH target dialects
+         * -- not gated to Vircon32-mode only, since a struct that's
+         * valid in one dialect and not the other for no reason a user
+         * wrote themselves would be a confusing, purely accidental
+         * difference between this project's own two output modes. */
+        explain(out, 1, "Vircon32 rejects an empty struct outright (\"structures must have at least 1 member\") -- this class has no data members and no vtable of its own, so this unused placeholder byte is here purely to give the struct one");
+        fprintf(out, "    char __v32_empty_struct_pad;\n");
+    }
     for (int i = 0; i < layout->count; i++) {
         StructField *f = &layout->fields[i];
         if (f->kind == FIELD_VTABLE_PTR) {
@@ -1153,6 +1179,23 @@ static void print_expr(FILE *out, const AstNode *e) {
             break;
         case AST_CHAR_LIT:
             print_char_literal(out, e->ival);
+            break;
+        case AST_NULL_LIT:
+            /* `nullptr` always prints as the literal word `NULL`, in
+             * BOTH target dialects -- Vircon32's own compiler rejects a
+             * bare `0` in pointer context outright (docs/
+             * VIRCON32_QUIRKS.md), so this is the one literal this
+             * project cannot afford to print naively even though gcc
+             * itself wouldn't mind a bare 0 in --target=standard output.
+             * `NULL` is already in scope everywhere a program can
+             * possibly reach here: unconditionally via misc.h's own
+             * `#include` for TARGET_VIRCON32 (codegen_run, near the top
+             * of this file), and via <stdlib.h>'s own unconditional
+             * `#include` for TARGET_STANDARD (this file's own comment on
+             * that `#include`, added for `new`/`delete`'s own malloc/
+             * free calls, which already guarantees NULL is declared
+             * there too). */
+            fprintf(out, "NULL");
             break;
         case AST_IDENT:
             fprintf(out, "%s", e->str1);
