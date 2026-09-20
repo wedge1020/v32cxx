@@ -600,62 +600,42 @@ static AstNode *cast_receiver_if_needed(AstNode *obj_expr, const AstNode *actual
     return cast;
 }
 
-/* Wraps a member-access READ (`other->size`, `other.size`) in an
- * explicit cast to the member's own (unqualified) type, when the
- * member is being read THROUGH a const-qualified receiver (`other` is
- * `const Shape &`/`const Shape *`) -- a second, independent instance
- * of the exact same real-Vircon32-compiler-only bug class
- * cast_receiver_if_needed's own doc comment already describes for
- * method receivers, just found on a plain data-member read instead: a
- * real Vircon32 compiler run against tests/76sample.cpp's own
- * generated copy constructor --
- *
- *   void Shape__Shape__Shape_ref(Shape *this, const Shape *other) {
- *       (this->size = other->size);
- *   }
- *
- * -- reported "cannot assign const int to int: discards const
- * qualifier" at the assignment, even though this is an ordinary
- * scalar VALUE copy (not a pointer assignment) that real C freely
- * allows without so much as a warning (`const int y = 5; int x = y;`
- * compiles clean under `-Wall -Wextra`); gcc agreed with real C here
- * and raised nothing for this file either. Vircon32's own compiler is
- * simply stricter about propagating a const qualifier through a
- * member read than either gcc or the C standard requires. Since this
- * project has already chosen, elsewhere, not to enforce const-
- * correctness of its own (see cast_receiver_if_needed's own doc
- * comment), the same fix applies here: insert the explicit cast a
- * user would write by hand to silence this, matching what a real
- * `const_cast`-equivalent read already looks like in C.
- *
- * Deliberately narrow: only fires on a BARE `AST_MEMBER` value (never
- * wraps the member's own object sub-expression, and is only called at
- * specific "this is a value being READ" call sites below -- an
- * assignment's RHS, a call argument -- never at a position that could
- * be an LVALUE, such as an assignment's LHS or the operand of `&`,
- * where wrapping in a cast would produce an unassignable rvalue and
- * silently break the very code this is meant to fix). Returns `expr`
- * unchanged whenever there's nothing to strip (not a member access at
- * all, the receiver isn't const, or the member's own type can't be
- * determined -- best-effort, matching this file's "never insert a fix
- * on a guess" rule everywhere else). */
+/* Wraps a member-access OR subscript READ (`other->size`, `text[i]`) in
+ * an explicit cast to the value's own (unqualified) type, when the value
+ * is being read THROUGH a const-qualified receiver -- see the original
+ * doc comment above for the real-Vircon32-compiler bug class this
+ * closes. The AST_SUBSCRIPT arm is new: `text[i]` on a `const char *`
+ * parameter is the same "const propagates through a by-value read"
+ * quirk on a different expression shape (surfaced by a real program's
+ * drawText(video, "...") forwarding text[i] into an int parameter).
+ * Still deliberately narrow: only bare AST_MEMBER / AST_SUBSCRIPT
+ * values at read positions (assignment RHS, call argument, return,
+ * initializer) -- never an lvalue, never `&`-operand. */
 static AstNode *strip_const_member_read(AstNode *expr, AstNode *class_decl, LocalVarType *locals) {
-    if (expr == NULL || expr->kind != AST_MEMBER) return expr;
+    if (expr == NULL) return expr;
+    if (expr->kind != AST_MEMBER && expr->kind != AST_SUBSCRIPT) return expr;
     AstNode *obj_type = infer_expr_type(expr->a, class_decl, locals);
     if (!receiver_type_is_const(obj_type)) return expr;
-    AstNode *member_type = infer_expr_type(expr, class_decl, locals);
-    if (member_type == NULL) return expr;
+    AstNode *read_type = infer_expr_type(expr, class_decl, locals);
+    if (read_type == NULL) return expr;
+    /* Strip one const wrapper if the inferred type carries one (the
+     * subscript path can: `const char *`'s element type infers as
+     * `const char`). A no-op for the member path when the member's
+     * declared type was already unqualified. */
+    if (read_type->kind == AST_CONST_TYPE) read_type = read_type->a;
+    if (read_type == NULL) return expr;
     AstNode *cast = ast_new(AST_CAST, expr->line);
-    cast->type = member_type; /* reused by reference, not deep-copied --
+    cast->type = read_type; /* reused by reference, not deep-copied --
         same convention as every other cast built in this file */
     cast->a = expr;
-    const char *type_name = (member_type->kind == AST_IDENT && member_type->str1 != NULL)
-        ? member_type->str1 : "value";
-    lower_note(expr->line, "inserted a (%s) cast around a member read "
-        "through a const receiver -- Vircon32 rejects assigning a "
-        "const-qualified value into a plain one outright (\"discards "
-        "const qualifier\"), unlike gcc, which only ever warns, and "
-        "this project doesn't enforce const-correctness of its own", type_name);
+    const char *type_name = (read_type->kind == AST_IDENT && read_type->str1 != NULL)
+        ? read_type->str1 : "value";
+    lower_note(expr->line, "inserted a (%s) cast around a const %s read "
+        "-- Vircon32 rejects assigning a const-qualified value into a "
+        "plain one outright (\"discards const qualifier\"), unlike gcc, "
+        "which only ever warns, and this project doesn't enforce "
+        "const-correctness of its own", type_name,
+        expr->kind == AST_SUBSCRIPT ? "subscript" : "member");
     return cast;
 }
 
@@ -1268,6 +1248,44 @@ static int type_is_func_ptr(const AstNode *type) {
     return resolve_typedef_chain(type)->kind == AST_FUNC_PTR_TYPE;
 }
 
+/* True only for a literal integer 0 -- the one int that is a valid null
+ * pointer constant in standard C, and the one Vircon32 C rejects in any
+ * pointer context outright ("cannot assign int to struct T*" /
+ * "types are not compatible" / "invalid operands for equality
+ * comparison"), per the same real-compiler evidence AST_NULL_LIT's own
+ * print_expr case in codegen.c already documents. */
+static int is_int_zero_literal(const AstNode *e) {
+    return e != NULL && e->kind == AST_INT_LIT && e->ival == 0;
+}
+
+/* True only for a plain pointer type (through any typedef chain).
+ * Deliberately NOT AST_ARRAY_TYPE or AST_FUNC_PTR_TYPE: those have their
+ * own existing lowering paths, and a 0 initializer there means something
+ * else (or is already handled by type_is_func_ptr's &-insertion). */
+static int type_is_plain_pointer(const AstNode *type) {
+    if (type == NULL) return 0;
+    return resolve_typedef_chain(type)->kind == AST_POINTER_TYPE;
+}
+
+/* Rewrites a literal `0` into an AST_NULL_LIT when the TARGET position
+ * it's flowing into is a plain pointer type -- the same quirk-driven,
+ * best-effort rewrite pattern as wrap_addr_of just above: Vircon32's
+ * compiler rejects what standard C freely allows, so the transpiler
+ * silently writes the C the user meant. `target_type` may be NULL
+ * (unknown) -- then this is a no-op, matching this file's "never insert
+ * a fix on a guess" rule everywhere else. */
+static void rewrite_zero_to_null(AstNode **rhs_slot, const AstNode *target_type) {
+    if (rhs_slot == NULL || *rhs_slot == NULL) return;
+    if (!is_int_zero_literal(*rhs_slot)) return;
+    if (!type_is_plain_pointer(target_type)) return;
+    lower_note((*rhs_slot)->line,
+        "rewrote a literal 0 to NULL in a pointer context -- Vircon32 "
+        "rejects a bare int 0 assigned to or compared with a pointer, "
+        "unlike standard C where 0 is a valid null pointer constant");
+    AstNode *null_lit = ast_new(AST_NULL_LIT, (*rhs_slot)->line);
+    *rhs_slot = null_lit;
+}
+
 /* Wraps `*slot` in an explicit `&expr` UnOp, IN PLACE -- same AST_UNOP
  * shape ("addr") that a user-written `&x` already parses to, so nothing
  * downstream (codegen's print_unop, or a later lowering pass) needs to
@@ -1366,6 +1384,24 @@ static void finalize_calls_expr(AstNode **slot, AstNode *class_decl, LocalVarTyp
              * practice (see this file's many other "found only by an
              * actual compiler run" comments). */
             finalize_call(n, class_decl, locals);
+            /* NEW: closes the "known, honestly-stated gap" the comment
+             * above used to carry. Now that finalize_call has finished
+             * every &-insertion and receiver/argument cast it's going to
+             * do, any argument that is STILL a bare AST_MEMBER is a
+             * by-value member read -- and if its receiver is const
+             * (`this->mFrame` inside a const method), Vircon32 rejects
+             * passing it to a plain int parameter ("cannot assign const
+             * int to int: discards const qualifier"). Reference arguments
+             * are never touched: they're already wrapped in an AST_UNOP
+             * "addr" or an AST_CAST by now, so strip_const_member_read's
+             * own bare-AST_MEMBER-only guard skips them for free --
+             * closing the gap without reintroducing the rvalue problem
+             * the original ordering restriction existed to avoid.
+             * Surfaced by a real program: a const Alien::spriteId()
+             * dispatching this->mFrame through the vtable. */
+            for (int i = 0; i < n->list.count; i++) {
+                n->list.items[i] = strip_const_member_read(n->list.items[i], class_decl, locals);
+            }
             /* Reference-RETURN calls need a deref inserted at their use
              * site -- symmetric to reference-PARAMETER arguments needing
              * an addr-of inserted at the call site (finalize_call's own
@@ -1420,6 +1456,27 @@ static void finalize_calls_expr(AstNode **slot, AstNode *class_decl, LocalVarTyp
         case AST_BINOP:
             finalize_calls_expr(&n->a, class_decl, locals);
             finalize_calls_expr(&n->b, class_decl, locals);
+            /* NEW: `ptr == 0` / `ptr != 0` -- the comparison counterpart
+             * of the AST_ASSIGN case's null rewrite. Vircon32 rejects a
+             * pointer/int-literal comparison outright ("invalid operands
+             * for equality comparison"), so rewrite the literal 0 side to
+             * NULL whenever the OTHER side is statically a plain pointer.
+             * Only == and !=: every other binop on a pointer is already
+             * invalid C++ that sema would have flagged. Done before
+             * rewrite_operator_use so an operator== overload, if sema
+             * resolved one, sees the same operand shapes it already
+             * expects (a pointer-vs-null comparison never resolves to an
+             * overload, so this is a no-op in that path). */
+            if (n->str1 != NULL &&
+                (strcmp(n->str1, "==") == 0 || strcmp(n->str1, "!=") == 0)) {
+                AstNode *a_type = infer_expr_type(n->a, class_decl, locals);
+                AstNode *b_type = infer_expr_type(n->b, class_decl, locals);
+                if (type_is_plain_pointer(a_type)) {
+                    rewrite_zero_to_null(&n->b, a_type);
+                } else if (type_is_plain_pointer(b_type)) {
+                    rewrite_zero_to_null(&n->a, b_type);
+                }
+            }
             rewrite_operator_use(slot, n->a, n->b, class_decl, locals);
             break;
         case AST_ASSIGN:
@@ -1438,6 +1495,15 @@ static void finalize_calls_expr(AstNode **slot, AstNode *class_decl, LocalVarTyp
                 is_bare_free_function_ref(n->b, locals) &&
                 type_is_func_ptr(infer_expr_type(n->a, class_decl, locals))) {
                 wrap_addr_of(&n->b);
+            }
+            /* NEW: `mItems[i] = 0;` / `mPlayerBullet = 0;` -- a literal 0
+             * stored into a pointer-typed LHS. Checked after n->a is
+             * finalized (so infer_expr_type sees a resolvable LHS) and
+             * before n->b is recursed into (the literal has nothing to
+             * recurse into). Scoped to plain "=" only, same as the
+             * func-ptr &-insertion just above. */
+            if (n->str1 != NULL && strcmp(n->str1, "=") == 0) {
+                rewrite_zero_to_null(&n->b, infer_expr_type(n->a, class_decl, locals));
             }
             finalize_calls_expr(&n->b, class_decl, locals);
             /* A bare member read on the RHS through a const receiver
@@ -1679,6 +1745,13 @@ static void finalize_calls_stmt(AstNode **slot, AstNode *class_decl, LocalVarTyp
             if (n->type == NULL || n->type->kind != AST_REFERENCE_TYPE) {
                 n->a = strip_const_member_read(n->a, class_decl, *locals);
             }
+            /* NEW: `Alien *a = 0;` -- the VarDecl-initializer counterpart
+             * of the AST_ASSIGN null rewrite. n->type is this decl's own
+             * declared type; a reference-typed local is skipped for free
+             * (AST_REFERENCE_TYPE is not AST_POINTER_TYPE at this point
+             * in the pipeline, and phase 5 relabels those later). */
+            rewrite_zero_to_null(&n->a, n->type);
+
             LocalVarType *lv = calloc(1, sizeof(LocalVarType)); /* calloc: zero-inits was_reference too */
             lv->name = n->str1;
             lv->type = n->type;
@@ -3475,6 +3548,13 @@ static void destruct_scope_stmt(AstNode **slot, DestructScope *scope,
                     existing type nodes elsewhere (e.g. infer_expr_type's
                     own AST_NEW case) */
                 tmp_decl->a = n->a;
+                /* NEW: `return 0;` in a pointer-returning function built
+                 * `Alien *__v32_ret_tmp0 = 0;` -- the same Vircon32
+                 * int-to-pointer rejection; func_return_type is exactly
+                 * the target type this initializer flows into (NULL for
+                 * void/ctor returns, which the helper treats as "don't
+                 * guess"). */
+                rewrite_zero_to_null(&tmp_decl->a, func_return_type);
 
                 AstNode *new_return = ast_new(AST_RETURN, n->line);
                 new_return->a = ast_ident(tmp_name, n->line);

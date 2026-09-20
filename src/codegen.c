@@ -1362,6 +1362,21 @@ static void print_expr(FILE *out, const AstNode *e) {
              * these into an AST_CALL before codegen ever runs. */
             fprintf(out, "0 /* WARNING: unlowered New/Delete reached codegen */");
             break;
+        case AST_STRING_LIT:
+            /* The lexer stores the string's INNER text -- quotes already
+             * stripped, escape sequences deliberately left as literal
+             * backslash pairs (see lexer.l's STRING_LITERAL rule, which
+             * memcpy's yytext+1 .. len-2). So re-quote it here. No
+             * re-escaping pass is needed: the lexer's own regex only
+             * admits a '"' inside a string as part of a \" pair, which is
+             * already exactly the escape syntax the output C wants, so
+             * wrapping the stored text back in quotes round-trips it.
+             * Found via a real user program (a Space Invaders port)
+             * calling drawText(video, "SPACE INVADERS", ...) -- the call
+             * parsed and resolved fine, then silently emitted a bare 0
+             * here, which Vircon32 rejected at the call site. */
+            fprintf(out, "\"%s\"", e->str1);
+            break;
         default:
             fprintf(out, "0 /* WARNING: unhandled expression kind in codegen */");
             break;
@@ -2117,7 +2132,14 @@ static void emit_primitive_array_new_runtime(FILE *out) {
 }
 
 static void emit_v32_delete(FILE *out) {
-    fprintf(out, "void v32_delete(void *ptr)\n{\n    free(ptr);\n}\n\n\n");
+    /* The NULL guard is REQUIRED on Vircon32, not cosmetic: C++ 'delete'
+     * on a null pointer is a no-op, but this project's own generated
+     * call sites delete unconditionally (e.g. a Game destructor or
+     * reset path deleting a maybe-never-allocated member), and
+     * Vircon32's NULL is -1 (address 0 is a legitimate address there) --
+     * free() has no reason to treat -1 specially the way standard C's
+     * free(NULL) must. */
+    fprintf(out, "void v32_delete(void *ptr)\n{\n    if (ptr == NULL) return;\n    free(ptr);\n}\n\n\n");
 }
 
 /* ---- destructor invocation via delete ------------------------------------
@@ -2188,6 +2210,13 @@ static void emit_delete_runtime(FILE *out, const AstNode *class_decl) {
     fprintf(out, "void v32_delete_%s(", class_decl->str1);
     print_class_type_name(out, class_decl->str1);
     fprintf(out, " *ptr)\n{\n");
+    /* NULL guard, same reasoning as emit_v32_delete's own copy: C++
+     * 'delete' on null is a no-op, but Vircon32's NULL is -1 (address
+     * 0 is legitimate memory there), so free() can't be relied on to
+     * special-case it. Emitted as the FIRST statement inside the
+     * braces, after the header -- never before the function's opening,
+     * where it would land at file scope. */
+    fprintf(out, "    if (ptr == NULL) return;\n");
     explain(out, 1, "C++'s 'delete' has no C equivalent -- this function does what 'delete' does under the hood: call the destructor explicitly, then free the memory");
 
     /* VIRTUAL DESTRUCTOR DISPATCH: if this class's destructor is

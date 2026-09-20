@@ -1346,6 +1346,41 @@ AstNode *infer_expr_type(const AstNode *expr, AstNode *current_class, LocalVarTy
             }
             return NULL;
         }
+        case AST_BINOP: {
+            /* Without this, every arithmetic/logical expression's type
+             * silently fell through to "unknown" -- harmless until it
+             * reached resolve_overload_generic's genuinely-overloaded
+             * path, which gives up silently whenever ANY argument type
+             * is unknown. That dropped a real constructor call on the
+             * floor with no diagnostic: `Vec2 r(x() + o.x(), ...)` in a
+             * class with two constructors transpiled to a bare,
+             * uninitialized `Vec2 r;` (caught only by "argument not
+             * used" warnings on the generated operator+ body).
+             * Overload-use first (an operatorX CallResolution may
+             * already be attached by resolve_operator_use -- its return
+             * type is the answer); otherwise, when BOTH operand types
+             * are known and identical non-class types, the result is
+             * that type (int + int is int; real C++'s full promotion
+             * rules are deliberately not modeled -- same "never guess"
+             * discipline as the rest of this function). */
+            CallResolution *cr = (CallResolution *)expr->sema_info;
+            if (cr != NULL && cr->resolved_target != NULL) {
+                return cr->resolved_target->type;
+            }
+            const AstNode *lt = infer_expr_type(expr->a, current_class, locals);
+            const AstNode *rt = infer_expr_type(expr->b, current_class, locals);
+            if (lt == NULL || rt == NULL) return NULL;
+            const AstNode *l = resolve_typedef_chain(lt);
+            const AstNode *r = resolve_typedef_chain(rt);
+            if (l->kind == AST_IDENT && r->kind == AST_IDENT &&
+                l->str1 != NULL && r->str1 != NULL &&
+                strcmp(l->str1, r->str1) == 0 &&
+                type_to_class(l) == NULL) {
+                return (AstNode *)lt; /* shared reference, not copied --
+                    same convention as every other return in this function */
+            }
+            return NULL;
+        }
         case AST_TERNARY: {
             /* A ternary's own static type is whichever of its two
              * branches actually resolves -- real C++ requires both
@@ -1632,9 +1667,27 @@ static void resolve_overload_generic(AstNode *site, const char *name, AstNode **
     }
 
     if (!all_known) {
-        /* Best-effort: can't confidently disambiguate without knowing
-         * every argument's type, so this doesn't guess -- silently
-         * skipped rather than risking a false error or a wrong pick. */
+        /* Best-effort fallback, NEW: even without every argument's type,
+         * ARITY alone may leave exactly one viable candidate (a 2-arg
+         * call against Vec2() and Vec2(int, int) has only one possible
+         * match). Resolving on unique arity is not a guess -- it's the
+         * same certainty the single-candidate branch above already
+         * accepts. Only when arity leaves 0 or 2+ candidates does this
+         * still give up silently, exactly as before. */
+        AstNode *arity_match = NULL;
+        int arity_match_count = 0;
+        for (int i = 0; i < count; i++) {
+            if (arg_count <= candidates[i]->list.count &&
+                arg_count >= min_required_args(candidates[i])) {
+                arity_match = candidates[i];
+                arity_match_count++;
+            }
+        }
+        if (arity_match_count == 1) {
+            CallResolution *cr = calloc(1, sizeof(CallResolution));
+            cr->resolved_target = arity_match;
+            site->sema_info = cr;
+        }
         free(arg_types);
         free(candidates);
         return;
