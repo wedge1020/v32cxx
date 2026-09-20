@@ -151,7 +151,7 @@ namespace AssetIds {
 enum GameConsts {
     SPRITE_W                 = 10,
     SPRITE_H                 = 20,
-    PLAYFIELD_W              = 224,
+    PLAYFIELD_W              = 448,  // wide: 448*45/32 = 630 of 640 px used
     PLAYFIELD_H              = 256,
 
     PLAYER_WIDTH             = SPRITE_W,
@@ -384,19 +384,19 @@ class Video {
 public:
     void init() {
         select_texture(-1);
-        // Vircon32's screen is 640x360; the logical playfield is 224x256.
+        // Vircon32's screen is 640x360; the logical playfield is 448x256.
         // Scale by 360/256 = 1.40625 so the playfield fills the screen
-        // height, centered horizontally: 224 * 1.40625 = 315, and
-        // (640 - 315) / 2 = 162 pixels of left margin.
+        // height: 448 * 1.40625 = 630, and (640 - 630) / 2 = 5 pixels
+        // of left margin -- nearly the full screen width is in play.
         set_drawing_scale(1.40625, 1.40625);
     }
 
     // Blit one sprite (10x20) with the given ASCII-value sprite id.
-    // Logical (224x256) coordinates are mapped to the 640x360 screen:
+    // Logical (448x256) coordinates are mapped to the 640x360 screen:
     // 1.40625 == 45/32 exactly, done in integer math per call.
     void blit(int spriteId, int x, int y) {
         select_region(spriteId);
-        draw_region_zoomed_at(162 + (x * 45) / 32, (y * 45) / 32);
+        draw_region_zoomed_at(5 + (x * 45) / 32, (y * 45) / 32);
     }
 
     // Blit TWO sprites superimposed in the same cell -- for multi-glyph
@@ -406,9 +406,9 @@ public:
     // can be pulled together visually.
     void blit2(int spriteIdA, int spriteIdB, int x, int y, int dyA = 0) {
         select_region(spriteIdA);
-        draw_region_zoomed_at(162 + (x * 45) / 32, ((y + dyA) * 45) / 32);
+        draw_region_zoomed_at(5 + (x * 45) / 32, ((y + dyA) * 45) / 32);
         select_region(spriteIdB);
-        draw_region_zoomed_at(162 + (x * 45) / 32, (y * 45) / 32);
+        draw_region_zoomed_at(5 + (x * 45) / 32, (y * 45) / 32);
     }
 
     // Clear the framebuffer.
@@ -846,6 +846,20 @@ private:
 namespace si {
 
 // ---------------------------------------------------------------------------
+// Difficulty (namespace-level: the subset has no class enums). Chosen on the
+// title screen, consulted by the Swarm's march interval and Game's bomb-spawn
+// cadence. NOTE: declared BEFORE Swarm -- v32c++'s lexer only classifies an
+// identifier as a type once it is registered in the symbol table, so a type
+// used before its declaration parses as a bare IDENTIFIER and fails with
+// "unexpected IDENTIFIER, expecting COLONCOLON" at Swarm::setDifficulty.
+// ---------------------------------------------------------------------------
+enum GameDifficulty {
+    DIFF_EASY,
+    DIFF_MEDIUM,
+    DIFF_HARD      // the original tuning -- what the game played like
+};
+
+// ---------------------------------------------------------------------------
 // BombList: minimal freestanding replacement for std::vector<Bullet*>.
 // Lives here (after Bullet's full definition) because the v32c++ grammar
 // has no class forward declarations.
@@ -891,16 +905,21 @@ private:
 // ---------------------------------------------------------------------------
 class Swarm {
 public:
-    Swarm() : mDx(2), mAnimFrame(0), mStepCooldown(0) {
+    Swarm() : mDx(2), mAnimFrame(0), mStepCooldown(0), mDifficulty(DIFF_MEDIUM) {
         for (int r = 0; r < SWARM_ROWS; ++r)
             for (int c = 0; c < SWARM_COLS; ++c)
                 mGrid[r][c] = 0;
     }
 
+    void setDifficulty(GameDifficulty d) { mDifficulty = d; }
+
     void spawn(int baseY) {
+        // center the 220px-wide swarm grid in the 448px playfield:
+        // (448 - 11 * 20) / 2 = 114
+        int x0 = (PLAYFIELD_W - SWARM_COLS * SWARM_GAP_X) / 2;
         for (int r = 0; r < SWARM_ROWS; ++r) {
             for (int c = 0; c < SWARM_COLS; ++c) {
-                int px = c * SWARM_GAP_X;
+                int px = x0 + c * SWARM_GAP_X;
                 int py = baseY + r * SWARM_GAP_Y;
                 Alien* a;
                 if (r == 0)      a = new AlienTopRow(px, py);
@@ -1030,13 +1049,19 @@ public:
 private:
     int stepInterval() const {
         int n = aliveCount();
-        if (n > 40) return 30;
-        if (n > 30) return 24;
-        if (n > 20) return 18;
-        if (n > 10) return 12;
-        if (n >  5) return 8;
-        if (n >  1) return 4;
-        return 2;
+        int base;
+        if (n > 40) base = 30;
+        else if (n > 30) base = 24;
+        else if (n > 20) base = 18;
+        else if (n > 10) base = 12;
+        else if (n >  5) base = 8;
+        else if (n >  1) base = 4;
+        else base = 2;
+        // difficulty slows the march: more frames between steps
+        if (mDifficulty == DIFF_EASY)   base += 12;
+        if (mDifficulty == DIFF_MEDIUM) base += 6;
+        // DIFF_HARD: the original tuning, unchanged
+        return base;
     }
     int marchStep() const {
         int n = aliveCount();
@@ -1053,6 +1078,7 @@ private:
     int    mDx;
     int    mAnimFrame;
     int    mStepCooldown;
+    GameDifficulty mDifficulty;
 
     friend class Game;   // Game may reach into the grid directly
 };
@@ -1099,7 +1125,7 @@ public:
     Game()
         : mPlayerBullet(0), mScore(0), mHiScore(0), mWave(1),
           mBombCooldown(60), mWaveClearTimer(0), mLastExtraLifeAt(0),
-          mState(GAME_TITLE) {
+          mState(GAME_TITLE), mDifficulty(DIFF_MEDIUM) {
         // Class-typed members are held BY POINTER: v32c++ never injects
         // constructor calls for class-typed members (its ctor-call
         // injection only walks function bodies), so `Swarm mSwarm;`
@@ -1138,8 +1164,13 @@ public:
     void draw(Video& video) {
         video.clear();   // hand frame-clearing to the GPU layer
         if (mState == GAME_TITLE) {
-            drawText(video, "SPACE INVADERS", 40, 80);
-            drawText(video, "PRESS START",   60, 130);
+            drawText(video, "SPACE INVADERS", 144, 60);
+            drawText(video, "PRESS START",   154, 180);
+            // difficulty menu: three options, '>' marks the selection
+            drawText(video, "EASY",   186, 100);
+            drawText(video, "MEDIUM", 186, 120);
+            drawText(video, "HARD",   186, 140);
+            drawText(video, ">", 176, 100 + mDifficulty * 20);
         } else {
             mPlayer->draw(video);
             mSwarm->draw(video);
@@ -1156,7 +1187,34 @@ private:
     // ---- title ------------------------------------------------------------
     void titleFrame(const Input& in) {
         // a just-pressed button reads exactly 1
+        // NOTE: no int round-trip here -- Vircon32 C rejects assigning an
+        // int expression to an enum-typed lvalue ("cannot assign int to
+        // const-qualified enumeration"), stricter than gcc. Step through
+        // the named values instead (also avoids ternaries).
+        if (in.read(BTN_UP) == 1 && mDifficulty > DIFF_EASY) {
+            if (mDifficulty == DIFF_HARD)     mDifficulty = DIFF_MEDIUM;
+            else                             mDifficulty = DIFF_EASY;
+        }
+        if (in.read(BTN_DOWN) == 1 && mDifficulty < DIFF_HARD) {
+            if (mDifficulty == DIFF_EASY)     mDifficulty = DIFF_MEDIUM;
+            else                             mDifficulty = DIFF_HARD;
+        }
         if (in.read(BTN_START) == 1) startNewGame();
+    }
+
+    // bomb spawn cadence by difficulty (frames between drops, before
+    // the random jitter): easy breathes, hard is the original pressure
+    int bombCooldownBase() const {
+        if (mDifficulty == DIFF_EASY)   return 80;
+        if (mDifficulty == DIFF_MEDIUM) return 55;
+        return 30;
+    }
+
+    // bomb fall speed cap by difficulty (px/frame, before wave scaling)
+    int bombFallSpeed() const {
+        if (mDifficulty == DIFF_EASY)   return 1;
+        if (mDifficulty == DIFF_MEDIUM) return 2;
+        return 3;
     }
 
     void startNewGame() {
@@ -1165,7 +1223,8 @@ private:
         mWave = 1;
         mWaveClearTimer = 0;
         mLastExtraLifeAt = 0;
-        mBombCooldown = 60;
+        mBombCooldown = bombCooldownBase();
+        mSwarm->setDifficulty(mDifficulty);
         mPlayer->reset(PLAYFIELD_W / 2 - PLAYER_WIDTH / 2, PLAYER_HOME_Y);
         for (int i = 0; i < mBombs->size(); ++i) delete (*mBombs)[i];
         mBombs->clear();
@@ -1180,7 +1239,9 @@ private:
         mSwarm->spawn(40 + (mWave - 1) * 20);  // each wave starts lower
         for (int i = 0; i < BUNKER_COUNT; ++i) {
             delete mBunkers[i];
-            mBunkers[i] = new Bunker(22 + i * 56, 168);
+            // spread the four 30px bunkers across the wide field:
+            // 40 + i*100 -> 40, 140, 240, 340 (last ends at 370)
+            mBunkers[i] = new Bunker(40 + i * 100, 168);
         }
     }
 
@@ -1226,12 +1287,21 @@ private:
                 int sprite;
                 if (g_rng.bit()) sprite = AssetIds::ALIEN_BULLET_SQUIGGLE;
                 else             sprite = AssetIds::ALIEN_BULLET_PLUMB;
+                // wave-scaled fall speed, capped by difficulty
+                int vy = 1 + mWave / 3;
+                int cap = bombFallSpeed();
+                if (vy > cap) vy = cap;
                 mBombs->push(new Bullet(
                     shooter->posX() + ALIEN_WIDTH / 2 - SPRITE_W / 2,
                     shooter->posY() + ALIEN_HEIGHT,
-                    0, 1 + mWave / 3, sprite));
+                    0, vy, sprite));
             }
-            mBombCooldown = 30 + g_rng.next(45);
+            // jitter window also scales down on easier settings, so easy
+            // isn't just slower on average but also less spiky
+            int jitter = 45;
+            if (mDifficulty == DIFF_EASY)   jitter = 70;
+            if (mDifficulty == DIFF_MEDIUM) jitter = 55;
+            mBombCooldown = bombCooldownBase() + g_rng.next(jitter);
         }
         for (int i = 0; i < mBombs->size();) {
             // KEPT UNHOISTED ON PURPOSE: the result of operator[] (a call)
@@ -1352,6 +1422,7 @@ private:
     int       mWaveClearTimer;
     int       mLastExtraLifeAt;
     GameState mState;
+    GameDifficulty mDifficulty;   // chosen on the title screen
 };
 
 } // namespace si

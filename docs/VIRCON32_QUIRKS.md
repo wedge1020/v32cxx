@@ -591,6 +591,18 @@ output  can silently  diverge  from  Vircon32 behavior.  If  you want,  a
 into  the mask-and-subtract  form)  would be  the  v32c++-side fix,  same
 pattern as the ternary rewrite. ---
 
+---
+
+## 15. Types must be declared before use
+
+types must be declared before use — an enum used before its declaration
+fails with a  misleading expecting COLONCOLON error,  because the lexer's
+TYPE_NAME classification  is registration-order dependent."  A friendlier
+sema/lexer  diagnostic (e.g.  "GameDifficulty  used before  declaration")
+would make this much easier to spot than the parser error.
+
+---
+
 ## What this list does NOT cover
 
 - Anything this project hasn't discovered yet -- this is a record of
