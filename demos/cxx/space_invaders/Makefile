@@ -64,4 +64,4 @@ context:
 
 # --- Clean Up ---
 clean:
-	rm -f bin/*.v32 obj/* textures/*.vtex
+	rm -f bin/*.v32 obj/* textures/*.vtex *.xml

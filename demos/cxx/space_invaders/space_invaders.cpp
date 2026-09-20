@@ -1,6 +1,8 @@
 #include "video.h"
 #include "audio.h"
 #include "input.h"
+#include "misc.h"
+#include "time.h"
 
 // ============================================================================
 //  SPACE INVADERS - portable object-oriented C++ skeleton
@@ -19,16 +21,26 @@
 //  return values of exactly one word, so a 2-int Vec2 returned by value
 //  (operator+ etc.) would be rejected downstream. Packing keeps natural
 //  by-value math while staying one word. Coordinates stay well inside
-//  the 16-bit range (playfield is 224 x 256).
+//  the 16-bit range (Vircon32 screen / playfield is 640 x 360).
 //
 //  Platform hookup notes:
-//    * All drawing is stubbed: every class has draw()  -- fill in with your
-//      blitter calls using the integer sprite ids listed below.
-//    * All audio is stubbed: sound effects are triggered via Sound::play().
-//    * All input is stubbed: Input::read(Button) returns one signed int per
-//      button, never zero.
-//    * Video::sync() (NOT part of Input) signals end-of-frame to the GPU:
-//      vsync / frame flip / present. Call it once per frame after drawing.
+//    * Video is WIRED to the Vircon32 SDK: blit() does
+//      select_region(id) + draw_region_at(x, y); clear() calls
+//      clear_screen(); sync() calls end_frame(). init() selects
+//      texture -1 once (no texture: sprites are region-only).
+//    * Input is WIRED: read() forwards directly to the per-button SDK
+//      query functions (gamepad_up(), gamepad_button_a(), ...) -- each
+//      already returns the signed +/- frame count the contract needs.
+//    * Audio is still stubbed: sound effects are triggered via Sound::play().
+//
+//  NOTE ON SDK CALLS: select_region/draw_region_at/end_frame/
+//  gamepad_button_state are NOT declared anywhere in this C++ source --
+//  v32c++'s sema leaves unresolved free-function calls untouched and
+//  codegen emits them verbatim, so they pass straight through to the
+//  generated C, where the #include lines above (re-emitted verbatim at
+//  the top of the output by the preprocessor pass-through) resolve them
+//  against the real Vircon32 SDK headers. This is the same mechanism
+//  tests/sample22.cpp and friends use for video.h/audio.h.
 //
 //  INPUT CONTRACT
 //  --------------
@@ -40,6 +52,9 @@
 //
 //  SPRITES: all 10 x 20 pixels, one sprite per frame.
 //  Sprite ids are simply the ASCII value of the character shown.
+//  (On the Vircon32 side, the cart texture's regions must be DEFINED in
+//  this same id order -- region id == ASCII code -- via define_region()
+//  or the Region Editor tool, so select_region(id) picks the right one.)
 //  ---------------------------------------------------------------
 //  char  name                 10 x 20     notes
 //  ----  -------------------  --------    --------------------------------
@@ -163,21 +178,19 @@ namespace si {
 // ---------------------------------------------------------------------------
 class Random {
 public:
-    Random() : mState(0x1234ABCD) {}
-
-    void seed(int s) { mState = s; }
+    // thin wrapper over the hardware RNG in misc.h (rand/srand);
+    // note srand(0) is ignored by the hardware (0 never set as seed)
+    void seed(int s) { srand(s); }
 
     // returns 0..limit-1
     int next(int limit) {
-        mState = mState * 1103515245 + 12345;
-        return ((mState >> 16) & 0x7FFF) % limit;
+        int r = rand();          // full 32-bit value, may be negative
+        if (r < 0) r = -r;
+        return r % limit;
     }
 
     // returns 0 or 1
     int bit() { return next(2); }
-
-private:
-    int mState;
 };
 
 // ---------------------------------------------------------------------------
@@ -265,11 +278,19 @@ Random g_rng;
 // === END FILE: si_core.h ===
 
 
-// === FILE: si_platform.h ===  (the three platform stub layers)
+// === FILE: si_platform.h ===  (the three platform layers, Vircon32-wired)
 namespace si {
 
 // ---------------------------------------------------------------------------
-// Input: per-button signed reads, never zero. NO sync() here.
+// Input: per-button signed reads, never zero.
+//
+// Wired directly to Vircon32's individual per-button query functions:
+// gamepad_up(), gamepad_down(), gamepad_left(), gamepad_right(),
+// gamepad_button_start(), gamepad_button_a(), gamepad_button_b(),
+// gamepad_button_x(), gamepad_button_y(), gamepad_button_l(),
+// gamepad_button_r(). Each already returns the signed frame count
+// (+N held for N frames / -N released for N frames), so read() just
+// forwards it -- no polling state, no counters, no per-frame setup.
 // ---------------------------------------------------------------------------
 enum Button {
     BTN_UP = 0, BTN_DOWN, BTN_LEFT, BTN_RIGHT,
@@ -284,45 +305,64 @@ public:
     //   > 0 : pressed, for that many consecutive frames
     //   < 0 : not pressed, for that many consecutive frames
     int read(Button b) const {
-        // TODO: platform I/O -- poll just this button and return its
-        //       signed frame count. Placeholder returns "never touched".
-        return -1;
+        if (b == BTN_UP)    return gamepad_up();
+        if (b == BTN_DOWN)  return gamepad_down();
+        if (b == BTN_LEFT)  return gamepad_left();
+        if (b == BTN_RIGHT) return gamepad_right();
+        if (b == BTN_START) return gamepad_button_start();
+        if (b == BTN_A)     return gamepad_button_a();
+        if (b == BTN_B)     return gamepad_button_b();
+        if (b == BTN_X)     return gamepad_button_x();
+        if (b == BTN_Y)     return gamepad_button_y();
+        if (b == BTN_L)     return gamepad_button_l();
+        return gamepad_button_r();
     }
 };
 
 // ---------------------------------------------------------------------------
-// Video: GPU-facing layer. Owns end-of-frame sync (vsync / flip / present),
-// sprite blitting, and clearing -- NOT part of Input.
+// Video: GPU-facing layer, wired to the Vircon32 SDK.
+//   init()  -- one-time setup: select texture -1 (no texture; all sprites
+//              come from region ids alone).
+//   blit()  -- select_region(spriteId); draw_region_at(x, y);
+//   clear() -- clear_screen(...) in preparation for the frame.
+//   sync()  -- end_frame(): vsync / present. Call once per frame after all
+//              drawing is done. Lives on Video, not Input.
 // ---------------------------------------------------------------------------
 class Video {
 public:
+    void init() {
+        select_texture(-1);
+    }
+
     // Blit one sprite (10x20) with the given ASCII-value sprite id.
     void blit(int spriteId, int x, int y) {
-        // TODO: platform GPU call -- draw sprite `spriteId` at (x, y)
+        select_region(spriteId);
+        draw_region_at(x, y);
     }
 
-    // Clear the framebuffer / reset the draw list.
+    // Clear the framebuffer.
     void clear() {
-        // TODO: platform GPU call
+        clear_screen(color_black);
     }
 
-    // Signal end of processing for this frame: flip buffers, wait for
-    // vblank, present. Call once per frame after all drawing is done.
+    // Signal end of processing for this frame.
     void sync() {
-        // TODO: platform GPU call -- vsync / present / frame flip
+        end_frame();
     }
 };
 
 // ---------------------------------------------------------------------------
-// Sound: stubbed playback of integer sound ids
+// Sound: stubbed playback of integer sound ids.
+// Wire to the audio.h API (select_sound / play_sound / stop_sound) with a
+// #sound cart hint per effect when you have audio assets ready.
 // ---------------------------------------------------------------------------
 class Sound {
 public:
     void play(int soundId) {
-        // TODO: start playing the given sound
+        // TODO: select_sound(soundId); play_sound(soundId);
     }
     void stop(int soundId) {
-        // TODO
+        // TODO: stop_sound(soundId);
     }
 };
 
@@ -945,15 +985,28 @@ public:
         : mPlayerBullet(0), mScore(0), mHiScore(0), mWave(1),
           mBombCooldown(60), mWaveClearTimer(0), mLastExtraLifeAt(0),
           mState(GAME_TITLE) {
-        // mPlayer is class-typed: default-constructed, then positioned here
-        mPlayer.reset(PLAYFIELD_W / 2 - PLAYER_WIDTH / 2, PLAYER_HOME_Y);
+        // Class-typed members are held BY POINTER: v32c++ never injects
+        // constructor calls for class-typed members (its ctor-call
+        // injection only walks function bodies), so `Swarm mSwarm;`
+        // would leave the grid and vtable as raw stack garbage and
+        // HALT on first use. `new T()` runs the constructor and
+        // installs the vtable (see the v32_new_* helpers).
+        mPlayer = new Player();
+        mSwarm  = new Swarm();
+        mSaucer = new Saucer();
+        mBombs  = new BombList();
+        mPlayer->reset(PLAYFIELD_W / 2 - PLAYER_WIDTH / 2, PLAYER_HOME_Y);
         for (int i = 0; i < BUNKER_COUNT; ++i) mBunkers[i] = 0;
     }
 
     ~Game() {
         delete mPlayerBullet;
-        for (int i = 0; i < mBombs.size(); ++i) delete mBombs[i];
+        for (int i = 0; i < mBombs->size(); ++i) delete (*mBombs)[i];
         for (int i = 0; i < BUNKER_COUNT; ++i) delete mBunkers[i];
+        delete mBombs;
+        delete mSaucer;
+        delete mSwarm;
+        delete mPlayer;
     }
 
     void runFrame(const Input& in) {
@@ -969,13 +1022,13 @@ public:
             drawText(video, "SPACE INVADERS", 40, 80);
             drawText(video, "PRESS START",   60, 130);
         } else {
-            mPlayer.draw(video);
-            mSwarm.draw(video);
-            mSaucer.draw(video);
+            mPlayer->draw(video);
+            mSwarm->draw(video);
+            mSaucer->draw(video);
             for (int i = 0; i < BUNKER_COUNT; ++i)
                 if (mBunkers[i]) mBunkers[i]->draw(video);
             if (mPlayerBullet) mPlayerBullet->draw(video);
-            for (int i = 0; i < mBombs.size(); ++i) mBombs[i]->draw(video);
+            for (int i = 0; i < mBombs->size(); ++i) (*mBombs)[i]->draw(video);
             drawHUD(video);
         }
     }
@@ -994,9 +1047,9 @@ private:
         mWaveClearTimer = 0;
         mLastExtraLifeAt = 0;
         mBombCooldown = 60;
-        mPlayer.reset(PLAYFIELD_W / 2 - PLAYER_WIDTH / 2, PLAYER_HOME_Y);
-        for (int i = 0; i < mBombs.size(); ++i) delete mBombs[i];
-        mBombs.clear();
+        mPlayer->reset(PLAYFIELD_W / 2 - PLAYER_WIDTH / 2, PLAYER_HOME_Y);
+        for (int i = 0; i < mBombs->size(); ++i) delete (*mBombs)[i];
+        mBombs->clear();
         delete mPlayerBullet;
         mPlayerBullet = 0;
         buildWave();
@@ -1004,8 +1057,8 @@ private:
     }
 
     void buildWave() {
-        mSwarm.destroyAll();
-        mSwarm.spawn(40 + (mWave - 1) * 20);  // each wave starts lower
+        mSwarm->destroyAll();
+        mSwarm->spawn(40 + (mWave - 1) * 20);  // each wave starts lower
         for (int i = 0; i < BUNKER_COUNT; ++i) {
             delete mBunkers[i];
             mBunkers[i] = new Bunker(22 + i * 56, 168);
@@ -1014,29 +1067,29 @@ private:
 
     // ---- main gameplay ------------------------------------------------------
     void playFrame(const Input& in) {
-        mPlayer.handleInput(in);
-        if (in.read(BTN_A) == 1 || in.read(BTN_B) == 1) mPlayer.fire();
+        mPlayer->handleInput(in);
+        if (in.read(BTN_A) == 1 || in.read(BTN_B) == 1) mPlayer->fire();
 
         updatePlayerBullet();
-        mSwarm.update(mSfx);
+        mSwarm->update(mSfx);
         updateBombs();
-        mSaucer.update();
-        mPlayer.update();
+        mSaucer->update();
+        mPlayer->update();
         checkCollisions();
         awardExtraLife();
 
-        if (mPlayer.gameOver()) mState = GAME_OVER;
-        else if (mSwarm.aliveCount() == 0) mState = GAME_WAVE_CLEAR;
-        else if (mSwarm.reachedBottom(PLAYER_HOME_Y)) mState = GAME_OVER;
+        if (mPlayer->gameOver()) mState = GAME_OVER;
+        else if (mSwarm->aliveCount() == 0) mState = GAME_WAVE_CLEAR;
+        else if (mSwarm->reachedBottom(PLAYER_HOME_Y)) mState = GAME_OVER;
     }
 
     void updatePlayerBullet() {
-        if (mPlayer.wantsFire() && mPlayerBullet == 0) {
-            mPlayerBullet = new Bullet(mPlayer.muzzleX(), mPlayer.muzzleY(),
+        if (mPlayer->wantsFire() && mPlayerBullet == 0) {
+            mPlayerBullet = new Bullet(mPlayer->muzzleX(), mPlayer->muzzleY(),
                                        0, -8, AssetIds::PLAYER_BULLET);
             mSfx.play(AssetIds::SOUND_SHOOT);
         }
-        mPlayer.clearFire();
+        mPlayer->clearFire();
         if (mPlayerBullet) {
             mPlayerBullet->update();
             if (mPlayerBullet->state() == STATE_DEAD) {
@@ -1048,24 +1101,24 @@ private:
 
     void updateBombs() {
         --mBombCooldown;
-        if (mBombCooldown <= 0 && !mBombs.full()) {
-            Alien* shooter = mSwarm.randomShooter();
+        if (mBombCooldown <= 0 && !mBombs->full()) {
+            Alien* shooter = mSwarm->randomShooter();
             if (shooter) {
                 int sprite;
                 if (g_rng.bit()) sprite = AssetIds::ALIEN_BULLET_SQUIGGLE;
                 else             sprite = AssetIds::ALIEN_BULLET_PLUMB;
-                mBombs.push(new Bullet(
+                mBombs->push(new Bullet(
                     shooter->posX() + ALIEN_WIDTH / 2 - SPRITE_W / 2,
                     shooter->posY() + ALIEN_HEIGHT,
                     0, 1 + mWave / 3, sprite));
             }
             mBombCooldown = 30 + g_rng.next(45);
         }
-        for (int i = 0; i < mBombs.size();) {
-            mBombs[i]->update();
-            if (mBombs[i]->state() == STATE_DEAD) {
-                delete mBombs[i];
-                mBombs.eraseAt(i);
+        for (int i = 0; i < mBombs->size();) {
+            (*mBombs)[i]->update();
+            if ((*mBombs)[i]->state() == STATE_DEAD) {
+                delete (*mBombs)[i];
+                mBombs->eraseAt(i);
             } else {
                 ++i;
             }
@@ -1078,14 +1131,14 @@ private:
         if (mPlayerBullet) {
             Rect pb;
             mPlayerBullet->getBounds(pb);
-            Alien* a = mSwarm.hitTest(pb);
+            Alien* a = mSwarm->hitTest(pb);
             if (a) {
                 a->destroy(mSfx);
                 addScore(a->points());
                 deleteBullet();
-            } else if (mSaucer.flying() && mSaucer.collidesWith(pb)) {
-                addScore(mSaucer.scoreValue());
-                mSaucer.destroy(mSfx);
+            } else if (mSaucer->flying() && mSaucer->collidesWith(pb)) {
+                addScore(mSaucer->scoreValue());
+                mSaucer->destroy(mSfx);
                 deleteBullet();
             } else {
                 // vs bunkers
@@ -1097,21 +1150,21 @@ private:
             }
         }
         // bombs vs player / bunkers
-        for (int i = 0; i < mBombs.size();) {
+        for (int i = 0; i < mBombs->size();) {
             bool gone = false;
-            if (mPlayer.collidesWith(*mBombs[i])) {
-                mPlayer.hit(mSfx);
+            if (mPlayer->collidesWith(*(*mBombs)[i])) {
+                mPlayer->hit(mSfx);
                 gone = true;
             } else {
                 for (int k = 0; k < BUNKER_COUNT && !gone; ++k) {
                     if (mBunkers[k]) {
                         Rect bb;
-                        mBombs[i]->getBounds(bb);
+                        (*mBombs)[i]->getBounds(bb);
                         if (mBunkers[k]->erode(bb, mSfx)) gone = true;
                     }
                 }
             }
-            if (gone) { delete mBombs[i]; mBombs.eraseAt(i); }
+            if (gone) { delete (*mBombs)[i]; mBombs->eraseAt(i); }
             else      { ++i; }
         }
     }
@@ -1143,7 +1196,7 @@ private:
 
     void awardExtraLife() {
         if (mScore / 1500 > mLastExtraLifeAt / 1500) {
-            mPlayer.awardLife();
+            mPlayer->awardLife();
             mSfx.play(AssetIds::SOUND_EXTRA_LIFE);
         }
         mLastExtraLifeAt = mScore;
@@ -1153,15 +1206,15 @@ private:
         drawNumber(video, mScore,   8,   2);
         drawNumber(video, mHiScore, 88,  2);
         drawNumber(video, mWave,    200, 2);
-        for (int i = 0; i < mPlayer.lives() - 1; ++i)
+        for (int i = 0; i < mPlayer->lives() - 1; ++i)
             video.blit(AssetIds::PLAYER_SHIP, 8 + i * 16, 236);   // '='
     }
 
-    Player    mPlayer;
-    Swarm     mSwarm;
-    Saucer    mSaucer;
+    Player*   mPlayer;      // by pointer: ctor injection never touches
+    Swarm*    mSwarm;       //   class-typed members -- see constructor
+    Saucer*   mSaucer;
     Bullet*   mPlayerBullet;
-    BombList  mBombs;   // concrete fixed-capacity list, no templates
+    BombList* mBombs;   // concrete fixed-capacity list, no templates
     Bunker*   mBunkers[4];   // BUNKER_COUNT: dims must be INT_LITERALs
     Sound     mSfx;
     int       mScore;
@@ -1192,19 +1245,18 @@ int main() {
     si::Input input;
     si::Video video;
 
-    for (;;) {
-        // 1) read controller state (per-button, never 0, signed frame counts)
-        //    -- the Game queries buttons via input.read(BTN_x) during update.
-        //    TODO: make Input::read() hit real controller I/O.
+    // one-time GPU setup: no texture, sprites come from region ids alone
+    video.init();
 
-        // 2) simulate one frame
+    for (;;) {
+        // 1) simulate one frame; input.read() queries each button's
+        //    SDK function directly (gamepad_up(), gamepad_button_a(), ...)
         game.runFrame(input);
 
-        // 3) draw one frame (entity draw() calls go through Video::blit)
+        // 3) draw one frame (blit -> select_region + draw_region_at)
         game.draw(video);
 
-        // 4) end-of-frame GPU sync: vsync / flip / present.
-        //    Lives on Video, not Input.
+        // 4) end-of-frame GPU sync: present the frame.
         video.sync();
     }
     return 0;
