@@ -1,87 +1,107 @@
 #title "Star Raiders"
-#version 0.1
+#version 0.4
 
 #include "video.h"
 #include "input.h"
+#include "math.h"
 #include "string.h"
 #include "time.h"
 
 // ============================================================================
-//  STAR RAIDERS for Vircon32 -- phase 1: scrolling quadrant starfield
+//  STAR RAIDERS for Vircon32
+//  Phase 1: quadrant starfield (superseded)
+//  Phase 2: Zylon enemies, phasers, energy/shields
+//  Phase 3: galactic chart
+//  Phase 4: FIRST-PERSON pseudo-3D space (like the original game)
 //
-//  Written to the v32c++ subset (same conventions as the Space Invaders
-//  project): no templates, no static members, no in-class initializers,
-//  no class-nested enums, no 'unsigned', no ternaries, one-word parameter
-//  and return types, no bare constructor/functional casts. SDK calls are
-//  passed through undeclared to the Vircon32 C compiler.
+//  The ship is at the center of a 3D relative space. Stars live at
+//  (x, y, z) relative to the ship; D-pad rotates the view (yaw/pitch),
+//  space always streams past (forward motion), and A engages warp.
+//  Stars that pass behind the camera respawn at the far plane with a
+//  new (x, y), so flying forever wraps around -- space feels spherical.
+//  Quadrant tracking is kept for the galactic chart: our accumulated
+//  yaw is quantized to a compass heading for warp jumps.
 //
-//  Graphics use ONLY the BIOS font (texture -1): one pre-defined region
-//  per ASCII code, 10x20 pixel characters. Stars are the '.' glyph
-//  (region 46), the reticle is '+' (region 43). The glyphs are drawn as
-//  regions and ZOOMED via set_drawing_scale + draw_region_zoomed_at to
-//  fake depth and warp speed. Note: print_at selects texture -1 itself
-//  and restores the previous texture, so it is safe inside our loop.
+//  Written to the v32c++ subset: no templates, no static members, no
+//  in-class initializers, no ternaries, no 'unsigned', one-word
+//  parameter/return types. Tunables are #defines (Vircon C enforces
+//  const strictly); text lives in ASCII-code int arrays (the v32c++
+//  grammar has no string-literal array initializers).
 //
-//  Text: Vircon strings are int arrays (one int per character, null
-//  terminated) -- see string.h. We use string.h's strcpy/strcat/itoa.
-//  Colors: video.h has no get_color; use make_color_rgb / color_*.
+//  Graphics use ONLY the BIOS font (texture -1, 10x20 glyphs, region
+//  id = ASCII code). Hotspots of the glyphs we zoom are re-centered
+//  at startup (print_at is unaffected: we never print those glyphs).
 // ============================================================================
 
-// NOTE on constants: the Vircon32 C compiler enforces const very
-// strictly (a const int global cannot even be assigned FROM), so all
-// tunables are #defines instead of const variables.
+// ---------------------------------------------------------------------------
+//  Tunables
+// ---------------------------------------------------------------------------
 
 #define SCREEN_W   640
 #define SCREEN_H   360
 #define CENTER_X   320
 #define CENTER_Y   180
 
-// BIOS font: texture -1, one region per ASCII code, chars are 10x20 px.
-// Region id for an ASCII code is simply the code itself.
 #define ASCII_DOT   46    // '.'
 #define ASCII_PLUS  43    // '+'
+#define ASCII_V     86    // 'V' -- enemy ship
+#define ASCII_DASH  45    // '-' -- HUD bars
+#define ASCII_STAR  42    // '*' -- explosions
 
 // galaxy structure: 8x8 quadrants, each 8x8 sectors
 #define GALAXY_QUADS       8
 #define SECTORS_PER_QUAD   8
-#define QUAD_SIZE   1024          // quadrant space, abstract units
+#define QUAD_SIZE   1024
 #define QUAD_HALF    512
 
+// 3D space
 #define STAR_COUNT        140
-#define CRUISE_SPEED        5     // units per frame at parallax 1.0
+#define NEAR_Z             50    // behind this = respawn
+#define FAR_Z            1050
+#define DEPTH_Z           990    // FAR_Z - NEAR_Z, respawn distance
+#define FIELD_XY          700    // stars spawn within +-this in x/y
+#define CRUISE_SPEED        6    // forward units per frame
+#define WARP_SPEED         60
+#define TURN_RATE        0.035    // radians per frame
+#define FOCAL             300    // projection factor
 
-#define WARP_FRAMES       100     // length of a warp jump
-#define WARP_GROWTH      8.0     // how violently stars stream outward
+#define WARP_FRAMES        90
+#define PHASER_COST       1.5
+#define WARP_COST         12.0
+#define COLLISION_DAMAGE  25.0
+#define ENERGY_REGEN      0.03
+#define SHIELD_REGEN      0.02
+#define BOLT_FRAMES         8
+#define BOLT_STEP         140    // bolt z advance per frame
+#define MSG_FRAMES        120
 
 // ---------------------------------------------------------------------------
-//  HUD text. Vircon string literals are const int* and the console C
-//  compiler will not pass them to strcpy/strcat (int* parameters), so
-//  every literal lives in a named int array (same pattern as string.h's
-//  own itoa, which builds "0123456789ABCDEF" in an int array).
+//  HUD text (ASCII code lists; plain text in comments)
 // ---------------------------------------------------------------------------
 
 int hud_line[64];
 int hud_num[16];
 
-// NOTE: the v32c++ grammar does not accept a string literal as an
-// array initializer ("int s[4] = \"abc\";" fails -- only brace lists
-// are allowed there), so these are written as ASCII code lists.
-// (Text: "QUADRANT ", ",", "  SECTOR ", "ENGINES: WARP",
-//  "ENGINES: CRUISE", "ENGINES: OFF", "  HEAD: ", "N", "E", "S", "W")
-int s_quadrant[10] = { 81, 85, 65, 68, 82, 65, 78, 84, 32, 0 };
-int s_comma[2]     = { 44, 0 };
-int s_sector[9]    = { 32, 32, 83, 69, 67, 84, 79, 82, 0 };
-int s_warp[15]     = { 69, 78, 71, 73, 78, 69, 83, 58, 32, 87, 65, 82, 80, 0 };
-int s_cruise[17]   = { 69, 78, 71, 73, 78, 69, 83, 58, 32, 67, 82, 85, 73, 83, 69, 0 };
-int s_off[13]      = { 69, 78, 71, 73, 78, 69, 83, 58, 32, 79, 70, 70, 0 };
-int s_head[9]      = { 32, 32, 72, 69, 65, 68, 58, 32, 0 };
-int s_n[2] = { 78, 0 };
-int s_e[2] = { 69, 0 };
-int s_s[2] = { 83, 0 };
-int s_w[2] = { 87, 0 };
+int s_quadrant[10]  = { 81, 85, 65, 68, 82, 65, 78, 84, 32, 0 };          // "QUADRANT "
+int s_comma[2]      = { 44, 0 };                                          // ","
+int s_sector[9]     = { 32, 32, 83, 69, 67, 84, 79, 82, 0 };              // "  SECTOR "
+int s_zylons[9]     = { 90, 89, 76, 79, 78, 83, 58, 32, 0 };              // "ZYLONS: "
+int s_energy[7]     = { 69, 78, 69, 82, 71, 89, 0 };                      // "ENERGY"
+int s_shields[8]    = { 83, 72, 73, 69, 76, 68, 83, 0 };                  // "SHIELDS"
+int s_warp[15]      = { 69, 78, 71, 73, 78, 69, 83, 58, 32, 87, 65, 82, 80, 0 };        // "ENGINES: WARP"
+int s_cruise[17]    = { 69, 78, 71, 73, 78, 69, 83, 58, 32, 67, 82, 85, 73, 83, 69, 0 };// "ENGINES: CRUISE"
+int s_off[13]       = { 69, 78, 71, 73, 78, 69, 83, 58, 32, 79, 70, 70, 0 };            // "ENGINES: OFF"
+int s_head[9]       = { 32, 32, 72, 69, 65, 68, 58, 32, 0 };              // "  HEAD: "
+int s_n[2] = { 78, 0 };   // "N"
+int s_e[2] = { 69, 0 };   // "E"
+int s_s[2] = { 83, 0 };   // "S"
+int s_w[2] = { 87, 0 };   // "W"
+int s_clear[13]     = { 83, 69, 67, 84, 79, 82, 32, 67, 76, 69, 65, 82, 0 };      // "SECTOR CLEAR"
+int s_destroyed[15] = { 83, 72, 73, 80, 32, 68, 69, 83, 84, 82, 79, 89, 69, 68, 0 }; // "SHIP DESTROYED"
+int s_restart[12]   = { 80, 82, 69, 83, 83, 32, 83, 84, 65, 82, 84, 0 };          // "PRESS START"
+int s_chart[15]     = { 71, 65, 76, 65, 67, 84, 73, 67, 32, 67, 72, 65, 82, 84, 0 }; // "GALACTIC CHART"
+int s_yclose[9]     = { 89, 58, 32, 67, 76, 79, 83, 69, 0 };                      // "Y: CLOSE"
 
-// appends a number to the HUD line (itoa into a temp, then strcat;
-// avoids pointer arithmetic on the destination array entirely)
 void hud_append_int( int v )
 {
     itoa( v, hud_num, 10 );
@@ -110,64 +130,140 @@ public:
         return (state >> 16) & 32767;
     }
 
-    int between( int lo, int hi )  // inclusive
+    int between( int lo, int hi )
     {
         return lo + (next() % (hi - lo + 1));
     }
 };
 
 // ---------------------------------------------------------------------------
-//  A single star: fixed position inside quadrant space plus a parallax
-//  factor p in (0..1]. Rendered as a zoomed '.' region.
+//  Star: position in the ship's relative 3D space
 // ---------------------------------------------------------------------------
 
 class Star
 {
 public:
-    float fx;    // quadrant-space position
-    float fy;
-    float p;     // parallax / depth: 0 = infinitely far, 1 = ship's plane
-    int tint;    // 0 white, 1 blue, 2 warm, 3 pale cyan
+    float x;
+    float y;
+    float z;
+    int tint;
 
     void randomize( RNG *rng )
     {
-        fx = rng->between( 0, QUAD_SIZE - 1 );
-        fy = rng->between( 0, QUAD_SIZE - 1 );
-        p = rng->between( 2, 10 ) * 0.1;   // 0.2 .. 1.0
+        x = rng->between( -FIELD_XY, FIELD_XY );
+        y = rng->between( -FIELD_XY, FIELD_XY );
+        z = rng->between( NEAR_Z + 40, FAR_Z );
         tint = rng->between( 0, 3 );
+    }
+
+    // respawn at a uniformly random depth: placing stars at a fixed
+    // distance (z + DEPTH) would bunch them into a thin shell that
+    // whips past the camera in one frame at warp speed, leaving the
+    // screen blank most of the time
+    void respawn( RNG *rng )
+    {
+        x = rng->between( -FIELD_XY, FIELD_XY );
+        y = rng->between( -FIELD_XY, FIELD_XY );
+        z = NEAR_Z + 10 + rng->between( 0, DEPTH_Z - 20 );
     }
 };
 
 // ---------------------------------------------------------------------------
-//  The starfield: one deterministic star pattern per galaxy quadrant.
-//  The ship scrolls through quadrant space with the D-pad (parallax by
-//  star depth), and the A button performs a warp jump: stars zoom and
-//  stream outward from screen center, then we arrive in the adjacent
-//  quadrant.
+//  Enemy ship: also lives in relative 3D space, homes toward the ship
+// ---------------------------------------------------------------------------
+
+class Enemy
+{
+public:
+    float x;
+    float y;
+    float z;
+    int alive;
+    int kind;      // 0 slow, 1 fast
+
+    void randomize( RNG *rng )
+    {
+        x = rng->between( -FIELD_XY, FIELD_XY );
+        y = rng->between( -FIELD_XY, FIELD_XY );
+        z = rng->between( 400, FAR_Z );
+        alive = 1;
+        kind = rng->between( 0, 1 );
+    }
+};
+
+// ---------------------------------------------------------------------------
+//  Explosion: screen-space marker of a killed enemy
+// ---------------------------------------------------------------------------
+
+class Explosion
+{
+public:
+    int sx;
+    int sy;
+    int t;      // frames remaining
+};
+
+// ---------------------------------------------------------------------------
+//  The game
 // ---------------------------------------------------------------------------
 
 class Starfield
 {
 public:
-    Star stars[140];     // STAR_COUNT (literal size for the transpiler)
+    Star stars[140];
+    Enemy enemies[8];
+    Explosion explosions[4];
     RNG rng;
 
-    int qx;              // current quadrant, galaxy coords 0..7
+    int qx;
     int qy;
-    float shipx;         // ship position in quadrant space
+    float shipx;        // quadrant-space position (for the HUD)
     float shipy;
-    int heading;         // 0=N 1=E 2=S 3=W, last travel direction
-    int warp_t;          // 0 = idle, else 1..WARP_FRAMES
-    int warp_dir;        // quadrant step direction of current warp
+    float yaw;          // accumulated view yaw (0 = north)
+    int warp_t;
+    int warp_dir;
+
+    float energy;
+    float shields;
+    int bolt_t;         // phaser bolt in flight
+    float bolt_z;       // bolt distance along the view axis
+    int kills;
+    int msg_t;
+    int dead;
+
+    int chart_on;
+    int prev_y;
+    int galaxy_map[64];
+    int cleared[64];
 
     // ------------------------------------------------------------------
+
+    // deterministic enemy count for a quadrant we have NOT entered
+    int quadrant_enemies( int cqx, int cqy )
+    {
+        int i;
+        int count;
+        rng.seed( (cqy * GALAXY_QUADS + cqx + 1) * 7919 );
+        i = 0;
+        while (i < STAR_COUNT * 4)
+        {
+            rng.next();
+            i = i + 1;
+        }
+        count = 0;
+        if (rng.between( 0, 3 ) < 3)
+            count = rng.between( 1, 5 );
+        return count;
+    }
 
     void enter_quadrant( int nqx, int nqy )
     {
         int i;
+        int count;
+        int idx;
         qx = nqx;
         qy = nqy;
-        // deterministic pattern: same quadrant always shows the same stars
+        idx = qy * GALAXY_QUADS + qx;
         rng.seed( (qy * GALAXY_QUADS + qx + 1) * 7919 );
         i = 0;
         while (i < STAR_COUNT)
@@ -175,82 +271,137 @@ public:
             stars[i].randomize( &rng );
             i = i + 1;
         }
+        count = galaxy_map[idx];
+        if (cleared[idx] != 0)
+            count = 0;
+        i = 0;
+        while (i < 8)
+        {
+            if (i < count)
+                enemies[i].randomize( &rng );
+            else
+                enemies[i].alive = 0;
+            i = i + 1;
+        }
+        i = 0;
+        while (i < 4)
+        {
+            explosions[i].t = 0;
+            i = i + 1;
+        }
+        msg_t = 0;
     }
 
     void init( int start_qx, int start_qy )
     {
-        heading = 0;
+        int i;
+        yaw = 0;
         warp_t = 0;
         warp_dir = 0;
         shipx = QUAD_HALF;
         shipy = QUAD_HALF;
+        energy = 100;
+        shields = 100;
+        bolt_t = 0;
+        kills = 0;
+        dead = 0;
+        msg_t = 0;
+        chart_on = 0;
+        prev_y = 0;
+        i = 0;
+        while (i < GALAXY_QUADS * GALAXY_QUADS)
+        {
+            galaxy_map[i] = quadrant_enemies( i % GALAXY_QUADS, i / GALAXY_QUADS );
+            cleared[i] = 0;
+            i = i + 1;
+        }
         enter_quadrant( start_qx, start_qy );
     }
 
-    // wrap a quadrant-space delta to (-QUAD_HALF, QUAD_HALF]
-    float wrap_delta( float d )
+    // compass heading (0=N 1=E 2=S 3=W) quantized from the yaw
+    int heading()
     {
-        while (d >= QUAD_HALF)
-            d = d - QUAD_SIZE;
-        while (d < -QUAD_HALF)
-            d = d + QUAD_SIZE;
-        return d;
+        int h;
+        float a;
+        a = yaw / 1.5707963;      // yaw / (pi/2)
+        h = a;
+        if (a - h >= 0.5)
+            h = h + 1;
+        h = h % 4;
+        if (h < 0)
+            h = h + 4;
+        return h;
+    }
+
+    int enemies_alive()
+    {
+        int i;
+        int n;
+        n = 0;
+        i = 0;
+        while (i < 8)
+        {
+            if (enemies[i].alive != 0)
+                n = n + 1;
+            i = i + 1;
+        }
+        return n;
     }
 
     // ------------------------------------------------------------------
 
     void update()
     {
-        int dx;
-        int dy;
-        dx = 0;
-        dy = 0;
-        if (gamepad_left() != 0)
-            dx = -1;
-        if (gamepad_right() != 0)
-            dx = 1;
-        if (gamepad_up() != 0)
-            dy = -1;
-        if (gamepad_down() != 0)
-            dy = 1;
+        float turn;
+        float speed;
+        int i;
 
-        // warp jump: A button starts it, direction = held pad (or heading)
+        if (dead != 0)
+        {
+            if (gamepad_button_start() > 0)
+                init( 3, 4 );
+            return;
+        }
+
+        // Y toggles the galactic chart (rising edge only)
+        if (gamepad_button_y() > 0 && prev_y <= 0)
+            chart_on = 1 - chart_on;
+        prev_y = gamepad_button_y();
+
+        // while the chart is up, the game is paused
+        if (chart_on != 0)
+            return;
+
+        // view rotation: left/right = yaw, up/down = pitch
+        turn = 0;
+        if (gamepad_left() > 0)
+            turn = turn - TURN_RATE;
+        if (gamepad_right() > 0)
+            turn = turn + TURN_RATE;
+        if (turn != 0)
+        {
+            yaw = yaw + turn;
+            rotate_yaw( turn );
+        }
+        if (gamepad_up() > 0)
+            rotate_pitch( 0 - TURN_RATE );
+        if (gamepad_down() > 0)
+            rotate_pitch( TURN_RATE );
+
+        // forward speed: cruising always; warp on A
+        speed = CRUISE_SPEED;
         if (warp_t == 0)
         {
-            if (gamepad_button_a() != 0)
+            if (gamepad_button_a() > 0 && energy >= WARP_COST)
             {
+                energy = energy - WARP_COST;
                 warp_t = 1;
-                warp_dir = heading;
-                if (dy < 0)
-                    warp_dir = 0;
-                if (dx > 0)
-                    warp_dir = 1;
-                if (dy > 0)
-                    warp_dir = 2;
-                if (dx < 0)
-                    warp_dir = 3;
-            }
-            else
-            {
-                // normal cruising: scroll through quadrant space
-                if (dx != 0 || dy != 0)
-                {
-                    shipx = shipx + dx * CRUISE_SPEED;
-                    shipy = shipy + dy * CRUISE_SPEED;
-                    if (dy < 0)
-                        heading = 0;
-                    if (dx > 0)
-                        heading = 1;
-                    if (dy > 0)
-                        heading = 2;
-                    if (dx < 0)
-                        heading = 3;
-                }
+                warp_dir = heading();
             }
         }
         else
         {
-            // in warp: hold course, count frames, arrive at the end
+            speed = WARP_SPEED;
             warp_t = warp_t + 1;
             if (warp_t > WARP_FRAMES)
             {
@@ -259,7 +410,9 @@ public:
             }
         }
 
-        // keep ship inside its quadrant (space wraps)
+        // move the ship through quadrant space along its facing
+        shipx = shipx + sin( yaw ) * speed * 0.5;
+        shipy = shipy - cos( yaw ) * speed * 0.5;
         while (shipx < 0)
             shipx = shipx + QUAD_SIZE;
         while (shipx >= QUAD_SIZE)
@@ -268,10 +421,237 @@ public:
             shipy = shipy + QUAD_SIZE;
         while (shipy >= QUAD_SIZE)
             shipy = shipy - QUAD_SIZE;
+
+        // stars stream past
+        i = 0;
+        while (i < STAR_COUNT)
+        {
+            stars[i].z = stars[i].z - speed;
+            if (stars[i].z < NEAR_Z)
+                stars[i].respawn( &rng );
+            i = i + 1;
+        }
+
+        // phaser bolt: X fires along the view axis
+        if (bolt_t > 0)
+        {
+            bolt_t = bolt_t - 1;
+            bolt_z = bolt_z + BOLT_STEP;
+        }
+        if (gamepad_button_x() > 0 && bolt_t == 0 && energy >= PHASER_COST)
+        {
+            energy = energy - PHASER_COST;
+            bolt_t = BOLT_FRAMES;
+            bolt_z = NEAR_Z + 30;
+            fire_phaser();
+        }
+
+        if (warp_t == 0)
+            update_enemies();
+
+        // explosions decay
+        i = 0;
+        while (i < 4)
+        {
+            if (explosions[i].t > 0)
+                explosions[i].t = explosions[i].t - 1;
+            i = i + 1;
+        }
+
+        // regeneration
+        energy = energy + ENERGY_REGEN;
+        if (energy > 100)
+            energy = 100;
+        shields = shields + SHIELD_REGEN;
+        if (shields > 100)
+            shields = 100;
+
+        if (msg_t > 0)
+            msg_t = msg_t - 1;
     }
 
-    // warp finished: step to the adjacent quadrant, entering from the
-    // edge opposite to our direction of travel
+    // rotate all stars and enemies around the Y axis (camera yaw).
+    // turning right (d>0) moves dead-ahead points to the LEFT on screen.
+    void rotate_yaw( float d )
+    {
+        float c;
+        float s;
+        float nx;
+        float nz;
+        int i;
+        c = cos( d );
+        s = sin( d );
+        i = 0;
+        while (i < STAR_COUNT)
+        {
+            nx = stars[i].x * c - stars[i].z * s;
+            nz = stars[i].x * s + stars[i].z * c;
+            stars[i].x = nx;
+            stars[i].z = nz;
+            if (stars[i].z < NEAR_Z)
+                stars[i].respawn( &rng );
+            i = i + 1;
+        }
+        i = 0;
+        while (i < 8)
+        {
+            if (enemies[i].alive != 0)
+            {
+                nx = enemies[i].x * c - enemies[i].z * s;
+                nz = enemies[i].x * s + enemies[i].z * c;
+                enemies[i].x = nx;
+                enemies[i].z = nz;
+            }
+            i = i + 1;
+        }
+    }
+
+    // rotate around the X axis (camera pitch).
+    // nose up (d>0) moves dead-ahead points DOWN on screen.
+    void rotate_pitch( float d )
+    {
+        float c;
+        float s;
+        float ny;
+        float nz;
+        int i;
+        c = cos( d );
+        s = sin( d );
+        i = 0;
+        while (i < STAR_COUNT)
+        {
+            ny = stars[i].y * c - stars[i].z * s;
+            nz = stars[i].y * s + stars[i].z * c;
+            stars[i].y = ny;
+            stars[i].z = nz;
+            if (stars[i].z < NEAR_Z)
+                stars[i].respawn( &rng );
+            i = i + 1;
+        }
+        i = 0;
+        while (i < 8)
+        {
+            if (enemies[i].alive != 0)
+            {
+                ny = enemies[i].y * c - enemies[i].z * s;
+                nz = enemies[i].y * s + enemies[i].z * c;
+                enemies[i].y = ny;
+                enemies[i].z = nz;
+            }
+            i = i + 1;
+        }
+    }
+
+    // phaser hit test: nearest live enemy inside the view cone
+    // (|x| and |y| small relative to z, in front of us)
+    void fire_phaser()
+    {
+        int i;
+        int best;
+        float bestd;
+        best = -1;
+        bestd = 0;
+        i = 0;
+        while (i < 8)
+        {
+            if (enemies[i].alive != 0 && enemies[i].z > NEAR_Z)
+            {
+                float limx;
+                float limy;
+                float d;
+                limx = enemies[i].z * 0.30;
+                limy = enemies[i].z * 0.30;
+                d = enemies[i].z;
+                if (enemies[i].x > -limx && enemies[i].x < limx &&
+                    enemies[i].y > -limy && enemies[i].y < limy)
+                {
+                    if (best == -1 || d < bestd)
+                    {
+                        best = i;
+                        bestd = d;
+                    }
+                }
+            }
+            i = i + 1;
+        }
+        if (best != -1)
+        {
+            // remember where it was, for the explosion marker
+            add_explosion( best );
+            enemies[best].alive = 0;
+            kills = kills + 1;
+            if (enemies_alive() == 0)
+            {
+                cleared[qy * GALAXY_QUADS + qx] = 1;
+                msg_t = MSG_FRAMES;
+            }
+        }
+    }
+
+    void add_explosion( int i )
+    {
+        int slot;
+        float d;
+        slot = 0;
+        if (explosions[1].t < explosions[slot].t)
+            slot = 1;
+        if (explosions[2].t < explosions[slot].t)
+            slot = 2;
+        if (explosions[3].t < explosions[slot].t)
+            slot = 3;
+        d = enemies[i].z;
+        if (d < NEAR_Z)
+            d = NEAR_Z;
+        explosions[slot].sx = CENTER_X + enemies[i].x / d * FOCAL;
+        explosions[slot].sy = CENTER_Y - enemies[i].y / d * FOCAL;
+        explosions[slot].t = 20;
+    }
+
+    void update_enemies()
+    {
+        int i;
+        i = 0;
+        while (i < 8)
+        {
+            if (enemies[i].alive != 0)
+            {
+                float ddx;
+                float ddy;
+                float ddz;
+                float len;
+                float spd;
+                // home toward the ship at the origin
+                ddx = 0 - enemies[i].x;
+                ddy = 0 - enemies[i].y;
+                ddz = 0 - enemies[i].z;
+                len = sqrt( ddx * ddx + ddy * ddy + ddz * ddz );
+                spd = 0.8;
+                if (enemies[i].kind == 1)
+                    spd = 1.5;
+                if (len > 1)
+                {
+                    enemies[i].x = enemies[i].x + ddx / len * spd;
+                    enemies[i].y = enemies[i].y + ddy / len * spd;
+                    enemies[i].z = enemies[i].z + ddz / len * spd;
+                }
+                // collision: close in all three axes
+                if (enemies[i].z < 90 && enemies[i].z > -90 &&
+                    enemies[i].x > -70 && enemies[i].x < 70 &&
+                    enemies[i].y > -70 && enemies[i].y < 70)
+                {
+                    enemies[i].alive = 0;
+                    shields = shields - COLLISION_DAMAGE;
+                    if (shields <= 0)
+                    {
+                        shields = 0;
+                        dead = 1;
+                    }
+                }
+            }
+            i = i + 1;
+        }
+    }
+
     void arrive()
     {
         int nqx;
@@ -298,7 +678,6 @@ public:
             nqx = qx - 1;
             shipx = QUAD_SIZE - 64;
         }
-        // galaxy wraps around
         while (nqx < 0)
             nqx = nqx + GALAXY_QUADS;
         while (nqx >= GALAXY_QUADS)
@@ -314,22 +693,25 @@ public:
 
     void draw()
     {
-        int i;
-        float g;        // warp zoom growth factor (1 = normal)
-        g = 1;
-        if (warp_t > 0)
+        if (chart_on != 0)
         {
-            float t;
-            t = warp_t;
-            t = t / WARP_FRAMES;
-            g = 1 + t * t * WARP_GROWTH;
+            draw_chart();
+            return;
         }
+
+        int i;
+        float speed;
+        float speedscale;
+
+        // star size boost with speed: subtle at cruise, big at warp
+        speed = CRUISE_SPEED;
+        if (warp_t > 0)
+            speed = WARP_SPEED;
+        speedscale = speed / CRUISE_SPEED;
 
         clear_screen( make_color_rgb( 2, 4, 12 ) );
 
-        // stars: '.' regions of the BIOS font. The dot inside the 10x20
-        // glyph is only a few pixels, so modest scale factors (1..12)
-        // give dot sizes from ~2 to ~30 px.
+        // stars, far to near
         select_texture( -1 );
         select_region( ASCII_DOT );
         set_blending_mode( blending_add );
@@ -337,74 +719,134 @@ public:
         i = 0;
         while (i < STAR_COUNT)
         {
-            float ox;
-            float oy;
-            float dx;
-            float dy;
-            int sx;
-            int sy;
-            float s;
-
-            dx = wrap_delta( stars[i].fx - shipx );
-            dy = wrap_delta( stars[i].fy - shipy );
-
-            // project: parallax by depth, zoom outward during warp
-            ox = dx * stars[i].p * g;
-            oy = dy * stars[i].p * g;
-
-            // cull off-screen (they fly out fast during warp)
-            if (ox > -360 && ox < 360 && oy > -210 && oy < 210)
+            float d;
+            float sx;
+            float sy;
+            d = stars[i].z;
+            if (d >= NEAR_Z)
             {
-                int b;
-                int r;
-                int gg;
-                int bb;
-                b = 70 + stars[i].p * 185;
-                r = b;
-                gg = b;
-                bb = b;
-                if (stars[i].tint == 1)
+                sx = CENTER_X + stars[i].x / d * FOCAL;
+                sy = CENTER_Y - stars[i].y / d * FOCAL;
+                if (sx > -20 && sx < 660 && sy > -20 && sy < 380)
                 {
-                    r = b * 0.7;
-                    gg = b * 0.85;
-                    bb = b + 40;
-                }
-                else if (stars[i].tint == 2)
-                {
-                    r = b + 30;
-                    gg = b * 0.8;
-                    bb = b * 0.7;
-                }
-                else if (stars[i].tint == 3)
-                {
-                    r = b * 0.7;
-                    gg = b + 20;
-                    bb = b + 30;
-                }
-                if (r > 255)
-                    r = 255;
-                if (gg > 255)
-                    gg = 255;
-                if (bb > 255)
-                    bb = 255;
+                    int b;
+                    int r;
+                    int gg;
+                    int bb;
+                    float s;
+                    b = 255 - d * 0.19;      // brighter when closer
+                    if (b < 60)
+                        b = 60;
+                    r = b;
+                    gg = b;
+                    bb = b;
+                    if (stars[i].tint == 1)
+                    {
+                        r = b * 0.7;
+                        gg = b * 0.85;
+                        bb = b + 40;
+                    }
+                    else if (stars[i].tint == 2)
+                    {
+                        r = b + 30;
+                        gg = b * 0.8;
+                        bb = b * 0.7;
+                    }
+                    else if (stars[i].tint == 3)
+                    {
+                        r = b * 0.7;
+                        gg = b + 20;
+                        bb = b + 30;
+                    }
+                    if (r > 255)
+                        r = 255;
+                    if (gg > 255)
+                        gg = 255;
+                    if (bb > 255)
+                        bb = 255;
 
-                sx = CENTER_X + ox;
-                sy = CENTER_Y + oy;
+                    s = 420 / d * speedscale;
+                    if (s < 0.5)
+                        s = 0.5;
+                    if (s > 10.0)
+                        s = 10.0;
 
-                // dot size grows with depth and with warp zoom
-                s = 1.0 + stars[i].p * 2.0;
-                s = s * g;
-                if (s > 12.0)
-                    s = 12.0;
-
-                set_multiply_color( make_color_rgb( r, gg, bb ) );
-                set_drawing_scale( s, s );
-                draw_region_zoomed_at( sx, sy );
+                    set_multiply_color( make_color_rgb( r, gg, bb ) );
+                    set_drawing_scale( s, s );
+                    draw_region_zoomed_at( sx, sy );
+                }
             }
             i = i + 1;
         }
 
         set_blending_mode( blending_alpha );
+
+        // enemies (draw far to near so closer ones overlap)
+        i = 7;
+        while (i >= 0)
+        {
+            if (enemies[i].alive != 0 && enemies[i].z >= NEAR_Z)
+            {
+                float d;
+                float sx;
+                float sy;
+                float s;
+                d = enemies[i].z;
+                sx = CENTER_X + enemies[i].x / d * FOCAL;
+                sy = CENTER_Y - enemies[i].y / d * FOCAL;
+                s = 700 / d;
+                if (s < 0.7)
+                    s = 0.7;
+                if (s > 8.0)
+                    s = 8.0;
+                if (sx > -40 && sx < 680 && sy > -40 && sy < 400)
+                {
+                    select_region( ASCII_V );
+                    if (enemies[i].kind == 1)
+                        set_multiply_color( make_color_rgb( 255, 80, 60 ) );
+                    else
+                        set_multiply_color( make_color_rgb( 255, 170, 40 ) );
+                    set_drawing_scale( s, s );
+                    draw_region_zoomed_at( sx, sy );
+                }
+            }
+            i = i - 1;
+        }
+
+        // explosions: expanding '*' at the kill position
+        i = 0;
+        while (i < 4)
+        {
+            if (explosions[i].t > 0)
+            {
+                float s;
+                s = 1.0 + (20 - explosions[i].t) * 0.35;
+                select_region( ASCII_STAR );
+                set_multiply_color( make_color_rgb( 255, 200, 60 ) );
+                set_drawing_scale( s, s );
+                draw_region_zoomed_at( explosions[i].sx, explosions[i].sy );
+            }
+            i = i + 1;
+        }
+
+        // phaser bolts: twin bolts fired from the ship's left and
+        // right sides, converging toward the view axis as they fly.
+        // Drawn as zoomed '*' glyphs (ASCII 42).
+        if (bolt_t > 0)
+        {
+            float s;
+            float offs;
+            s = 1400 / bolt_z;
+            if (s < 1.5)
+                s = 1.5;
+            offs = 4000 / bolt_z;    // lateral offset shrinks with distance
+            select_region( ASCII_STAR );
+            set_multiply_color( make_color_rgb( 120, 255, 180 ) );
+            set_drawing_scale( s, s );
+            draw_region_zoomed_at( CENTER_X - offs, CENTER_Y - 6 );
+            draw_region_zoomed_at( CENTER_X + offs, CENTER_Y - 6 );
+        }
+
         draw_reticle();
         draw_hud();
     }
@@ -417,11 +859,78 @@ public:
         draw_region_zoomed_at( CENTER_X, CENTER_Y );
     }
 
+    // horizontal bar: the '-' glyph zoomed non-uniformly.
+    // width 200 px max, 10 px tall, at (x,y) = top-left corner.
+    void draw_bar( int x, int y, float frac, int r, int gg, int b )
+    {
+        select_region( ASCII_DASH );
+        set_multiply_color( make_color_rgb( 30, 30, 40 ) );
+        set_drawing_scale( 20.0, 0.5 );
+        draw_region_zoomed_at( x + 100, y + 5 );
+        if (frac < 0)
+            frac = 0;
+        if (frac > 1)
+            frac = 1;
+        set_multiply_color( make_color_rgb( r, gg, b ) );
+        set_drawing_scale( 20.0 * frac, 0.5 );
+        draw_region_zoomed_at( x + 100 * frac, y + 5 );
+    }
+
+    // galactic chart: 8x8 grid, one cell per quadrant
+    void draw_chart()
+    {
+        int gx;
+        int gy;
+        int cell_x;
+        int cell_y;
+        int cell;
+        int hostile;
+
+        clear_screen( make_color_rgb( 2, 4, 12 ) );
+
+        set_multiply_color( color_white );
+        print_at( 260, 30, s_chart );
+        print_at( 260, 320, s_yclose );
+
+        cell_x = 240;
+        cell_y = 80;
+        for (gy = 0; gy < GALAXY_QUADS; gy++)
+        {
+            for (gx = 0; gx < GALAXY_QUADS; gx++)
+            {
+                cell = gy * GALAXY_QUADS + gx;
+                hostile = galaxy_map[cell];
+                if (cleared[cell] != 0)
+                    hostile = 0;
+                if (gx == qx && gy == qy)
+                {
+                    select_region( ASCII_PLUS );
+                    set_multiply_color( make_color_rgb( 0, 220, 120 ) );
+                }
+                else if (hostile > 0)
+                {
+                    select_region( ASCII_V );
+                    set_multiply_color( make_color_rgb( 255, 90, 70 ) );
+                }
+                else
+                {
+                    select_region( ASCII_DOT );
+                    set_multiply_color( make_color_rgb( 90, 90, 110 ) );
+                }
+                set_drawing_scale( 1.0, 1.0 );
+                draw_region_zoomed_at( cell_x, cell_y );
+                cell_x = cell_x + 20;
+            }
+            cell_x = 240;
+            cell_y = cell_y + 25;
+        }
+    }
+
     void draw_hud()
     {
         set_multiply_color( color_white );
 
-        // top-left: position readout
+        // top-left: position + enemy count
         strcpy( hud_line, s_quadrant );
         hud_append_int( qx + 1 );
         strcat( hud_line, s_comma );
@@ -432,24 +941,42 @@ public:
         hud_append_int( sector_y() + 1 );
         print_at( 8, 8, hud_line );
 
+        strcpy( hud_line, s_zylons );
+        hud_append_int( enemies_alive() );
+        print_at( 8, 32, hud_line );
+
+        // top-right: energy and shield bars
+        print_at( 440, 8, s_energy );
+        draw_bar( 440, 32, energy / 100, 80, 220, 80 );
+        print_at( 440, 56, s_shields );
+        draw_bar( 440, 80, shields / 100, 80, 140, 255 );
+
         // bottom-left: engines + heading
         if (warp_t > 0)
             strcpy( hud_line, s_warp );
-        else if (gamepad_left() != 0 || gamepad_right() != 0 ||
-                 gamepad_up() != 0 || gamepad_down() != 0)
-            strcpy( hud_line, s_cruise );
         else
-            strcpy( hud_line, s_off );
+            strcpy( hud_line, s_cruise );
         strcat( hud_line, s_head );
-        if (heading == 0)
+        if (heading() == 0)
             strcat( hud_line, s_n );
-        else if (heading == 1)
+        else if (heading() == 1)
             strcat( hud_line, s_e );
-        else if (heading == 2)
+        else if (heading() == 2)
             strcat( hud_line, s_s );
         else
             strcat( hud_line, s_w );
         print_at( 8, 332, hud_line );
+
+        // center messages
+        if (dead != 0)
+        {
+            print_at( CENTER_X - 60, CENTER_Y - 40, s_destroyed );
+            print_at( CENTER_X - 50, CENTER_Y - 10, s_restart );
+        }
+        else if (msg_t > 0)
+        {
+            print_at( CENTER_X - 55, CENTER_Y - 40, s_clear );
+        }
     }
 
     int sector_x()
@@ -478,12 +1005,36 @@ public:
 Starfield g_field;
 
 // ---------------------------------------------------------------------------
+//  Video setup. The BIOS font regions have their hotspot at the TOP-LEFT
+//  of each glyph (print_at depends on that). All of our zoomed drawing
+//  assumes a center hotspot, so re-center the glyphs we zoom. We never
+//  print '.', '+', 'V', '-', or '*' as text, so print_at is unaffected.
+// ---------------------------------------------------------------------------
+
+void center_char_hotspot( int ascii )
+{
+    select_texture( -1 );
+    select_region( ascii );
+    set_region_hotspot( 5, 10 );   // glyphs are 10x20
+}
+
+void init_gfx( void )
+{
+    center_char_hotspot( ASCII_DOT );
+    center_char_hotspot( ASCII_PLUS );
+    center_char_hotspot( ASCII_V );
+    center_char_hotspot( ASCII_DASH );
+    center_char_hotspot( ASCII_STAR );
+}
+
+// ---------------------------------------------------------------------------
 //  Main loop
 // ---------------------------------------------------------------------------
 
 void main( void )
 {
-    g_field.init( 3, 4 );          // start somewhere in the middle
+    init_gfx();
+    g_field.init( 3, 4 );
 
     while (1)
     {
