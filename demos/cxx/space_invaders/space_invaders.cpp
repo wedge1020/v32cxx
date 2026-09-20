@@ -75,7 +75,10 @@
 //   'o'  ALIEN_C_FRAME1          "       bottom-row alien, frame 1
 //   '*'  ALIEN_EXPLOSION         "       alien death poof
 //   '#'  PLAYER_EXPLOSION        "       player death animation
-//   '@'  BUNKER_BLOCK            "       one destructible bunker cell
+//   0x11 BUNKER_BLOCK_1         "       bunker cell, 1 hit point left (lightest)
+//   0x12 BUNKER_BLOCK_2         "       bunker cell, 2 hit points left
+//   0x13 BUNKER_BLOCK_3         "       bunker cell, 3 hit points left
+//   0x14 BUNKER_BLOCK_4         "       bunker cell, undamaged (solid)
 //   'U'  SAUCER                  "       mystery UFO
 //   'v'  ALIEN_BULLET_SQUIGGLE   "       wiggling bomb
 //   '|'  ALIEN_BULLET_PLUMB      "       straight bomb
@@ -124,7 +127,10 @@ namespace AssetIds {
         ALIEN_C_FRAME1         = 'o',
         ALIEN_EXPLOSION        = '*',
         PLAYER_EXPLOSION       = '#',
-        BUNKER_BLOCK           = '@',
+        BUNKER_BLOCK_1         = 0x11,  // most damaged bunker cell
+        BUNKER_BLOCK_2         = 0x12,
+        BUNKER_BLOCK_3         = 0x13,
+        BUNKER_BLOCK_4         = 0x14,  // undamaged (solid) bunker cell
         SAUCER                 = 'U',
         ALIEN_BULLET_SQUIGGLE  = 'v',
         ALIEN_BULLET_PLUMB     = '|',
@@ -768,8 +774,10 @@ public:
     Bunker(int px, int py)
         : Entity(px, py, BUNKER_CELLS_W * BUNKER_CELL_W,
                           BUNKER_CELLS_H * BUNKER_CELL_H) {
+        // every cell starts at 4 hit points (sprite BUNKER_BLOCK_4);
+        // each hit steps down through 0x13 -> 0x12 -> 0x11 -> gone
         for (int i = 0; i < BUNKER_CELLS_W * BUNKER_CELLS_H; ++i)
-            mCells[i] = true;
+            mCells[i] = 4;
     }
 
     void update() {}
@@ -778,25 +786,28 @@ public:
         video.tint(0xFF00FF00);   // green shields (classic)
         for (int cy = 0; cy < BUNKER_CELLS_H; ++cy)
             for (int cx = 0; cx < BUNKER_CELLS_W; ++cx)
-                if (cell(cx, cy))
-                    video.blit(AssetIds::BUNKER_BLOCK,          // '@'
+                if (cell(cx, cy) > 0)
+                    // hp 1..4 -> sprites 0x11..0x14 (light -> solid):
+                    // BUNKER_BLOCK_1 + (hp - 1) == 0x10 + hp
+                    video.blit(AssetIds::BUNKER_BLOCK_1 + cell(cx, cy) - 1,
                                mPos.x() + cx * BUNKER_CELL_W,
                                mPos.y() + cy * BUNKER_CELL_H);
     }
 
-    // erode cells where the rect overlaps; returns true if anything erased
+    // erode cells where the rect overlaps: each overlapping cell loses
+    // ONE hit point (chip, not vanish); returns true if anything chipped
     bool erode(const Rect& hit, Sound& sfx) {
         bool any = false;
         for (int cy = 0; cy < BUNKER_CELLS_H; ++cy) {
             for (int cx = 0; cx < BUNKER_CELLS_W; ++cx) {
-                if (!cell(cx, cy)) continue;
+                if (cell(cx, cy) <= 0) continue;
                 Rect r;
                 r.x = mPos.x() + cx * BUNKER_CELL_W;
                 r.y = mPos.y() + cy * BUNKER_CELL_H;
                 r.w = BUNKER_CELL_W;
                 r.h = BUNKER_CELL_H;
                 if (r.intersects(hit)) {
-                    setCell(cx, cy, false);
+                    setCell(cx, cy, cell(cx, cy) - 1);
                     any = true;
                 }
             }
@@ -806,14 +817,14 @@ public:
     }
 
 private:
-    bool cell(int x, int y) const {
+    int cell(int x, int y) const {
         return mCells[y * BUNKER_CELLS_W + x];
     }
-    void setCell(int x, int y, bool v) {
+    void setCell(int x, int y, int v) {
         mCells[y * BUNKER_CELLS_W + x] = v;
     }
-    bool mCells[6];      // BUNKER_CELLS_W * BUNKER_CELLS_H: dims must be
-                         // INT_LITERALs, not enum constants or expressions
+    int mCells[6];       // hit points per cell, 0..4. BUNKER_CELLS_W *
+                         // BUNKER_CELLS_H: dims must be INT_LITERALs
 };
 
 // ---------------------------------------------------------------------------
