@@ -29,8 +29,11 @@
 //  grammar has no string-literal array initializers).
 //
 //  Graphics use ONLY the BIOS font (texture -1, 10x20 glyphs, region
-//  id = ASCII code). Hotspots of the glyphs we zoom are re-centered
-//  at startup (print_at is unaffected: we never print those glyphs).
+//  id = ASCII code). Glyph hotspots are left at the BIOS default
+//  (top-left of each cell, as print_at expects); centered drawing is
+//  done in screen space via draw_zoomed_centered instead, because
+//  hotspot coordinates are ABSOLUTE texture positions and must not
+//  be touched without knowing the font's cell layout.
 // ============================================================================
 
 // ---------------------------------------------------------------------------
@@ -101,11 +104,29 @@ int s_destroyed[15] = { 83, 72, 73, 80, 32, 68, 69, 83, 84, 82, 79, 89, 69, 68, 
 int s_restart[12]   = { 80, 82, 69, 83, 83, 32, 83, 84, 65, 82, 84, 0 };          // "PRESS START"
 int s_chart[15]     = { 71, 65, 76, 65, 67, 84, 73, 67, 32, 67, 72, 65, 82, 84, 0 }; // "GALACTIC CHART"
 int s_yclose[9]     = { 89, 58, 32, 67, 76, 79, 83, 69, 0 };                      // "Y: CLOSE"
+int s_hdg[6]        = { 72, 68, 71, 58, 32, 0 };                                  // "HDG: "
+int s_pit[6]        = { 32, 32, 80, 73, 84, 0 };                                  // "  PIT"
+int s_pos[6]        = { 32, 32, 88, 89, 58, 0 };                                  // "  XY:"
 
 void hud_append_int( int v )
 {
     itoa( v, hud_num, 10 );
     strcat( hud_line, hud_num );
+}
+
+// ---------------------------------------------------------------------------
+//  Centered glyph drawing. BIOS font hotspots sit at each cell's TOP-LEFT
+//  (print_at depends on that), and hotspot coordinates are ABSOLUTE
+//  texture positions -- so we never touch hotspots. Instead we center
+//  glyphs in screen space: a 10x20 cell drawn at scale s extends (10*s,
+//  20*s) right/down from its drawing point, so we draw at (sx - 5*s,
+//  sy - 10*s) to center it on (sx, sy).
+// ---------------------------------------------------------------------------
+
+void draw_zoomed_centered( int sx, int sy, float s )
+{
+    set_drawing_scale( s, s );
+    draw_region_zoomed_at( sx - 5 * s, sy - 10 * s );
 }
 
 // ---------------------------------------------------------------------------
@@ -220,6 +241,7 @@ public:
     float shipx;        // quadrant-space position (for the HUD)
     float shipy;
     float yaw;          // accumulated view yaw (0 = north)
+    float pitch;        // accumulated view pitch (for the nav readout)
     int warp_t;
     int warp_dir;
 
@@ -296,6 +318,7 @@ public:
     {
         int i;
         yaw = 0;
+        pitch = 0;
         warp_t = 0;
         warp_dir = 0;
         shipx = QUAD_HALF;
@@ -331,6 +354,23 @@ public:
         if (h < 0)
             h = h + 4;
         return h;
+    }
+
+    // heading in degrees, 0 = north, growing clockwise (east = 90)
+    int nav_heading_deg()
+    {
+        int d;
+        d = yaw * 57.29578;
+        d = d % 360;
+        if (d < 0)
+            d = d + 360;
+        return d;
+    }
+
+    // pitch in degrees, negative = nose up
+    int nav_pitch_deg()
+    {
+        return pitch * 57.29578;
     }
 
     int enemies_alive()
@@ -384,9 +424,20 @@ public:
             rotate_yaw( turn );
         }
         if (gamepad_up() > 0)
+        {
             rotate_pitch( 0 - TURN_RATE );
+            pitch = pitch - TURN_RATE;
+        }
         if (gamepad_down() > 0)
+        {
             rotate_pitch( TURN_RATE );
+            pitch = pitch + TURN_RATE;
+        }
+        // clamp displayed pitch to +-35 degrees
+        if (pitch > 0.61)
+            pitch = 0.61;
+        if (pitch < -0.61)
+            pitch = -0.61;
 
         // forward speed: cruising always; warp on A
         speed = CRUISE_SPEED;
@@ -772,8 +823,7 @@ public:
                         s = 10.0;
 
                     set_multiply_color( make_color_rgb( r, gg, bb ) );
-                    set_drawing_scale( s, s );
-                    draw_region_zoomed_at( sx, sy );
+                    draw_zoomed_centered( sx, sy, s );
                 }
             }
             i = i + 1;
@@ -806,8 +856,7 @@ public:
                         set_multiply_color( make_color_rgb( 255, 80, 60 ) );
                     else
                         set_multiply_color( make_color_rgb( 255, 170, 40 ) );
-                    set_drawing_scale( s, s );
-                    draw_region_zoomed_at( sx, sy );
+                    draw_zoomed_centered( sx, sy, s );
                 }
             }
             i = i - 1;
@@ -823,15 +872,14 @@ public:
                 s = 1.0 + (20 - explosions[i].t) * 0.35;
                 select_region( ASCII_STAR );
                 set_multiply_color( make_color_rgb( 255, 200, 60 ) );
-                set_drawing_scale( s, s );
-                draw_region_zoomed_at( explosions[i].sx, explosions[i].sy );
+                draw_zoomed_centered( explosions[i].sx, explosions[i].sy, s );
             }
             i = i + 1;
         }
 
-        // phaser bolts: twin bolts fired from the ship's left and
-        // right sides, converging toward the view axis as they fly.
-        // Drawn as zoomed '*' glyphs (ASCII 42).
+        // phaser bolts: twin bolts fired from the ship's wing roots
+        // (wide apart, below the view center), converging slowly
+        // toward the view axis as they fly. Drawn as zoomed '*'.
         if (bolt_t > 0)
         {
             float s;
@@ -839,12 +887,13 @@ public:
             s = 1400 / bolt_z;
             if (s < 1.5)
                 s = 1.5;
-            offs = 4000 / bolt_z;    // lateral offset shrinks with distance
+            offs = 250 - bolt_z * 0.22;   // 250px apart at launch, ~0 at 1100
+            if (offs < 0)
+                offs = 0;
             select_region( ASCII_STAR );
             set_multiply_color( make_color_rgb( 120, 255, 180 ) );
-            set_drawing_scale( s, s );
-            draw_region_zoomed_at( CENTER_X - offs, CENTER_Y - 6 );
-            draw_region_zoomed_at( CENTER_X + offs, CENTER_Y - 6 );
+            draw_zoomed_centered( CENTER_X - offs, CENTER_Y + 40, s );
+            draw_zoomed_centered( CENTER_X + offs, CENTER_Y + 40, s );
         }
 
         draw_reticle();
@@ -855,25 +904,26 @@ public:
     {
         select_region( ASCII_PLUS );
         set_multiply_color( make_color_rgb( 0, 200, 120 ) );
-        set_drawing_scale( 1.0, 1.0 );
-        draw_region_zoomed_at( CENTER_X, CENTER_Y );
+        draw_zoomed_centered( CENTER_X, CENTER_Y, 1.0 );
     }
 
-    // horizontal bar: the '-' glyph zoomed non-uniformly.
-    // width 200 px max, 10 px tall, at (x,y) = top-left corner.
+    // horizontal bar: the '-' glyph zoomed non-uniformly. The glyph's
+    // horizontal line sits at the vertical center of its 10x20 cell,
+    // so a bar anchored at (x, y) with scale (20*f, 0.5) spans
+    // x..x+200*f horizontally and lands on y+5 vertically.
     void draw_bar( int x, int y, float frac, int r, int gg, int b )
     {
         select_region( ASCII_DASH );
         set_multiply_color( make_color_rgb( 30, 30, 40 ) );
         set_drawing_scale( 20.0, 0.5 );
-        draw_region_zoomed_at( x + 100, y + 5 );
+        draw_region_zoomed_at( x, y );
         if (frac < 0)
             frac = 0;
         if (frac > 1)
             frac = 1;
         set_multiply_color( make_color_rgb( r, gg, b ) );
         set_drawing_scale( 20.0 * frac, 0.5 );
-        draw_region_zoomed_at( x + 100 * frac, y + 5 );
+        draw_region_zoomed_at( x, y );
     }
 
     // galactic chart: 8x8 grid, one cell per quadrant
@@ -917,8 +967,7 @@ public:
                     select_region( ASCII_DOT );
                     set_multiply_color( make_color_rgb( 90, 90, 110 ) );
                 }
-                set_drawing_scale( 1.0, 1.0 );
-                draw_region_zoomed_at( cell_x, cell_y );
+                draw_zoomed_centered( cell_x, cell_y, 1.0 );
                 cell_x = cell_x + 20;
             }
             cell_x = 240;
@@ -944,6 +993,18 @@ public:
         strcpy( hud_line, s_zylons );
         hud_append_int( enemies_alive() );
         print_at( 8, 32, hud_line );
+
+        // navigation: heading (0-359) and pitch (degrees), plus raw
+        // quadrant-space XY position
+        strcpy( hud_line, s_hdg );
+        hud_append_int( nav_heading_deg() );
+        strcat( hud_line, s_pit );
+        hud_append_int( nav_pitch_deg() );
+        strcat( hud_line, s_pos );
+        hud_append_int( shipx );
+        strcat( hud_line, s_comma );
+        hud_append_int( shipy );
+        print_at( 8, 56, hud_line );
 
         // top-right: energy and shield bars
         print_at( 440, 8, s_energy );
@@ -1005,35 +1066,11 @@ public:
 Starfield g_field;
 
 // ---------------------------------------------------------------------------
-//  Video setup. The BIOS font regions have their hotspot at the TOP-LEFT
-//  of each glyph (print_at depends on that). All of our zoomed drawing
-//  assumes a center hotspot, so re-center the glyphs we zoom. We never
-//  print '.', '+', 'V', '-', or '*' as text, so print_at is unaffected.
-// ---------------------------------------------------------------------------
-
-void center_char_hotspot( int ascii )
-{
-    select_texture( -1 );
-    select_region( ascii );
-    set_region_hotspot( 5, 10 );   // glyphs are 10x20
-}
-
-void init_gfx( void )
-{
-    center_char_hotspot( ASCII_DOT );
-    center_char_hotspot( ASCII_PLUS );
-    center_char_hotspot( ASCII_V );
-    center_char_hotspot( ASCII_DASH );
-    center_char_hotspot( ASCII_STAR );
-}
-
-// ---------------------------------------------------------------------------
 //  Main loop
 // ---------------------------------------------------------------------------
 
 void main( void )
 {
-    init_gfx();
     g_field.init( 3, 4 );
 
     while (1)
