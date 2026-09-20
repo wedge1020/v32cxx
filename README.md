@@ -630,6 +630,127 @@ later.
   negative test confirming a non-friend class still gets the ordinary
   private-access error).
 
+- **FIXED — a global (namespace-scope) object's own method calls used to
+  transpile completely untranslated**, including when accessed with an
+  explicit namespace qualifier from outside its own namespace
+  (`si::g_rng.seed(...)` called from `main()`, outside `namespace si`).
+  Found from a real user's Space Invaders program: `Random g_rng;` at
+  namespace scope, then `g_rng.next(300)`/`g_rng.seed(...)` calls —
+  real Vircon32 C, seeing the untranslated `.`-syntax, failed outright
+  ("'next' is not a member of type 'Random'"), because `infer_expr_type`
+  never checked a global-variable registry at all — one didn't exist.
+  Fixed with a new flat global-variable registry (mirroring the
+  existing free-function one), populated while walking top-level and
+  namespace-nested declarations, and consulted as a fallback in a new
+  shared `lookup_ident_expr_type` helper used by both a bare identifier
+  and a namespace-qualified one (`AST_QUALIFIED_ID`, a second, separate
+  gap the same investigation found — a qualified VALUE reference is a
+  structurally different AST node from a bare identifier, and
+  previously fell through to "unknown type" entirely). See
+  tests/82sample.cpp.
+- **FIXED — a `virtual ... const` method's vtable slot and its
+  cast-on-override both silently dropped the `const`**, producing a
+  real `-Wincompatible-pointer-types` warning from gcc (confirmed a
+  hard error class this project treats seriously, per its own
+  established const-correctness fixes elsewhere). Fixed in
+  `emit_vtable_struct`/`emit_vtable_instance` (`codegen.c`) by checking
+  the method's own declared constness (`canonical->str2`) and printing
+  `const` on the receiver in both places, matching what the actual
+  override function's own signature already correctly had.
+- **FIXED — a derived-class object couldn't bind to a base-class
+  reference parameter at all** (`bool collidesWith(const Entity &e)`
+  called with a `Bullet`, an `Entity` subclass, flatly failed to
+  resolve: "no matching overload"), despite being exactly the ordinary
+  polymorphic upcast-on-binding real C++ allows, and exactly what this
+  project's own single-inheritance struct-layout guarantee (a derived
+  struct's fields are always a valid prefix of its base's) was already
+  built to support. Fixed in `type_matches_param` (`sema.c`) by
+  accepting a same-or-descendant class match for the reference-binding
+  case specifically (a by-value base parameter accepting a derived
+  argument, which would need actual struct slicing, remains
+  unsupported and out of scope). A second, separate lowering gap
+  surfaced right behind it: even once resolved, nothing ever inserted
+  the base-class pointer CAST the resulting C code needs (`&derivedObj`
+  is a `Derived *`, a real mismatch against a `const Base *`
+  parameter) — fixed for both reference-parameter and plain
+  pointer-parameter arguments (the latter needed for an entirely
+  different reason: a single-candidate call skips argument type
+  checking altogether, so the mismatch was never even caught) via a
+  new shared `cast_ref_arg_if_needed` (`lower.c`), applied at every
+  call/constructor-argument site. The identical gap for a plain
+  pointer ASSIGNMENT (`Alien *a; a = new AlienTopRow(...);`, exactly
+  the polymorphic-factory pattern `Swarm::spawn` uses) got the same
+  treatment. See tests/82sample.cpp.
+- **FIXED — an `operator[]` overload's result type wasn't tracked
+  through further use**, breaking both overload resolution (`*list[i]`
+  passed where a class-typed parameter was expected) and, more subtly,
+  VIRTUAL DISPATCH lowering on a chained call (`list[i]->draw(...)`)
+  — the latter only surfacing because lowering rewrites the subscript
+  into a mangled-name call BEFORE the outer call's own virtual-dispatch
+  logic runs, and the stale by-name lookup that logic depended on could
+  never match the now-mangled name, so the call silently stayed
+  unlowered. Fixed by checking an expression's own attached
+  `CallResolution` first in `infer_expr_type`'s `AST_SUBSCRIPT` and
+  `AST_CALL` cases (confirming, in the latter case, that
+  `rewrite_operator_use` already carries the resolution forward onto
+  the rewritten call node) before falling back to the older, by-name
+  logic that only ever made sense pre-lowering. See tests/82sample.cpp.
+- **FIXED — a namespace-qualified TYPE reference (`si::Game game;`,
+  written from OUTSIDE the `si` namespace) never got the `struct`
+  keyword under `--target=standard`**, a hard "unknown type name"
+  compile error — even though every unqualified use of the exact same
+  class throughout the rest of the file was correctly printed. Found
+  from the real Space Invaders program's own `main()`, which declares
+  its top-level objects this way. `print_type`'s `AST_QUALIFIED_ID`
+  case had never been given the same struct/enum/union lookup its
+  `AST_IDENT` case already does — fixed by mirroring that same logic
+  (`codegen.c`).
+- **FIXED — a class with a vtable but NO user-declared constructor at
+  all got NO vtable-pointer initialization anywhere, on the stack OR
+  the heap** — a serious, previously-undiscovered bug: `new Square()`
+  (heap) or a plain `Square s;` (stack, scalar or array) left
+  `vtable` as raw, uninitialized memory, and the very first virtual
+  call through it dispatched through garbage — confirmed with an
+  isolated repro that segfaulted on every one of those three shapes
+  before this fix. Root cause: vtable-pointer initialization was only
+  ever injected as the first statement of an EXISTING constructor body
+  (phase 8, `inject_vtable_init_classes`) — exactly right for a class
+  that has one, but a class with none has no body to inject into, and
+  nothing else ever set the pointer at all. Fixed with three separate,
+  narrowly-targeted additions rather than synthesizing a fake AST-level
+  default constructor: `emit_new_delete_runtime`'s own fallback
+  allocator (`codegen.c`, for the heap case) now sets `self->vtable`
+  directly when the class has one; a new shared `build_vtable_init_stmt`
+  (`lower.c`) builds the stack-object equivalent (`obj.vtable = &...`),
+  used both for a plain scalar local and, via `build_array_ctor_loop`'s
+  new no-constructor fallback, for each element of a stack array.
+  Alongside this fix, a second, genuinely separate PRE-EXISTING bug in
+  the same code surfaced and was fixed too: a bare pointer-typed local
+  with no initializer (`Widget *p;`) was ALSO being treated as an
+  object needing its own constructor called on it (`type_to_class`
+  resolves straight through a pointer wrapper, which is right for most
+  callers but wrong for "does this VarDecl need construction") —
+  confirmed generating flatly wrong code (`Widget__Widget__void(&p)`,
+  passing a `Widget **` where `Widget *` is expected) before this fix;
+  now guarded out for both the scalar and array-of-pointers shapes.
+  See tests/82sample.cpp (exercises the no-constructor stack/heap
+  cases indirectly via `Dog`/`Cat`/`Animal`).
+- **A global (namespace-scope) object direct-initialized WITH
+  constructor arguments (`Counter g_counter(100);`) doesn't generate a
+  working initializer at all** — codegen currently emits
+  `struct Counter g_counter = 0 /* WARNING: unhandled expression kind
+  in codegen */;`, an invalid initializer. Found alongside the
+  global-variable-method-call fix above, while writing its regression
+  test — deliberately left unfixed and out of scope for this round,
+  since the real program that motivated this whole investigation only
+  ever uses the always-supported zero-argument shape (`Random g_rng;`,
+  seeded later via an ordinary method call) for its own namespace-scope
+  objects. A real gap, not a guess: this project's constructor-call
+  injection (phase 7, `lower.c`) only ever runs over function BODIES
+  (`inject_ctor_calls_stmt`/`_block`), never over top-level/namespace-
+  scope declarations, which have no enclosing function body for that
+  walk to reach at all.
+
 This is genuinely still growing — expect rough edges, and expect this
 README to need updating again as things change.
 

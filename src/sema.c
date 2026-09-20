@@ -227,6 +227,74 @@ static void free_free_func_registry(void) {
     g_free_func_registry = NULL;
 }
 
+/* ---- flat global-variable registry: name -> declared type -------------
+ *
+ * A REAL, previously-undiscovered gap, found by actually running a real-
+ * world program (a global `Random g_rng;`, called as `g_rng.next(300)`
+ * from inside several methods) through this compiler and reading the
+ * generated C rather than just the AST dump: `infer_expr_type`'s own
+ * AST_IDENT case (further down this file) only ever consulted `locals`
+ * (the current function's own local variables) and `current_class`'s own
+ * members -- a global (file-scope or namespace-scope) variable was never
+ * tracked ANYWHERE, so `infer_expr_type("g_rng")` always returned NULL,
+ * "unknown type." For a plain field read that's genuinely harmless (see
+ * check_globals's own doc comment on this file, which documents exactly
+ * that, correctly, for the case it was written about) -- codegen prints a
+ * bare identifier regardless of whether sema ever resolved its type. But
+ * a METHOD CALL on that identifier (`g_rng.next(300)`) needs its
+ * receiver's class known to do anything at all: resolve_call's own
+ * AST_MEMBER handling silently fails to find a candidate method to
+ * resolve against, attaches no CallResolution, and lower.c's
+ * finalize_call then sees `cr == NULL` and leaves the call completely
+ * unlowered (by its own documented, deliberate "best-effort" design) --
+ * producing exactly the broken output this bug produced: `g_rng.next(300)`
+ * printed verbatim in the generated C, which real Vircon32 C (having no
+ * member-call syntax at all) then rejects as a `.`-qualified STRUCT FIELD
+ * access to a field literally named "next" that doesn't exist.
+ *
+ * Mirrors g_free_func_registry's own flat-list shape (deliberately not a
+ * hash table -- this project's own global count is always small) --
+ * populated in collect_declarations (same pass, same namespace-recursion,
+ * as the free-function and class registries), consulted from
+ * infer_expr_type's AST_IDENT case as a fallback AFTER locals and
+ * current_class members (a global can be shadowed by either, matching
+ * real C++'s own name-lookup order), and freed on the same lifecycle as
+ * every other registry this file builds (see sema_cleanup's own doc
+ * comment on why that's deliberately NOT torn down at the end of
+ * sema_run() itself). */
+typedef struct GlobalVarRegEntry {
+    const char *name;   /* not owned -- points into the AST_VAR_DECL's own str1 */
+    AstNode *type;       /* not owned either -- the AST_VAR_DECL's own type node */
+    struct GlobalVarRegEntry *next;
+} GlobalVarRegEntry;
+
+static GlobalVarRegEntry *g_global_var_registry = NULL;
+
+static void register_global_var(AstNode *var_decl) {
+    GlobalVarRegEntry *e = malloc(sizeof(GlobalVarRegEntry));
+    e->name = var_decl->str1;
+    e->type = var_decl->type;
+    e->next = g_global_var_registry;
+    g_global_var_registry = e;
+}
+
+static AstNode *find_global_var_type(const char *name) {
+    for (GlobalVarRegEntry *e = g_global_var_registry; e != NULL; e = e->next) {
+        if (strcmp(e->name, name) == 0) return e->type;
+    }
+    return NULL;
+}
+
+static void free_global_var_registry(void) {
+    GlobalVarRegEntry *e = g_global_var_registry;
+    while (e != NULL) {
+        GlobalVarRegEntry *next = e->next;
+        free(e);
+        e = next;
+    }
+    g_global_var_registry = NULL;
+}
+
 /* ---- pass 1: collect every class, typedef, AND free function, recursing
  * into namespace bodies (was collect_classes; renamed since it now does
  * all three) ------------------------------------------------------------ */
@@ -246,6 +314,12 @@ static void collect_declarations(AstList *decls) {
              * its real, callable identity lives on the class's member
              * list, found via the class registry instead. */
             register_free_function(n);
+        } else if (n->kind == AST_VAR_DECL) {
+            /* A file-scope or namespace-scope global -- see
+             * find_global_var_type's own doc comment for exactly why this
+             * needs tracking at all (a method call on one, not a plain
+             * field read, is what actually breaks without it). */
+            register_global_var(n);
         } else if (n->kind == AST_NAMESPACE_DECL) {
             collect_declarations(&n->list);
         }
@@ -1057,6 +1131,25 @@ static void check_member_access(int line, const char *member_name, const AstNode
  * would mean this function's correctness depends on being called AFTER
  * resolution has already happened for every nested call, which the
  * single-pass tree walk doesn't guarantee in general). */
+/* The shared name-lookup infer_expr_type's own AST_IDENT and
+ * AST_QUALIFIED_ID cases both need: a local, then a member of
+ * `current_class` (if any), then a global variable, in that order --
+ * matching real C++'s own name-lookup precedence (either of the first
+ * two can shadow a global of the same name). Factored out once
+ * AST_QUALIFIED_ID needed the identical lookup for its own last
+ * component's name (see that case's own doc comment for why a
+ * namespace-qualified name resolves the same way as a bare one here). */
+static AstNode *lookup_ident_expr_type(const char *name, AstNode *current_class, LocalVarType *locals) {
+    LocalVarType *lv = find_local(locals, name);
+    if (lv != NULL) return lv->type;
+    if (current_class != NULL) {
+        AstNode *owner = NULL;
+        AstNode *member = find_member_in_hierarchy(current_class, name, &owner);
+        if (member != NULL && member->kind == AST_VAR_DECL) return member->type;
+    }
+    return find_global_var_type(name);
+}
+
 AstNode *infer_expr_type(const AstNode *expr, AstNode *current_class, LocalVarType *locals) {
     if (expr == NULL) return NULL;
     switch (expr->kind) {
@@ -1080,15 +1173,33 @@ AstNode *infer_expr_type(const AstNode *expr, AstNode *current_class, LocalVarTy
         case AST_CHAR_LIT: return ast_ident("char", expr->line);
         case AST_THIS:
             return (current_class != NULL) ? ast_ident(current_class->str1, expr->line) : NULL;
-        case AST_IDENT: {
-            LocalVarType *lv = find_local(locals, expr->str1);
-            if (lv != NULL) return lv->type;
-            if (current_class != NULL) {
-                AstNode *owner = NULL;
-                AstNode *member = find_member_in_hierarchy(current_class, expr->str1, &owner);
-                if (member != NULL && member->kind == AST_VAR_DECL) return member->type;
-            }
-            return NULL;
+        case AST_IDENT:
+            return lookup_ident_expr_type(expr->str1, current_class, locals);
+        case AST_QUALIFIED_ID: {
+            /* A namespace-qualified name used as a VALUE (`si::g_rng`),
+             * built by `qualified_id_expr` in the grammar -- the exact
+             * same shape (a list of AST_IDENT components, the real name
+             * last) that type_to_class's own AST_QUALIFIED_ID case
+             * already resolves for a namespace-qualified TYPE. This
+             * project's own registries (classes, free functions, and
+             * now global variables) are all flat and namespace-name-
+             * blind by construction -- mangling and lookup both key off
+             * the bare final name only, matching type_to_class's own
+             * established "just take the last component" precedent --
+             * so the same lookup AST_IDENT uses above applies unchanged
+             * once the qualifier prefix is stripped down to that name.
+             * A real, previously-undiscovered gap: without this case,
+             * every qualified value reference fell through to the
+             * default "unknown" case below, discovered specifically by
+             * a global variable's own METHOD CALL written with an
+             * explicit namespace qualifier (`si::g_rng.seed(...)`,
+             * called from outside the `si` namespace) -- the exact same
+             * failure mode find_global_var_type's own doc comment
+             * describes for a global with no qualifier at all, just one
+             * more AST shape it can arrive in. */
+            if (expr->list.count == 0) return NULL;
+            return lookup_ident_expr_type(expr->list.items[expr->list.count - 1]->str1,
+                                           current_class, locals);
         }
         case AST_MEMBER: {
             AstNode *obj_class = type_to_class(infer_expr_type(expr->a, current_class, locals));
@@ -1108,6 +1219,37 @@ AstNode *infer_expr_type(const AstNode *expr, AstNode *current_class, LocalVarTy
             return ptr;
         }
         case AST_CALL: {
+            /* Checked FIRST, before any by-NAME lookup of the callee
+             * below: `expr->sema_info` may already hold a CallResolution
+             * resolve_call (or resolve_overload_generic more generally)
+             * attached back at sema time -- and once it does, that's the
+             * only reliable source left, because THIS SAME infer_expr_type
+             * function is also called from lower.c, well after
+             * finalize_calls_expr/finalize_call have already rewritten
+             * `expr->a` (the callee) into its own final, mangled-name
+             * form (a plain AST_IDENT holding something like
+             * "BombList__op_index__int", or a "->vtable->slot" member
+             * chain for a virtual call) -- neither of which the by-name
+             * lookup below can ever match back to the ORIGINAL method it
+             * once named. A real, previously-undiscovered gap: found by
+             * a real-world program calling a VIRTUAL method through an
+             * operator[] overload's own result (`mBombs[i]->draw(video)`)
+             * -- finalize_call (lower.c) needs this call's own class
+             * (via resolve_expr_class, this same function) to look up
+             * its vtable slot, but by the time it asks, `mBombs[i]`
+             * itself has ALREADY been rewritten (by this exact
+             * expression's own earlier AST_SUBSCRIPT handling, in the
+             * same top-down finalize_calls_expr walk) into a
+             * BombList__op_index__int(...) call -- exactly the AST_CALL
+             * shape this case exists to type, but with a callee name
+             * that no longer means anything to the by-name lookup below.
+             * Using the attached CallResolution instead sidesteps the
+             * problem entirely: it was recorded back when the callee's
+             * name still meant something, and never changes afterward. */
+            CallResolution *cr = (CallResolution *)expr->sema_info;
+            if (cr != NULL && cr->resolved_target != NULL) {
+                return cr->resolved_target->type;
+            }
             const AstNode *callee = expr->a;
             AstNode *owner = NULL;
             AstNode *method = NULL;
@@ -1137,7 +1279,33 @@ AstNode *infer_expr_type(const AstNode *expr, AstNode *current_class, LocalVarTy
              * default "unknown" case below -- harmless today (this
              * project doesn't yet support arrays of class objects, so
              * nothing currently exercises this), but a real correctness
-             * gap waiting to matter the moment it does. */
+             * gap waiting to matter the moment it does.
+             *
+             * Checked FIRST, before any of that raw array/pointer
+             * unwrapping: `expr` itself may be an `operator[]` OVERLOAD
+             * use instead of a real subscript at all (`mBombs[i]` on a
+             * class object, not a plain array or pointer) --
+             * resolve_operator_use already attaches a CallResolution
+             * directly to this same AST_SUBSCRIPT node when that
+             * happens (see its own doc comment), and when it has, the
+             * expression's real type is that resolved operator
+             * function's own RETURN type, not "the element type of
+             * whatever `expr->a`'s type is" -- `expr->a` here is a
+             * whole class object (`BombList`, say), which isn't an
+             * array or pointer type at all, so the fallback logic below
+             * would (and, before this check existed, silently did)
+             * return NULL for it, exactly the same failure mode
+             * find_global_var_type's own doc comment describes: harmless
+             * for the cases this project had already tested, a real,
+             * previously-undiscovered gap for the untested one (an
+             * operator[] overload's own RESULT immediately used for a
+             * further method call or dereference, `mBombs[i]->draw()`,
+             * `*mBombs[i]`) that a real-world program's own test run
+             * surfaced. */
+            CallResolution *cr = (CallResolution *)expr->sema_info;
+            if (cr != NULL && cr->resolved_target != NULL) {
+                return cr->resolved_target->type;
+            }
             const AstNode *base_type = resolve_typedef_chain(infer_expr_type(expr->a, current_class, locals));
             if (base_type != NULL && (base_type->kind == AST_ARRAY_TYPE || base_type->kind == AST_POINTER_TYPE)) {
                 return base_type->a;
@@ -1360,7 +1528,36 @@ static int type_matches_param(const AstNode *param_type, const AstNode *arg_type
          * scoped to the one real, confirmed gap (a copy constructor
          * failing to resolve at all) rather than modeling every nuance
          * of real C++ overload resolution's reference-binding rules. */
-        return types_equal(p->a, arg_type);
+        if (types_equal(p->a, arg_type)) return 1;
+        /* A DERIVED-class object also binds to a BASE-class reference
+         * parameter (`collidesWith(const Entity& e)` called with a
+         * `Bullet`, `Alien`, `Player`, ...) -- real C++'s ordinary
+         * polymorphic upcast-on-binding rule, and this project's own
+         * single-inheritance struct layout genuinely supports it at
+         * runtime (a derived struct's fields are always a valid prefix
+         * of its base's, the same guarantee cast_receiver_if_needed's
+         * own doc comment in lower.c already relies on elsewhere) --
+         * `types_equal` alone can never see this, since it checks
+         * literal type-name identity, not the class HIERARCHY between
+         * two different names. A real, previously-undiscovered gap:
+         * found by a real-world program passing a `Bullet` (an Entity
+         * subclass) to `bool collidesWith(const Entity&) const`, which
+         * flatly failed to resolve at all ("no matching overload")
+         * despite being exactly the kind of call this project's own
+         * struct-layout design was already built to support. Reference-
+         * only, matching the exact-match case just above and this
+         * function's own established one-directional scope -- a BY-
+         * VALUE base parameter accepting a derived argument would slice
+         * it, a real but separate feature (copying only the base's own
+         * prefix of fields) this project doesn't implement anywhere
+         * yet, so that case is deliberately left unmatched here rather
+         * than guessed at. */
+        AstNode *arg_class = type_to_class(arg_type);
+        AstNode *param_class = type_to_class(p->a);
+        if (arg_class != NULL && param_class != NULL && is_same_or_descendant(arg_class, param_class)) {
+            return 1;
+        }
+        return 0;
     }
     return 0;
 }
@@ -2277,6 +2474,7 @@ int sema_run(AstNode *program) {
     free_registry();          /* defensive: in case sema_run() is ever called twice in one process */
     free_typedef_registry();  /* same */
     free_free_func_registry(); /* same */
+    free_global_var_registry(); /* same */
 
     collect_declarations(&program->list);
     attach_out_of_line(&program->list);
@@ -2320,6 +2518,7 @@ void sema_cleanup(void) {
     free_registry();
     free_typedef_registry();
     free_free_func_registry();
+    free_global_var_registry();
 }
 
 /* ---- dump ---------------------------------------------------------- */

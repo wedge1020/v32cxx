@@ -6521,3 +6521,185 @@ deliberately-`-`-prefixed expected-fail entries (now 81 total samples).
 A full `--target=standard` + gcc sweep across every sample: the same 5
 pre-existing, already-documented `video.h`/`audio.h`-missing-header
 failures as before this round, nothing new.
+
+## Round: a real Space Invaders program, and eight real bugs it surfaced
+
+A user distilled a small demo down to something that would actually
+transpile, then ran the output through a real Vircon32 C compiler for
+the first time this round. It failed immediately: `spaceinvaders.c:1658:
+45: fatal error: "next" is not a member of type "Random"`. The reported
+line was a global (namespace-scope) `Random g_rng;`'s own method calls
+(`g_rng.next(300)`, `g_rng.seed(...)`) -- left completely untranslated,
+because `infer_expr_type`'s `AST_IDENT` case never checked a global-
+variable registry at all. One didn't exist: this project already had a
+flat registry for free functions, but nothing equivalent for namespace-
+scope variables. Added one (`GlobalVarRegEntry`/`g_global_var_registry`,
+`sema.c`), populated while walking top-level and namespace-nested
+declarations, and folded into a new shared `lookup_ident_expr_type`
+helper (locals, then current-class members, then this new registry) used
+by both a bare identifier AND a namespace-qualified one (`AST_QUALIFIED_
+ID`, a second, separate gap the same investigation found: `si::g_rng`
+used as a VALUE, from a call site outside `namespace si` itself, is a
+structurally different AST node from a bare identifier and previously
+fell straight through to "unknown type").
+
+Fixing the reported bug and re-running the file against a real gcc
+`-fsyntax-only` check (this project's own established stand-in for the
+real compiler when it isn't directly at hand) surfaced several more real
+bugs in quick succession, each one confirmed with its own isolated
+repro before being trusted:
+
+- **A `virtual ... const` method's vtable slot and cast-on-override both
+  silently dropped the `const`** (`-Wincompatible-pointer-types`).
+  `emit_vtable_struct`/`emit_vtable_instance` (`codegen.c`) never
+  checked the method's own declared constness (`canonical->str2`) the
+  way the actual override function's own signature already correctly
+  did. Fixed by printing `const` on the receiver in both places when it
+  applies.
+- **A derived-class object couldn't bind to a base-class reference
+  parameter at all** (`collidesWith(const Entity&)` called with a
+  `Bullet` flatly failed to resolve: "no matching overload"), despite
+  being exactly the polymorphic upcast-on-binding real C++ allows, and
+  exactly what this project's own single-inheritance struct-layout
+  guarantee was already built to support. `type_matches_param`
+  (`sema.c`) widened to accept a same-or-descendant match for reference
+  binding specifically -- a by-value base parameter accepting a derived
+  argument (needing actual struct slicing) stays out of scope,
+  deliberately.
+- **`operator[]`'s own result type wasn't tracked through further use**
+  -- breaking not just overload resolution on the result
+  (`mPlayer.collidesWith(*mBombs[i])`) but, far more subtly, VIRTUAL
+  DISPATCH lowering on a chained call (`mBombs[i]->draw(video)`). The
+  second failure took real bisection to find: it only reproduces with a
+  namespace + a member-field receiver + a `virtual` method + a reference
+  parameter all together (confirmed by shrinking a repro down through
+  `subtest.cpp` through `subtest3a.cpp`, each one isolating a single
+  variable). Root cause: lowering rewrites `mBombs[i]` into a mangled-
+  name call (`BombList__op_index__int(...)`) BEFORE the OUTER `draw`
+  call's own virtual-dispatch logic runs; that logic then calls
+  `infer_expr_type` on the already-rewritten node to find its class for
+  the vtable-slot lookup, and the stale by-NAME lookup inside
+  `infer_expr_type`'s `AST_CALL` case can never match a mangled name,
+  so `finalize_call` silently left the call unlowered (its own
+  documented best-effort fallback). Fixed by checking an expression's
+  own attached `CallResolution` FIRST, in both the `AST_SUBSCRIPT` and
+  `AST_CALL` cases of `infer_expr_type`, before falling back to the
+  by-name logic that only ever made sense pre-lowering -- confirmed
+  correct by checking that `rewrite_operator_use` already copies
+  `call->sema_info = cr;` onto the rewritten call node, so the
+  resolution really is still there to be found.
+  A genuine false-positive during this investigation is worth recording
+  honestly: an early test run seemed to show the `AST_SUBSCRIPT` fix
+  alone had also fixed the `draw`/`update` codegen errors, but this was
+  an artifact of a bash `&&` between the transpile and gcc-check
+  commands -- the transpiler was still exiting nonzero (a still-present
+  sema error), so gcc never actually ran, and "no gcc output" was
+  wrongly read as "gcc found nothing wrong." Caught by a later,
+  differently-structured command without the short-circuit. Worth
+  remembering next time a fix seems to close more than it should have.
+- **Resolving the reference-binding gap above still didn't produce
+  working C** -- once `collidesWith(*mBombs[i])` resolved, nothing at
+  the LOWERING level ever inserted the base-class pointer CAST the
+  result needs (`&derivedObj` is a `Derived *`, a real mismatch against
+  `const Base *`). A new shared `cast_ref_arg_if_needed` (`lower.c`)
+  closes this for both reference-parameter arguments and, for an
+  entirely different underlying reason, plain POINTER-parameter
+  arguments too: `resolve_overload_generic` (`sema.c`) deliberately
+  skips argument-type checking altogether whenever a name has only one
+  candidate, so a plain-pointer mismatch is never even caught at the
+  sema level to fix there -- confirmed by an isolated `AnimalList::push
+  (Animal*)` called with a `Cat*` repro, which produced the identical
+  warning gcc showed for the real file. The identical gap for a plain
+  pointer ASSIGNMENT (`Alien *a; a = new AlienTopRow(px, py);`, the
+  polymorphic-factory pattern `Swarm::spawn` uses to build one of
+  several subclasses into a single base-typed local) got the same
+  treatment, inline in `finalize_calls_expr`'s own `AST_ASSIGN` case,
+  reading the RHS's class directly off `AST_NEW`'s own `type` field
+  (since `infer_expr_type` has no `AST_NEW` case at all, and phase 6
+  hasn't rewritten it into a call yet at this point in phase 3/4).
+- **A namespace-qualified TYPE reference never got the `struct` keyword
+  under `--target=standard`** -- `si::Game game;`, written from OUTSIDE
+  `namespace si` (exactly how the real file's own `main()` declares its
+  top-level objects), produced a hard "unknown type name" error, even
+  though every UNQUALIFIED use of the same class throughout the rest of
+  the file was correctly printed. `print_type`'s `AST_QUALIFIED_ID` case
+  had simply never been given the same struct/enum/union lookup its
+  `AST_IDENT` case (right above it in the same function) already does.
+  Fixed by mirroring that logic exactly, fed the qualified name's own
+  flattened final component.
+
+With all of the above fixed, the real file transpiled and gcc-compiled
+with ZERO errors and ZERO warnings for the first time. Rather than stop
+there, a permanent regression test (`tests/82sample.cpp`) was written to
+cover the same five bug classes in miniature -- and writing it, by
+actually running the result rather than just checking it compiled,
+surfaced a SIXTH and much more serious bug that the real file happened
+never to exercise (every one of its own polymorphic classes always
+declares an explicit constructor):
+
+- **A class with a vtable but NO user-declared constructor at all got NO
+  vtable-pointer initialization anywhere -- on the stack OR the heap.**
+  `new Square()` and a plain `Square s;` (scalar or stack array) both
+  left `vtable` as raw, uninitialized memory; the first virtual call
+  through either one segfaulted, confirmed directly with a minimal
+  repro before any fix existed. Root cause: vtable-pointer
+  initialization was only ever injected as the first statement of an
+  EXISTING constructor body (phase 8, `inject_vtable_init_classes`) --
+  correct for a class that has one, but there's no body at all to
+  inject into for a class that doesn't, and nothing else ever set the
+  pointer. Fixed with three narrow, separate additions rather than
+  synthesizing a fake AST-level default constructor (which would have
+  needed its own this-injection, vtable-injection, and destructor-
+  scoping treatment to behave like a real one): `emit_new_delete_
+  runtime`'s own no-constructor fallback allocator (`codegen.c`) now
+  sets `self->vtable` directly when the class has one; a new shared
+  `build_vtable_init_stmt` (`lower.c`) builds the equivalent stack-
+  object assignment (`.` access, not `->`, since it's always a plain
+  value here), used both for a bare scalar local with no ctor and,
+  via a new no-constructor fallback branch in `build_array_ctor_loop`,
+  for each element of a stack array.
+  Fixing this surfaced a SEVENTH bug, entirely pre-existing and
+  independent of the vtable work itself: `type_to_class` deliberately
+  resolves straight through a pointer/reference wrapper (right for
+  almost every one of its many callers), but `inject_ctor_calls_block`'s
+  "does this VarDecl need a constructor call" check used it directly,
+  which meant a bare pointer-typed local with no initializer
+  (`Widget *p;`) was ALSO being treated as an object needing its own
+  constructor called on it -- confirmed generating flatly wrong code
+  (`Widget__Widget__void((&p));`, a `Widget **` passed where `Widget *`
+  is declared) for a class that DOES have a real constructor, which had
+  simply never been exercised by any existing test (every prior test
+  either initializes a pointer local immediately or omits the
+  declare-then-assign-via-`new` pattern entirely). Fixed by requiring
+  the VarDecl's own type to be neither `AST_POINTER_TYPE` nor
+  `AST_REFERENCE_TYPE` before treating it as an object needing
+  construction, in both the scalar branch and the array-of-elements
+  branch (`Widget *arr[3];`, the identical mistake one level up).
+
+One further real gap was found and DELIBERATELY left unfixed, scoped out
+in the README rather than silently patched over: a global/namespace-
+scope object direct-initialized WITH constructor arguments (`Counter
+g_counter(100);`) produces an invalid initializer (`= 0 /* WARNING:
+unhandled expression kind in codegen */`), because this project's
+constructor-call injection (phase 7) only ever walks function BODIES,
+never top-level declarations. The real file never needed this shape (its
+own namespace-scope object is always zero-argument, seeded later via an
+ordinary method call), so `tests/82sample.cpp` was written to use that
+same always-supported shape rather than accidentally depending on a
+gap discovered while writing it.
+
+Verified: the real, complete, ~1200-line Space Invaders program now
+transpiles and gcc-`-fsyntax-only`-compiles with ZERO errors and ZERO
+warnings (previously: one fatal error, then, after each subsequent fix,
+progressively fewer errors/warnings down to two remaining warnings and
+three remaining errors, then finally none). `tests/82sample.cpp`, the
+new permanent regression test covering six of the eight bug classes
+above in miniature, was compiled and RUN, returning exit code 7 --
+checked by hand against the arithmetic the test itself performs (a
+namespace-scope counter, a heap-allocated derived object, a reference-
+bound polymorphic comparison, and a virtual-dispatch-through-operator[]
+loop). Full `make test`: still exactly 14 deliberately-`-`-prefixed
+expected-fail entries, now 82 total samples. A full `--target=standard`
++ gcc sweep across every sample: the same 5 pre-existing, already-
+documented `video.h`/`audio.h`-missing-header failures as every prior
+round, nothing new.

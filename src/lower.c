@@ -723,6 +723,83 @@ static AstNode *address_of_if_needed(AstNode *obj_expr, AstNode *class_decl, Loc
     return addr;
 }
 
+/* Reference- AND plain-pointer-parameter ARGUMENTS need the same
+ * explicit base-class pointer cast a method's own RECEIVER already
+ * gets from cast_receiver_if_needed (above) -- a real, separate gap
+ * found via a real user's Space Invaders program: `mPlayer.
+ * collidesWith(*mBombs[i])` resolves (after the type_matches_param fix
+ * in sema.c that allows a derived-class object to bind to a base-class
+ * reference parameter, matching real C++'s own reference-binding
+ * rules) to `collidesWith(const Entity &e)` called with a `Bullet`
+ * argument -- but nothing at the LOWERING level ever inserted the
+ * pointer cast the resulting C code actually needs. `&bulletObj` is a
+ * `struct Bullet *`, and passing that where a `const struct Entity *`
+ * parameter is declared is a real pointer-type mismatch in plain C
+ * (confirmed via gcc: `-Wincompatible-pointer-types`); this project's
+ * own established pattern (see cast_receiver_if_needed's own doc
+ * comment, and docs/DESIGN_NOTES.md) is that the real Vircon32 compiler
+ * is likely to reject outright what gcc only warns about, so this is
+ * worth closing even though gcc itself doesn't hard-fail on it.
+ *
+ * A PLAIN pointer parameter (`void push(Animal *a)` called with a
+ * `Cat *`) has the exact same gap for an entirely different reason:
+ * sema.c's own resolve_overload_generic deliberately skips
+ * type_matches_param altogether whenever a name has only ONE
+ * candidate at all (no real overload ambiguity to resolve -- see its
+ * own doc comment), so a plain-pointer argument's class is never even
+ * CHECKED against the declared parameter type, let alone cast --
+ * confirmed directly by a real gcc run showing the identical
+ * `-Wincompatible-pointer-types` warning for exactly this shape.
+ * Handled together here since both need the identical cast once a
+ * mismatch is found; only the caller-side treatment of the argument
+ * differs (a reference parameter needs address-of'd first, a plain
+ * pointer parameter's argument is already pointer-valued as written).
+ *
+ * `arg` must already be pointer-valued by the time this runs -- for a
+ * reference parameter, called AFTER address_of_if_needed (mirroring
+ * the order cast_receiver_if_needed is applied relative to
+ * address_of_if_needed for a method's own receiver); for a plain
+ * pointer parameter, the argument already is pointer-valued as
+ * written, so no address-of step is needed first. `arg_static_type` is
+ * the argument's ORIGINAL (pre-&, for the reference case) static type,
+ * used only to recover its class. `param_type` is the parameter's
+ * declared (pre-lowering) type -- an AST_REFERENCE_TYPE or
+ * AST_POINTER_TYPE, possibly wrapping AST_CONST_TYPE.
+ *
+ * Deliberately trusts sema.c's own type_matches_param (for the
+ * reference-parameter case) or the "only one candidate, no type check
+ * needed" latitude resolve_overload_generic already takes (for the
+ * plain-pointer case) rather than reverifying the classes are actually
+ * related (same-or-descendant) itself -- is_same_or_descendant is
+ * static to sema.c and not worth exposing a second time just to
+ * recheck what amounts to the same discipline cast_receiver_if_needed
+ * already trusts for a receiver. Returns `arg` unchanged whenever the
+ * classes already match, or either class can't be determined -- same
+ * "never insert a cast on a guess" discipline as everywhere else in
+ * this file. */
+static AstNode *cast_ref_arg_if_needed(AstNode *arg, AstNode *arg_static_type,
+                                       AstNode *param_type) {
+    if (param_type == NULL) return arg;
+    if (param_type->kind != AST_REFERENCE_TYPE && param_type->kind != AST_POINTER_TYPE) {
+        return arg;
+    }
+    AstNode *param_class = type_to_class(param_type);
+    AstNode *arg_class = type_to_class(arg_static_type);
+    if (param_class == NULL || arg_class == NULL || param_class == arg_class) {
+        return arg; /* same class already, or not enough information known */
+    }
+    int param_is_const = receiver_type_is_const(param_type);
+    AstNode *class_ident = ast_ident(param_class->str1, arg->line);
+    AstNode *pointee = param_is_const ? ast_wrap_const(class_ident, arg->line) : class_ident;
+    AstNode *cast = ast_new(AST_CAST, arg->line);
+    cast->type = ast_wrap_pointer(pointee, arg->line);
+    cast->a = arg;
+    lower_note(arg->line, "inserted (%s%s *) cast for a base/derived "
+        "reference-parameter argument", param_is_const ? "const " : "",
+        param_class->str1);
+    return cast;
+}
+
 /* Forward declarations -- both are defined further down this file
  * (clone_default_expr and fill_default_args, right before
  * finalize_call's own definition), but fixup_ctor_reference_args
@@ -786,7 +863,17 @@ static void fixup_ctor_reference_args(AstList *args, AstNode *ctor, AstNode *cla
             follows */
         AstNode *param = ctor->list.items[param_idx];
         if (param->type != NULL && param->type->kind == AST_REFERENCE_TYPE) {
+            AstNode *arg_static_type = infer_expr_type(args->items[i], class_decl, locals);
             args->items[i] = address_of_if_needed(args->items[i], class_decl, locals);
+            args->items[i] = cast_ref_arg_if_needed(args->items[i], arg_static_type, param->type);
+        } else if (param->type != NULL && param->type->kind == AST_POINTER_TYPE) {
+            /* Same plain-pointer-parameter gap finalize_call's own
+             * identical loop closes -- see cast_ref_arg_if_needed's own
+             * doc comment. A constructor's own plain pointer parameter
+             * (`Node(Node *parent)`) called with a derived-class pointer
+             * argument needs the identical cast. */
+            AstNode *arg_static_type = infer_expr_type(args->items[i], class_decl, locals);
+            args->items[i] = cast_ref_arg_if_needed(args->items[i], arg_static_type, param->type);
         }
     }
 }
@@ -976,7 +1063,22 @@ static void finalize_call(AstNode *call, AstNode *class_decl, LocalVarType *loca
                 but fail closed (stop) rather than read out of bounds */
             AstNode *param = target->list.items[param_idx];
             if (param->type != NULL && param->type->kind == AST_REFERENCE_TYPE) {
+                AstNode *arg_static_type = infer_expr_type(call->list.items[i], class_decl, locals);
                 call->list.items[i] = address_of_if_needed(call->list.items[i], class_decl, locals);
+                call->list.items[i] = cast_ref_arg_if_needed(call->list.items[i], arg_static_type, param->type);
+            } else if (param->type != NULL && param->type->kind == AST_POINTER_TYPE) {
+                /* A plain (non-reference) pointer parameter -- see
+                 * cast_ref_arg_if_needed's own doc comment for why this
+                 * needs the identical cast a reference parameter does,
+                 * for a completely different reason (sema.c never even
+                 * checked this argument's type against the parameter at
+                 * all, for a single-candidate call). The argument is
+                 * already pointer-valued as written (`&cat`, an existing
+                 * `Animal *` variable, ...) -- no address_of_if_needed
+                 * step first, unlike the reference-parameter case just
+                 * above. */
+                AstNode *arg_static_type = infer_expr_type(call->list.items[i], class_decl, locals);
+                call->list.items[i] = cast_ref_arg_if_needed(call->list.items[i], arg_static_type, param->type);
             }
         }
     }
@@ -1354,6 +1456,57 @@ static void finalize_calls_expr(AstNode **slot, AstNode *class_decl, LocalVarTyp
              * operator-overload case, which never produces a bare
              * AST_MEMBER on this side). */
             n->b = strip_const_member_read(n->b, class_decl, locals);
+            /* Assigning a derived-class pointer into a base-class pointer
+             * variable (`Alien *a; a = new AlienTopRow(px, py);`, the
+             * polymorphic-factory pattern Swarm::spawn uses to build one
+             * of several Alien subclasses into a single Alien* local)
+             * needs the same explicit base-class cast a reference-bound
+             * ARGUMENT already gets from cast_ref_arg_if_needed (above) --
+             * a real, separate gap: this project's single-inheritance
+             * struct layout makes the assignment memory-safe, but C's
+             * type system has no way to know that (confirmed via gcc:
+             * `-Wincompatible-pointer-types`, "assignment to 'struct
+             * Alien *' from incompatible pointer type 'struct
+             * AlienTopRow *'"), and this project's own established
+             * pattern (cast_receiver_if_needed's own doc comment) is that
+             * a real Vircon32 compiler run is likely to reject outright
+             * what gcc only warns about. Scoped to plain "=" only, and
+             * only when BOTH sides are statically known to be POINTER
+             * types (never a plain by-value object assignment -- struct
+             * slicing a derived object into a base one needs an actual
+             * memberwise copy this project doesn't generate, an honest,
+             * separate, out-of-scope limitation, not something a pointer
+             * cast could paper over safely). The RHS's class is read
+             * directly off `n->b->type` when it's a bare `new` expression
+             * (infer_expr_type has no AST_NEW case at all -- new_delete_
+             * rewrite_expr, phase 6, hasn't run yet at this point in
+             * phase 3/4, so n->b is still the original AST_NEW node
+             * here), falling back to infer_expr_type for every other RHS
+             * shape (an existing derived-pointer variable/expression
+             * being assigned across, not just a fresh `new`). */
+            if (n->str1 != NULL && strcmp(n->str1, "=") == 0) {
+                AstNode *lhs_type = infer_expr_type(n->a, class_decl, locals);
+                if (lhs_type != NULL && lhs_type->kind == AST_POINTER_TYPE) {
+                    AstNode *lhs_class = type_to_class(lhs_type);
+                    AstNode *rhs_class = NULL;
+                    if (n->b->kind == AST_NEW) {
+                        rhs_class = type_to_class(n->b->type);
+                    } else {
+                        AstNode *rhs_type = infer_expr_type(n->b, class_decl, locals);
+                        if (rhs_type != NULL && rhs_type->kind == AST_POINTER_TYPE) {
+                            rhs_class = type_to_class(rhs_type);
+                        }
+                    }
+                    if (lhs_class != NULL && rhs_class != NULL && lhs_class != rhs_class) {
+                        AstNode *cast = ast_new(AST_CAST, n->line);
+                        cast->type = ast_wrap_pointer(ast_ident(lhs_class->str1, n->line), n->line);
+                        cast->a = n->b;
+                        n->b = cast;
+                        lower_note(n->line, "inserted (%s *) cast for a base/"
+                            "derived pointer assignment", lhs_class->str1);
+                    }
+                }
+            }
             rewrite_operator_use(slot, n->a, n->b, class_decl, locals);
             break;
         case AST_SUBSCRIPT:
@@ -2284,6 +2437,58 @@ static void new_delete_rewrite_free_functions(AstList *decls) {
  * for any real parameter beyond `this`, exactly the way
  * fill_default_args already does for an ordinary resolved call. Every
  * call site below that uses this function's result does so. */
+/* Builds `objExpr.vtable = &ClassName_vtable_instance;` as a standalone
+ * AST_EXPR_STMT -- the stack-object counterpart to the fix
+ * emit_new_delete_runtime (codegen.c) now applies for a HEAP-allocated
+ * one: a class with a vtable but NO user-declared constructor at all
+ * has no constructor BODY anywhere for phase 8 (inject_vtable_init_
+ * classes, above) to have injected its own vtable-pointer assignment
+ * into, so a plain `Square s;` (no `new`, no explicit initializer)
+ * previously left `s.vtable` as raw, uninitialized stack garbage --
+ * the exact same real, previously-undiscovered bug class, just found
+ * on the stack instead of the heap. Confirmed directly (not guessed
+ * at) with an isolated repro that segfaulted on the very first virtual
+ * call through such an object before this fix, and ran clean after.
+ * Called from both of this phase's own "no constructor at all" call
+ * sites below -- the plain scalar VarDecl case and the per-element
+ * stack-array case -- each of which builds its own `objExpr` (a bare
+ * AST_IDENT for a scalar, an AST_SUBSCRIPT for an array element) and
+ * passes it in fresh, used exactly once.
+ *
+ * `.` access (not `->`) since `objExpr` is always a plain VALUE
+ * expression here, never a pointer -- matching how this project prints
+ * ordinary stack-object member access everywhere else. Returns NULL
+ * when the class has no vtable at all -- nothing to initialize, and
+ * the caller already knows to fall back to its own prior "nothing to
+ * inject" no-op in that case, matching this file's "only act when
+ * there's something real to fix" discipline everywhere else. */
+static AstNode *build_vtable_init_stmt(AstNode *obj_expr, AstNode *class_decl, int line) {
+    ClassLayout *layout = (ClassLayout *)class_decl->sema_info;
+    if (layout == NULL || layout->vtable == NULL) return NULL;
+
+    AstNode *vtable_ref = ast_new(AST_MEMBER, line);
+    vtable_ref->str1 = strdup(".");
+    vtable_ref->str2 = strdup("vtable");
+    vtable_ref->a = obj_expr;
+
+    size_t len = strlen(class_decl->str1) + strlen("_vtable_instance") + 1;
+    char *instance_name = malloc(len);
+    snprintf(instance_name, len, "%s_vtable_instance", class_decl->str1);
+    AstNode *addr = ast_new(AST_UNOP, line);
+    addr->str1 = strdup("addr");
+    addr->a = ast_ident(instance_name, line);
+    free(instance_name);
+
+    AstNode *assign = ast_new(AST_ASSIGN, line);
+    assign->str1 = strdup("=");
+    assign->a = vtable_ref;
+    assign->b = addr;
+
+    AstNode *expr_stmt = ast_new(AST_EXPR_STMT, line);
+    expr_stmt->a = assign;
+    return expr_stmt;
+}
+
 static AstNode *find_zero_arg_constructor(AstNode *class_decl) {
     ClassLayout *layout = (ClassLayout *)class_decl->sema_info;
     if (layout == NULL) return NULL;
@@ -2342,12 +2547,60 @@ static void inject_ctor_calls_stmt(AstNode **slot, AstNode *class_decl, LocalVar
  * half-fix. */
 static AstNode *build_array_ctor_loop(AstNode *stmt, AstNode *var_class, int *arr_ctor_counter) {
     AstNode *ctor = find_zero_arg_constructor(var_class);
-    if (ctor == NULL) return NULL;
-    FuncSemaInfo *info = (FuncSemaInfo *)ctor->sema_info;
-    const char *mangled = (info != NULL) ? info->mangled_name : ctor->str1;
 
     char idx_name[64];
-    snprintf(idx_name, sizeof(idx_name), "__v32_ctor_arr_i%d", (*arr_ctor_counter)++);
+    snprintf(idx_name, sizeof(idx_name), "__v32_ctor_arr_i%d", *arr_ctor_counter);
+
+    AstNode *subscript = ast_new(AST_SUBSCRIPT, stmt->line);
+    subscript->a = ast_ident(stmt->str1, stmt->line);
+    subscript->b = ast_ident(idx_name, stmt->line);
+
+    AstNode *body_stmt;
+    if (ctor != NULL) {
+        FuncSemaInfo *info = (FuncSemaInfo *)ctor->sema_info;
+        const char *mangled = (info != NULL) ? info->mangled_name : ctor->str1;
+
+        AstNode *addr = ast_new(AST_UNOP, stmt->line);
+        addr->str1 = strdup("addr");
+        addr->a = subscript;
+
+        /* fill_default_args (see its own doc comment) expects an argument
+         * list that does NOT include the receiver -- exactly like
+         * fixup_ctor_reference_args's own `args` parameter -- so it's
+         * called on an EMPTY temporary list here (this call site always
+         * supplies zero explicit real arguments, by construction: see
+         * find_zero_arg_constructor's own doc comment on why that no
+         * longer means the constructor takes none at all), and the
+         * receiver is prepended into `call->list` separately, after. */
+        AstList real_args = ast_list_new();
+        fill_default_args(&real_args, ctor, 1); /* offset 1 -- ctor->list
+            starts with the injected "this" */
+
+        AstNode *call = ast_new(AST_CALL, stmt->line);
+        call->a = ast_ident(mangled, stmt->line);
+        ast_list_append(&call->list, addr);
+        for (int k = 0; k < real_args.count; k++) {
+            ast_list_append(&call->list, real_args.items[k]);
+        }
+
+        body_stmt = ast_new(AST_EXPR_STMT, stmt->line);
+        body_stmt->a = call;
+    } else {
+        /* No user-declared constructor at all -- see build_vtable_init_
+         * stmt's own doc comment for the real bug this closes: a
+         * vtable-owning class with no constructor previously got NO
+         * per-element vtable-pointer initialization either, for the
+         * exact same underlying reason emit_new_delete_runtime's own
+         * doc comment (codegen.c) describes for the heap-`new` case --
+         * `subscript` (an array element, a plain VALUE, never a
+         * pointer) is exactly the right shape build_vtable_init_stmt
+         * already expects. */
+        body_stmt = build_vtable_init_stmt(subscript, var_class, stmt->line);
+        if (body_stmt == NULL) return NULL; /* no ctor AND no vtable --
+            truly nothing to do, matching this function's own prior
+            "ctor == NULL" no-op for a class that needs neither */
+    }
+    (*arr_ctor_counter)++;
 
     AstNode *idx_decl = ast_new(AST_VAR_DECL, stmt->line);
     idx_decl->str1 = strdup(idx_name);
@@ -2365,38 +2618,8 @@ static AstNode *build_array_ctor_loop(AstNode *stmt, AstNode *var_class, int *ar
     step->str1 = strdup("post++");
     step->a = ast_ident(idx_name, stmt->line);
 
-    AstNode *subscript = ast_new(AST_SUBSCRIPT, stmt->line);
-    subscript->a = ast_ident(stmt->str1, stmt->line);
-    subscript->b = ast_ident(idx_name, stmt->line);
-
-    AstNode *addr = ast_new(AST_UNOP, stmt->line);
-    addr->str1 = strdup("addr");
-    addr->a = subscript;
-
-    /* fill_default_args (see its own doc comment) expects an argument
-     * list that does NOT include the receiver -- exactly like
-     * fixup_ctor_reference_args's own `args` parameter -- so it's
-     * called on an EMPTY temporary list here (this call site always
-     * supplies zero explicit real arguments, by construction: see
-     * find_zero_arg_constructor's own doc comment on why that no
-     * longer means the constructor takes none at all), and the
-     * receiver is prepended into `call->list` separately, after. */
-    AstList real_args = ast_list_new();
-    fill_default_args(&real_args, ctor, 1); /* offset 1 -- ctor->list
-        starts with the injected "this" */
-
-    AstNode *call = ast_new(AST_CALL, stmt->line);
-    call->a = ast_ident(mangled, stmt->line);
-    ast_list_append(&call->list, addr);
-    for (int k = 0; k < real_args.count; k++) {
-        ast_list_append(&call->list, real_args.items[k]);
-    }
-
-    AstNode *call_stmt = ast_new(AST_EXPR_STMT, stmt->line);
-    call_stmt->a = call;
-
     AstNode *body = ast_new(AST_BLOCK, stmt->line);
-    ast_list_append(&body->list, call_stmt);
+    ast_list_append(&body->list, body_stmt);
 
     AstNode *loop = ast_new(AST_FOR, stmt->line);
     loop->a = idx_decl;
@@ -2433,7 +2656,9 @@ static void inject_ctor_calls_block(AstNode *block, AstNode *class_decl, LocalVa
         ast_list_append(&new_list, stmt);
 
         if (stmt->kind == AST_VAR_DECL && stmt->a == NULL && stmt->type != NULL
-            && stmt->type->kind == AST_ARRAY_TYPE) {
+            && stmt->type->kind == AST_ARRAY_TYPE
+            && stmt->type->a != NULL && stmt->type->a->kind != AST_POINTER_TYPE
+            && stmt->type->a->kind != AST_REFERENCE_TYPE) {
             /* `Shape shapes[3];` -- see build_array_ctor_loop's own doc
              * comment for the full story on this branch. Checked ahead
              * of the plain-scalar branch just below (both conditions
@@ -2441,7 +2666,16 @@ static void inject_ctor_calls_block(AstNode *block, AstNode *class_decl, LocalVa
              * class-named AST_IDENT are mutually exclusive shapes for
              * stmt->type, so ordering between the two branches doesn't
              * actually matter -- kept first here only because it's the
-             * newer, less-established case, easier to spot at the top). */
+             * newer, less-established case, easier to spot at the top).
+             * The element-type pointer/reference guard is the exact same
+             * pre-existing bug fix the scalar branch just below needed
+             * (see its own doc comment) -- `Widget *arr[3];` is an array
+             * of POINTERS, never itself an array of objects needing
+             * per-element construction, but type_to_class resolves
+             * straight through a pointer wrapper same as it does for a
+             * plain scalar, so without this guard this branch wrongly
+             * tried to construct each element as if it were a `Widget`
+             * value. */
             AstNode *elem_class = type_to_class(stmt->type->a);
             if (elem_class != NULL) {
                 AstNode *loop = build_array_ctor_loop(stmt, elem_class, arr_ctor_counter);
@@ -2449,7 +2683,29 @@ static void inject_ctor_calls_block(AstNode *block, AstNode *class_decl, LocalVa
                     ast_list_append(&new_list, loop);
                 }
             }
-        } else if (stmt->kind == AST_VAR_DECL && stmt->a == NULL) {
+        } else if (stmt->kind == AST_VAR_DECL && stmt->a == NULL
+                   && stmt->type != NULL && stmt->type->kind != AST_POINTER_TYPE
+                   && stmt->type->kind != AST_REFERENCE_TYPE) {
+            /* A real, separate, PRE-EXISTING bug found while adding this
+             * phase's own vtable-init fallback just below: type_to_class
+             * already resolves straight THROUGH a pointer/reference
+             * wrapper (see its own doc comment in sema.c) -- exactly
+             * right for every other caller that wants to know "what
+             * class does this TYPE ultimately name", but wrong here,
+             * where this branch specifically means "this VarDecl is a
+             * plain, by-value, uninitialized class object that needs
+             * its own constructor called on it". Without this guard, a
+             * bare `Widget *p;` (a POINTER local, never itself an
+             * object at all) was ALSO treated as needing a constructor
+             * call -- confirmed directly against real gcc output
+             * generating `Widget__Widget__void((&p));`, calling the
+             * constructor with `&p` (a `Widget **`) where the
+             * constructor's own `this` parameter is a plain `Widget *`,
+             * a real, silently-wrong-code bug (not just a warning) that
+             * predates this round's own vtable-init work entirely --
+             * this guard closes both at once, since the vtable-init
+             * fallback just below would have inherited the identical
+             * mistake otherwise. */
             AstNode *var_class = type_to_class(stmt->type);
             if (var_class != NULL) {
                 AstNode *ctor = find_zero_arg_constructor(var_class);
@@ -2477,6 +2733,18 @@ static void inject_ctor_calls_block(AstNode *block, AstNode *class_decl, LocalVa
                     AstNode *expr_stmt = ast_new(AST_EXPR_STMT, stmt->line);
                     expr_stmt->a = call;
                     ast_list_append(&new_list, expr_stmt);
+                } else {
+                    /* No user-declared constructor at all -- see
+                     * build_vtable_init_stmt's own doc comment for the
+                     * real bug this closes: a vtable-owning class with
+                     * no constructor previously got NO vtable-pointer
+                     * initialization anywhere, for a plain stack local
+                     * exactly as much as for `new`. */
+                    AstNode *vtable_stmt = build_vtable_init_stmt(
+                        ast_ident(stmt->str1, stmt->line), var_class, stmt->line);
+                    if (vtable_stmt != NULL) {
+                        ast_list_append(&new_list, vtable_stmt);
+                    }
                 }
             }
         } else if (stmt->kind == AST_VAR_DECL && stmt->a != NULL

@@ -202,13 +202,51 @@ static void print_type(FILE *out, const AstNode *type) {
             }
             fprintf(out, "%s", type->str1);
             break;
-        case AST_QUALIFIED_ID:
-            if (type->list.count > 0) {
-                fprintf(out, "%s", type->list.items[type->list.count - 1]->str1);
-            } else {
+        case AST_QUALIFIED_ID: {
+            /* A namespace-qualified TYPE reference (e.g. `si::Game` used
+             * as a variable's declared type, as opposed to an unqualified
+             * `Game` used from inside `namespace si` itself, which parses
+             * as a plain AST_IDENT and already goes through the AST_IDENT
+             * case above). A real, previously-undiscovered gap: this case
+             * used to just print the flattened final component's bare
+             * name with NO struct/enum/union keyword handling at all,
+             * unlike the AST_IDENT case just above it -- meaning
+             * `si::Game game;` at file scope (main(), outside the
+             * namespace) printed as `Game game;` under --target=standard
+             * (a hard "unknown type name" compile error), even though
+             * every OTHER, unqualified use of the exact same class
+             * throughout the rest of the generated file correctly got
+             * `struct Game`. Found via a real user's Space Invaders
+             * program, whose main() declares `si::Game game;`,
+             * `si::Input input;`, `si::Video video;`. Fixed by giving
+             * this case the identical struct/enum/union lookup the
+             * AST_IDENT case already does -- type_to_class and
+             * find_enum_or_union_decl both already accept a flattened
+             * final-component name string, so the same two lookups work
+             * here unchanged, just fed this node's own last component
+             * instead of an AST_IDENT's str1. Vircon32 mode still wants
+             * the bare name either way, exactly as AST_IDENT's own case
+             * does, since Vircon32 C rejects the tag keyword as a type
+             * reference. */
+            if (type->list.count == 0) {
                 fprintf(out, "void" /* malformed -- shouldn't happen */);
+                break;
             }
+            const char *name = type->list.items[type->list.count - 1]->str1;
+            if (g_target == TARGET_STANDARD) {
+                if (type_to_class(type) != NULL) {
+                    fprintf(out, "struct %s", name);
+                    break;
+                }
+                AstNode *tag = find_enum_or_union_decl(&g_program->list, name);
+                if (tag != NULL) {
+                    fprintf(out, "%s %s", tag->kind == AST_ENUM_DECL ? "enum" : "union", name);
+                    break;
+                }
+            }
+            fprintf(out, "%s", name);
             break;
+        }
         case AST_POINTER_TYPE:
             print_type(out, type->a);
             fprintf(out, " *");
@@ -737,6 +775,28 @@ static void emit_vtable_struct(FILE *out, const AstNode *class_decl) {
         fprintf(out, "    ");
         int already_this_injected = (canonical->kind == AST_FUNC_DEF);
         int start = already_this_injected ? 1 : 0;
+        /* A const method (`int spriteForFrame(int) const`) needs its
+         * vtable slot's OWN receiver type to say so too -- `canonical`'s
+         * own `str2` ("const" or NULL) is set directly by the grammar
+         * (func_header/out_of_line_def, parser.y) BEFORE this-injection
+         * ever runs, and is never touched afterward, so it's a reliable
+         * check regardless of whether `canonical` is an AST_FUNC_DEF
+         * (already this-injected -- its own list.items[0] is already a
+         * `const ClassName *` receiver) or a still-uninjected
+         * AST_FUNC_DECL prototype. A real, previously-undiscovered gap
+         * found by actually gcc-compiling a real-world program: without
+         * this, every override's own generated function (whose receiver
+         * IS correctly emitted as const, from emit_method_prototype's own
+         * unrelated, already-correct logic) gets assigned into a vtable
+         * slot declared as a plain, non-const pointer -- an incompatible
+         * function-pointer-type mismatch gcc only warns about
+         * (`-Wincompatible-pointer-types`) but which this project's own
+         * established pattern (see strip_const_member_read's and
+         * cast_receiver_if_needed's own doc comments in lower.c) says to
+         * assume the real, stricter Vircon32 compiler rejects outright,
+         * the same shape of gap as every other "Vircon32 is pickier than
+         * gcc" bug this project has already found and fixed. */
+        int is_const_method = (canonical->str2 != NULL && strcmp(canonical->str2, "const") == 0);
         if (g_target == TARGET_STANDARD) {
             /* Standard C's own function-pointer field declarator needs
              * the name INSIDE the parens -- same reasoning as
@@ -754,6 +814,7 @@ static void emit_vtable_struct(FILE *out, const AstNode *class_decl) {
              * contract). */
             print_type(out, canonical->type);
             fprintf(out, " (*%s)(", field_name);
+            if (is_const_method) fprintf(out, "const ");
             print_class_type_name(out, canonical_class->str1);
             fprintf(out, " *");
             for (int p = start; p < canonical->list.count; p++) {
@@ -763,7 +824,7 @@ static void emit_vtable_struct(FILE *out, const AstNode *class_decl) {
             fprintf(out, ");\n");
         } else {
             print_type(out, canonical->type);
-            fprintf(out, "(%s *", canonical_class->str1);
+            fprintf(out, "(%s%s *", is_const_method ? "const " : "", canonical_class->str1);
             for (int p = start; p < canonical->list.count; p++) {
                 fprintf(out, ", ");
                 print_type(out, canonical->list.items[p]->type);
@@ -956,6 +1017,15 @@ static void emit_vtable_instance(FILE *out, const AstNode *class_decl) {
             const AstNode *impl_class = find_declaring_class(class_decl, impl);
             if (impl_class != canonical_class) {
                 int start = (entry->canonical_method->kind == AST_FUNC_DEF) ? 1 : 0;
+                /* Same const-receiver check emit_vtable_struct's own
+                 * doc comment explains -- this cast's own target type
+                 * has to match the vtable slot's own declared type
+                 * exactly (including constness), or this is right back
+                 * to the identical incompatible-function-pointer-type
+                 * mismatch fixing the slot's own declaration alone
+                 * would only have moved here instead of removing. */
+                int is_const_method = (entry->canonical_method->str2 != NULL
+                    && strcmp(entry->canonical_method->str2, "const") == 0);
                 fprintf(out, "(");
                 print_type(out, entry->canonical_method->type);
                 if (g_target == TARGET_STANDARD) {
@@ -969,6 +1039,7 @@ static void emit_vtable_instance(FILE *out, const AstNode *class_decl) {
                      * fix this round, just with the name slot left
                      * empty since a cast has none. */
                     fprintf(out, " (*)(");
+                    if (is_const_method) fprintf(out, "const ");
                     print_class_type_name(out, canonical_class->str1);
                     fprintf(out, " *");
                     for (int p = start; p < entry->canonical_method->list.count; p++) {
@@ -977,7 +1048,7 @@ static void emit_vtable_instance(FILE *out, const AstNode *class_decl) {
                     }
                     fprintf(out, "))&%s", impl_mangled);
                 } else {
-                    fprintf(out, "(%s *", canonical_class->str1);
+                    fprintf(out, "(%s%s *", is_const_method ? "const " : "", canonical_class->str1);
                     for (int p = start; p < entry->canonical_method->list.count; p++) {
                         fprintf(out, ", ");
                         print_type(out, entry->canonical_method->list.items[p]->type);
@@ -1939,12 +2010,44 @@ static void emit_new_delete_runtime(FILE *out, const AstNode *class_decl) {
     }
 
     if (!found_ctor) {
+        /* A class with NO user-declared constructor at all has no
+         * constructor BODY for phase 8 (inject_vtable_init_classes,
+         * lower.c) to inject its `this->vtable = &ClassName_
+         * vtable_instance;` assignment into -- that phase only ever
+         * walks a class's own declared constructors, and finds none
+         * here, so a class with a vtable but no constructor previously
+         * got NO vtable-pointer initialization ANYWHERE: `new`ing it
+         * left `self->vtable` as raw, uninitialized malloc'd memory,
+         * and the very first virtual call through it dispatched through
+         * garbage. A real, serious, previously-undiscovered bug --
+         * confirmed directly (not guessed at) with an isolated repro
+         * (`class Shape { virtual int area(){...} }; class Square :
+         * public Shape { virtual int area(){...} }; new Square()`,
+         * calling `->area()` through it) that segfaulted every time
+         * before this fix, and compiled+ran clean after it. Fixed the
+         * same way inject_vtable_init_classes' own doc comment
+         * describes for a class that DOES have a constructor -- set the
+         * vtable pointer to the class's own `ClassName_vtable_instance`
+         * (emit_vtable_instance's own naming, which this has to agree
+         * with, same cross-module constraint as everywhere else in this
+         * pair of functions) -- just emitted directly as C text here,
+         * since there's no AST constructor body available to inject an
+         * AST_ASSIGN into for this case; codegen already builds this
+         * exact allocator function as raw text regardless, so adding
+         * one more line to it is the natural, minimal fix rather than
+         * inventing a synthetic AST-level default constructor. */
         print_class_type_name(out, class_decl->str1);
-        fprintf(out, " *v32_new_%s(void)\n{\n    return (", class_decl->str1);
+        fprintf(out, " *v32_new_%s(void)\n{\n    ", class_decl->str1);
+        print_class_type_name(out, class_decl->str1);
+        fprintf(out, " *self = (");
         print_class_type_name(out, class_decl->str1);
         fprintf(out, " *)malloc(sizeof(");
         print_class_type_name(out, class_decl->str1);
-        fprintf(out, "));\n}\n\n\n");
+        fprintf(out, "));\n");
+        if (layout->vtable != NULL) {
+            fprintf(out, "    self->vtable = &%s_vtable_instance;\n", class_decl->str1);
+        }
+        fprintf(out, "    return self;\n}\n\n\n");
     }
 }
 
