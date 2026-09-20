@@ -2963,6 +2963,181 @@ static void inject_ctor_calls_free_functions(AstList *decls) {
     }
 }
 
+/* ---- phase 8-pre: implicit default construction of class-typed members ---
+ *
+ * A class-typed data member (`Swarm mSwarm;` inside `Game`) is never
+ * constructed today: phase 7 only walks function BODIES for local
+ * VarDecls, and a member field is not a local. The member's own fields
+ * (and, worse, its vtable pointer) are left as raw stack garbage until
+ * first use -- surfaced directly by the real Space Invaders program,
+ * where `Game game;` compiled clean but HALTed the CPU the moment a
+ * method touched the uninitialized `mSwarm.mGrid` pointers.
+ *
+ * For every constructor WITH a body, walk the class's own data_members
+ * in declaration order and, for each member that is a BARE class type
+ * (not pointer/reference/array -- the same guard phase 7's `Widget *p`
+ * bug fix established, since type_to_class resolves straight through a
+ * pointer wrapper) with a callable-with-zero-arguments constructor,
+ * prepend `Member__Member__void(&this->member);` -- with any
+ * default-value expressions spliced via fill_default_args, exactly the
+ * way build_array_ctor_loop builds the same call shape for stack arrays.
+ * A member class with NO constructor but a vtable instead gets
+ * `this->member.vtable = &Member_vtable_instance;` prepended -- the
+ * member counterpart of build_vtable_init_stmt's own stack-object fix.
+ *
+ * ORDERING: this phase PREPENDS, so it must run BEFORE phase 8 in the
+ * driver -- the phase that prepends last ends up first, and member
+ * construction needs to land AFTER base-ctor delegation (8b) and the
+ * primitive member-init assigns (8a) in the final body, i.e. this
+ * phase's statements must be the first thing prepended. Final emitted
+ * order: base-ctor, primitive member assigns, vtable init, member
+ * default-construction, user body -- matching real C++'s "base, then
+ * members, then body" (one documented approximation: class-typed
+ * members are constructed after ALL primitive member-init assigns,
+ * not interleaved with them by declaration order).
+ *
+ * DELIBERATE SCOPE LIMITS, same discipline as phase 7:
+ *   - A member already named in the constructor's own member-init list
+ *     (`: swarm(40)`) is SKIPPED here -- that member's construction is
+ *     the member-init path's job, not this phase's. Once sema.c's
+ *     resolve_member_init_list stops rejecting class-typed members,
+ *     the two compose without double construction via this check.
+ *   - A self-typed member (recursive containment, `Node n;` inside
+ *     class Node) is skipped -- it would inject unbounded recursion,
+ *     and real C++ rejects the class outright anyway.
+ *   - Inherited members are NOT walked -- data_members holds only the
+ *     class's OWN fields; the base's members are constructed by the
+ *     base's own constructor, which phase 8b already calls.
+ *   - Prototype-only member constructors are skipped (no body -- the
+ *     emitted call would reference a C function never defined).
+ */
+static AstNode *build_member_ctor_stmt(AstNode *field, int line) {
+    /* receiver: &this->member */
+    AstNode *member_ref = ast_new(AST_MEMBER, line);
+    member_ref->str1 = strdup("->");
+    member_ref->str2 = strdup(field->str1);
+    member_ref->a = ast_ident("this", line);
+
+    AstNode *var_class = type_to_class(field->type);
+    AstNode *ctor = find_zero_arg_constructor(var_class);
+
+    if (ctor != NULL) {
+        FuncSemaInfo *info = (FuncSemaInfo *)ctor->sema_info;
+        const char *mangled = (info != NULL) ? info->mangled_name : ctor->str1;
+
+        AstNode *addr = ast_new(AST_UNOP, line);
+        addr->str1 = strdup("addr");
+        addr->a = member_ref;
+
+        /* fill_default_args expects the argument list WITHOUT the
+         * receiver (same convention as build_array_ctor_loop) -- spliced
+         * in after, offset 1 past the injected "this". */
+        AstList real_args = ast_list_new();
+        fill_default_args(&real_args, ctor, 1);
+
+        AstNode *call = ast_new(AST_CALL, line);
+        call->a = ast_ident(mangled, line);
+        ast_list_append(&call->list, addr);
+        for (int k = 0; k < real_args.count; k++) {
+            ast_list_append(&call->list, real_args.items[k]);
+        }
+
+        AstNode *expr_stmt = ast_new(AST_EXPR_STMT, line);
+        expr_stmt->a = call;
+        return expr_stmt;
+    }
+
+    /* No user-declared constructor at all -- member counterpart of
+     * build_vtable_init_stmt: a vtable-owning member class needs its
+     * vtable pointer set even with no constructor body to do it.
+     * Note "->" vtable access (member reached through this), where
+     * build_vtable_init_stmt's stack-object form uses ".". */
+    ClassLayout *mlayout = (ClassLayout *)var_class->sema_info;
+    if (mlayout == NULL || mlayout->vtable == NULL) return NULL;
+
+    AstNode *vtable_ref = ast_new(AST_MEMBER, line);
+    vtable_ref->str1 = strdup(".");
+    vtable_ref->str2 = strdup("vtable");
+    vtable_ref->a = member_ref;
+
+    size_t len = strlen(var_class->str1) + strlen("_vtable_instance") + 1;
+    char *instance_name = malloc(len);
+    snprintf(instance_name, len, "%s_vtable_instance", var_class->str1);
+    AstNode *addr = ast_new(AST_UNOP, line);
+    addr->str1 = strdup("addr");
+    addr->a = ast_ident(instance_name, line);
+    free(instance_name);
+
+    AstNode *assign = ast_new(AST_ASSIGN, line);
+    assign->str1 = strdup("=");
+    assign->a = vtable_ref;
+    assign->b = addr;
+
+    AstNode *expr_stmt = ast_new(AST_EXPR_STMT, line);
+    expr_stmt->a = assign;
+    return expr_stmt;
+}
+
+/* Is `name` already explicitly initialized in ctor `m`'s member-init
+ * list?  (m->c is the MemberInitList -- AstList of AST_MEMBER_INIT,
+ * str1 = the member/base name; NULL when no ": ..." was written.) */
+static int member_is_explicitly_initialized(AstNode *m, const char *name) {
+    if (m->c == NULL) return 0;
+    for (int i = 0; i < m->c->list.count; i++) {
+        if (strcmp(m->c->list.items[i]->str1, name) == 0) return 1;
+    }
+    return 0;
+}
+
+static void inject_member_ctor_calls_classes(AstList *decls) {
+    for (int i = 0; i < decls->count; i++) {
+        AstNode *n = decls->items[i];
+        if (n->kind == AST_CLASS_DECL) {
+            ClassLayout *layout = (ClassLayout *)n->sema_info;
+            if (layout != NULL) {
+                for (int j = 0; j < layout->methods.count; j++) {
+                    AstNode *m = layout->methods.items[j];
+                    if (strcmp(m->str1, n->str1) != 0) continue; /* not a ctor */
+                    if (m->kind != AST_FUNC_DEF) continue;        /* no body */
+
+                    /* Collect this ctor's injected statements FIRST (can't
+                     * prepend one at a time with a plain front-insert while
+                     * also iterating -- same rebuild-the-list shape phase 8
+                     * uses, but appending our statements as a group). */
+                    AstList injected = ast_list_new();
+                    for (int f = 0; f < layout->data_members.count; f++) {
+                        AstNode *field = layout->data_members.items[f];
+                        if (field->type == NULL) continue;
+                        if (field->type->kind == AST_POINTER_TYPE) continue;
+                        if (field->type->kind == AST_REFERENCE_TYPE) continue;
+                        if (field->type->kind == AST_ARRAY_TYPE) continue;
+                        AstNode *var_class = type_to_class(field->type);
+                        if (var_class == NULL) continue;         /* not a class */
+                        if (var_class == n) continue;            /* self-recursion */
+                        if (member_is_explicitly_initialized(m, field->str1)) continue;
+                        AstNode *stmt = build_member_ctor_stmt(field, m->line);
+                        if (stmt != NULL) ast_list_append(&injected, stmt);
+                    }
+
+                    if (injected.count > 0) {
+                        AstNode *body = m->a; /* AST_BLOCK */
+                        AstList new_list = ast_list_new();
+                        for (int k = 0; k < injected.count; k++) {
+                            ast_list_append(&new_list, injected.items[k]);
+                        }
+                        for (int k = 0; k < body->list.count; k++) {
+                            ast_list_append(&new_list, body->list.items[k]);
+                        }
+                        body->list = new_list;
+                    }
+                }
+            }
+        } else if (n->kind == AST_NAMESPACE_DECL) {
+            inject_member_ctor_calls_classes(&n->list);
+        }
+    }
+}
+
 /* ---- phase 8: vtable pointer initialization in constructors ------------
  *
  * For every class WITH a vtable, prepends `this->vtable = &ClassName_
@@ -4425,6 +4600,11 @@ int lower_run(AstNode *program) {
         depends on exist, sidesteps the question entirely */
     check_word_sizes_free_functions(&program->list);
     this_inject_classes(&program->list);
+    inject_member_ctor_calls_classes(&program->list); /* phase 8-pre -- MUST run
+        before phase 8: both prepend, and member construction has to end up
+        AFTER base-ctor (8b) / member-assigns (8a) / vtable-init (8) in the
+        final body, so this phase prepends FIRST of the five -- see its own
+        doc comment */
     inject_vtable_init_classes(&program->list);       /* phase 8 -- deliberately
         runs right after this-injection, before anything else touches a
         constructor's body, so the injected statement is simply the FIRST
