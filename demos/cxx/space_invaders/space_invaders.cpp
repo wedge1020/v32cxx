@@ -7,6 +7,25 @@
 #title "[v32cxx] C++/OOP Space Invaders"
 #version 1.0
 
+// sound cart hints -- ORDER IS THE ID: 0..13, matching AssetIds::Sounds
+// exactly. Macro names are WAV_* on purpose (never SOUND_*): v32c++
+// emits `#define NAME id` per hint, and SOUND_SHOOT would rewrite the
+// enum entry `SOUND_SHOOT = 0` into `0 = 0` -- a syntax error.
+#sound WAV_SHOOT        "sounds/shoot.wav"
+#sound WAV_ALIEN_DEATH  "sounds/alien_death.wav"
+#sound WAV_PLAYER_DEATH "sounds/player_death.wav"
+#sound WAV_MARCH0       "sounds/march0.wav"
+#sound WAV_MARCH1       "sounds/march1.wav"
+#sound WAV_MARCH2       "sounds/march2.wav"
+#sound WAV_MARCH3       "sounds/march3.wav"
+#sound WAV_MARCH4       "sounds/march4.wav"
+#sound WAV_MARCH5       "sounds/march5.wav"
+#sound WAV_MARCH6       "sounds/march6.wav"
+#sound WAV_SAUCER       "sounds/saucer.wav"
+#sound WAV_SAUCER_DEATH "sounds/saucer_death.wav"
+#sound WAV_EXTRA_LIFE   "sounds/extra_life.wav"
+#sound WAV_BUNKER_HIT   "sounds/bunker_hit.wav"
+
 // ============================================================================
 //  SPACE INVADERS - portable object-oriented C++ skeleton
 //
@@ -442,17 +461,36 @@ public:
 };
 
 // ---------------------------------------------------------------------------
-// Sound: stubbed playback of integer sound ids.
-// Wire to the audio.h API (select_sound / play_sound / stop_sound) with a
-// #sound cart hint per effect when you have audio assets ready.
+// Sound: wired to the Vircon32 audio.h API. Sound ids are the cart sound
+// ids (see the #sound hints at the top of this file -- declaration order
+// IS the id, matching AssetIds::Sounds). All of these are SDK free
+// functions passed through to the generated C, same mechanism as
+// select_region.
+//
+// API shape (per audio.h):
+//   play_sound(id)      -- plays in the first free channel, RETURNS that
+//                          channel id (or -1 if all 16 are busy)
+//   stop_channel(ch)    -- stops by CHANNEL; there is no stop-by-sound
+//   set_sound_loop(b)   -- applies to the currently SELECTED sound, so
+//                          select_sound(id) must come first
 // ---------------------------------------------------------------------------
 class Sound {
 public:
-    void play(int soundId) {
-        // TODO: select_sound(soundId); play_sound(soundId);
+    // one-time setup: the saucer's warble loops until stopped
+    void init() {
+        select_sound(AssetIds::SOUND_SAUCER);
+        set_sound_loop(1);   // applies to the selected sound
     }
-    void stop(int soundId) {
-        // TODO: stop_sound(soundId);
+
+    // returns the channel the sound started in, or -1 if none was free
+    // (the caller can hold that to stop_channel() it later)
+    int play(int soundId) {
+        return play_sound(soundId);
+    }
+
+    // stop a channel previously returned by play()
+    void stopChannel(int channelId) {
+        stop_channel(channelId);
     }
 };
 
@@ -1203,8 +1241,8 @@ public:
     Game()
         : mPlayerBullet(0), mScore(0), mHiScore(0), mWave(1),
           mBombCooldown(60), mWaveClearTimer(0), mLastExtraLifeAt(0),
-          mState(GAME_TITLE), mDifficulty(DIFF_MEDIUM) {
-        // Class-typed members are held BY POINTER: v32c++ never injects
+          mState(GAME_TITLE), mDifficulty(DIFF_MEDIUM), mSaucerSfxChannel(-1) {
+        // Class-typed members are held BY_POINTER: v32c++ never injects
         // constructor calls for class-typed members (its ctor-call
         // injection only walks function bodies), so `Swarm mSwarm;`
         // would leave the grid and vtable as raw stack garbage and
@@ -1214,6 +1252,7 @@ public:
         mSwarm  = new Swarm();
         mSaucer = new Saucer();
         mBombs  = new BombList();
+        mSfx.init();   // saucer warble loops until stopped
         mPlayer->reset(PLAYFIELD_W / 2 - PLAYER_WIDTH / 2, PLAYER_HOME_Y);
         for (int i = 0; i < BUNKER_COUNT; ++i) mBunkers[i] = 0;
         // title screen active: game starts on START (titleFrame).
@@ -1311,6 +1350,9 @@ private:
         mWaveClearTimer = 0;
         mLastExtraLifeAt = 0;
         mBombCooldown = bombCooldownBase();
+        // title screen: silence any leftover UFO warble
+        if (mSaucerSfxChannel >= 0) mSfx.stopChannel(mSaucerSfxChannel);
+        mSaucerSfxChannel = -1;
         mSwarm->setDifficulty(mDifficulty);
         mPlayer->reset(PLAYFIELD_W / 2 - PLAYER_WIDTH / 2, PLAYER_HOME_Y);
         for (int i = 0; i < mBombs->size(); ++i) delete (*mBombs)[i];
@@ -1343,6 +1385,7 @@ private:
         updateBombs();
         mSaucer->update();
         mPlayer->update();
+        updateSaucerSfx();
         checkCollisions();
         awardExtraLife();
 
@@ -1454,6 +1497,23 @@ private:
         }
     }
 
+    // saucer warble: a LOOPING sound, so it must be started once at
+    // launch and stopped by CHANNEL (audio.h has no stop-by-sound) when
+    // it exits or dies. -1 means the warble is not playing.
+    void updateSaucerSfx() {
+        if (mSaucer->flying()) {
+            if (mSaucerSfxChannel < 0) {
+                // -1 return (all 16 channels busy) leaves us < 0, so we
+                // simply retry on the next frame
+                mSaucerSfxChannel = mSfx.play(AssetIds::SOUND_SAUCER);
+            }
+        } else {
+            if (mSaucerSfxChannel >= 0)
+                mSfx.stopChannel(mSaucerSfxChannel);
+            mSaucerSfxChannel = -1;
+        }
+    }
+
     void deleteBullet() {
         delete mPlayerBullet;
         mPlayerBullet = 0;
@@ -1513,6 +1573,7 @@ private:
     int       mLastExtraLifeAt;
     GameState mState;
     GameDifficulty mDifficulty;   // chosen on the title screen
+    int mSaucerSfxChannel;        // warble's channel, -1 when not playing
 };
 
 } // namespace si
