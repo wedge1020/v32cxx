@@ -190,8 +190,11 @@ enum GameConsts {
     SAUCER_HEIGHT            = SPRITE_H,
     SAUCER_SPEED             = 1,
 
-    BUNKER_CELLS_W           = 3,   // 3 * 10 = 30 px wide
-    BUNKER_CELLS_H           = 2,   // 2 * 20 = 40 px tall
+    // umbrella-shaped bunker: 6x3 grid of 10x20 cells (60x60 px), but
+    // only the cells inside the classic shape exist (see Bunker::ctor):
+    // chamfered top corners, solid mid, legs with an arch underneath
+    BUNKER_CELLS_W           = 6,
+    BUNKER_CELLS_H           = 3,
     BUNKER_CELL_W            = SPRITE_W,
     BUNKER_CELL_H            = SPRITE_H,
 
@@ -774,10 +777,27 @@ public:
     Bunker(int px, int py)
         : Entity(px, py, BUNKER_CELLS_W * BUNKER_CELL_W,
                           BUNKER_CELLS_H * BUNKER_CELL_H) {
-        // every cell starts at 4 hit points (sprite BUNKER_BLOCK_4);
-        // each hit steps down through 0x13 -> 0x12 -> 0x11 -> gone
-        for (int i = 0; i < BUNKER_CELLS_W * BUNKER_CELLS_H; ++i)
-            mCells[i] = 4;
+        // classic umbrella shape, 6 cols x 3 rows:
+        //   row 0:  . X X X X .     chamfered top corners
+        //   row 1:  X X X X X X     solid middle
+        //   row 2:  X X . . X X     legs with an arch underneath
+        // Every EXISTING cell starts at 4 hit points; cells outside the
+        // shape are permanently 0. (No array initializer lists -- dims
+        // and contents stay plain statements per the subset's rules.)
+        for (int cy = 0; cy < BUNKER_CELLS_H; ++cy) {
+            for (int cx = 0; cx < BUNKER_CELLS_W; ++cx) {
+                if (shapeHas(cx, cy)) mCells[cy * BUNKER_CELLS_W + cx] = 4;
+                else                  mCells[cy * BUNKER_CELLS_W + cx] = 0;
+            }
+        }
+    }
+
+    // is (cx, cy) part of the umbrella outline?
+    bool shapeHas(int cx, int cy) const {
+        if (cy == 0) return cx > 0 && cx < BUNKER_CELLS_W - 1;
+        if (cy == BUNKER_CELLS_H - 1)
+            return cx < 2 || cx >= BUNKER_CELLS_W - 2;
+        return true;
     }
 
     void update() {}
@@ -795,8 +815,9 @@ public:
     }
 
     // erode cells where the rect overlaps: each overlapping cell loses
-    // ONE hit point (chip, not vanish); returns true if anything chipped
-    bool erode(const Rect& hit, Sound& sfx) {
+    // 'dmg' hit points (difficulty-scaled enemy weapon strength);
+    // returns true if anything chipped
+    bool erode(const Rect& hit, Sound& sfx, int dmg) {
         bool any = false;
         for (int cy = 0; cy < BUNKER_CELLS_H; ++cy) {
             for (int cx = 0; cx < BUNKER_CELLS_W; ++cx) {
@@ -807,7 +828,9 @@ public:
                 r.w = BUNKER_CELL_W;
                 r.h = BUNKER_CELL_H;
                 if (r.intersects(hit)) {
-                    setCell(cx, cy, cell(cx, cy) - 1);
+                    int hp = cell(cx, cy) - dmg;
+                    if (hp < 0) hp = 0;
+                    setCell(cx, cy, hp);
                     any = true;
                 }
             }
@@ -823,8 +846,8 @@ private:
     void setCell(int x, int y, int v) {
         mCells[y * BUNKER_CELLS_W + x] = v;
     }
-    int mCells[6];       // hit points per cell, 0..4. BUNKER_CELLS_W *
-                         // BUNKER_CELLS_H: dims must be INT_LITERALs
+    int mCells[18];     // hit points per cell, 0..4. BUNKER_CELLS_W (6) *
+                         // BUNKER_CELLS_H (3): dims must be INT_LITERALs
 };
 
 // ---------------------------------------------------------------------------
@@ -1272,6 +1295,15 @@ private:
         return 3;
     }
 
+    // enemy weapon strength vs shield hit points, by difficulty:
+    // easy chips 1 hp per hit, medium 2 (2 hits per cell), hard 4
+    // (one hit destroys a full cell)
+    int shieldDamage() const {
+        if (mDifficulty == DIFF_EASY)   return 1;
+        if (mDifficulty == DIFF_MEDIUM) return 2;
+        return 4;
+    }
+
     void startNewGame() {
         mScore = 0;
         mHiScore = 0;
@@ -1294,9 +1326,10 @@ private:
         mSwarm->spawn(40 + (mWave - 1) * 20);  // each wave starts lower
         for (int i = 0; i < BUNKER_COUNT; ++i) {
             delete mBunkers[i];
-            // spread the four 30px bunkers across the wide field:
-            // 40 + i*100 -> 40, 140, 240, 340 (last ends at 370)
-            mBunkers[i] = new Bunker(40 + i * 100, 168);
+            // spread the four 60px umbrella bunkers across the wide
+            // field: 41 + i*102 -> 41, 143, 245, 347 (41px margins,
+            // 42px gaps; last ends at 407)
+            mBunkers[i] = new Bunker(41 + i * 102, 168);
         }
     }
 
@@ -1393,7 +1426,7 @@ private:
             } else {
                 // vs bunkers
                 for (int i = 0; i < BUNKER_COUNT; ++i)
-                    if (mBunkers[i] && mBunkers[i]->erode(pb, mSfx)) {
+                    if (mBunkers[i] && mBunkers[i]->erode(pb, mSfx, 1)) {
                         deleteBullet();
                         break;
                     }
@@ -1411,7 +1444,8 @@ private:
                     if (mBunkers[k]) {
                         Rect bb;
                         (*mBombs)[i]->getBounds(bb);   // virtual: inset box
-                        if (mBunkers[k]->erode(bb, mSfx)) gone = true;
+                        if (mBunkers[k]->erode(bb, mSfx, shieldDamage()))
+                            gone = true;
                     }
                 }
             }
