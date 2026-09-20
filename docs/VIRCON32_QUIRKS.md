@@ -580,6 +580,17 @@ important default to protect.
 
 ---
 
+## 14. Right shift does not sign-extend negative values
+
+Worth  noting for  your  quirks doc:  "shift-right  does not  sign-extend
+negative values"  is a  new Vircon32 C  entry in the  same family  as the
+arg-staging bug — and this  one is particularly sneaky because standard
+C  makes  >> on  negative  ints  implementation-defined, so  gcc-verified
+output  can silently  diverge  from  Vircon32 behavior.  If  you want,  a
+--target=vircon32 lowering  rewrite (expanding  x >>  n on  signed values
+into  the mask-and-subtract  form)  would be  the  v32c++-side fix,  same
+pattern as the ternary rewrite. ---
+
 ## What this list does NOT cover
 
 - Anything this project hasn't discovered yet -- this is a record of

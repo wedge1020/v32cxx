@@ -1,8 +1,11 @@
 #include "video.h"
 #include "audio.h"
 #include "input.h"
-#include "misc.h"
-#include "time.h"
+#include "misc.h"   // rand()/srand() (hardware RNG), malloc/free
+#include "time.h"   // end_frame()
+
+#title "[v32cxx] C++/OOP Space Invaders"
+#version 1.0
 
 // ============================================================================
 //  SPACE INVADERS - portable object-oriented C++ skeleton
@@ -10,18 +13,20 @@
 //  Freestanding: NO standard library headers are used. Everything needed
 //  beyond core C++ (random numbers, containers) is implemented here.
 //  Written to the v32c++ subset: no templates, no static members, no
-//  'explicit', no default parameter values, no in-class default member
-//  initializers, no class-nested enums, no 'unsigned', no ternaries, and
-//  NO bare constructor-call / functional-cast expressions ("Vec2(x, y)").
-//  Only `new T(args)` may construct with arguments in an expression;
-//  everywhere else uses local declarations or int arguments.
+//  'explicit', no in-class default member initializers, no class-nested
+//  enums, no 'unsigned', no ternaries, and NO bare constructor-call /
+//  functional-cast expressions ("Vec2(x, y)"). Only `new T(args)` may
+//  construct with arguments in an expression; everywhere else uses local
+//  declarations or int arguments. Default parameter values ARE now used
+//  (v32c++ implements them: fill_default_args splices cloned defaults
+//  into calls that omit trailing arguments).
 //
 //  Vec2 is deliberately a ONE-WORD type (a single int packing x/y as two
 //  16-bit halves): the Vircon32 C compiler only accepts parameters and
 //  return values of exactly one word, so a 2-int Vec2 returned by value
 //  (operator+ etc.) would be rejected downstream. Packing keeps natural
 //  by-value math while staying one word. Coordinates stay well inside
-//  the 16-bit range (Vircon32 screen / playfield is 640 x 360).
+//  the 16-bit range (playfield is 224 x 256).
 //
 //  Platform hookup notes:
 //    * Video is WIRED to the Vircon32 SDK: blit() does
@@ -58,7 +63,9 @@
 //  ---------------------------------------------------------------
 //  char  name                 10 x 20     notes
 //  ----  -------------------  --------    --------------------------------
-//   '='  PLAYER_SHIP             "       player cannon
+//   '^'  PLAYER_SHIP_TURRET      "       player cannon turret (upper glyph)
+//   '_'  PLAYER_SHIP_BASE        "       player cannon base (lower glyph);
+//                                        drawn superimposed on the turret
 //   '!'  PLAYER_BULLET           "       player shot
 //   'W'  ALIEN_A_FRAME0          "       top-row alien (squid), frame 0
 //   'w'  ALIEN_A_FRAME1          "       top-row alien, frame 1
@@ -74,6 +81,16 @@
 //   '|'  ALIEN_BULLET_PLUMB      "       straight bomb
 //   '0'..'9'  FONT_DIGITS        "       score/wave digits
 //   'A'..'Z'  FONT_CAPS          "       title / HUD text
+//
+//  COLLISION HITBOXES
+//  ------------------
+//  The visible glyphs are much smaller than their 10x20 font cells, so
+//  full-cell hitboxes made bombs "hit" the player while still 10-30 px
+//  away on screen. Entity::getBounds is therefore now VIRTUAL, and the
+//  thin-glyph classes (Player, Bullet) override it with an INSET,
+//  cell-centered hitbox while keeping mPos as the CELL position -- draw
+//  coordinates, clamping, respawn and muzzle math all stay unchanged.
+//  Tune BULLET_HIT_INSET_X/Y and PLAYER_HIT_INSET_Y to taste.
 //
 //  SOUNDS (integer ids)
 //  --------------------
@@ -96,22 +113,23 @@ namespace si {
 // ---------------------------------------------------------------------------
 namespace AssetIds {
     enum Sprites {
-        PLAYER_SHIP           = '=',
-        PLAYER_BULLET         = '!',
-        ALIEN_A_FRAME0        = 'W',
-        ALIEN_A_FRAME1        = 'w',
-        ALIEN_B_FRAME0        = 'X',
-        ALIEN_B_FRAME1        = 'x',
-        ALIEN_C_FRAME0        = 'O',
-        ALIEN_C_FRAME1        = 'o',
-        ALIEN_EXPLOSION       = '*',
-        PLAYER_EXPLOSION      = '#',
-        BUNKER_BLOCK          = '@',
-        SAUCER                = 'U',
-        ALIEN_BULLET_SQUIGGLE = 'v',
-        ALIEN_BULLET_PLUMB    = '|',
-        FONT_DIGITS_BASE      = '0',   // + 0..9
-        FONT_CAPS_BASE        = 'A'    // + 0..25
+        PLAYER_SHIP_TURRET     = '^',   // superimposed on PLAYER_SHIP_BASE
+        PLAYER_SHIP_BASE       = '_',   //   (both drawn in the same cell)
+        PLAYER_BULLET          = '!',
+        ALIEN_A_FRAME0         = 'W',
+        ALIEN_A_FRAME1         = 'w',
+        ALIEN_B_FRAME0         = 'X',
+        ALIEN_B_FRAME1         = 'x',
+        ALIEN_C_FRAME0         = 'O',
+        ALIEN_C_FRAME1         = 'o',
+        ALIEN_EXPLOSION        = '*',
+        PLAYER_EXPLOSION       = '#',
+        BUNKER_BLOCK           = '@',
+        SAUCER                 = 'U',
+        ALIEN_BULLET_SQUIGGLE  = 'v',
+        ALIEN_BULLET_PLUMB     = '|',
+        FONT_DIGITS_BASE       = '0',   // + 0..9
+        FONT_CAPS_BASE         = 'A'    // + 0..25
     };
 
     enum Sounds {
@@ -142,6 +160,21 @@ enum GameConsts {
     PLAYER_RESPAWN_FRAMES    = 90,
     PLAYER_DEATH_FRAMES      = 40,
     PLAYER_HOME_Y            = 232,
+
+    // player hitbox inset (turret+base glyph band, cell-centered):
+    // '^' sits around mid-cell, '_' at the bottom, so the visible ship
+    // spans roughly the lower 8 px of the 20 px cell
+    PLAYER_HIT_INSET_Y       = 6,
+
+    // how far the '^' turret glyph drops toward the '_' base when the
+    // two are superimposed (they sit in different parts of the 10x20
+    // font cell; without this the caret hovers well above the base)
+    PLAYER_TURRET_DROP       = 9,
+
+    // projectile hitbox insets ('|' is a ~2 px stroke, 'v' a small
+    // chevron -- both far smaller than their 10x20 cell)
+    BULLET_HIT_INSET_X       = 3,
+    BULLET_HIT_INSET_Y       = 5,
 
     ALIEN_WIDTH              = SPRITE_W,
     ALIEN_HEIGHT             = SPRITE_H,
@@ -182,15 +215,17 @@ public:
     // note srand(0) is ignored by the hardware (0 never set as seed)
     void seed(int s) { srand(s); }
 
-    // returns 0..limit-1
-    int next(int limit) {
+    // returns 0..limit-1; default limit exercises v32c++'s default
+    // parameter values (fill_default_args splices the literal in at
+    // every call site that omits it)
+    int next(int limit = 2) {
         int r = rand();          // full 32-bit value, may be negative
         if (r < 0) r = -r;
         return r % limit;
     }
 
     // returns 0 or 1
-    int bit() { return next(2); }
+    int bit() { return next(); }
 };
 
 // ---------------------------------------------------------------------------
@@ -205,8 +240,25 @@ public:
         mV = ((px & 0xFFFF) << 16) | (py & 0xFFFF);
     }
 
-    int x() const { return mV >> 16; }
-    int y() const { return (mV << 16) >> 16; }   // sign-extend low half
+    // SIGN-EXTENSION WITHOUT '>>' ON A NEGATIVE VALUE: Vircon32's
+    // shift-right does not sign-extend (logical shift), so reading the
+    // high half as 'mV >> 16' returned ~65534 for a negative x -- the
+    // player's left-edge clamp (< 0) never fired, the right-edge clamp
+    // caught the huge positive instead, and the player "wrapped" from
+    // the left edge to the right edge. Both halves are now decoded with
+    // only masks, a 1-bit shift of a MASKED value, and signed compares
+    // (which the hardware does correctly): grab the magnitude bits, then
+    // subtract 32768 when the half's own sign bit is set.
+    int x() const {
+        int h = (mV >> 16) & 0x7FFF;     // bits 30..16, shift-semantics-agnostic
+        if (mV < 0) return h - 32768;    // bit 31 set -> negative x
+        return h;
+    }
+    int y() const {
+        int l = mV & 0x7FFF;             // bits 14..0
+        if ((mV & 0x8000) != 0) return l - 32768;   // bit 15 set -> negative y
+        return l;
+    }
 
     void setX(int px) { mV = (mV & 0xFFFF) | ((px & 0xFFFF) << 16); }
     void setY(int py) { mV = (mV & (0xFFFF << 16)) | (py & 0xFFFF); }
@@ -332,12 +384,31 @@ class Video {
 public:
     void init() {
         select_texture(-1);
+        // Vircon32's screen is 640x360; the logical playfield is 224x256.
+        // Scale by 360/256 = 1.40625 so the playfield fills the screen
+        // height, centered horizontally: 224 * 1.40625 = 315, and
+        // (640 - 315) / 2 = 162 pixels of left margin.
+        set_drawing_scale(1.40625, 1.40625);
     }
 
     // Blit one sprite (10x20) with the given ASCII-value sprite id.
+    // Logical (224x256) coordinates are mapped to the 640x360 screen:
+    // 1.40625 == 45/32 exactly, done in integer math per call.
     void blit(int spriteId, int x, int y) {
         select_region(spriteId);
-        draw_region_at(x, y);
+        draw_region_zoomed_at(162 + (x * 45) / 32, (y * 45) / 32);
+    }
+
+    // Blit TWO sprites superimposed in the same cell -- for multi-glyph
+    // assemblies like the player cannon ('^' turret over '_' base).
+    // dyA (default parameter value) drops glyph A that many pixels
+    // toward glyph B, so glyphs living in different parts of the cell
+    // can be pulled together visually.
+    void blit2(int spriteIdA, int spriteIdB, int x, int y, int dyA = 0) {
+        select_region(spriteIdA);
+        draw_region_zoomed_at(162 + (x * 45) / 32, ((y + dyA) * 45) / 32);
+        select_region(spriteIdB);
+        draw_region_zoomed_at(162 + (x * 45) / 32, (y * 45) / 32);
     }
 
     // Clear the framebuffer.
@@ -399,8 +470,12 @@ public:
     }
 
     // bounds via out-parameter: Rect is bigger than one word, so it must
-    // not be returned by value under Vircon32 C's one-word rule
-    void getBounds(Rect& r) const {
+    // not be returned by value under Vircon32 C's one-word rule.
+    // VIRTUAL now: thin-glyph subclasses (Player, Bullet) override it with
+    // an inset, cell-centered hitbox so collision matches what's actually
+    // visible on screen; mPos stays the CELL position in every class, so
+    // drawing / clamping / respawn math is untouched by the insets.
+    virtual void getBounds(Rect& r) const {
         r.x = mPos.x();
         r.y = mPos.y();
         r.w = mW;
@@ -448,14 +523,12 @@ protected:
 // ---------------------------------------------------------------------------
 class Player : public Entity {
 public:
-    // NOTE: default ctor exists because Game cannot mention mPlayer in its
-    // initializer list (sema rejects member inits for class-typed fields);
-    // Game default-constructs it and immediately calls reset(px, py).
-    Player()
-        : Entity(0, PLAYER_HOME_Y, PLAYER_WIDTH, PLAYER_HEIGHT),
-          mLives(3), mRespawn(0), mWantsFire(false) {}
-
-    Player(int px, int py)
+    // ONE constructor with DEFAULT PARAMETER VALUES (now supported by
+    // v32c++) replaces the old default/ two-ctor pair. Game constructs
+    // with `new Player()` and immediately reset()s, exactly as before.
+    // NOTE: Game cannot mention mPlayer in its initializer list (sema
+    // rejects member inits for class-typed fields), hence this shape.
+    Player(int px = 0, int py = PLAYER_HOME_Y)
         : Entity(px, py, PLAYER_WIDTH, PLAYER_HEIGHT),
           mLives(3), mRespawn(0), mWantsFire(false) {}
 
@@ -469,6 +542,16 @@ public:
         mWantsFire = false;
         mState = STATE_ALIVE;
         mTimer = 0;
+    }
+
+    // inset hitbox: the visible turret+base band spans roughly the lower
+    // 8 px of the 20 px cell -- full-cell bounds made bombs connect
+    // 10-30 px "early" (i.e. while the glyphs were still clearly apart)
+    void getBounds(Rect& r) const {
+        r.x = mPos.x();
+        r.y = mPos.y() + PLAYER_HIT_INSET_Y;
+        r.w = PLAYER_WIDTH;
+        r.h = PLAYER_HEIGHT - 2 * PLAYER_HIT_INSET_Y;
     }
 
     void handleInput(const Input& in) {
@@ -494,7 +577,11 @@ public:
 
     void draw(Video& video) {
         if (mState == STATE_ALIVE)
-            video.blit(AssetIds::PLAYER_SHIP, mPos.x(), mPos.y());      // '='
+            // '^' turret superimposed over '_' base, same 10x20 cell,
+            // turret dropped a few px so it sits ON the base, not above it
+            video.blit2(AssetIds::PLAYER_SHIP_TURRET,
+                        AssetIds::PLAYER_SHIP_BASE,
+                        mPos.x(), mPos.y(), PLAYER_TURRET_DROP);
         else if (mState == STATE_DYING)
             video.blit(AssetIds::PLAYER_EXPLOSION, mPos.x(), mPos.y()); // '#'
     }
@@ -546,6 +633,16 @@ public:
         mVel.setY(vy);
     }
 
+    // inset hitbox: '|' is a ~2 px stroke and 'v' a small chevron inside
+    // a 10x20 cell -- full-cell bounds collided with things the visible
+    // glyph hadn't reached yet
+    void getBounds(Rect& r) const {
+        r.x = mPos.x() + BULLET_HIT_INSET_X;
+        r.y = mPos.y() + BULLET_HIT_INSET_Y;
+        r.w = SPRITE_W - 2 * BULLET_HIT_INSET_X;
+        r.h = SPRITE_H - 2 * BULLET_HIT_INSET_Y;
+    }
+
     void update() {
         mPos += mVel;   // Vec2::operator+=
         if (mPos.y() < -SPRITE_H || mPos.y() > PLAYFIELD_H)
@@ -580,6 +677,7 @@ public:
 
     int points() const { return mPoints; }
     int frame() const  { return mFrame; }
+    void setFrame(int f) { mFrame = f; }   // Swarm drives the march animation
 
     void destroy(Sound& sfx) {
         if (mState == STATE_ALIVE) {
@@ -691,8 +789,10 @@ private:
 // ---------------------------------------------------------------------------
 class Saucer : public Entity {
 public:
+    // kill() in the body: Entity's ctor forces STATE_ALIVE, which made
+    // the saucer fly from frame 0 instead of waiting out mCooldown.
     Saucer() : Entity(0, 16, SAUCER_WIDTH, SAUCER_HEIGHT),
-               mDir(1), mCooldown(600) {}
+               mDir(1), mCooldown(600) { kill(); }
 
     void update() {
         if (mState == STATE_ALIVE) {
@@ -792,8 +892,6 @@ private:
 class Swarm {
 public:
     Swarm() : mDx(2), mAnimFrame(0), mStepCooldown(0) {
-        mOffset.setX(0);
-        mOffset.setY(0);
         for (int r = 0; r < SWARM_ROWS; ++r)
             for (int c = 0; c < SWARM_COLS; ++c)
                 mGrid[r][c] = 0;
@@ -837,34 +935,37 @@ public:
         return false;
     }
 
-    // march one animation/exchange step; steps faster as aliens die
+    // march one animation/exchange step; steps faster as aliens die.
+    // Moves the ALIENS themselves (no separate offset): each alive alien
+    // shifts by mDx, or drops one sprite height and reverses at the
+    // edges. Extents are computed from the aliens' ACTUAL positions.
     void step(Sound& sfx) {
         if (mStepCooldown > 0) { --mStepCooldown; return; }
         mStepCooldown = stepInterval();
 
-        // find horizontal extent of living columns
-        int minC = SWARM_COLS, maxC = -1;
+        // find horizontal extent of living aliens, from real positions
+        int minX = PLAYFIELD_W, maxX = -1;
         for (int r = 0; r < SWARM_ROWS; ++r)
             for (int c = 0; c < SWARM_COLS; ++c)
                 if (mGrid[r][c] && mGrid[r][c]->state() == STATE_ALIVE) {
-                    if (c < minC) minC = c;
-                    if (c > maxC) maxC = c;
+                    if (mGrid[r][c]->posX() < minX) minX = mGrid[r][c]->posX();
+                    if (mGrid[r][c]->posX() > maxX) maxX = mGrid[r][c]->posX();
                 }
-        if (maxC < 0) return; // nobody left
+        if (maxX < 0) return; // nobody left
 
-        int leftEdge  = minC * SWARM_GAP_X + mOffset.x();
-        int rightEdge = (maxC + 1) * SWARM_GAP_X + mOffset.x();
-
-        bool drop = (mDx > 0 && rightEdge + mDx > PLAYFIELD_W) ||
-                    (mDx < 0 && leftEdge  + mDx < 0);
-        if (drop) {
-            mDx = -mDx;
-            mOffset.setY(mOffset.y() + SPRITE_H);   // one sprite height
-        } else {
-            mOffset.setX(mOffset.x() + mDx);
-        }
-
+        bool drop = (mDx > 0 && maxX + mDx + ALIEN_WIDTH > PLAYFIELD_W) ||
+                    (mDx < 0 && minX + mDx < 0);
         mAnimFrame = 1 - mAnimFrame;
+        for (int r = 0; r < SWARM_ROWS; ++r)
+            for (int c = 0; c < SWARM_COLS; ++c) {
+                Alien* a = mGrid[r][c];
+                if (a && a->state() == STATE_ALIVE) {
+                    if (drop) a->move(0, SPRITE_H);   // one sprite height
+                    else      a->move(mDx, 0);
+                    a->setFrame(mAnimFrame);
+                }
+            }
+        if (drop) mDx = -mDx;
         sfx.play(AssetIds::SOUND_MARCH_BASE + marchStep());
     }
 
@@ -882,18 +983,33 @@ public:
                     mGrid[r][c]->draw(video);
     }
 
-    // pick a random living alien (lowest in its column) to drop a bomb from
+    // pick a random living alien (lowest in its column) to drop a bomb from.
+    // Counts the shooter CANDIDATES first (one per column that has any
+    // living alien), then picks among exactly those -- the old version
+    // picked in [0, aliveCount) but only ever decremented once per
+    // column, so any pick >= the number of living columns fell through
+    // the whole loop and returned 0 (no bomb that cycle, ~80% of the
+    // time with a full swarm).
     Alien* randomShooter() {
-        int alive = aliveCount();
-        if (!alive) return 0;
-        int pick = g_rng.next(alive);
+        int shooters = 0;
+        for (int c = 0; c < SWARM_COLS; ++c) {
+            for (int r = SWARM_ROWS - 1; r >= 0; --r) {
+                Alien* a = mGrid[r][c];
+                if (a && a->state() == STATE_ALIVE) {
+                    ++shooters;   // only the lowest alien per column shoots
+                    break;
+                }
+            }
+        }
+        if (!shooters) return 0;
+        int pick = g_rng.next(shooters);
         for (int c = 0; c < SWARM_COLS; ++c) {
             for (int r = SWARM_ROWS - 1; r >= 0; --r) {
                 Alien* a = mGrid[r][c];
                 if (a && a->state() == STATE_ALIVE) {
                     if (pick == 0) return a;
                     --pick;
-                    break; // only the lowest alien per column shoots
+                    break;
                 }
             }
         }
@@ -934,7 +1050,6 @@ private:
     }
 
     Alien* mGrid[5][11];   // SWARM_ROWS x SWARM_COLS: dims must be INT_LITERALs
-    Vec2   mOffset;
     int    mDx;
     int    mAnimFrame;
     int    mStepCooldown;
@@ -991,12 +1106,16 @@ public:
         // would leave the grid and vtable as raw stack garbage and
         // HALT on first use. `new T()` runs the constructor and
         // installs the vtable (see the v32_new_* helpers).
-        mPlayer = new Player();
+        mPlayer = new Player();   // default parameter values fill px/py
         mSwarm  = new Swarm();
         mSaucer = new Saucer();
         mBombs  = new BombList();
         mPlayer->reset(PLAYFIELD_W / 2 - PLAYER_WIDTH / 2, PLAYER_HOME_Y);
         for (int i = 0; i < BUNKER_COUNT; ++i) mBunkers[i] = 0;
+        // title screen active: game starts on START (titleFrame).
+        // (The old TEMP DEBUG autostart was removed with the headless
+        // v32sim testing era -- re-add startNewGame() here for headless
+        // runs.)
     }
 
     ~Game() {
@@ -1115,6 +1234,12 @@ private:
             mBombCooldown = 30 + g_rng.next(45);
         }
         for (int i = 0; i < mBombs->size();) {
+            // KEPT UNHOISTED ON PURPOSE: the result of operator[] (a call)
+            // used directly as a virtual-call receiver. This was the
+            // trigger of the wild-jump HLT (~frame 160, first bomb
+            // delete). v32c++ now auto-hoists these in its lowering
+            // (phase 3c, the Vircon32 C arg-staging workaround), so this
+            // loop doubles as a live regression test for that fix.
             (*mBombs)[i]->update();
             if ((*mBombs)[i]->state() == STATE_DEAD) {
                 delete (*mBombs)[i];
@@ -1130,7 +1255,7 @@ private:
         // player bullet vs aliens
         if (mPlayerBullet) {
             Rect pb;
-            mPlayerBullet->getBounds(pb);
+            mPlayerBullet->getBounds(pb);   // virtual: Bullet's inset box
             Alien* a = mSwarm->hitTest(pb);
             if (a) {
                 a->destroy(mSfx);
@@ -1149,7 +1274,8 @@ private:
                     }
             }
         }
-        // bombs vs player / bunkers
+        // bombs vs player / bunkers (KEPT UNHOISTED on purpose -- same
+        // live-regression reasoning as updateBombs above)
         for (int i = 0; i < mBombs->size();) {
             bool gone = false;
             if (mPlayer->collidesWith(*(*mBombs)[i])) {
@@ -1159,7 +1285,7 @@ private:
                 for (int k = 0; k < BUNKER_COUNT && !gone; ++k) {
                     if (mBunkers[k]) {
                         Rect bb;
-                        (*mBombs)[i]->getBounds(bb);
+                        (*mBombs)[i]->getBounds(bb);   // virtual: inset box
                         if (mBunkers[k]->erode(bb, mSfx)) gone = true;
                     }
                 }
@@ -1207,7 +1333,9 @@ private:
         drawNumber(video, mHiScore, 88,  2);
         drawNumber(video, mWave,    200, 2);
         for (int i = 0; i < mPlayer->lives() - 1; ++i)
-            video.blit(AssetIds::PLAYER_SHIP, 8 + i * 16, 236);   // '='
+            video.blit2(AssetIds::PLAYER_SHIP_TURRET,   // '^' over '_'
+                        AssetIds::PLAYER_SHIP_BASE,
+                        8 + i * 16, 236, PLAYER_TURRET_DROP);
     }
 
     Player*   mPlayer;      // by pointer: ctor injection never touches

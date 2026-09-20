@@ -13,3 +13,12 @@ public:
     Inner* mPtr;               // must NOT be constructed (pointer)
     int sum() { return mPlain + mInner.value(); }  // 12
 };
+
+int main() {
+    Outer o;
+    Outer* p = new Outer();
+    int a = o.sum();      // 12
+    int b = p->sum();     // 12
+    delete p;
+    return a + b - 24;    // 0
+}

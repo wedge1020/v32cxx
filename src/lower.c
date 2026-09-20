@@ -971,6 +971,251 @@ static void fill_default_args(AstList *call_args, AstNode *target, int param_off
     }
 }
 
+/* ---- phase 3c: indirect-call receiver/argument temp hoisting ------------- */
+
+/* File-scope temp counter, reset per function (see PLACE 3). Unique within
+ * one function is all C block scope requires. */
+static int g_v32_temp_counter;
+
+/* True if this expression contains an AST_CALL anywhere. Runs AFTER phases
+ * 3+4 have finalized a statement, so operator-overload uses (`list[i]`,
+ * `a + b` on class operands) are already AST_CALLs and are seen through. */
+static int expr_contains_call(const AstNode *n)
+{
+    if (n == NULL) return 0;
+    if (n->kind == AST_CALL) return 1;
+    if (expr_contains_call(n->a)) return 1;
+    for (int i = 0; i < n->list.count; i++)
+        if (expr_contains_call(n->list.items[i])) return 1;
+    return 0;
+}
+
+/* If `call` is a fully-finalized VIRTUAL dispatch -- callee shaped
+ * recv->vtable->Field -- return the receiver node; else NULL. Only
+ * finalize_call's virtual branch ever builds a member chain whose middle
+ * link is named "vtable", so the name is an unambiguous marker of an
+ * indirect call site. codegen.c's virtual-destructor dispatch inside
+ * v32_delete_ClassName is emitted directly as text and never appears in a
+ * lowered AST, so it cannot be confused with this. */
+static AstNode *virtual_call_receiver(AstNode *call)
+{
+    if (call == NULL || call->kind != AST_CALL || call->a == NULL) return NULL;
+    AstNode *slot_ref = call->a;
+    if (slot_ref->kind != AST_MEMBER || slot_ref->a == NULL) return NULL;
+    AstNode *vtable_ref = slot_ref->a;
+    if (vtable_ref->kind != AST_MEMBER) return NULL;
+    if (vtable_ref->str2 == NULL || strcmp(vtable_ref->str2, "vtable") != 0)
+        return NULL;
+    return vtable_ref->a;
+}
+
+/* A receiver is "simple" (safe to emit textually twice) iff it contains no
+ * call and is an identifier possibly under -> member accesses. A subscript
+ * on a raw pointer array (mGrid[r][c]) contains no call and needs no
+ * special case. Everything else is conservatively hoisted. */
+static int receiver_is_simple(const AstNode *n)
+{
+    if (n == NULL) return 0;
+    if (expr_contains_call(n)) return 0;
+    switch (n->kind) {
+        case AST_IDENT:
+            return 1;
+        case AST_MEMBER:
+            return receiver_is_simple(n->a);
+        default:
+            return 0;
+    }
+}
+
+/* Replace every node in the tree rooted at `n` that IS `target` (by pointer
+ * identity) with a fresh identifier named `name`. Identity, not shape: the
+ * receiver node is shared between the vtable-ref and (possibly cast-wrapped
+ * by cast_receiver_if_needed) the first argument, and replacement must hit
+ * both. */
+static void replace_node_identity(AstNode *n, AstNode *target, const char *name, int line)
+{
+    if (n == NULL) return;
+    if (n->a == target) n->a = ast_ident(name, line);
+    else replace_node_identity(n->a, target, name, line);
+    for (int i = 0; i < n->list.count; i++) {
+        if (n->list.items[i] == target) n->list.items[i] = ast_ident(name, line);
+        else replace_node_identity(n->list.items[i], target, name, line);
+    }
+}
+
+/* Builds `T* v32_temp_N = <expr>;` as an AST_VAR_DECL. The type node is a
+ * COPY of the expression's own inferred (already pointer-typed) type, so
+ * the declaration doesn't alias the expression's type node. Mirror however
+ * existing code builds local var decls (codegen prints AST_VAR_DECL via
+ * print_var_decl_inline). NOTE: takes ownership of `expr`. */
+static AstNode *build_hoisted_temp_decl(AstNode *expr, const char *name,
+                                        AstNode *class_decl, LocalVarType *locals)
+{
+    AstNode *decl = ast_new(AST_VAR_DECL, expr->line);
+    /* Type nodes are shared by reference throughout the codebase and never
+     * mutated in place (see clone_default_expr's own comment in ast.c) --
+     * no copy needed, unlike what the original patch draft assumed. */
+    decl->type = infer_expr_type(expr, class_decl, locals);
+    decl->str1 = strdup(name);
+    decl->a = expr;
+    return decl;
+}
+
+/* True if evaluating `n` unconditionally could execute something the
+ * original program might not have: a ternary branch, or the RHS of a
+ * short-circuit && / ||. Such expressions must NOT be hoisted. */
+static int expr_has_cond_eval(const AstNode *n)
+{
+    if (n == NULL) return 0;
+    if (n->kind == AST_TERNARY) return 1;
+    if (n->kind == AST_BINOP && n->str1 != NULL &&
+        (strcmp(n->str1, "&&") == 0 || strcmp(n->str1, "||") == 0))
+        return 1;
+    if (expr_has_cond_eval(n->a)) return 1;
+    if (expr_has_cond_eval(n->b)) return 1;
+    if (expr_has_cond_eval(n->c)) return 1;
+    for (int i = 0; i < n->list.count; i++)
+        if (expr_has_cond_eval(n->list.items[i])) return 1;
+    return 0;
+}
+
+/* Insert `node` into `list` at `index`, shifting later items up. The
+ * AST_LIST API only offers append (ast_list_append), so phase 3c needs
+ * this small local helper to place hoisted temp decls BEFORE the
+ * statement that owns them. Valid for 0 <= index <= count. */
+static void ast_list_insert_at(AstList *list, int index, AstNode *node)
+{
+    if (index < 0 || index > list->count) return;  /* defensive; shouldn't happen */
+    ast_list_append(list, node);                   /* grow (reallocs if needed) */
+    for (int i = list->count - 1; i > index; i--)
+        list->items[i] = list->items[i - 1];
+    list->items[index] = node;
+}
+
+/* Recursive hazard scan over ONE expression tree (already finalized).
+ * Hoists complex virtual-call receivers and call-containing arguments
+ * into temps prepended into `block_list` at base_index + *inserted. */
+static void hoist_hazards_in_expr(AstNode *expr, AstNode *stmt, AstList *block_list,
+                                  int base_index, int *inserted,
+                                  AstNode *class_decl, LocalVarType *locals)
+{
+    if (expr == NULL) return;
+    /* never hoist out of a conditional-evaluation context */
+    if (expr->kind == AST_TERNARY) return;
+    if (expr->kind == AST_BINOP && expr->str1 != NULL &&
+        (strcmp(expr->str1, "&&") == 0 || strcmp(expr->str1, "||") == 0))
+        return;
+
+    if (expr->kind == AST_CALL) {
+        AstNode *recv = virtual_call_receiver(expr);
+        if (recv != NULL) {
+            if (!receiver_is_simple(recv)) {
+                if (expr_has_cond_eval(recv)) {
+                    lower_note(expr->line, "virtual-call receiver under a ternary/short-circuit: not auto-hoisted (Vircon32 C compiler workaround); hoist manually if this HALTs");
+                } else {
+                    char name[32];
+                    snprintf(name, sizeof name, "v32_temp_%d", g_v32_temp_counter++);
+                    AstNode *decl = build_hoisted_temp_decl(recv, name, class_decl, locals);
+                    replace_node_identity(stmt, recv, name, expr->line);
+                    ast_list_insert_at(block_list, base_index + *inserted, decl);
+                    (*inserted)++;
+                }
+            }
+            for (int i = 0; i < expr->list.count; i++) {
+                AstNode *arg = expr->list.items[i];
+                if (expr_contains_call(arg)) {
+                    if (expr_has_cond_eval(arg)) {
+                        lower_note(expr->line, "call-containing argument under a ternary/short-circuit: not auto-hoisted (Vircon32 C compiler workaround); hoist manually if this HALTs");
+                    } else {
+                        char name[32];
+                        snprintf(name, sizeof name, "v32_temp_%d", g_v32_temp_counter++);
+                        AstNode *decl = build_hoisted_temp_decl(arg, name, class_decl, locals);
+                        replace_node_identity(stmt, arg, name, expr->line);
+                        ast_list_insert_at(block_list, base_index + *inserted, decl);
+                        (*inserted)++;
+                    }
+                }
+            }
+        }
+        /* descend into every arg of ANY call -- a direct call's arguments
+         * can themselves contain virtual calls needing the same treatment */
+        for (int i = 0; i < expr->list.count; i++)
+            hoist_hazards_in_expr(expr->list.items[i], stmt, block_list,
+                                  base_index, inserted, class_decl, locals);
+        return;
+    }
+
+    hoist_hazards_in_expr(expr->a, stmt, block_list, base_index, inserted, class_decl, locals);
+    hoist_hazards_in_expr(expr->b, stmt, block_list, base_index, inserted, class_decl, locals);
+    for (int i = 0; i < expr->list.count; i++)
+        hoist_hazards_in_expr(expr->list.items[i], stmt, block_list,
+                              base_index, inserted, class_decl, locals);
+}
+
+/* One statement's worth of hoisting. Only statements whose expressions
+ * are evaluated UNCONDITIONALLY qualify: an expr-stmt's expression, a
+ * return's expression, a var-decl's initializer, and an if's CONDITION
+ * (its branches are conditional statements -- skipped; block-shaped
+ * branches reach the AST_BLOCK hook through their own recursion). */
+static int hoist_indirect_call_temps_stmt(AstNode *stmt, AstList *block_list,
+                                          int stmt_index, AstNode *class_decl,
+                                          LocalVarType *locals)
+{
+    int inserted = 0;
+    switch (stmt->kind) {
+        case AST_EXPR_STMT:
+        case AST_RETURN:
+        case AST_VAR_DECL:
+            hoist_hazards_in_expr(stmt->a, stmt, block_list, stmt_index,
+                                  &inserted, class_decl, locals);
+            break;
+        case AST_IF:
+            hoist_hazards_in_expr(stmt->a, stmt, block_list, stmt_index,
+                                  &inserted, class_decl, locals);
+            break;
+        default:
+            break;   /* conservative: single-statement if/else branches and
+                        anything else unusual is left alone */
+    }
+    return inserted;
+}
+
+/* True if a while/for statement's condition (or a for's step expression)
+ * contains an indirect-call hazard -- used only to decide whether to warn. */
+static int loop_stmt_has_indirect_hazard(AstNode *stmt)
+{
+    if (stmt == NULL) return 0;
+    AstNode *parts[2] = { NULL, NULL };
+    int n = 0;
+    if (stmt->kind == AST_WHILE) {
+        parts[n++] = stmt->a;                 /* condition */
+    } else if (stmt->kind == AST_FOR) {
+        parts[n++] = stmt->b;                 /* condition */
+        parts[n++] = stmt->c;                 /* step expression */
+    }
+    for (int p = 0; p < n; p++) {
+        AstNode *e = parts[p];
+        if (e == NULL) continue;
+        if (e->kind == AST_CALL) {
+            AstNode *recv = virtual_call_receiver(e);
+            if (recv != NULL) {
+                if (!receiver_is_simple(recv)) return 1;
+                for (int i = 0; i < e->list.count; i++)
+                    if (expr_contains_call(e->list.items[i])) return 1;
+            }
+        }
+        if (loop_stmt_has_indirect_hazard(e->a) ||
+            loop_stmt_has_indirect_hazard(e->b)) return 1;  /* crude but
+            adequate: only needs to over-warn, never under-warn... but see
+            note -- replace with a proper expr walker if it misses cases */
+        for (int i = 0; i < e->list.count; i++)
+            if (expr_contains_call(e->list.items[i]) &&
+                (e->kind == AST_CALL) == 0) return 1;  /* call somewhere in
+                a non-call position is at least worth warning about */
+    }
+    return 0;
+}
+
 static void finalize_call(AstNode *call, AstNode *class_decl, LocalVarType *locals) {
     CallResolution *cr = (CallResolution *)call->sema_info;
     if (cr == NULL || cr->resolved_target == NULL) {
@@ -1685,6 +1930,45 @@ static void finalize_calls_stmt(AstNode **slot, AstNode *class_decl, LocalVarTyp
             for (int i = 0; i < n->list.count; i++) {
                 finalize_calls_stmt(&n->list.items[i], class_decl, locals);
             }
+            /* Runs after each direct child is fully finalized: at this point
+             * every expression has its final dispatch shape (phases 3 and 4
+             * interleave inside finalize_call/rewrite_operator_use, so there is
+             * no earlier moment when the whole statement is final). Only DIRECT
+             * children are scanned here -- nested blocks recurse through this
+             * same case and hoist into their own block, keeping loop bodies
+             * re-evaluating their temps per iteration. */
+            for (int i = 0; i < n->list.count; i++) {
+                AstNode *stmt = n->list.items[i];
+                if (stmt == NULL) continue;
+                if (stmt->kind == AST_WHILE || stmt->kind == AST_FOR) {
+                    /* single-statement bodies aren't Blocks (the parser only wraps
+                     * multi-statement ones) -- wrap them here so their hazards get
+                     * the same hoisting a braced body would. Purely structural. */
+                    AstNode *body = (stmt->kind == AST_FOR) ? stmt->d : stmt->b;
+                    if (body != NULL && body->kind != AST_BLOCK) {
+                        AstNode *blk = ast_new(AST_BLOCK, body->line);
+                        ast_list_append(&blk->list, body);
+                        if (stmt->kind == AST_FOR) stmt->d = blk;
+                        else                       stmt->b = blk;
+                        body = blk;
+                    }
+                    if (body != NULL && body->kind == AST_BLOCK) {
+                        for (int j = 0; j < body->list.count; j++) {
+                            AstNode *inner = body->list.items[j];
+                            if (inner == NULL) continue;
+                            if (inner->kind == AST_WHILE || inner->kind == AST_FOR) continue; /* nesting handled by its own visit */
+                            j += hoist_indirect_call_temps_stmt(inner, &body->list, j,
+                                                                 class_decl, *locals);
+                        }
+                    }
+                    /* condition (and for's init/step) still deliberately not hoisted:
+                     * temps there would change evaluation frequency */
+                    if (loop_stmt_has_indirect_hazard(stmt))
+                        lower_note(stmt->line, "virtual call with call-result receiver/argument inside a while/for condition: not auto-hoisted (Vircon32 C compiler workaround); hoist manually if this HALTs");
+                    continue;
+                }
+                i += hoist_indirect_call_temps_stmt(stmt, &n->list, i, class_decl, *locals);
+            }
             break;
         case AST_IF:
             finalize_calls_expr(&n->a, class_decl, *locals);
@@ -1854,6 +2138,7 @@ static void inject_reference_return_address_stmt(AstNode **slot, AstNode *class_
 
 static void finalize_calls_in_method(AstNode *method, AstNode *class_decl) {
     if (method->kind != AST_FUNC_DEF) return;
+    g_v32_temp_counter = 0;                        /* NEW: phase 3c */
     LocalVarType *locals = seed_locals_from_params(method);
     finalize_calls_stmt(&method->a, class_decl, &locals);
     if (method->type != NULL && method->type->kind == AST_REFERENCE_TYPE) {
@@ -1889,6 +2174,7 @@ static void finalize_calls_free_functions(AstList *decls) {
              * the identical guard already used elsewhere in this
              * project for exactly this reason). */
             LocalVarType *locals = seed_locals_from_params(n);
+            g_v32_temp_counter = 0;                        /* NEW: phase 3c */
             finalize_calls_stmt(&n->a, NULL, &locals);
             if (n->type != NULL && n->type->kind == AST_REFERENCE_TYPE) {
                 /* Same reference-return handling as

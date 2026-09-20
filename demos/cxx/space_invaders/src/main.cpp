@@ -88,13 +88,6 @@
 //  13  SOUND_BUNKER_HIT     bullet chews a bunker cell
 // ============================================================================
 
-// If you split the sections above into real headers, include them here:
-#include "inc/assets.h"
-#include "inc/core.h"
-#include "inc/platform.h"
-#include "inc/entities.h"
-#include "inc/game.h"
-
 int main() {
     si::g_rng.seed(0x1234ABCD);   // or a real entropy source
 

@@ -29,12 +29,13 @@ clang: obj/$(DEMO).c
 
 # Transpile C++ to C
 obj/$(DEMO).c: prep $(DEMO).cpp
-	$(TRANSPILER) $(DEBUG_FLAGS) -c -o obj/assets.h   inc/assets.h
-	$(TRANSPILER) $(DEBUG_FLAGS) -c -o obj/core.h     inc/core.h
-	$(TRANSPILER) $(DEBUG_FLAGS) -c -o obj/entities.h inc/entities.h
-	$(TRANSPILER) $(DEBUG_FLAGS) -c -o obj/game.h     inc/game.h
-	$(TRANSPILER) $(DEBUG_FLAGS) -c -o obj/platform.h inc/platform.h
-	$(TRANSPILER) $(DEBUG_FLAGS)    -o obj/$(DEMO).c  src/main.cpp
+	$(TRANSPILER) $(DEBUG_FLAGS)    -o obj/$(DEMO).c  $(DEMO).cpp
+	#$(TRANSPILER) $(DEBUG_FLAGS) -c -o obj/assets.h   inc/assets.h
+	#$(TRANSPILER) $(DEBUG_FLAGS) -c -o obj/core.h     inc/core.h
+	#$(TRANSPILER) $(DEBUG_FLAGS) -c -o obj/entities.h inc/entities.h
+	#$(TRANSPILER) $(DEBUG_FLAGS) -c -o obj/game.h     inc/game.h
+	#$(TRANSPILER) $(DEBUG_FLAGS) -c -o obj/platform.h inc/platform.h
+	#$(TRANSPILER) $(DEBUG_FLAGS)    -o obj/$(DEMO).c  src/main.cpp
 
 # Compile C to Assembly
 asm: obj/$(DEMO).asm
