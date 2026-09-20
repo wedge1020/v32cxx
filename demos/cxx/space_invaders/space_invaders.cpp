@@ -420,6 +420,16 @@ public:
     void sync() {
         end_frame();
     }
+
+    // Tint all subsequent region draws (GPU multiply color). Colors are
+    // ABGR ints (see video.h); set_multiply_color is an SDK free function
+    // passed through to the generated C like select_region. White
+    // (0xFFFFFFFF) is neutral. clear_screen() is NOT affected by it.
+    // NOTE: numeric literals, not the color_* macros -- those #defines
+    // live in video.h, which v32c++ passes through without expanding.
+    void tint(int color) {
+        set_multiply_color(color);
+    }
 };
 
 // ---------------------------------------------------------------------------
@@ -576,14 +586,18 @@ public:
     }
 
     void draw(Video& video) {
-        if (mState == STATE_ALIVE)
+        if (mState == STATE_ALIVE) {
+            // classic green cannon
+            video.tint(0xFF00FF00);   // color_green (ABGR)
             // '^' turret superimposed over '_' base, same 10x20 cell,
             // turret dropped a few px so it sits ON the base, not above it
             video.blit2(AssetIds::PLAYER_SHIP_TURRET,
                         AssetIds::PLAYER_SHIP_BASE,
                         mPos.x(), mPos.y(), PLAYER_TURRET_DROP);
-        else if (mState == STATE_DYING)
+        } else if (mState == STATE_DYING) {
+            video.tint(0xFF0080FF);   // color_orange: hot death flash
             video.blit(AssetIds::PLAYER_EXPLOSION, mPos.x(), mPos.y()); // '#'
+        }
     }
 
     void fire() {
@@ -650,6 +664,7 @@ public:
     }
 
     void draw(Video& video) {
+        video.tint(0xFFFFFFFF);       // white: neutral tracer
         video.blit(mSprite, mPos.x(), mPos.y());   // '!' / 'v' / '|'
     }
 
@@ -665,15 +680,30 @@ class Alien : public Entity {
 public:
     Alien(int px, int py, int points)
         : Entity(px, py, ALIEN_WIDTH, ALIEN_HEIGHT),
-          mPoints(points), mFrame(0) {}
+          mPoints(points), mFrame(0), mColor(0xFFFFFFFF) {}
 
     void update() {
         tickDeath(); // DYING -> DEAD after explosion frames
     }
 
     void draw(Video& video) {
+        if (mState == STATE_DYING)
+            video.tint(0xFF0080FF);          // orange explosion poof
+        else
+            video.tint(mColor);              // this row's rainbow color
         video.blit(spriteId(), mPos.x(), mPos.y());   // 10x20, ASCII id
     }
+
+    // per-instance tint (ABGR multiply color), set by Swarm::spawn --
+    // per-INSTANCE, not per-subclass: rows 1-2 share AlienMiddleRow and
+    // rows 3-4 share AlienBottomRow, so the row classes can't own it.
+    // The Atari-rainbow look, one hue per row:
+    //   row 0 squid    magenta
+    //   row 1 crab     orange
+    //   row 2 crab     yellow
+    //   row 3 octopus  green
+    //   row 4 octopus  cyan
+    void setColor(int c) { mColor = c; }
 
     int points() const { return mPoints; }
     int frame() const  { return mFrame; }
@@ -697,6 +727,7 @@ protected:
 
     int mPoints;
     int mFrame;
+    int mColor;   // ABGR tint; white until Swarm::spawn assigns the row's
 };
 
 class AlienTopRow : public Alien {          // squid, 30 pts
@@ -744,6 +775,7 @@ public:
     void update() {}
 
     void draw(Video& video) {
+        video.tint(0xFF00FF00);   // green shields (classic)
         for (int cy = 0; cy < BUNKER_CELLS_H; ++cy)
             for (int cx = 0; cx < BUNKER_CELLS_W; ++cx)
                 if (cell(cx, cy))
@@ -810,8 +842,10 @@ public:
     }
 
     void draw(Video& video) {
-        if (mState != STATE_DEAD)
+        if (mState != STATE_DEAD) {
+            video.tint(0xFF0000FF);   // color_red: the mystery UFO
             video.blit(AssetIds::SAUCER, mPos.x(), mPos.y());   // 'U'
+        }
     }
 
     void launch() {
@@ -921,10 +955,18 @@ public:
             for (int c = 0; c < SWARM_COLS; ++c) {
                 int px = x0 + c * SWARM_GAP_X;
                 int py = baseY + r * SWARM_GAP_Y;
+                // Atari rainbow: one hue per row (ABGR multiply colors)
+                int rowColor[5];
+                rowColor[0] = 0xFFFF00FF;   // magenta (squid)
+                rowColor[1] = 0xFF0080FF;   // orange
+                rowColor[2] = 0xFF00FFFF;   // yellow
+                rowColor[3] = 0xFF00FF00;   // green
+                rowColor[4] = 0xFFFFFF00;   // cyan
                 Alien* a;
                 if (r == 0)      a = new AlienTopRow(px, py);
                 else if (r < 3)  a = new AlienMiddleRow(px, py);
                 else             a = new AlienBottomRow(px, py);
+                a->setColor(rowColor[r]);
                 mGrid[r][c] = a;
             }
         }
@@ -1088,6 +1130,7 @@ private:
 // functions, and 'ScoreDisplay::draw' would need them)
 // ---------------------------------------------------------------------------
 void drawNumber(Video& video, int value, int x, int y) {
+    video.tint(0xFFFFFFFF);   // text always neutral white
     // render digits with FONT_DIGITS_BASE + digit ('0'..'9', 10x20)
     char buf[12];
     int n = 0;
@@ -1102,6 +1145,7 @@ void drawNumber(Video& video, int value, int x, int y) {
 }
 
 void drawText(Video& video, const char* text, int x, int y) {
+    video.tint(0xFFFFFFFF);   // text always neutral white
     // render text using each character's ASCII value as the sprite id
     for (int i = 0; text[i] != 0; ++i)
         video.blit(text[i], x + i * SPRITE_W, y);
@@ -1402,6 +1446,7 @@ private:
         drawNumber(video, mScore,   8,   2);
         drawNumber(video, mHiScore, 88,  2);
         drawNumber(video, mWave,    200, 2);
+        video.tint(0xFF00FF00);   // lives icons match the green cannon
         for (int i = 0; i < mPlayer->lives() - 1; ++i)
             video.blit2(AssetIds::PLAYER_SHIP_TURRET,   // '^' over '_'
                         AssetIds::PLAYER_SHIP_BASE,
