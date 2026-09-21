@@ -976,11 +976,17 @@ public:
                 stars[i].respawn( &rng );
             i = i + 1;
         }
-        // menu navigation
+        // menu navigation (with the shield-toggle blip on moves)
         if (gamepad_up() > 0 && prev_bu <= 0)
+        {
             title_sel = title_sel - 1;
+            play_sound( SFX_BEEP );
+        }
         if (gamepad_down() > 0 && prev_bd <= 0)
+        {
             title_sel = title_sel + 1;
+            play_sound( SFX_BEEP );
+        }
         if (title_sel < 0)
             title_sel = 2;
         if (title_sel > 2)
@@ -999,8 +1005,9 @@ public:
     }
 
     // draw one title letter from its 5x7 pattern; shade picks the
-    // block density (0 = full solid 0x14 ... 3 = lightest 0x11)
-    void draw_title_letter( int letter, int x0, int y0, int shade, int shadow )
+    // block density (0 = full solid 0x14 ... 3 = lightest 0x11).
+    // zoom scales the letter cells for the undulation effect.
+    void draw_title_letter( int letter, int x0, int y0, int shade, int shadow, float zoom )
     {
         int* pat;
         int r;
@@ -1036,8 +1043,13 @@ public:
                         select_region( ASCII_BLK4 - shade );
                         set_multiply_color( color_white );
                     }
-                    set_drawing_scale( 0.8, 0.4 );
-                    draw_region_zoomed_at( x0 + c * 8, y0 + r * 8 );
+                    // letter cells: base 8x8 layout, scaled by the
+                    // zoom factor (wave undulation), anchored at the
+                    // letter's center so growth is symmetric
+                    set_drawing_scale( 0.8 * zoom, 0.4 * zoom );
+                    draw_region_zoomed_at(
+                        x0 + 20 + ( c * 8 - 20 ) * zoom,
+                        y0 + 28 + ( r * 8 - 28 ) * zoom );
                 }
                 c = c + 1;
             }
@@ -1089,12 +1101,15 @@ public:
         set_blending_mode( blending_alpha );
 
         // "STAR RAIDERS" -- 11 letters, progressively lighter
-        // blocks (0x14 -> 0x11), with a drop shadow
+        // blocks (0x14 -> 0x11), with a drop shadow and a wave
+        // undulating through the letters
         lx = 52;
         i = 0;
         while (i < 11)
         {
-            draw_title_letter( title_word[i], lx + 6, 80 + 6, 0, 1 );
+            float wz;
+            wz = 1.0 + 0.18 * sin( ( get_frame_counter() * 0.06 - i * 0.55 ) );
+            draw_title_letter( title_word[i], lx + 6, 80 + 6, 0, 1, wz );
             i = i + 1;
             lx = lx + 48;
             if (i == 4)
@@ -1104,7 +1119,9 @@ public:
         i = 0;
         while (i < 11)
         {
-            draw_title_letter( title_word[i], lx, 80, i / 3, 0 );
+            float wz;
+            wz = 1.0 + 0.18 * sin( ( get_frame_counter() * 0.06 - i * 0.55 ) );
+            draw_title_letter( title_word[i], lx, 80, i / 3, 0, wz );
             i = i + 1;
             lx = lx + 48;
             if (i == 4)
@@ -3083,13 +3100,13 @@ public:
         print_at( 8, 284, s_lcan );
         draw_gauge( 60, 292, comp_hp[COMP_CAN] );
         if (shields_on != 0)
-            print_at( 200, 218, s_sh_on );
+            print_at( 440, 56, s_sh_on );
         else
-            print_at( 200, 218, s_sh_off );
+            print_at( 440, 56, s_sh_off );
         if (computer_on != 0)
-            print_at( 200, 240, s_ac_on );
+            print_at( 440, 80, s_ac_on );
         else
-            print_at( 200, 240, s_ac_off );
+            print_at( 440, 80, s_ac_off );
         strcpy( hud_line, s_near );
         strcat( hud_line, s_zch );
         strcat( hud_line, s_sp );
