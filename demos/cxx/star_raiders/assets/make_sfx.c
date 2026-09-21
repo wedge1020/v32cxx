@@ -341,6 +341,81 @@ static void make_replenish( void )
 }
 
 /* ================================================================== */
+/*  8. title music: 8 s loop -- heroic minor-key arpeggio over a      */
+/*     pulsing bass, all loop-periodic (click-free wrap)              */
+/* ================================================================== */
+
+static void make_title_music( void )
+{
+    double seconds = 8.0;
+    int n = (int)( seconds * RATE );
+    float* b = new_buffer( seconds );
+    int i;
+    /* A minor: A2 bass, arpeggio A3-C4-E4-A4 (110, 130.81, 164.81, 220) */
+    double arp[4] = { 110.0 * 2, 130.8127826503 * 2, 164.8137784564 * 2, 220.0 * 2 };
+    double bass_f = 55.0;                    /* 440 whole cycles in 8 s */
+    double arp_rate = 4.0;                   /* 32 steps across the loop */
+    for( i = 0; i < n; i++ )
+    {
+        double t = (double)i / RATE;
+        double step = fmod( t * arp_rate, 4.0 );
+        int note = (int)step;
+        double nt = fmod( step, 1.0 );
+        double f = arp[note];
+        /* exact loop-periodic phase: cycles = f * 8 / arp_rate per step,
+           which is an integer for these frequencies over this length */
+        double cycles = f * ( seconds / arp_rate ) * note;
+        double cycles2 = f * ( seconds / arp_rate );
+        double arp_s = sin( 2 * 3.14159265 * ( cycles + nt * cycles2 ) );
+        double env = sin( 3.14159265 * nt );   /* soft per-note swell */
+        double bass = sin( 2 * 3.14159265 * bass_f * t ) * 0.5
+                    + sin( 2 * 3.14159265 * bass_f * 2 * t ) * 0.15;
+        double pulse = 0.85 + 0.15 * sin( 2 * 3.14159265 * 2 * t );
+        b[i] = (float)( ( arp_s * env * 0.35 + bass * 0.30 ) * pulse * 0.7 );
+    }
+    write_wav( "sounds/title.wav", b, n );
+    free( b );
+}
+
+/* ================================================================== */
+/*  9. gameplay music: 12 s loop -- tense low drone with a slow      */
+/*     rotating two-chord pad (Am -> F), sparse blips on top         */
+/* ================================================================== */
+
+static void make_gameplay_music( void )
+{
+    double seconds = 12.0;
+    int n = (int)( seconds * RATE );
+    float* b = new_buffer( seconds );
+    int i;
+    /* two 6 s chords: A (110, 220, 261.63) then F (87.31, 174.61, 220) */
+    double root[2] = { 110.0, 87.3070578583 };
+    double third[2] = { 130.8127826503, 130.8127826503 };
+    double fifth[2] = { 164.8137784564, 174.6141157165 };
+    for( i = 0; i < n; i++ )
+    {
+        double t = (double)i / RATE;
+        int ch = ( t < 6.0 ) ? 0 : 1;
+        /* pad: chord tones with slow tremolo */
+        double pad = sin( 2 * 3.14159265 * root[ch] * t ) * 0.35
+                   + sin( 2 * 3.14159265 * third[ch] * 2 * t ) * 0.18
+                   + sin( 2 * 3.14159265 * fifth[ch] * 2 * t ) * 0.18;
+        double trem = 0.7 + 0.3 * sin( 2 * 3.14159265 * ( 1.0 / 6.0 ) * t );
+        /* deep pulse: 45 Hz, 540 whole cycles in 12 s */
+        double pulse = sin( 2 * 3.14159265 * 45.0 * t ) * 0.22;
+        /* sparse radar blips: 8 per loop, each ~0.05 s */
+        double blip = 0;
+        double bt = fmod( t, 1.5 );
+        if( bt < 0.05 )
+            blip = sin( 2 * 3.14159265 * 1560.0 * t )
+                 * ( 1.0 - bt / 0.05 ) * 0.10;
+        b[i] = (float)( ( pad * trem + pulse + blip ) * 0.65 );
+    }
+    write_wav( "sounds/gameplay.wav", b, n );
+    free( b );
+}
+
+/* ================================================================== */
 
 int main( void )
 {
@@ -354,6 +429,8 @@ int main( void )
     make_engine();
     make_alert();
     make_replenish();
+    make_title_music();
+    make_gameplay_music();
 
     printf( "\nAll sounds written to ./sounds/ -- convert to VSND:\n" );
     printf( "  sndconverter sounds/missile.wav    sounds/missile.vsnd\n" );
@@ -363,5 +440,7 @@ int main( void )
     printf( "  sndconverter sounds/engine.wav     sounds/engine.vsnd\n" );
     printf( "  sndconverter sounds/alert.wav      sounds/alert.vsnd\n" );
     printf( "  sndconverter sounds/replenish.wav  sounds/replenish.vsnd\n" );
+    printf( "  sndconverter sounds/title.wav      sounds/title.vsnd\n" );
+    printf( "  sndconverter sounds/gameplay.wav   sounds/gameplay.vsnd\n" );
     return 0;
 }

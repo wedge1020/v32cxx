@@ -9,6 +9,8 @@
 #sound SFX_ENGINE     "sounds/engine.wav"
 #sound SFX_ALERT      "sounds/alert.wav"
 #sound SFX_REPLENISH  "sounds/replenish.wav"
+#sound SFX_TITLE      "sounds/title.wav"
+#sound SFX_GAME       "sounds/gameplay.wav"
 
 #include "video.h"
 #include "input.h"
@@ -128,7 +130,7 @@
 #define SHIELD_HIT_ODDS     5
 
 // component damage: 4 systems, each with a 9-position gauge
-// (3 red / 3 yellow / 3 green, 8 = perfect, 0 = destroyed).
+// (3 red / 3 yellow / 3 green, 9 = perfect, 0 = destroyed).
 // Hits add damage POINTS; every 3 points steps the gauge down.
 // Difficulty sets points per hit: easy 1, medium 2, hard 3.
 #define COMP_ENG  0
@@ -471,7 +473,7 @@ public:
     int msg_t;
     int dead;
 
-    int comp_hp[4];     // component health (8 = perfect, 0 = destroyed)
+    int comp_hp[4];     // component health (9 = perfect, 0 = destroyed)
     int comp_pts[4];    // pending damage points (3 points = 1 step)
     int flash_t;
 
@@ -688,7 +690,7 @@ public:
         i = 0;
         while (i < COMP_COUNT)
         {
-            comp_hp[i] = 8;
+            comp_hp[i] = 9;
             comp_pts[i] = 0;
             i = i + 1;
         }
@@ -940,11 +942,25 @@ public:
             stars[i].randomize( &rng );
             i = i + 1;
         }
+        // title music: looped in channel 4
+        stop_channel( 4 );
+        select_sound( SFX_TITLE );
+        set_sound_loop_start( 0 );
+        set_sound_loop_end( 352800 );
+        set_sound_loop( true );
+        play_sound_in_channel( SFX_TITLE, 4 );
     }
 
     void start_game()
     {
         diff = title_sel;
+        // swap the title track for the gameplay track
+        stop_channel( 4 );
+        select_sound( SFX_GAME );
+        set_sound_loop_start( 0 );
+        set_sound_loop_end( 529200 );
+        set_sound_loop( true );
+        play_sound_in_channel( SFX_GAME, 4 );
         init( 3, 4 );
     }
 
@@ -1097,7 +1113,7 @@ public:
 
         // difficulty menu
         set_multiply_color( color_white );
-        print_at( 258, 210, s_select );
+        print_at( 228, 210, s_select );
         if (title_sel == 0)
             set_multiply_color( make_color_rgb( 0, 230, 130 ) );
         else
@@ -1281,7 +1297,7 @@ public:
         // engine damage: yellow band = half speed, red = dead stick
         if (comp_hp[COMP_ENG] <= 0)
             speed = 0;
-        else if (comp_hp[COMP_ENG] < 6)
+        else if (comp_hp[COMP_ENG] < 7)
             speed = speed * 0.5;
         // emerging from hyperspace: still hauling faster than the
         // engines can push; bleed down to the set gear smoothly
@@ -1425,8 +1441,8 @@ public:
                         rep_state = 1;
                         rep_t = 0;
                         rep_had_dmg = 0;
-                        if (comp_hp[COMP_ENG] < 8 || comp_hp[COMP_SHD] < 8 ||
-                            comp_hp[COMP_CMP] < 8 || comp_hp[COMP_CAN] < 8)
+                        if (comp_hp[COMP_ENG] < 9 || comp_hp[COMP_SHD] < 9 ||
+                            comp_hp[COMP_CMP] < 9 || comp_hp[COMP_CAN] < 9)
                             rep_had_dmg = 1;
                     }
                 }
@@ -1561,7 +1577,7 @@ public:
         if (comp_hp[COMP_CAN] < 2 || energy < MISSILE_COST)
             return;
         // pick the cannon: with both, alternate; with one, right only
-        if (comp_hp[COMP_CAN] >= 6)
+        if (comp_hp[COMP_CAN] >= 7)
         {
             side = fire_side;
             fire_side = 0 - fire_side;
@@ -2188,7 +2204,7 @@ public:
         i = 0;
         while (i < COMP_COUNT)
         {
-            comp_hp[i] = 8;
+            comp_hp[i] = 9;
             comp_pts[i] = 0;
             i = i + 1;
         }
@@ -2618,10 +2634,10 @@ public:
             int show;
             int ontime;
             show = 1;
-            ontime = 16 - ( 8 - comp_hp[COMP_SHD] ) * 2;
+            ontime = 16 - ( 9 - comp_hp[COMP_SHD] ) * 2;
             if (ontime < 2)
                 ontime = 2;
-            if (comp_hp[COMP_SHD] < 8)
+            if (comp_hp[COMP_SHD] < 9)
                 show = (get_frame_counter() % 16) < ontime;
             if (show != 0)
             {
@@ -3141,33 +3157,23 @@ public:
         print_at( 440, 56, s_shields );
         draw_bar( 440, 80, shields / 100, 80, 140, 255 );
 
-        // component status gauges
-        print_at( 440, 104, s_leng );
-        draw_gauge( 492, 112, comp_hp[COMP_ENG] );
-        print_at( 440, 126, s_lshd );
-        draw_gauge( 492, 134, comp_hp[COMP_SHD] );
-        print_at( 440, 148, s_lcmp );
-        draw_gauge( 492, 156, comp_hp[COMP_CMP] );
-        print_at( 440, 170, s_lcan );
-        draw_gauge( 492, 178, comp_hp[COMP_CAN] );
-
         // engine speed bar
-        print_at( 440, 196, s_spd );
-        draw_bar( 440, 220, gear_frac(), 255, 200, 40 );
+        print_at( 440, 104, s_spd );
+        draw_bar( 440, 128, gear_frac(), 255, 200, 40 );
 
         // shields / attack computer state
         if (shields_on != 0)
-            print_at( 440, 244, s_sh_on );
+            print_at( 440, 152, s_sh_on );
         else
-            print_at( 440, 244, s_sh_off );
+            print_at( 440, 152, s_sh_off );
         if (computer_on != 0)
-            print_at( 440, 268, s_ac_on );
+            print_at( 440, 176, s_ac_on );
         else
-            print_at( 440, 268, s_ac_off );
+            print_at( 440, 176, s_ac_off );
         if (aft_on != 0)
-            print_at( 440, 292, s_aft );
+            print_at( 440, 200, s_aft );
         else
-            print_at( 440, 292, s_fwd );
+            print_at( 440, 200, s_fwd );
 
         // bottom-left: engines + heading
         if (warp_t > 0)

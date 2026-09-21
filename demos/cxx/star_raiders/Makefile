@@ -60,11 +60,13 @@ textures/$(DEMO)_sprites.vtex: textures/$(DEMO)_sprites.png
 vsnd:
 	$(SOUND_TOOL)   sounds/alert.wav      -o sounds/alert.vsnd
 	$(SOUND_TOOL)   sounds/beep.wav       -o sounds/beep.vsnd
+	$(SOUND_TOOL)   sounds/gameplay.wav   -o sounds/gameplay.vsnd
 	$(SOUND_TOOL)   sounds/engine.wav     -o sounds/engine.vsnd
 	$(SOUND_TOOL)   sounds/explosion.wav  -o sounds/explosion.vsnd
 	$(SOUND_TOOL)   sounds/hyperspace.wav -o sounds/hyperspace.vsnd
 	$(SOUND_TOOL)   sounds/missile.wav    -o sounds/missile.vsnd
 	$(SOUND_TOOL)   sounds/replenish.wav  -o sounds/replenish.vsnd
+	$(SOUND_TOOL)   sounds/title.wav      -o sounds/title.vsnd
 
 # Pack ROM cartridge (Depends on the binary and texture to ensure they are built first)
 v32: vsnd bin/$(DEMO).v32
