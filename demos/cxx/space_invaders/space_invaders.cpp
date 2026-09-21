@@ -508,6 +508,45 @@ public:
     void stopChannel(int channelId) {
         stop_channel(channelId);
     }
+
+    // global volume, 0..10 steps (SPU range is 0..2; 10 steps = 0..1.0).
+    // NOTE: each step maps to a LITERAL float -- do NOT compute
+    // v / 10.0 here: Vircon32 C evaluates mixed int/float division
+    // integer-style (6 / 10.0 == 0), which muted the music channel at
+    // startup and killed all sound on any adjustment. Literal float
+    // arguments are known-good (Video::init's set_drawing_scale).
+    void setGlobalVolumeSteps(int v) {
+        if (v <= 0)      set_global_volume(0.0);
+        else if (v == 1) set_global_volume(0.1);
+        else if (v == 2) set_global_volume(0.2);
+        else if (v == 3) set_global_volume(0.3);
+        else if (v == 4) set_global_volume(0.4);
+        else if (v == 5) set_global_volume(0.5);
+        else if (v == 6) set_global_volume(0.6);
+        else if (v == 7) set_global_volume(0.7);
+        else if (v == 8) set_global_volume(0.8);
+        else if (v == 9) set_global_volume(0.9);
+        else             set_global_volume(1.0);
+    }
+
+    // per-channel volume, 0..10 steps; channel volume range is 0..1.
+    // Same literal-mapping reason as setGlobalVolumeSteps above.
+    // NOTE: must be re-applied whenever a channel starts playing a new
+    // sound (channels reset to full volume on start).
+    void setChannelVolumeSteps(int channelId, int v) {
+        select_channel(channelId);
+        if (v <= 0)      set_channel_volume(0.0);
+        else if (v == 1) set_channel_volume(0.1);
+        else if (v == 2) set_channel_volume(0.2);
+        else if (v == 3) set_channel_volume(0.3);
+        else if (v == 4) set_channel_volume(0.4);
+        else if (v == 5) set_channel_volume(0.5);
+        else if (v == 6) set_channel_volume(0.6);
+        else if (v == 7) set_channel_volume(0.7);
+        else if (v == 8) set_channel_volume(0.8);
+        else if (v == 9) set_channel_volume(0.9);
+        else             set_channel_volume(1.0);
+    }
 };
 
 } // namespace si
@@ -1339,7 +1378,9 @@ public:
         : mPlayerBullet(0), mScore(0), mHiScore(0), mWave(1),
           mBombCooldown(60), mWaveClearTimer(0), mLastExtraLifeAt(0),
           mState(GAME_TITLE), mDifficulty(DIFF_MEDIUM), mSaucerSfxChannel(-1),
-          mTitleTick(0), mMusicChannel(-1), mMusicId(-1) {
+          mTitleTick(0), mMusicChannel(-1), mMusicId(-1),
+          mMusicOn(1), mPaused(0), mPauseRow(0), mVolGlobal(10),
+          mVolMusic(6) {
         // sine table for the title wave (16 steps = one period, x5):
         // filled with plain assignments -- the subset has no array
         // initializer lists
@@ -1378,6 +1419,7 @@ public:
 
     void runFrame(const Input& in) {
         updateMusic();
+        if (mPaused) { pauseFrame(in); return; }   // simulation frozen
         if (mState == GAME_TITLE)           titleFrame(in);
         else if (mState == GAME_PLAYING)    playFrame(in);
         else if (mState == GAME_WAVE_CLEAR) waveClearFrame();
@@ -1404,6 +1446,8 @@ public:
             for (int i = 0; i < mBombs->size(); ++i) (*mBombs)[i]->draw(video);
             drawHUD(video);
         }
+        // pause menu draws ON TOP of the frozen scene
+        if (mPaused != 0) drawPauseOverlay(video);
     }
 
 private:
@@ -1484,6 +1528,7 @@ private:
 
     void startNewGame() {
         mScore = 0;
+        mPaused = 0;   // safety: never enter a fresh game paused
         mHiScore = 0;
         mWave = 1;
         mWaveClearTimer = 0;
@@ -1522,6 +1567,11 @@ private:
 
     // ---- main gameplay ------------------------------------------------------
     void playFrame(const Input& in) {
+        // START pauses mid-game (A/B remain fire)
+        if (in.read(BTN_START) == 1) {
+            mPaused = 1;
+            return;
+        }
         mPlayer->handleInput(in);
         if (in.read(BTN_A) == 1 || in.read(BTN_B) == 1) mPlayer->fire();
 
@@ -1642,6 +1692,87 @@ private:
         }
     }
 
+    // ---- pause --------------------------------------------------------------
+    // START during gameplay freezes the simulation; this menu runs on
+    // top of the (still drawn) frozen frame. UP/DOWN pick a row,
+    // LEFT/RIGHT adjust, A toggles the music switch, START resumes.
+    void pauseFrame(const Input& in) {
+        if (in.read(BTN_START) == 1) {
+            mPaused = 0;
+            mSfx.play(AssetIds::SOUND_MENU_SELECT);
+            return;
+        }
+        if (in.read(BTN_UP) == 1 && mPauseRow > 0) {
+            --mPauseRow;
+            mSfx.play(AssetIds::SOUND_MENU_MOVE);
+        }
+        if (in.read(BTN_DOWN) == 1 && mPauseRow < 2) {
+            ++mPauseRow;
+            mSfx.play(AssetIds::SOUND_MENU_MOVE);
+        }
+        // LEFT/RIGHT adjust the selected row (music toggle row 2 uses A)
+        int dir = 0;
+        if (in.read(BTN_LEFT) == 1)  dir = -1;
+        if (in.read(BTN_RIGHT) == 1) dir = 1;
+        if (dir != 0 && mPauseRow < 2) {
+            int v = (mPauseRow == 0) ? mVolGlobal : mVolMusic;
+            v += dir;
+            if (v < 0) v = 0;
+            if (v > 10) v = 10;
+            if (v != ((mPauseRow == 0) ? mVolGlobal : mVolMusic)) {
+                if (mPauseRow == 0) {
+                    mVolGlobal = v;
+                    mSfx.setGlobalVolumeSteps(v);
+                } else {
+                    mVolMusic = v;
+                    applyMusicVolume();
+                }
+                mSfx.play(AssetIds::SOUND_MENU_MOVE);
+            }
+        }
+        // A on the music row toggles gameplay music on/off
+        if (in.read(BTN_A) == 1 && mPauseRow == 2) {
+            mMusicOn = 1 - mMusicOn;
+            mSfx.play(AssetIds::SOUND_MENU_SELECT);
+        }
+    }
+
+    // (Re)apply the music volume to the current music channel. Called on
+    // every adjustment and whenever updateMusic starts a new channel,
+    // because a freshly started channel resets to full volume.
+    void applyMusicVolume() {
+        if (mMusicChannel >= 0)
+            mSfx.setChannelVolumeSteps(mMusicChannel, mVolMusic);
+    }
+
+    void drawPauseOverlay(Video& video) {
+        // dim the frozen scene: a full-field block wall, tinted dark
+        video.tint(0xFF404040);   // color_darkgray (ABGR), ~75% dim
+        for (int y = 0; y < PLAYFIELD_H; y += SPRITE_H)
+            for (int x = 0; x < PLAYFIELD_W; x += SPRITE_W)
+                video.blit(AssetIds::BUNKER_BLOCK_4, x, y);
+
+        drawText(video, "PAUSED", 194, 40);
+        // three rows: global volume, music volume, gameplay music toggle
+        drawText(video, "GLOBAL VOLUME", 114, 100);
+        drawText(video, "MUSIC VOLUME",  114, 120);
+        if (mMusicOn != 0) drawText(video, "GAMEPLAY MUSIC ON",  94, 140);
+        else               drawText(video, "GAMEPLAY MUSIC OFF", 94, 140);
+        drawText(video, ">", 104, 100 + mPauseRow * 20);
+        // volume bars: 10 cells, filled part white, rest dark -- drawn
+        // with bunker blocks right of each label
+        for (int row = 0; row < 2; ++row) {
+            int v = (row == 0) ? mVolGlobal : mVolMusic;
+            for (int i = 0; i < 10; ++i) {
+                if (i < v) video.tint(0xFFFFFFFF);
+                else       video.tint(0xFF404040);
+                video.blit(AssetIds::BUNKER_BLOCK_4, 274 + i * SPRITE_W,
+                           100 + row * 20);
+            }
+        }
+        drawText(video, "START RESUMES  A TOGGLES MUSIC", 44, 200);
+    }
+
     // ---- music --------------------------------------------------------------
     // One looping track per screen state, switched automatically:
     //   GAME_TITLE            -> title theme
@@ -1654,14 +1785,20 @@ private:
         if (mState == GAME_TITLE)     target = AssetIds::SOUND_MUSIC_TITLE;
         else if (mState == GAME_OVER) target = -1;
         else                          target = AssetIds::SOUND_MUSIC_GAME;
+        // gameplay music can be switched off from the pause screen
+        // (the title theme always plays)
+        if (target == AssetIds::SOUND_MUSIC_GAME && mMusicOn == 0)
+            target = -1;
         if (target == mMusicId) return;          // already correct
         if (mMusicChannel >= 0) {                // stop the old track
             mSfx.stopChannel(mMusicChannel);
             mMusicChannel = -1;
         }
         mMusicId = target;
-        if (mMusicId >= 0)
+        if (mMusicId >= 0) {
             mMusicChannel = mSfx.play(mMusicId); // -1: retried next frame
+            applyMusicVolume();                  // new channel = full vol
+        }
     }
 
     // saucer warble: a LOOPING sound, so it must be started once at
@@ -1745,6 +1882,11 @@ private:
     int mSine[16];                // one sine period, amplitude 5
     int mMusicChannel;            // music loop's channel, -1 when silent
     int mMusicId;                 // sound id of the current track, -1 none
+    int mMusicOn;                 // gameplay music enabled (pause toggle)
+    int mPaused;                  // 1 while the pause menu is up
+    int mPauseRow;                // selected pause menu row, 0..2
+    int mVolGlobal;               // global volume, 0..10
+    int mVolMusic;                // music channel volume, 0..10
 };
 
 } // namespace si
