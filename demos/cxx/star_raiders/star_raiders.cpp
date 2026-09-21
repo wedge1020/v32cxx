@@ -82,9 +82,12 @@
 #define MISSILE_COST      1.0
 #define MISSILE_LATERAL   45    // turret offset from the view axis
 
-// starbases: fixed quadrants, repair needs full stop at close range
-#define DOCK_RANGE        130
-#define DOCK_ZMIN          40
+// starbases: fixed quadrants; park nearby (any gear) and a repair
+// shuttle flies out to you -- repairs apply when it arrives
+#define DOCK_RANGE        300
+#define DOCK_ZMIN        -150
+#define DOCK_ZMAX         500
+#define REPAIR_STEPS      130   // shuttle flight frames
 
 // asteroids
 #define AST_COUNT           8
@@ -163,6 +166,8 @@ int s_dmg_e0[9]     = { 69, 78, 71, 73, 78, 69, 58, 32, 0 };                    
 int s_dmg_ok[3]     = { 79, 75, 0 };                                             // "OK"
 int s_dmg_bad[5]    = { 68, 65, 77, 33, 0 };                                     // "DAM!"
 int s_docked[7]     = { 68, 79, 67, 75, 69, 68, 0 };                             // "DOCKED"
+int s_energyrep[19] = { 69, 78, 69, 82, 71, 89, 32, 82, 69, 80, 76, 69, 78, 73, 83, 72, 69, 68, 0 };      // "ENERGY REPLENISHED"
+int s_repcomp[17]   = { 82, 69, 80, 65, 73, 82, 83, 32, 67, 79, 77, 80, 76, 69, 84, 69, 0 };              // "REPAIRS COMPLETE"
 int s_repair[17]    = { 83, 89, 83, 84, 69, 77, 83, 32, 82, 69, 83, 84, 79, 82, 69, 68, 0 }; // "SYSTEMS RESTORED"
 int s_cost[7]       = { 67, 79, 83, 84, 58, 32, 0 };                             // "COST: "
 int s_awarp[10]     = { 32, 32, 65, 58, 32, 87, 65, 82, 80, 0 };                 // "  A: WARP"
@@ -420,6 +425,10 @@ public:
     int docked_t;
     int dock_hint;      // 1 = near base but not stopped
 
+    int rep_active;     // repair shuttle in flight
+    int rep_t;          // flight progress (frames)
+    int rep_had_dmg;    // choose the completion message
+
     int ast_active;     // asteroid field in this quadrant
     int ast_count;
 
@@ -581,6 +590,9 @@ public:
         msg_t = 0;
         docked_t = 0;
         dock_hint = 0;
+        rep_active = 0;
+        rep_t = 0;
+        rep_had_dmg = 0;
         cannons = 2;
         engine_dmg = 0;
         flash_t = 0;
@@ -871,23 +883,51 @@ public:
             }
         }
 
-        // starbase: stationary; docking needs full stop at close range
+        // starbase: stationary; park nearby and a repair shuttle
+        // comes out to us
         if (sb_active != 0)
         {
             sb_z = sb_z - speed;
-            if (sb_z < DOCK_ZMIN && sb_z > 0 - DOCK_ZMIN &&
+            if (sb_z < DOCK_ZMAX && sb_z > DOCK_ZMIN &&
                 sb_x > -DOCK_RANGE && sb_x < DOCK_RANGE &&
                 sb_y > -DOCK_RANGE && sb_y < DOCK_RANGE)
             {
                 if (gear == 0)
                 {
-                    dock();
+                    dock_hint = 0;
+                    if (rep_active == 0)
+                    {
+                        rep_active = 1;
+                        rep_t = 0;
+                        rep_had_dmg = 0;
+                        if (cannons < 2 || engine_dmg != 0 || shield_dmg != 0)
+                            rep_had_dmg = 1;
+                    }
                 }
                 else
                     dock_hint = 1;
             }
             else
                 dock_hint = 0;
+        }
+
+        // repair shuttle flight: fly out, apply repairs on arrival;
+        // leaving (any motion) sends it back
+        if (rep_active != 0)
+        {
+            if (gear != 0 || sb_active == 0)
+            {
+                rep_active = 0;
+            }
+            else
+            {
+                rep_t = rep_t + 1;
+                if (rep_t >= REPAIR_STEPS)
+                {
+                    rep_active = 0;
+                    dock();
+                }
+            }
         }
 
         // missiles: fired one per X press, alternating cannons
@@ -1576,6 +1616,7 @@ public:
         shield_dmg = 0;
         docked_t = MSG_FRAMES;
         dock_hint = 0;
+        rep_active = 0;
     }
 
     // signed distance to the nearest object of a kind:
@@ -1714,8 +1755,10 @@ public:
                     s = 420 / d * speedscale;
                     if (s < 0.5)
                         s = 0.5;
-                    if (s > 10.0)
-                        s = 10.0;
+                    // keep stars star-sized: near ones must not swell
+                    // into blobs that read as approaching objects
+                    if (s > 3.5)
+                        s = 3.5;
 
                     set_multiply_color( make_color_rgb( r, gg, bb ) );
                     draw_zoomed_centered( sx, sy, s );
@@ -1783,6 +1826,41 @@ public:
                     draw_starbase_sprite( sx, sy, s );
                 }
             }
+        }
+
+        // repair shuttle: lerps from the starbase's screen position
+        // to our hull while the repair flight is in progress
+        if (rep_active != 0 && sb_active != 0)
+        {
+            float d;
+            float bsx;
+            float bsy;
+            float p;
+            float px;
+            float py;
+            float s;
+            d = sb_z;
+            if (aft_on != 0)
+                d = 0 - d;
+            if (d >= NEAR_Z)
+            {
+                bsx = view_sx( sb_x, d );
+                bsy = CENTER_Y - sb_y / d * FOCAL;
+            }
+            else
+            {
+                // base outside this view: shuttle comes from the
+                // nearest screen edge
+                bsx = CENTER_X;
+                bsy = 0 - 40;
+            }
+            p = rep_t;
+            p = p / REPAIR_STEPS;
+            px = bsx + ( CENTER_X - bsx ) * p;
+            py = bsy + ( CENTER_Y + 50 - bsy ) * p;
+            s = 0.8 + p * 1.8;
+            set_multiply_color( make_color_rgb( 255, 230, 120 ) );
+            draw_repship_sprite( px, py, s );
         }
 
         // enemies (block-built Zylon cruisers), far to near
@@ -2011,6 +2089,19 @@ public:
             select_region( ASCII_BLK1 );
             draw_zoomed_rect( sx - 5 * s, sy - 7 * s, 0.45 * s, 0.28 * s );
         }
+    }
+
+    // repair shuttle: a small yellow workbee that flies from the
+    // starbase to our ship. Body, side pods, beacon light.
+    void draw_repship_sprite( int sx, int sy, float s )
+    {
+        select_region( ASCII_BLK4 );
+        draw_zoomed_rect( sx, sy, 0.8 * s, 0.5 * s );
+        select_region( ASCII_BLK2 );
+        draw_zoomed_rect( sx - 7 * s, sy + 2 * s, 0.6 * s, 0.35 * s );
+        draw_zoomed_rect( sx + 7 * s, sy + 2 * s, 0.6 * s, 0.35 * s );
+        select_region( ASCII_BLK1 );
+        draw_zoomed_rect( sx, sy - 5 * s, 0.4 * s, 0.25 * s );
     }
 
     // Zylon cruiser: full-solid body, mid-solid swept wings,
@@ -2474,7 +2565,10 @@ public:
         else if (docked_t > 0)
         {
             print_at( CENTER_X - 30, CENTER_Y - 40, s_docked );
-            print_at( CENTER_X - 75, CENTER_Y - 10, s_repair );
+            if (rep_had_dmg != 0)
+                print_at( CENTER_X - 75, CENTER_Y - 10, s_repcomp );
+            else
+                print_at( CENTER_X - 80, CENTER_Y - 10, s_energyrep );
         }
         else if (msg_t > 0)
         {
