@@ -1,8 +1,18 @@
 #title "Star Raiders"
-#version 0.8
+#version 0.9
+
+// sounds (VSND files built by the host-side make_sfx tool)
+#sound SFX_MISSILE    "sounds/missile.wav"
+#sound SFX_EXPLOSION  "sounds/explosion.wav"
+#sound SFX_BEEP       "sounds/beep.wav"
+#sound SFX_HYPERSPACE "sounds/hyperspace.wav"
+#sound SFX_ENGINE     "sounds/engine.wav"
+#sound SFX_ALERT      "sounds/alert.wav"
+#sound SFX_REPLENISH  "sounds/replenish.wav"
 
 #include "video.h"
 #include "input.h"
+#include "audio.h"
 #include "math.h"
 #include "string.h"
 #include "time.h"
@@ -60,7 +70,7 @@
 #define QUAD_HALF    512
 
 // 3D space
-#define STAR_COUNT        140
+#define STAR_COUNT        220
 #define NEAR_Z             50
 #define FAR_Z            1050
 #define DEPTH_Z           990
@@ -78,9 +88,10 @@
 
 // missiles (one fired per X press, alternating cannons)
 #define MISSILE_COUNT       6
-#define MISSILE_STEP       55    // z advance per frame
+#define MISSILE_STEP       30    // z advance per frame
 #define MISSILE_COST      1.0
-#define MISSILE_LATERAL   45    // turret offset from the view axis
+#define MISSILE_LATERAL   75    // corner launch offset (x)
+#define MISSILE_DROP      38    // corner launch offset (y, down)
 
 // starbases: fixed quadrants; park nearby (any gear) and a repair
 // shuttle flies out to you -- repairs apply when it arrives
@@ -261,13 +272,13 @@ public:
         tint = rng->between( 0, 3 );
     }
 
-    // respawn at a uniformly random depth (a fixed distance would
-    // bunch stars into a thin shell that whips past at warp speed)
+    // respawn in the FAR band only: recycled stars always fade in
+    // from deep space instead of popping in close and large
     void respawn( RNG *rng )
     {
         x = rng->between( -FIELD_XY, FIELD_XY );
         y = rng->between( -FIELD_XY, FIELD_XY );
-        z = NEAR_Z + 10 + rng->between( 0, DEPTH_Z - 20 );
+        z = FAR_Z - rng->between( 0, 300 );
     }
 };
 
@@ -376,7 +387,7 @@ public:
 class Starfield
 {
 public:
-    Star stars[140];
+    Star stars[220];
     Enemy enemies[8];
     Asteroid asteroids[8];
     Missile missiles[6];
@@ -443,6 +454,7 @@ public:
 
     int chart_cx;
     int chart_cy;
+    int galaxy_seed;   // per-game random offset (hardware RNG)
     int prev_bl;
     int prev_br;
     int prev_bu;
@@ -468,7 +480,7 @@ public:
     void probe_quadrant( int cqx, int cqy )
     {
         int i;
-        rng.seed( (cqy * GALAXY_QUADS + cqx + 1) * 7919 );
+        rng.seed( (cqy * GALAXY_QUADS + cqx + 1) * 7919 + galaxy_seed );
         i = 0;
         while (i < STAR_COUNT * 4)
         {
@@ -493,7 +505,7 @@ public:
         qx = nqx;
         qy = nqy;
         idx = qy * GALAXY_QUADS + qx;
-        rng.seed( (qy * GALAXY_QUADS + qx + 1) * 7919 );
+        rng.seed( (qy * GALAXY_QUADS + qx + 1) * 7919 + galaxy_seed );
         i = 0;
         while (i < STAR_COUNT)
         {
@@ -571,6 +583,9 @@ public:
         else
             sb_active = 0;
         msg_t = 0;
+        // red alert when we arrive somewhere hostile
+        if (enemies_alive() > 0)
+            play_sound( SFX_ALERT );
     }
 
     void init( int start_qx, int start_qy )
@@ -616,6 +631,17 @@ public:
         move_t = 0;
         chart_cx = start_qx;
         chart_cy = start_qy;
+        // fresh layout every game: salt the per-quadrant seeds with
+        // the hardware RNG so nothing is ever in a known place
+        galaxy_seed = rand() % 1000000;
+        if (galaxy_seed == 0)
+            galaxy_seed = 1;
+
+        // engine hum: looped forever in channel 0, volume follows
+        // the throttle (see update())
+        select_sound( 5 );
+        set_sound_loop( true );
+        play_sound_in_channel( SFX_ENGINE, 0 );
         prev_bl = 0;
         prev_br = 0;
         prev_bu = 0;
@@ -696,6 +722,17 @@ public:
 
     // ------------------------------------------------------------------
 
+    // engine hum volume for the current gear / warp state
+    void update_engine_sound()
+    {
+        float vol;
+        vol = 0.12 + gear_frac() * 0.7;
+        if (warp_t > 0)
+            vol = 1.0;
+        select_channel( 0 );
+        set_channel_volume( vol );
+    }
+
     void update()
     {
         float turn;
@@ -720,11 +757,13 @@ public:
             {
                 computer_on = 1 - computer_on;
                 start_combo = 1;
+                play_sound( SFX_BEEP );
             }
             if (gamepad_button_b() > 0 && prev_bb <= 0)
             {
                 shields_on = 1 - shields_on;
                 start_combo = 1;
+                play_sound( SFX_BEEP );
             }
             prev_ba = gamepad_button_a();
             prev_bb = gamepad_button_b();
@@ -816,6 +855,7 @@ public:
                 energy = energy - WARP_COST;
                 warp_t = 1;
                 warp_dir = heading();
+                play_sound( SFX_HYPERSPACE );
             }
         }
         else
@@ -993,6 +1033,8 @@ public:
         if (docked_t > 0)
             docked_t = docked_t - 1;
 
+        update_engine_sound();
+
         // Zylon migration clock: now and then the Zylon fleet
         // redistributes itself across neighbouring quadrants
         migrate_t = migrate_t + 1;
@@ -1028,11 +1070,12 @@ public:
             if (missiles[i].active == 0)
             {
                 missiles[i].x = side * MISSILE_LATERAL;
-                missiles[i].y = -25;
+                missiles[i].y = 0 - MISSILE_DROP;
                 missiles[i].z = NEAR_Z + 30;
                 missiles[i].side = side;
                 missiles[i].active = 1;
                 energy = energy - MISSILE_COST;
+                play_sound( SFX_MISSILE );
                 return;
             }
             i = i + 1;
@@ -1153,6 +1196,7 @@ public:
                 debris[i].t = debris[i].life;
                 debris[i].kind = rng.between( 0, 3 );
                 n = n + 1;
+                play_sound( SFX_EXPLOSION );
             }
             i = i + 1;
         }
@@ -1617,6 +1661,7 @@ public:
         docked_t = MSG_FRAMES;
         dock_hint = 0;
         rep_active = 0;
+        play_sound( SFX_REPLENISH );
     }
 
     // signed distance to the nearest object of a kind:
@@ -1950,7 +1995,13 @@ public:
                 if (s > 5.0)
                     s = 5.0;
                 select_region( ASCII_STAR );
-                set_multiply_color( make_color_rgb( 120, 255, 180 ) );
+                // electric flicker: cycle 3 colors every few frames
+                if (get_frame_counter() % 6 < 2)
+                    set_multiply_color( make_color_rgb( 140, 255, 190 ) );
+                else if (get_frame_counter() % 6 < 4)
+                    set_multiply_color( make_color_rgb( 190, 200, 255 ) );
+                else
+                    set_multiply_color( make_color_rgb( 255, 255, 150 ) );
                 draw_zoomed_centered( sx, sy, s );
                 // tail: a dimmer dot one step back along the flight path
                 d = d - MISSILE_STEP * 1.6;
@@ -2010,9 +2061,11 @@ public:
         draw_radar();
 
         // damage flash: translucent red full-screen overlay
+        // (full-solid block glyph: it fills its whole cell, unlike
+        // the dash which only paints a thin band)
         if (flash_t > 0)
         {
-            select_region( ASCII_DASH );
+            select_region( ASCII_BLK4 );
             set_multiply_color( make_color_rgba( 255, 40, 40, flash_t * 30 ) );
             set_drawing_scale( 64.0, 18.0 );
             draw_region_zoomed_at( 0, 0 );
@@ -2028,7 +2081,7 @@ public:
                 show = (get_frame_counter() % 16) < 11;
             if (show != 0)
             {
-                select_region( ASCII_DASH );
+                select_region( ASCII_BLK4 );
                 set_multiply_color( make_color_rgba( 70, 130, 255, 34 ) );
                 set_drawing_scale( 64.0, 18.0 );
                 draw_region_zoomed_at( 0, 0 );
@@ -2039,7 +2092,7 @@ public:
         // pause overlay
         if (pause_on != 0)
         {
-            select_region( ASCII_DASH );
+            select_region( ASCII_BLK4 );
             set_multiply_color( make_color_rgba( 0, 0, 0, 170 ) );
             set_drawing_scale( 64.0, 18.0 );
             draw_region_zoomed_at( 0, 0 );

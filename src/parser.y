@@ -47,6 +47,54 @@
 #include "ast.h"
 #include "symtab.h"
 #include "driver.h"
+
+/* Expand a string literal's stored inner text (quotes already stripped
+ * by lexer.l's STRING_LITERAL rule; escape sequences still raw
+ * backslash pairs -- the lexer's own comment on that rule flags
+ * Vircon32's escape parity as unverified, which this sidesteps
+ * entirely by emitting plain integers) into an AST_INIT_LIST of one
+ * AST_INT_LIT per decoded character, plus a single trailing 0
+ * terminator -- the exact C rule for `T name[N] = "...";`, where
+ * the literal's own implicit terminator is part of the initializer.
+ * Escape set mirrors lexer.l's CHAR_LITERAL rule exactly (n, t, r,
+ * 0, backslash, both quote kinds) so nothing decodes differently
+ * than the lexer itself would for a char literal; an unrecognized
+ * escape falls back to the raw character, same best-effort stance
+ * that rule already takes. No length-checking against the declared
+ * size happens here (matching the braced alternative's own
+ * documented gap): a nonterminal never sees its parent rule's
+ * symbols, so padding/diagnosing belongs in the var_decl actions
+ * or a post-parse pass, not this rule. */
+static AstNode *string_literal_init_list(int line, const char *text)
+{
+    AstNode *list = ast_new(AST_INIT_LIST, line);
+    list->list = ast_list_new();
+    for (const char *p = text; *p != '\0'; p++) {
+        int ch = (unsigned char)*p;
+        if (*p == '\\' && p[1] != '\0') {
+            p++;
+            switch (*p) {
+                case 'n':  ch = '\n';  break;
+                case 't':  ch = '\t';  break;
+                case 'r':  ch = '\r';  break;
+                case '0':  ch = 0;     break;
+                case '\\': ch = '\\';  break;
+                case '"':  ch = '"';   break;
+                case '\'': ch = '\'';  break;
+                default:   ch = (unsigned char)*p; break;
+            }
+        }
+        AstNode *lit = ast_new(AST_INT_LIT, line);
+        lit->ival = ch;
+        ast_list_append(&list->list, lit);
+    }
+    /* Trailing terminator -- C's own rule: `char m[3] = "Hi"` means
+     * {'H', 'i', 0}; the literal ALWAYS contributes one terminator. */
+    AstNode *nul = ast_new(AST_INT_LIT, line);
+    nul->ival = 0;
+    ast_list_append(&list->list, nul);
+    return list;
+}
 %}
 
 %glr-parser
@@ -1375,6 +1423,23 @@ opt_array_initializer:
              * documented gap, not silently handled. */
             $$ = ast_new(AST_INIT_LIST, @1.first_line);
             $$->list = $3;
+        }
+    | '=' STRING_LITERAL
+        {
+            /* `int msg[8] = "Hello";` -- a string literal as an array
+             * initializer, either accepted array-declarator spelling
+             * (both route through opt_array_initializer). Expanded
+             * here into the same AST_INIT_LIST shape `= {1, 2, 3}`
+             * already produces -- one AST_INT_LIT per decoded
+             * character plus the trailing terminator -- so sema.c's
+             * existing item recursion, lower.c, and codegen.c's
+             * print_expr all handle it unchanged, and the generated
+             * C (`int msg[8] = {72, 101, ...};`) is valid under BOTH
+             * --target modes, whereas a pass-through `= "Hello"`
+             * would be invalid standard C for a non-char array and
+             * would depend on unverified Vircon32 string-escape
+             * parity. No new AST kind, no codegen changes. */
+            $$ = string_literal_init_list(@1.first_line, $2);
         }
     ;
 
