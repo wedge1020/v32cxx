@@ -231,6 +231,15 @@ int s_bch[2]        = { 83, 0 };                                                
 int s_pause[7]      = { 80, 65, 85, 83, 69, 68, 0 };                             // "PAUSED"
 int s_ph1[16]       = { 83, 84, 65, 82, 84, 43, 65, 58, 32, 65, 84, 84, 65, 67, 75, 0 }; // "START+A: ATTACK"
 int s_ph2[17]       = { 83, 84, 65, 82, 84, 43, 66, 58, 32, 83, 72, 73, 69, 76, 68, 83, 0 }; // "START+B: SHIELDS"
+// pause-screen control list
+int s_ctrl[9]       = { 67, 79, 78, 84, 82, 79, 76, 83, 0 };                              // "CONTROLS"
+int s_cd[11]        = { 68, 80, 65, 68, 58, 32, 84, 85, 82, 78, 0 };                       // "DPAD: TURN"
+int s_ct[14]        = { 76, 47, 82, 58, 32, 84, 72, 82, 79, 84, 84, 76, 69, 0 };           // "L/R: THROTTLE"
+int s_cf[17]        = { 88, 58, 32, 70, 73, 82, 69, 32, 77, 73, 83, 83, 73, 76, 69, 83, 0 }; // "X: FIRE MISSILES"
+int s_cw[14]        = { 65, 58, 32, 72, 89, 80, 69, 82, 83, 80, 65, 67, 69, 0 };           // "A: HYPERSPACE"
+int s_ca[12]        = { 66, 58, 32, 65, 70, 84, 32, 86, 73, 69, 87, 0 };                   // "B: AFT VIEW"
+int s_cc[18]        = { 89, 58, 32, 71, 65, 76, 65, 67, 84, 73, 67, 32, 67, 72, 65, 82, 84, 0 }; // "Y: GALACTIC CHART"
+int s_cp[13]        = { 83, 84, 65, 82, 84, 58, 32, 80, 65, 85, 83, 69, 0 };               // "START: PAUSE"
 int s_move[16]      = { 90, 89, 76, 79, 78, 83, 32, 83, 72, 73, 70, 84, 73, 78, 71, 0 };  // "ZYLONS SHIFTING"
 int s_offcourse[11] = { 79, 70, 70, 32, 67, 79, 85, 82, 83, 69, 0 };                       // "OFF COURSE"
 int s_leng[4]       = { 69, 78, 71, 0 };                    // "ENG"
@@ -2736,9 +2745,20 @@ public:
             set_drawing_scale( 64.0, 18.0 );
             draw_region_zoomed_at( 0, 0 );
             set_multiply_color( color_white );
-            print_at( CENTER_X - 30, CENTER_Y - 50, s_pause );
-            print_at( CENTER_X - 80, CENTER_Y - 10, s_ph1 );
-            print_at( CENTER_X - 80, CENTER_Y + 20, s_ph2 );
+            print_at( CENTER_X - 30, CENTER_Y - 80, s_pause );
+            // full control list, two columns
+            set_multiply_color( make_color_rgb( 120, 200, 255 ) );
+            print_at( CENTER_X - 200, CENTER_Y - 40, s_ctrl );
+            set_multiply_color( color_white );
+            print_at( CENTER_X - 200, CENTER_Y - 10, s_cd );
+            print_at( CENTER_X - 200, CENTER_Y + 14, s_ct );
+            print_at( CENTER_X - 200, CENTER_Y + 38, s_cf );
+            print_at( CENTER_X - 200, CENTER_Y + 62, s_cw );
+            print_at( CENTER_X + 40, CENTER_Y - 10, s_ca );
+            print_at( CENTER_X + 40, CENTER_Y + 14, s_cc );
+            print_at( CENTER_X + 40, CENTER_Y + 38, s_ph1 );
+            print_at( CENTER_X + 40, CENTER_Y + 62, s_ph2 );
+            print_at( CENTER_X - 55, CENTER_Y + 100, s_cp );
         }
 
         // hyperspace course marker: an amber diamond the pilot must
