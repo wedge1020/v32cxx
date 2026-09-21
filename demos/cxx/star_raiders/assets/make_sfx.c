@@ -224,12 +224,14 @@ static void make_beep( void )
 }
 
 /* ================================================================== */
-/*  4. hyperspace: rising sweep + noise whoosh, tail fade             */
+/*  4. hyperspace: full 8 s jump sequence -- a long accelerating      */
+/*     engine rise (matching the ship's ramp-up), then a bright       */
+/*     whoosh burst at the moment of transition, tail fade            */
 /* ================================================================== */
 
 static void make_hyperspace( void )
 {
-    double seconds = 1.5;
+    double seconds = 8.4;               /* covers the whole 8 s run */
     int n = (int)( seconds * RATE );
     float* b = new_buffer( seconds );
     int i;
@@ -238,12 +240,25 @@ static void make_hyperspace( void )
     for( i = 0; i < n; i++ )
     {
         double t = (double)i / n;
-        double f = 120 + 1400 * t * t;                /* accelerating rise */
-        double e = env_ar( i, n, 0.05, 0.3 );
+        double e = env_ar( i, n, 0.02, 0.05 );
+        /* accelerating rise across the whole run: 90 -> 900 Hz */
+        double f = 90 + 810 * t * t;
         double tone = sin( phase * 2 * 3.14159265 );
+        double tone2 = sin( phase * 4 * 3.14159265 ) * 0.3;
         phase += f / RATE;
-        double whoosh = lowpass( rng_01() * 2 - 1, 0.05 + 0.3 * t ) * 2.2;
-        b[i] = (float)( ( tone * 0.35 + whoosh * 0.5 ) * e * 0.8 );
+        /* airy shimmer that thickens as we go faster */
+        double shimmer = lowpass( rng_01() * 2 - 1, 0.02 + 0.25 * t ) * 2.0;
+        /* the transition burst near the end of the 8 s */
+        double burst = 0;
+        if( t > 0.72 && t < 0.95 )
+        {
+            double bt = ( t - 0.72 ) / 0.23;
+            burst = lowpass( rng_01() * 2 - 1, 0.5 ) * 3.0
+                  * sin( 3.14159265 * bt ) * sin( 3.14159265 * bt );
+        }
+        b[i] = (float)( ( tone * 0.4 + tone2 * 0.15
+                        + shimmer * 0.30 * ( 0.3 + 0.7 * t )
+                        + burst * 0.5 ) * e * 0.8 );
     }
     write_wav( "sounds/hyperspace.wav", b, n );
     free( b );

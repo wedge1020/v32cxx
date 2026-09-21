@@ -810,11 +810,33 @@ public:
     }
 
     // begin a hyperspace run: reset the course marker near center
-    // (small random error) and start the jump sound in channel 3
+    // (small random error), clear the sector (we are accelerating
+    // past everything in it) and start the jump sound in channel 3
     void nav_start_warp()
     {
+        int i;
         mk_yaw = rng.between( -6, 6 ) * 0.01;
         mk_pitch = rng.between( -6, 6 ) * 0.01;
+        // anything in this sector falls behind as we jump: enemies,
+        // their bolts, our own in-flight missiles
+        i = 0;
+        while (i < 8)
+        {
+            enemies[i].alive = 0;
+            i = i + 1;
+        }
+        i = 0;
+        while (i < EBOLT_COUNT)
+        {
+            ebolts[i].active = 0;
+            i = i + 1;
+        }
+        i = 0;
+        while (i < MISSILE_COUNT)
+        {
+            missiles[i].active = 0;
+            i = i + 1;
+        }
         play_sound_in_channel( SFX_HYPERSPACE, 3 );
     }
 
@@ -987,9 +1009,9 @@ public:
         else
             pitch_vel = 0;
         // steering also moves the hyperspace course marker (it is
-        // fixed in space; we rotate around it). Vertical response
-        // is flipped, as if trimming against the course directly.
-        mk_yaw = mk_yaw - yaw_vel;
+        // fixed in space; we rotate around it). Both axes flipped,
+        // as if trimming directly against the course.
+        mk_yaw = mk_yaw + yaw_vel;
         mk_pitch = mk_pitch - pitch_vel;
         if (pitch > 0.61)
             pitch = 0.61;
