@@ -1,7 +1,7 @@
 #title "Star Raiders"
 #version 0.9
 
-// sounds (VSND files built by the host-side make_sfx tool)
+// sounds (VSND assets; symbols defined by the #sound cart hints)
 #sound SFX_MISSILE    "sounds/missile.wav"
 #sound SFX_EXPLOSION  "sounds/explosion.wav"
 #sound SFX_BEEP       "sounds/beep.wav"
@@ -84,7 +84,9 @@
 
 #define WARP_FRAMES        90
 #define WARP_SPEED         60
-#define TURN_RATE        0.035
+#define TURN_ACCEL      0.0018  // angular acceleration (the ship has mass)
+#define TURN_DAMP        0.90   // velocity damping per frame
+#define TURN_MAX         0.045  // max angular velocity (agile fighter)
 
 // missiles (one fired per X press, alternating cannons)
 #define MISSILE_COUNT       6
@@ -127,6 +129,9 @@
 
 // shields & attack computer
 #define SHIELD_DRAIN     0.012
+
+// red alert klaxon duration (frames)
+#define ALERT_FRAMES      150
 
 // explosion debris: block fragments that fly apart and fade
 #define DEBRIS_COUNT       24
@@ -268,7 +273,13 @@ public:
     {
         x = rng->between( -FIELD_XY, FIELD_XY );
         y = rng->between( -FIELD_XY, FIELD_XY );
-        z = rng->between( NEAR_Z + 40, FAR_Z );
+        // spread over the FULL depth range, ahead AND behind: stars
+        // that pass us keep flying aft for a long time before
+        // recycling, so a forward-only initial placement steadily
+        // drains the fore view as the field reaches steady state
+        z = rng->between( 0 - FAR_Z, FAR_Z );
+        if (z > -NEAR_Z && z < NEAR_Z)
+            z = NEAR_Z + rng->between( 0, 300 );
         tint = rng->between( 0, 3 );
     }
 
@@ -401,6 +412,8 @@ public:
     float shipy;
     float yaw;
     float pitch;
+    float yaw_vel;    // angular velocity (turning inertia)
+    float pitch_vel;
     int warp_t;
     int warp_dir;
     int warp_targeted;
@@ -448,6 +461,7 @@ public:
     int prev_y;
     int migrate_t;    // Zylon migration clock (frames)
     int move_t;       // "ZYLONS SHIFTING" message timer
+    int alert_t;      // red alert klaxon timer
     int galaxy_map[64];
     int cleared[64];
     int ast_map[64];    // asteroid fields per quadrant
@@ -583,9 +597,13 @@ public:
         else
             sb_active = 0;
         msg_t = 0;
-        // red alert when we arrive somewhere hostile
+        // red alert when we arrive somewhere hostile: klaxon in a
+        // dedicated channel, stopped by a timer in update()
         if (enemies_alive() > 0)
-            play_sound( SFX_ALERT );
+        {
+            play_sound_in_channel( SFX_ALERT, 2 );
+            alert_t = ALERT_FRAMES;
+        }
     }
 
     void init( int start_qx, int start_qy )
@@ -593,6 +611,8 @@ public:
         int i;
         yaw = 0;
         pitch = 0;
+        yaw_vel = 0;
+        pitch_vel = 0;
         warp_t = 0;
         warp_dir = 0;
         warp_targeted = 0;
@@ -629,6 +649,7 @@ public:
         prev_y = 0;
         migrate_t = 0;
         move_t = 0;
+        alert_t = 0;
         chart_cx = start_qx;
         chart_cy = start_qy;
         // fresh layout every game: salt the per-quadrant seeds with
@@ -638,8 +659,12 @@ public:
             galaxy_seed = 1;
 
         // engine hum: looped forever in channel 0, volume follows
-        // the throttle (see update())
-        select_sound( 5 );
+        // the throttle (see update()). Explicit loop points: the
+        // default loop end can be 0, which silences the "loop".
+        // The engine sample is 2 s = 88200 samples at 44100 Hz.
+        select_sound( SFX_ENGINE );
+        set_sound_loop_start( 0 );
+        set_sound_loop_end( 88200 );
         set_sound_loop( true );
         play_sound_in_channel( SFX_ENGINE, 0 );
         prev_bl = 0;
@@ -735,7 +760,6 @@ public:
 
     void update()
     {
-        float turn;
         float speed;
         int i;
         int d;
@@ -806,27 +830,41 @@ public:
             return;
         }
 
-        // view rotation: left/right = yaw, up/down = pitch
-        turn = 0;
+        // view rotation with inertia: the D-pad accelerates angular
+        // velocity, damping bleeds it off -- the ship has mass, so
+        // turns start and stop with a hint of lag
         if (gamepad_left() > 0)
-            turn = turn - TURN_RATE;
+            yaw_vel = yaw_vel - TURN_ACCEL;
         if (gamepad_right() > 0)
-            turn = turn + TURN_RATE;
-        if (turn != 0)
-        {
-            yaw = yaw + turn;
-            rotate_yaw( turn );
-        }
+            yaw_vel = yaw_vel + TURN_ACCEL;
         if (gamepad_up() > 0)
-        {
-            rotate_pitch( 0 - TURN_RATE );
-            pitch = pitch - TURN_RATE;
-        }
+            pitch_vel = pitch_vel - TURN_ACCEL;
         if (gamepad_down() > 0)
+            pitch_vel = pitch_vel + TURN_ACCEL;
+        yaw_vel = yaw_vel * TURN_DAMP;
+        pitch_vel = pitch_vel * TURN_DAMP;
+        if (yaw_vel > TURN_MAX)
+            yaw_vel = TURN_MAX;
+        if (yaw_vel < 0 - TURN_MAX)
+            yaw_vel = 0 - TURN_MAX;
+        if (pitch_vel > TURN_MAX)
+            pitch_vel = TURN_MAX;
+        if (pitch_vel < 0 - TURN_MAX)
+            pitch_vel = 0 - TURN_MAX;
+        if (yaw_vel > 0.0005 || yaw_vel < -0.0005)
         {
-            rotate_pitch( TURN_RATE );
-            pitch = pitch + TURN_RATE;
+            yaw = yaw + yaw_vel;
+            rotate_yaw( yaw_vel );
         }
+        else
+            yaw_vel = 0;
+        if (pitch_vel > 0.0005 || pitch_vel < -0.0005)
+        {
+            pitch = pitch + pitch_vel;
+            rotate_pitch( pitch_vel );
+        }
+        else
+            pitch_vel = 0;
         if (pitch > 0.61)
             pitch = 0.61;
         if (pitch < -0.61)
@@ -1030,6 +1068,13 @@ public:
             msg_t = msg_t - 1;
         if (move_t > 0)
             move_t = move_t - 1;
+        // klaxon cutoff: never let the alert outlive its welcome
+        if (alert_t > 0)
+        {
+            alert_t = alert_t - 1;
+            if (alert_t == 0)
+                stop_channel( 2 );
+        }
         if (docked_t > 0)
             docked_t = docked_t - 1;
 
@@ -2190,6 +2235,10 @@ public:
 
     void draw_reticle()
     {
+        // no reticle at all without the attack computer
+        if (computer_on == 0)
+            return;
+
         // fully self-contained draw state; additive so it glows.
         // NOTE: stretching a dash glyph vertically does NOT make a
         // vertical line -- the dash occupies only ~3 rows of its
