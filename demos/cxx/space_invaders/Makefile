@@ -68,6 +68,8 @@ vsnd:
 	$(SOUND_TOOL)   sounds/march4.wav       -o sounds/march4.vsnd
 	$(SOUND_TOOL)   sounds/march5.wav       -o sounds/march5.vsnd
 	$(SOUND_TOOL)   sounds/march6.wav       -o sounds/march6.vsnd
+	$(SOUND_TOOL)   sounds/menu_move.wav    -o sounds/menu_move.vsnd
+	$(SOUND_TOOL)   sounds/menu_select.wav  -o sounds/menu_select.vsnd
 	$(SOUND_TOOL)   sounds/player_death.wav -o sounds/player_death.vsnd
 	$(SOUND_TOOL)   sounds/saucer_death.wav -o sounds/saucer_death.vsnd
 	$(SOUND_TOOL)   sounds/saucer.wav       -o sounds/saucer.vsnd

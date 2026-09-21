@@ -25,6 +25,8 @@
 #sound WAV_SAUCER_DEATH "sounds/saucer_death.wav"
 #sound WAV_EXTRA_LIFE   "sounds/extra_life.wav"
 #sound WAV_BUNKER_HIT   "sounds/bunker_hit.wav"
+#sound WAV_MENU_MOVE    "sounds/menu_move.wav"
+#sound WAV_MENU_SELECT  "sounds/menu_select.wav"
 
 // ============================================================================
 //  SPACE INVADERS - portable object-oriented C++ skeleton
@@ -125,6 +127,8 @@
 //  11  SOUND_SAUCER_DEATH   saucer destroyed
 //  12  SOUND_EXTRA_LIFE     bonus fanfare
 //  13  SOUND_BUNKER_HIT     bullet chews a bunker cell
+//  14  SOUND_MENU_MOVE      title menu cursor moved
+//  15  SOUND_MENU_SELECT    title menu: game started
 // ============================================================================
 
 // === FILE: si_assets.h ===
@@ -165,7 +169,9 @@ namespace AssetIds {
         SOUND_SAUCER        = 10,
         SOUND_SAUCER_DEATH  = 11,
         SOUND_EXTRA_LIFE    = 12,
-        SOUND_BUNKER_HIT    = 13
+        SOUND_BUNKER_HIT    = 13,
+        SOUND_MENU_MOVE     = 14,   // title menu: cursor moved
+        SOUND_MENU_SELECT   = 15    // title menu: game started
     };
 }
 
@@ -220,7 +226,7 @@ enum GameConsts {
     SWARM_COLS               = 11,
     SWARM_ROWS               = 5,
     SWARM_GAP_X              = 20,  // 10px sprite + 10px spacing
-    SWARM_GAP_Y              = 24,  // 20px sprite + 4px spacing
+    SWARM_GAP_Y              = 19,  // 20px sprite, rows nearly touching
 
     BOMB_CAPACITY            = 8,
     BUNKER_COUNT             = 4
@@ -1224,6 +1230,87 @@ void drawText(Video& video, const char* text, int x, int y) {
 }
 
 // ---------------------------------------------------------------------------
+// Block title font: one 3x5 "pixel" grid per letter, where each pixel is
+// a 10x20 BUNKER_BLOCK sprite (0x14 solid -> 0x11 lightest, giving the
+// letters a top-to-bottom damage-gradient look). Used only by the title
+// screen's big "SPACE INVADERS" logo. Glyphs are returned as 3-char
+// strings of '#'/'.' -- plain string literals, no arrays to initialize.
+// ---------------------------------------------------------------------------
+const char* titleGlyphRow(char c, int row) {
+    if (c == 'S') {
+        if (row == 0) return "###";
+        if (row == 1) return "#..";
+        if (row == 2) return "###";
+        if (row == 3) return "..#";
+        return "###";
+    }
+    if (c == 'P') {
+        if (row == 0) return "##.";
+        if (row == 1) return "#.#";
+        if (row == 2) return "##.";
+        if (row == 3) return "#..";
+        return "#..";
+    }
+    if (c == 'A') {
+        if (row == 0) return ".#.";
+        if (row == 1) return "#.#";
+        if (row == 2) return "###";
+        if (row == 3) return "#.#";
+        return "#.#";
+    }
+    if (c == 'C') {
+        if (row == 0) return "###";
+        if (row == 1) return "#..";
+        if (row == 2) return "#..";
+        if (row == 3) return "#..";
+        return "###";
+    }
+    if (c == 'E') {
+        if (row == 0) return "###";
+        if (row == 1) return "#..";
+        if (row == 2) return "##.";
+        if (row == 3) return "#..";
+        return "###";
+    }
+    if (c == 'I') {
+        if (row == 0) return "###";
+        if (row == 1) return ".#.";
+        if (row == 2) return ".#.";
+        if (row == 3) return ".#.";
+        return "###";
+    }
+    if (c == 'N') {
+        if (row == 0) return "##.";
+        if (row == 1) return "#.#";
+        if (row == 2) return "#.#";
+        if (row == 3) return "#.#";
+        return "#.#";
+    }
+    if (c == 'V') {
+        if (row == 0) return "#.#";
+        if (row == 1) return "#.#";
+        if (row == 2) return "#.#";
+        if (row == 3) return "#.#";
+        return ".#.";
+    }
+    if (c == 'R') {
+        if (row == 0) return "##.";
+        if (row == 1) return "#.#";
+        if (row == 2) return "##.";
+        if (row == 3) return "#.#";
+        return "#.#";
+    }
+    if (c == 'D') {
+        if (row == 0) return "##.";
+        if (row == 1) return "#.#";
+        if (row == 2) return "#.#";
+        if (row == 3) return "#.#";
+        return "##.";
+    }
+    return "...";   // space (and anything else): blank 3x5
+}
+
+// ---------------------------------------------------------------------------
 // Game states (namespace-level: the subset has no class enums)
 // ---------------------------------------------------------------------------
 enum GameState {
@@ -1241,7 +1328,15 @@ public:
     Game()
         : mPlayerBullet(0), mScore(0), mHiScore(0), mWave(1),
           mBombCooldown(60), mWaveClearTimer(0), mLastExtraLifeAt(0),
-          mState(GAME_TITLE), mDifficulty(DIFF_MEDIUM), mSaucerSfxChannel(-1) {
+          mState(GAME_TITLE), mDifficulty(DIFF_MEDIUM), mSaucerSfxChannel(-1),
+          mTitleTick(0) {
+        // sine table for the title wave (16 steps = one period, x5):
+        // filled with plain assignments -- the subset has no array
+        // initializer lists
+        mSine[0]  = 0;   mSine[1]  = 2;   mSine[2]  = 4;   mSine[3]  = 5;
+        mSine[4]  = 4;   mSine[5]  = 2;   mSine[6]  = 0;   mSine[7]  = -2;
+        mSine[8]  = -4;  mSine[9]  = -5;  mSine[10] = -4;  mSine[11] = -2;
+        mSine[12] = 0;   mSine[13] = 2;   mSine[14] = 4;   mSine[15] = 5;
         // Class-typed members are held BY_POINTER: v32c++ never injects
         // constructor calls for class-typed members (its ctor-call
         // injection only walks function bodies), so `Swarm mSwarm;`
@@ -1281,13 +1376,13 @@ public:
     void draw(Video& video) {
         video.clear();   // hand frame-clearing to the GPU layer
         if (mState == GAME_TITLE) {
-            drawText(video, "SPACE INVADERS", 144, 60);
-            drawText(video, "PRESS START",   154, 180);
+            drawBlockTitle(video);
+            drawText(video, "PRESS START",   154, 220);
             // difficulty menu: three options, '>' marks the selection
-            drawText(video, "EASY",   186, 100);
-            drawText(video, "MEDIUM", 186, 120);
-            drawText(video, "HARD",   186, 140);
-            drawText(video, ">", 176, 100 + mDifficulty * 20);
+            drawText(video, "EASY",   186, 150);
+            drawText(video, "MEDIUM", 186, 170);
+            drawText(video, "HARD",   186, 190);
+            drawText(video, ">", 176, 150 + mDifficulty * 20);
         } else {
             mPlayer->draw(video);
             mSwarm->draw(video);
@@ -1302,7 +1397,35 @@ public:
 
 private:
     // ---- title ------------------------------------------------------------
+    // Big block logo: "SPACE INVADERS" rendered from the bunker block
+    // sprites as a 3x5 pixel font (each pixel one 10x20 block). 14
+    // glyphs at pitch 32 (30px letter + 2px gap) = 446px wide: x0 = 1
+    // centers it in the 448px playfield. Each letter rides a slow sine
+    // wave (amplitude 5px, phase offset per letter), and the block id
+    // runs 0x14 (solid) at the top to 0x11 (lightest) at the bottom.
+    void drawBlockTitle(Video& video) {
+        const char* title = "SPACE INVADERS";
+        video.tint(0xFF00FF00);   // classic green logo
+        for (int i = 0; title[i] != 0; ++i) {
+            int wave = mSine[(mTitleTick / 4 + i) % 16];
+            for (int row = 0; row < 5; ++row) {
+                // rows 0..4 -> blocks 0x14..0x11 (5 rows, 4 shades:
+                // the two bottom rows share the lightest block)
+                int shade = 3 - row;
+                if (shade < 0) shade = 0;
+                const char* g = titleGlyphRow(title[i], row);
+                for (int col = 0; col < 3; ++col)
+                    if (g[col] == '#')
+                        video.blit(AssetIds::BUNKER_BLOCK_1 + shade,
+                                   1 + i * 32 + col * SPRITE_W,
+                                   20 + row * SPRITE_H + wave);
+            }
+        }
+    }
+
     void titleFrame(const Input& in) {
+        // title-wave animation clock (drawBlockTitle reads this)
+        ++mTitleTick;
         // a just-pressed button reads exactly 1
         // NOTE: no int round-trip here -- Vircon32 C rejects assigning an
         // int expression to an enum-typed lvalue ("cannot assign int to
@@ -1311,12 +1434,17 @@ private:
         if (in.read(BTN_UP) == 1 && mDifficulty > DIFF_EASY) {
             if (mDifficulty == DIFF_HARD)     mDifficulty = DIFF_MEDIUM;
             else                             mDifficulty = DIFF_EASY;
+            mSfx.play(AssetIds::SOUND_MENU_MOVE);
         }
         if (in.read(BTN_DOWN) == 1 && mDifficulty < DIFF_HARD) {
             if (mDifficulty == DIFF_EASY)     mDifficulty = DIFF_MEDIUM;
             else                             mDifficulty = DIFF_HARD;
+            mSfx.play(AssetIds::SOUND_MENU_MOVE);
         }
-        if (in.read(BTN_START) == 1) startNewGame();
+        if (in.read(BTN_START) == 1) {
+            mSfx.play(AssetIds::SOUND_MENU_SELECT);
+            startNewGame();
+        }
     }
 
     // bomb spawn cadence by difficulty (frames between drops, before
@@ -1365,7 +1493,13 @@ private:
 
     void buildWave() {
         mSwarm->destroyAll();
-        mSwarm->spawn(40 + (mWave - 1) * 20);  // each wave starts lower
+        // FIXED start height: every wave (and every new game) restarts
+        // the horde high on the screen. The old 40 + (mWave-1)*20 made
+        // each successive wave start lower, and after a long wave the
+        // swarm had also descended -- so a new wave could begin right
+        // where the last one died. Difficulty now comes purely from the
+        // march/bomb cadence, not from spawn position.
+        mSwarm->spawn(40);
         for (int i = 0; i < BUNKER_COUNT; ++i) {
             delete mBunkers[i];
             // spread the four 60px umbrella bunkers across the wide
@@ -1574,6 +1708,8 @@ private:
     GameState mState;
     GameDifficulty mDifficulty;   // chosen on the title screen
     int mSaucerSfxChannel;        // warble's channel, -1 when not playing
+    int mTitleTick;               // title-wave animation clock
+    int mSine[16];                // one sine period, amplitude 5
 };
 
 } // namespace si

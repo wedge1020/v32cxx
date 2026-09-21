@@ -17,26 +17,30 @@
  *   11  saucer_death.wav   UFO destroyed: noise crash
  *   12  extra_life.wav     bonus fanfare: rising sine arpeggio
  *   13  bunker_hit.wav     shield chip: short muffled thud
+ *   14  menu_move.wav      title menu: cursor moved (short blip)
+ *   15  menu_select.wav    title menu: game started (two-tone confirm)
  *
  * All synthesis is deterministic (own LCG for noise), so output is
  * reproducible. Keep everything 16-bit MONO -- one word per sample.
  *
  * CART HINT WIRING (macro-name note at the bottom of this comment):
  *
- *   #sound WAV_SHOOT        "shoot.wav"
- *   #sound WAV_ALIEN_DEATH  "alien_death.wav"
- *   #sound WAV_PLAYER_DEATH "player_death.wav"
- *   #sound WAV_MARCH0       "march0.wav"
- *   #sound WAV_MARCH1       "march1.wav"
- *   #sound WAV_MARCH2       "march2.wav"
- *   #sound WAV_MARCH3       "march3.wav"
- *   #sound WAV_MARCH4       "march4.wav"
- *   #sound WAV_MARCH5       "march5.wav"
- *   #sound WAV_MARCH6       "march6.wav"
- *   #sound WAV_SAUCER       "saucer.wav"
- *   #sound WAV_SAUCER_DEATH "saucer_death.wav"
- *   #sound WAV_EXTRA_LIFE   "extra_life.wav"
- *   #sound WAV_BUNKER_HIT   "bunker_hit.wav"
+ *   #sound WAV_SHOOT        "sounds/shoot.wav"
+ *   #sound WAV_ALIEN_DEATH  "sounds/alien_death.wav"
+ *   #sound WAV_PLAYER_DEATH "sounds/player_death.wav"
+ *   #sound WAV_MARCH0       "sounds/march0.wav"
+ *   #sound WAV_MARCH1       "sounds/march1.wav"
+ *   #sound WAV_MARCH2       "sounds/march2.wav"
+ *   #sound WAV_MARCH3       "sounds/march3.wav"
+ *   #sound WAV_MARCH4       "sounds/march4.wav"
+ *   #sound WAV_MARCH5       "sounds/march5.wav"
+ *   #sound WAV_MARCH6       "sounds/march6.wav"
+ *   #sound WAV_SAUCER       "sounds/saucer.wav"
+ *   #sound WAV_SAUCER_DEATH "sounds/saucer_death.wav"
+ *   #sound WAV_EXTRA_LIFE   "sounds/extra_life.wav"
+ *   #sound WAV_BUNKER_HIT   "sounds/bunker_hit.wav"
+ *   #sound WAV_MENU_MOVE    "sounds/menu_move.wav"
+ *   #sound WAV_MENU_SELECT  "sounds/menu_select.wav"
  *
  * Hint order == cart sound id == AssetIds::Sounds value. The hint macro
  * names deliberately do NOT reuse the enum names (WAV_*, not
@@ -239,6 +243,35 @@ int main(void) {
             buf[i] = (short)(11000 * env * last);
         }
         write_wav("bunker_hit.wav", n, buf);
+    }
+
+    /* -- 14: menu_move -- short square blip -------------------------------- */
+    {
+        double dur = 0.06;
+        int n = (int)(dur * RATE);
+        double phase = 0;
+        for (int i = 0; i < n; ++i) {
+            double t = (double)i / n;
+            phase += 740.0 / RATE;
+            double env = 1.0 - t;
+            buf[i] = (short)(11000 * env * square(phase));
+        }
+        write_wav("menu_move.wav", n, buf);
+    }
+
+    /* -- 15: menu_select -- two-tone confirm -------------------------------- */
+    {
+        double dur = 0.22;
+        int n = (int)(dur * RATE);
+        double phase = 0;
+        for (int i = 0; i < n; ++i) {
+            double t = (double)i / RATE;
+            double freq = (t < 0.1) ? 523.0 : 784.0;   /* C5 -> G5  */
+            phase += freq / RATE;
+            double env = 1.0 - 0.3 * (t / dur);
+            buf[i] = (short)(11000 * env * square(phase));
+        }
+        write_wav("menu_select.wav", n, buf);
     }
 
     return 0;
