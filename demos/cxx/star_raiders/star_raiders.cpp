@@ -1,5 +1,5 @@
 #title "Star Raiders"
-#version 0.6
+#version 0.8
 
 #include "video.h"
 #include "input.h"
@@ -14,6 +14,9 @@
 //  Phase 5: chart navigation, throttle, shields, attack computer
 //  Phase 6: missile physics, reverse gear, asteroid fields,
 //           block-built composite sprites for Zylons and starbases
+//  Phase 7: aft view on B (mirrored projection, half reticle),
+//           debris explosions from block glyphs, safe start quadrant
+//  Phase 8: Zylon migration clock, stray asteroids, bulbous rocks
 //
 //  Written to the v32c++ subset: no templates, no static members, no
 //  in-class initializers, no ternaries, no 'unsigned', one-word
@@ -111,6 +114,17 @@
 // shields & attack computer
 #define SHIELD_DRAIN     0.012
 
+// explosion debris: block fragments that fly apart and fade
+#define DEBRIS_COUNT       24
+#define DEBRIS_PER_BURST    6
+#define DEBRIS_LIFE_MIN    60    // 1 second at 60 fps
+#define DEBRIS_LIFE_MAX   180    // 3 seconds
+
+// Zylon migration: every ~2 minutes the Zylons shift between
+// neighbouring quadrants (the starting sector loses its
+// protection once the first migration has happened)
+#define MIGRATE_FRAMES   7200    // 120 seconds at 60 fps
+
 // ---------------------------------------------------------------------------
 //  HUD text (ASCII code lists; plain text in comments)
 // ---------------------------------------------------------------------------
@@ -156,6 +170,8 @@ int s_sh_on[9]      = { 83, 72, 76, 68, 58, 32, 79, 78, 0 };                    
 int s_sh_off[10]    = { 83, 72, 76, 68, 58, 32, 79, 70, 70, 0 };                 // "SHLD: OFF"
 int s_ac_on[9]      = { 65, 67, 77, 80, 58, 32, 79, 78, 0 };                     // "ACMP: ON"
 int s_ac_off[10]    = { 65, 67, 77, 80, 58, 32, 79, 70, 70, 0 };                 // "ACMP: OFF"
+int s_aft[10]       = { 86, 73, 69, 87, 58, 32, 65, 70, 84, 0 };                 // "VIEW: AFT"
+int s_fwd[10]       = { 86, 73, 69, 87, 58, 32, 70, 87, 68, 0 };                 // "VIEW: FWD"
 int s_near[7]       = { 78, 69, 65, 82, 58, 32, 0 };                             // "NEAR: "
 int s_sp[2]         = { 32, 0 };                                                 // " "
 int s_zch[2]        = { 90, 0 };                                                 // "Z"
@@ -163,6 +179,7 @@ int s_bch[2]        = { 83, 0 };                                                
 int s_pause[7]      = { 80, 65, 85, 83, 69, 68, 0 };                             // "PAUSED"
 int s_ph1[16]       = { 83, 84, 65, 82, 84, 43, 65, 58, 32, 65, 84, 84, 65, 67, 75, 0 }; // "START+A: ATTACK"
 int s_ph2[17]       = { 83, 84, 65, 82, 84, 43, 66, 58, 32, 83, 72, 73, 69, 76, 68, 83, 0 }; // "START+B: SHIELDS"
+int s_move[16]      = { 90, 89, 76, 79, 78, 83, 32, 83, 72, 73, 70, 84, 73, 78, 71, 0 };  // "ZYLONS SHIFTING"
 int s_astfield[10]  = { 65, 83, 84, 69, 82, 79, 73, 68, 83, 0 };                 // "ASTEROIDS"
 int s_fullstop[24]  = { 68, 79, 67, 75, 73, 78, 71, 32, 82, 69, 81, 85, 73, 82, 69, 83, 32, 70, 85, 76, 76, 32, 83, 0 }; // "DOCKING REQUIRES FULL "
 
@@ -329,15 +346,22 @@ public:
 };
 
 // ---------------------------------------------------------------------------
-//  Explosion: screen-space marker of a kill
+//  Debris: one exploding fragment. Lives in world space, flies apart
+//  from the explosion origin, fades out over 1-3 seconds.
 // ---------------------------------------------------------------------------
 
-class Explosion
+class Debris
 {
 public:
-    int sx;
-    int sy;
-    int t;
+    float x;
+    float y;
+    float z;
+    float vx;
+    float vy;
+    float vz;
+    int t;      // frames of life remaining
+    int life;   // total lifetime (for the fade)
+    int kind;   // 0-3: which block glyph to draw
 };
 
 // ---------------------------------------------------------------------------
@@ -352,7 +376,7 @@ public:
     Asteroid asteroids[8];
     Missile missiles[6];
     EnemyBolt ebolts[8];
-    Explosion explosions[4];
+    Debris debris[24];
     RNG rng;
 
     int qx;
@@ -400,7 +424,10 @@ public:
     int ast_count;
 
     int chart_on;
+    int aft_on;       // rear view (B toggles)
     int prev_y;
+    int migrate_t;    // Zylon migration clock (frames)
+    int move_t;       // "ZYLONS SHIFTING" message timer
     int galaxy_map[64];
     int cleared[64];
     int ast_map[64];    // asteroid fields per quadrant
@@ -490,10 +517,26 @@ public:
                 i = i + 1;
             }
         }
-        i = 0;
-        while (i < 4)
+        // stray rocks: even quadrants without a proper field can
+        // hold one or two lone asteroids (Zylons and rocks coexist)
+        if (ast_count == 0)
         {
-            explosions[i].t = 0;
+            if (rng.between( 0, 3 ) < 1)
+            {
+                ast_count = rng.between( 1, 2 );
+                ast_active = 1;
+                i = 0;
+                while (i < ast_count)
+                {
+                    asteroids[i].respawn( &rng );
+                    i = i + 1;
+                }
+            }
+        }
+        i = 0;
+        while (i < DEBRIS_COUNT)
+        {
+            debris[i].t = 0;
             i = i + 1;
         }
         i = 0;
@@ -552,10 +595,13 @@ public:
         prev_bx = 0;
         pause_on = 0;
         computer_on = 0;
-        shields_on = 1;
+        shields_on = 0;
         shield_dmg = 0;
         chart_on = 0;
+        aft_on = 0;
         prev_y = 0;
+        migrate_t = 0;
+        move_t = 0;
         chart_cx = start_qx;
         chart_cy = start_qy;
         prev_bl = 0;
@@ -569,6 +615,9 @@ public:
             cleared[i] = 0;
             i = i + 1;
         }
+        // the starting quadrant is Zylon-free so the player can
+        // get their bearings before the fight begins
+        galaxy_map[start_qy * GALAXY_QUADS + start_qx] = 0;
         enter_quadrant( start_qx, start_qy );
     }
 
@@ -691,6 +740,15 @@ public:
         }
         prev_y = gamepad_button_y();
 
+        // B alone toggles the aft (rear) view; the Start+B shield
+        // combo owns B while Start is held
+        if (gamepad_button_start() <= 0 && chart_on == 0)
+        {
+            if (gamepad_button_b() > 0 && prev_bb <= 0)
+                aft_on = 1 - aft_on;
+            prev_bb = gamepad_button_b();
+        }
+
         if (chart_on != 0)
         {
             update_chart();
@@ -774,12 +832,15 @@ public:
         while (shipy >= QUAD_SIZE)
             shipy = shipy - QUAD_SIZE;
 
-        // stars stream past (both directions: reverse pushes them away)
+        // stars stream past (both directions: reverse pushes them away).
+        // They recycle only once FAR behind the ship: the aft view
+        // sees the band -FAR_Z..-NEAR_Z, so recycling at -NEAR_Z
+        // would empty the rear view completely.
         i = 0;
         while (i < STAR_COUNT)
         {
             stars[i].z = stars[i].z - speed;
-            if (stars[i].z < NEAR_Z)
+            if (stars[i].z < 0 - FAR_Z - 150)
                 stars[i].respawn( &rng );
             if (stars[i].z > FAR_Z + 150)
                 stars[i].z = stars[i].z - DEPTH_Z;
@@ -794,7 +855,7 @@ public:
             while (i < ast_count)
             {
                 asteroids[i].z = asteroids[i].z - speed;
-                if (asteroids[i].z < NEAR_Z)
+                if (asteroids[i].z < 0 - FAR_Z - 150)
                     asteroids[i].respawn( &rng );
                 if (asteroids[i].z > FAR_Z + 150)
                     asteroids[i].z = asteroids[i].z - DEPTH_Z;
@@ -854,12 +915,17 @@ public:
         if (flash_t > 0)
             flash_t = flash_t - 1;
 
-        // explosions decay
+        // explosion debris: fly apart, drift back with our motion, fade
         i = 0;
-        while (i < 4)
+        while (i < DEBRIS_COUNT)
         {
-            if (explosions[i].t > 0)
-                explosions[i].t = explosions[i].t - 1;
+            if (debris[i].t > 0)
+            {
+                debris[i].x = debris[i].x + debris[i].vx;
+                debris[i].y = debris[i].y + debris[i].vy;
+                debris[i].z = debris[i].z + debris[i].vz - speed;
+                debris[i].t = debris[i].t - 1;
+            }
             i = i + 1;
         }
 
@@ -882,8 +948,19 @@ public:
 
         if (msg_t > 0)
             msg_t = msg_t - 1;
+        if (move_t > 0)
+            move_t = move_t - 1;
         if (docked_t > 0)
             docked_t = docked_t - 1;
+
+        // Zylon migration clock: now and then the Zylon fleet
+        // redistributes itself across neighbouring quadrants
+        migrate_t = migrate_t + 1;
+        if (migrate_t >= MIGRATE_FRAMES)
+        {
+            migrate_t = 0;
+            zylon_migration();
+        }
     }
 
     // ------------------------------------------------------------------
@@ -975,6 +1052,7 @@ public:
                         if (enemies_alive() == 0)
                         {
                             cleared[qy * GALAXY_QUADS + qx] = 1;
+                            galaxy_map[qy * GALAXY_QUADS + qx] = 0;
                             msg_t = MSG_FRAMES;
                         }
                         return;
@@ -1012,21 +1090,32 @@ public:
 
     void add_explosion( float ex, float ey, float ez )
     {
-        int slot;
-        float d;
-        slot = 0;
-        if (explosions[1].t < explosions[slot].t)
-            slot = 1;
-        if (explosions[2].t < explosions[slot].t)
-            slot = 2;
-        if (explosions[3].t < explosions[slot].t)
-            slot = 3;
-        d = ez;
-        if (d < NEAR_Z)
-            d = NEAR_Z;
-        explosions[slot].sx = CENTER_X + ex / d * FOCAL;
-        explosions[slot].sy = CENTER_Y - ey / d * FOCAL;
-        explosions[slot].t = 20;
+        int i;
+        int n;
+        i = 0;
+        n = 0;
+        while (i < DEBRIS_COUNT && n < DEBRIS_PER_BURST)
+        {
+            if (debris[i].t == 0)
+            {
+                float a;
+                float spd;
+                debris[i].x = ex;
+                debris[i].y = ey;
+                debris[i].z = ez;
+                // random outward direction and speed
+                a = rng.between( 0, 628 ) * 0.01;
+                spd = rng.between( 12, 40 ) * 0.1;
+                debris[i].vx = cos( a ) * spd;
+                debris[i].vy = sin( a ) * spd;
+                debris[i].vz = rng.between( -25, 25 ) * 0.1;
+                debris[i].life = rng.between( DEBRIS_LIFE_MIN, DEBRIS_LIFE_MAX );
+                debris[i].t = debris[i].life;
+                debris[i].kind = rng.between( 0, 3 );
+                n = n + 1;
+            }
+            i = i + 1;
+        }
     }
 
     // ------------------------------------------------------------------
@@ -1263,6 +1352,18 @@ public:
             sb_x = nx;
             sb_z = nz;
         }
+        i = 0;
+        while (i < DEBRIS_COUNT)
+        {
+            if (debris[i].t > 0)
+            {
+                nx = debris[i].x * c - debris[i].z * s;
+                nz = debris[i].x * s + debris[i].z * c;
+                debris[i].x = nx;
+                debris[i].z = nz;
+            }
+            i = i + 1;
+        }
     }
 
     void rotate_pitch( float d )
@@ -1314,6 +1415,77 @@ public:
             sb_y = ny;
             sb_z = nz;
         }
+        i = 0;
+        while (i < DEBRIS_COUNT)
+        {
+            if (debris[i].t > 0)
+            {
+                ny = debris[i].y * c - debris[i].z * s;
+                nz = debris[i].y * s + debris[i].z * c;
+                debris[i].y = ny;
+                debris[i].z = nz;
+            }
+            i = i + 1;
+        }
+    }
+
+    // ------------------------------------------------------------------
+    //  Zylon migration: about half of the hostile quadrants (excluding
+    //  the one we are in) send one ship to a toroidally adjacent
+    //  quadrant. Destinations turn hostile again (cleared reset).
+    //  The starting quadrant is a valid destination, so its initial
+    //  safety lasts only until the first migration.
+    // ------------------------------------------------------------------
+
+    void zylon_migration()
+    {
+        int i;
+        int j;
+        int dir;
+        int tx;
+        int ty;
+        int cur;
+        cur = qy * GALAXY_QUADS + qx;
+        i = 0;
+        while (i < GALAXY_QUADS * GALAXY_QUADS)
+        {
+            if (galaxy_map[i] > 0 && i != cur)
+            {
+                if (rng.between( 0, 1 ) == 0)
+                {
+                    tx = i % GALAXY_QUADS;
+                    ty = i / GALAXY_QUADS;
+                    dir = rng.between( 0, 3 );
+                    if (dir == 0)
+                        ty = ty - 1;
+                    else if (dir == 1)
+                        tx = tx + 1;
+                    else if (dir == 2)
+                        ty = ty + 1;
+                    else
+                        tx = tx - 1;
+                    while (tx < 0)
+                        tx = tx + GALAXY_QUADS;
+                    while (tx >= GALAXY_QUADS)
+                        tx = tx - GALAXY_QUADS;
+                    while (ty < 0)
+                        ty = ty + GALAXY_QUADS;
+                    while (ty >= GALAXY_QUADS)
+                        ty = ty - GALAXY_QUADS;
+                    j = ty * GALAXY_QUADS + tx;
+                    // never into the starbase quadrants or our own
+                    if (j != cur && is_starbase_quad( tx, ty ) == 0)
+                    {
+                        galaxy_map[i] = galaxy_map[i] - 1;
+                        if (galaxy_map[j] < 8)
+                            galaxy_map[j] = galaxy_map[j] + 1;
+                        cleared[j] = 0;
+                    }
+                }
+            }
+            i = i + 1;
+        }
+        move_t = MSG_FRAMES;
     }
 
     // ------------------------------------------------------------------
@@ -1446,6 +1618,15 @@ public:
     //  drawing
     // ------------------------------------------------------------------
 
+    // screen X for a world-space lateral offset at depth d. The aft
+    // view is a 180-degree yaw, which mirrors the horizontal axis.
+    float view_sx( float x, float d )
+    {
+        if (aft_on != 0)
+            return CENTER_X - x / d * FOCAL;
+        return CENTER_X + x / d * FOCAL;
+    }
+
     void draw()
     {
         if (chart_on != 0)
@@ -1465,6 +1646,13 @@ public:
         if (speedscale < 1)
             speedscale = 1;
 
+        // GPU state reset: ClearScreen honors the active blending
+        // mode and multiply color, so any state left over from the
+        // previous frame would turn the clear into an additive
+        // smear (trails building to a white-out). Always clear
+        // with plain alpha + white multiply.
+        set_blending_mode( blending_alpha );
+        set_multiply_color( color_white );
         clear_screen( make_color_rgb( 2, 4, 12 ) );
 
         // stars
@@ -1479,9 +1667,11 @@ public:
             float sx;
             float sy;
             d = stars[i].z;
+            if (aft_on != 0)
+                d = 0 - d;
             if (d >= NEAR_Z)
             {
-                sx = CENTER_X + stars[i].x / d * FOCAL;
+                sx = view_sx( stars[i].x, d );
                 sy = CENTER_Y - stars[i].y / d * FOCAL;
                 if (sx > -20 && sx < 660 && sy > -20 && sy < 380)
                 {
@@ -1547,9 +1737,11 @@ public:
                 float sy;
                 float s;
                 d = asteroids[i].z;
+                if (aft_on != 0)
+                    d = 0 - d;
                 if (d >= NEAR_Z)
                 {
-                    sx = CENTER_X + asteroids[i].x / d * FOCAL;
+                    sx = view_sx( asteroids[i].x, d );
                     sy = CENTER_Y - asteroids[i].y / d * FOCAL;
                     s = 750 / d;
                     if (s < 0.5)
@@ -1558,11 +1750,8 @@ public:
                         s = 6.0;
                     if (sx > -60 && sx < 700 && sy > -60 && sy < 420)
                     {
-                        select_region( ASCII_BLK1 + asteroids[i].kind );
                         set_multiply_color( make_color_rgb( 150, 130, 110 ) );
-                        // blocks are tall (10x20): flatten to look rocky
-                        draw_zoomed_rect( sx, sy, s * asteroids[i].asp,
-                                          s * 0.62 * asteroids[i].asp );
+                        draw_asteroid_sprite( sx, sy, s, asteroids[i].kind );
                     }
                 }
                 i = i - 1;
@@ -1570,24 +1759,29 @@ public:
         }
 
         // starbase: block-built station, stationary in space
-        if (sb_active != 0 && sb_z >= NEAR_Z)
+        if (sb_active != 0 && (sb_z >= NEAR_Z || sb_z <= 0 - NEAR_Z))
         {
             float d;
             float sx;
             float sy;
             float s;
             d = sb_z;
-            sx = CENTER_X + sb_x / d * FOCAL;
-            sy = CENTER_Y - sb_y / d * FOCAL;
-            s = 900 / d;
-            if (s < 0.5)
-                s = 0.5;
-            if (s > 4.0)
-                s = 4.0;
-            if (sx > -80 && sx < 720 && sy > -80 && sy < 440)
+            if (aft_on != 0)
+                d = 0 - d;
+            if (d >= NEAR_Z)
             {
-                set_multiply_color( make_color_rgb( 80, 230, 230 ) );
-                draw_starbase_sprite( sx, sy, s );
+                sx = view_sx( sb_x, d );
+                sy = CENTER_Y - sb_y / d * FOCAL;
+                s = 900 / d;
+                if (s < 0.5)
+                    s = 0.5;
+                if (s > 4.0)
+                    s = 4.0;
+                if (sx > -80 && sx < 720 && sy > -80 && sy < 440)
+                {
+                    set_multiply_color( make_color_rgb( 80, 230, 230 ) );
+                    draw_starbase_sprite( sx, sy, s );
+                }
             }
         }
 
@@ -1595,14 +1789,16 @@ public:
         i = 7;
         while (i >= 0)
         {
-            if (enemies[i].alive != 0 && enemies[i].z >= NEAR_Z)
+            if (enemies[i].alive != 0 && (enemies[i].z >= NEAR_Z || enemies[i].z <= 0 - NEAR_Z))
             {
                 float d;
                 float sx;
                 float sy;
                 float s;
                 d = enemies[i].z;
-                sx = CENTER_X + enemies[i].x / d * FOCAL;
+                if (aft_on != 0)
+                    d = 0 - d;
+                sx = view_sx( enemies[i].x, d );
                 sy = CENTER_Y - enemies[i].y / d * FOCAL;
                 s = 700 / d;
                 if (s < 0.5)
@@ -1625,14 +1821,16 @@ public:
         i = 0;
         while (i < EBOLT_COUNT)
         {
-            if (ebolts[i].active != 0 && ebolts[i].z >= NEAR_Z)
+            if (ebolts[i].active != 0 && (ebolts[i].z >= NEAR_Z || ebolts[i].z <= 0 - NEAR_Z))
             {
                 float d;
                 float sx;
                 float sy;
                 float s;
                 d = ebolts[i].z;
-                sx = CENTER_X + ebolts[i].x / d * FOCAL;
+                if (aft_on != 0)
+                    d = 0 - d;
+                sx = view_sx( ebolts[i].x, d );
                 sy = CENTER_Y - ebolts[i].y / d * FOCAL;
                 s = 500 / d;
                 if (s < 0.8)
@@ -1651,9 +1849,12 @@ public:
 
         // missiles: bright '*' heads with a fading tail dot, flying
         // down-range from the wing turrets toward the crosshair
-        i = 0;
-        while (i < MISSILE_COUNT)
+        // (forward fire only: nothing to see in the aft view)
+        if (aft_on == 0)
         {
+            i = 0;
+            while (i < MISSILE_COUNT)
+            {
             if (missiles[i].active != 0)
             {
                 float d;
@@ -1684,24 +1885,49 @@ public:
                 }
             }
             i = i + 1;
+            }
         }
 
-        // explosions: expanding '*' at the kill position
+        // explosion debris: block fragments breaking apart from the
+        // kill position, drifting with the debris velocity, fading out
+        set_blending_mode( blending_alpha );
         i = 0;
-        while (i < 4)
+        while (i < DEBRIS_COUNT)
         {
-            if (explosions[i].t > 0)
+            if (debris[i].t > 0)
             {
+                float d;
+                float sx;
+                float sy;
                 float s;
-                s = 1.0 + (20 - explosions[i].t) * 0.35;
-                select_region( ASCII_STAR );
-                set_multiply_color( make_color_rgb( 255, 200, 60 ) );
-                draw_zoomed_centered( explosions[i].sx, explosions[i].sy, s );
+                int a;
+                d = debris[i].z;
+                if (aft_on != 0)
+                    d = 0 - d;
+                if (d >= NEAR_Z)
+                {
+                    sx = view_sx( debris[i].x, d );
+                    sy = CENTER_Y - debris[i].y / d * FOCAL;
+                    s = 420 / d;
+                    if (s < 0.5)
+                        s = 0.5;
+                    if (s > 5.0)
+                        s = 5.0;
+                    a = debris[i].t * 255 / debris[i].life;
+                    if (a > 255)
+                        a = 255;
+                    if (sx > -60 && sx < 700 && sy > -60 && sy < 420)
+                    {
+                        select_region( ASCII_BLK1 + debris[i].kind );
+                        set_multiply_color( make_color_rgba( 255, 170, 60, a ) );
+                        // blocks are tall (10x20): flatten like rocks
+                        draw_zoomed_rect( sx, sy, s, s * 0.6 );
+                    }
+                }
             }
             i = i + 1;
         }
 
-        draw_reticle();
         draw_hud();
         draw_radar();
 
@@ -1744,11 +1970,48 @@ public:
             print_at( CENTER_X - 80, CENTER_Y - 10, s_ph1 );
             print_at( CENTER_X - 80, CENTER_Y + 20, s_ph2 );
         }
+
+        // reticle last: nothing may draw over the aiming cross
+        draw_reticle();
+
+        // and leave the GPU in a clean state for the next frame's
+        // clear_screen (see the note at the top of draw())
+        set_blending_mode( blending_alpha );
+        set_multiply_color( color_white );
     }
 
     // ------------------------------------------------------------------
     //  composite sprites, built from the block glyphs 0x11-0x14
     // ------------------------------------------------------------------
+
+    // Asteroid: a bulbous lump -- a big core block with smaller
+    // blocks welded on at jittered offsets, so it reads as a
+    // chunky rock instead of a square. 'kind' picks a silhouette.
+    // Multiply color is set by the caller.
+    void draw_asteroid_sprite( int sx, int sy, float s, int kind )
+    {
+        if (kind == 0 || kind == 2)
+        {
+            select_region( ASCII_BLK3 );
+            draw_zoomed_rect( sx, sy, 1.4 * s, 0.8 * s );
+            select_region( ASCII_BLK2 );
+            draw_zoomed_rect( sx - 10 * s, sy + 3 * s, 0.8 * s, 0.5 * s );
+            draw_zoomed_rect( sx + 9 * s, sy - 4 * s, 0.7 * s, 0.45 * s );
+            select_region( ASCII_BLK1 );
+            draw_zoomed_rect( sx + 4 * s, sy - 6 * s, 0.5 * s, 0.3 * s );
+        }
+        else
+        {
+            select_region( ASCII_BLK3 );
+            draw_zoomed_rect( sx, sy, 1.2 * s, 0.9 * s );
+            select_region( ASCII_BLK2 );
+            draw_zoomed_rect( sx + 11 * s, sy + 4 * s, 0.75 * s, 0.5 * s );
+            draw_zoomed_rect( sx - 9 * s, sy - 5 * s, 0.65 * s, 0.4 * s );
+            draw_zoomed_rect( sx - 2 * s, sy + 8 * s, 0.6 * s, 0.35 * s );
+            select_region( ASCII_BLK1 );
+            draw_zoomed_rect( sx - 5 * s, sy - 7 * s, 0.45 * s, 0.28 * s );
+        }
+    }
 
     // Zylon cruiser: full-solid body, mid-solid swept wings,
     // light-solid cockpit. Multiply color is set by the caller.
@@ -1783,9 +2046,34 @@ public:
 
     void draw_reticle()
     {
-        select_region( ASCII_PLUS );
-        set_multiply_color( make_color_rgb( 0, 200, 120 ) );
-        draw_zoomed_centered( CENTER_X, CENTER_Y, 1.0 );
+        // fully self-contained draw state; additive so it glows.
+        // NOTE: stretching a dash glyph vertically does NOT make a
+        // vertical line -- the dash occupies only ~3 rows of its
+        // 20-pixel cell, so a Y-scaled dash is just a small blob.
+        // Vertical bars must use the '|' pipe glyph.
+        select_texture( -1 );
+        set_blending_mode( blending_add );
+        set_multiply_color( make_color_rgb( 0, 220, 130 ) );
+        if (aft_on != 0)
+        {
+            // aft view: two thick horizontal hairs with a wide gap
+            // between them (no vertical -- we are not aiming)
+            select_region( ASCII_DASH );
+            set_drawing_scale( 2.2, 1.0 );
+            draw_region_zoomed_at( CENTER_X - 62, CENTER_Y - 10 );
+            draw_region_zoomed_at( CENTER_X + 40, CENTER_Y - 10 );
+        }
+        else
+        {
+            // full cross: dash for the horizontal hair, pipe for
+            // the vertical bar
+            select_region( ASCII_DASH );
+            set_drawing_scale( 3.0, 1.0 );
+            draw_region_zoomed_at( CENTER_X - 15, CENTER_Y - 10 );
+            select_region( ASCII_PIPE );
+            set_drawing_scale( 1.0, 1.4 );
+            draw_region_zoomed_at( CENTER_X - 5, CENTER_Y - 14 );
+        }
     }
 
     // horizontal bar: the '-' glyph zoomed non-uniformly
@@ -1841,21 +2129,26 @@ public:
                 float ny;
                 float ez;
                 ez = asteroids[i].z;
-                if (ez < NEAR_Z)
-                    ez = NEAR_Z;
-                nx = asteroids[i].x / ez / 0.9;
-                ny = 0 - asteroids[i].y / ez / 0.9;
-                if (nx > 1)
-                    nx = 1;
-                if (nx < -1)
-                    nx = -1;
-                if (ny > 1)
-                    ny = 1;
-                if (ny < -1)
-                    ny = -1;
-                select_region( ASCII_DOT );
-                set_multiply_color( make_color_rgb( 150, 140, 120 ) );
-                draw_zoomed_centered( rcx + nx * range, rcy + ny * range, 1.0 );
+                if (aft_on != 0)
+                    ez = 0 - ez;
+                if (ez >= NEAR_Z)
+                {
+                    nx = asteroids[i].x / ez / 0.9;
+                    ny = 0 - asteroids[i].y / ez / 0.9;
+                    if (aft_on != 0)
+                        nx = 0 - nx;
+                    if (nx > 1)
+                        nx = 1;
+                    if (nx < -1)
+                        nx = -1;
+                    if (ny > 1)
+                        ny = 1;
+                    if (ny < -1)
+                        ny = -1;
+                    select_region( ASCII_DOT );
+                    set_multiply_color( make_color_rgb( 150, 140, 120 ) );
+                    draw_zoomed_centered( rcx + nx * range, rcy + ny * range, 1.0 );
+                }
                 i = i + 1;
             }
         }
@@ -1870,21 +2163,26 @@ public:
                 float ny;
                 float ez;
                 ez = enemies[i].z;
-                if (ez < NEAR_Z)
-                    ez = NEAR_Z;
-                nx = enemies[i].x / ez / 0.9;
-                ny = 0 - enemies[i].y / ez / 0.9;
-                if (nx > 1)
-                    nx = 1;
-                if (nx < -1)
-                    nx = -1;
-                if (ny > 1)
-                    ny = 1;
-                if (ny < -1)
-                    ny = -1;
-                select_region( ASCII_DOT );
-                set_multiply_color( make_color_rgb( 255, 80, 80 ) );
-                draw_zoomed_centered( rcx + nx * range, rcy + ny * range, 1.2 );
+                if (aft_on != 0)
+                    ez = 0 - ez;
+                if (ez >= NEAR_Z)
+                {
+                    nx = enemies[i].x / ez / 0.9;
+                    ny = 0 - enemies[i].y / ez / 0.9;
+                    if (aft_on != 0)
+                        nx = 0 - nx;
+                    if (nx > 1)
+                        nx = 1;
+                    if (nx < -1)
+                        nx = -1;
+                    if (ny > 1)
+                        ny = 1;
+                    if (ny < -1)
+                        ny = -1;
+                    select_region( ASCII_DOT );
+                    set_multiply_color( make_color_rgb( 255, 80, 80 ) );
+                    draw_zoomed_centered( rcx + nx * range, rcy + ny * range, 1.2 );
+                }
             }
             i = i + 1;
         }
@@ -1896,21 +2194,26 @@ public:
             float ny;
             float ez;
             ez = sb_z;
-            if (ez < NEAR_Z)
-                ez = NEAR_Z;
-            nx = sb_x / ez / 0.9;
-            ny = 0 - sb_y / ez / 0.9;
-            if (nx > 1)
-                nx = 1;
-            if (nx < -1)
-                nx = -1;
-            if (ny > 1)
-                ny = 1;
-            if (ny < -1)
-                ny = -1;
-            select_region( ASCII_DOT );
-            set_multiply_color( make_color_rgb( 80, 230, 230 ) );
-            draw_zoomed_centered( rcx + nx * range, rcy + ny * range, 1.6 );
+            if (aft_on != 0)
+                ez = 0 - ez;
+            if (ez >= NEAR_Z)
+            {
+                nx = sb_x / ez / 0.9;
+                ny = 0 - sb_y / ez / 0.9;
+                if (aft_on != 0)
+                    nx = 0 - nx;
+                if (nx > 1)
+                    nx = 1;
+                if (nx < -1)
+                    nx = -1;
+                if (ny > 1)
+                    ny = 1;
+                if (ny < -1)
+                    ny = -1;
+                select_region( ASCII_DOT );
+                set_multiply_color( make_color_rgb( 80, 230, 230 ) );
+                draw_zoomed_centered( rcx + nx * range, rcy + ny * range, 1.6 );
+            }
         }
     }
 
@@ -1924,6 +2227,9 @@ public:
         int cell;
         int hostile;
 
+        // clean GPU state before clearing (see note in draw())
+        set_blending_mode( blending_alpha );
+        set_multiply_color( color_white );
         clear_screen( make_color_rgb( 2, 4, 12 ) );
 
         set_multiply_color( color_white );
@@ -1964,6 +2270,13 @@ public:
                     select_region( ASCII_V );
                     set_multiply_color( make_color_rgb( 255, 90, 70 ) );
                     draw_zoomed_centered( cell_x, cell_y, 1.0 );
+                    // hostile AND an asteroid field: rock marker beside
+                    if (ast_map[cell] > 0)
+                    {
+                        select_region( ASCII_BLK3 );
+                        set_multiply_color( make_color_rgb( 120, 105, 90 ) );
+                        draw_zoomed_rect( cell_x + 9, cell_y, 0.5, 0.3 );
+                    }
                 }
                 else if (ast_map[cell] > 0)
                 {
@@ -2123,6 +2436,10 @@ public:
             print_at( 440, 224, s_ac_on );
         else
             print_at( 440, 224, s_ac_off );
+        if (aft_on != 0)
+            print_at( 440, 248, s_aft );
+        else
+            print_at( 440, 248, s_fwd );
 
         // bottom-left: engines + heading
         if (warp_t > 0)
@@ -2162,6 +2479,8 @@ public:
         else if (msg_t > 0)
         {
             print_at( CENTER_X - 55, CENTER_Y - 40, s_clear );
+        if (move_t > 0)
+            print_at( CENTER_X - 60, CENTER_Y - 70, s_move );
         }
     }
 
