@@ -27,6 +27,8 @@
 #sound WAV_BUNKER_HIT   "sounds/bunker_hit.wav"
 #sound WAV_MENU_MOVE    "sounds/menu_move.wav"
 #sound WAV_MENU_SELECT  "sounds/menu_select.wav"
+#sound WAV_MUSIC_TITLE  "sounds/music_title.wav"
+#sound WAV_MUSIC_GAME   "sounds/music_game.wav"
 
 // ============================================================================
 //  SPACE INVADERS - portable object-oriented C++ skeleton
@@ -129,6 +131,8 @@
 //  13  SOUND_BUNKER_HIT     bullet chews a bunker cell
 //  14  SOUND_MENU_MOVE      title menu cursor moved
 //  15  SOUND_MENU_SELECT    title menu: game started
+//  16  SOUND_MUSIC_TITLE    looping title screen theme
+//  17  SOUND_MUSIC_GAME     looping gameplay theme
 // ============================================================================
 
 // === FILE: si_assets.h ===
@@ -171,7 +175,9 @@ namespace AssetIds {
         SOUND_EXTRA_LIFE    = 12,
         SOUND_BUNKER_HIT    = 13,
         SOUND_MENU_MOVE     = 14,   // title menu: cursor moved
-        SOUND_MENU_SELECT   = 15    // title menu: game started
+        SOUND_MENU_SELECT   = 15,   // title menu: game started
+        SOUND_MUSIC_TITLE   = 16,   // looping title screen theme
+        SOUND_MUSIC_GAME    = 17    // looping gameplay theme
     };
 }
 
@@ -482,10 +488,14 @@ public:
 // ---------------------------------------------------------------------------
 class Sound {
 public:
-    // one-time setup: the saucer's warble loops until stopped
+    // one-time setup: looping sounds get their loop flag set
     void init() {
         select_sound(AssetIds::SOUND_SAUCER);
         set_sound_loop(1);   // applies to the selected sound
+        select_sound(AssetIds::SOUND_MUSIC_TITLE);
+        set_sound_loop(1);
+        select_sound(AssetIds::SOUND_MUSIC_GAME);
+        set_sound_loop(1);
     }
 
     // returns the channel the sound started in, or -1 if none was free
@@ -1329,7 +1339,7 @@ public:
         : mPlayerBullet(0), mScore(0), mHiScore(0), mWave(1),
           mBombCooldown(60), mWaveClearTimer(0), mLastExtraLifeAt(0),
           mState(GAME_TITLE), mDifficulty(DIFF_MEDIUM), mSaucerSfxChannel(-1),
-          mTitleTick(0) {
+          mTitleTick(0), mMusicChannel(-1), mMusicId(-1) {
         // sine table for the title wave (16 steps = one period, x5):
         // filled with plain assignments -- the subset has no array
         // initializer lists
@@ -1367,6 +1377,7 @@ public:
     }
 
     void runFrame(const Input& in) {
+        updateMusic();
         if (mState == GAME_TITLE)           titleFrame(in);
         else if (mState == GAME_PLAYING)    playFrame(in);
         else if (mState == GAME_WAVE_CLEAR) waveClearFrame();
@@ -1631,6 +1642,28 @@ private:
         }
     }
 
+    // ---- music --------------------------------------------------------------
+    // One looping track per screen state, switched automatically:
+    //   GAME_TITLE            -> title theme
+    //   GAME_PLAYING/WAVE_CLR -> gameplay theme
+    //   GAME_OVER             -> silence (defeat gets quiet)
+    // Both tracks loop (set in Sound::init), so they are started once per
+    // state change and stopped by channel when the state changes again.
+    void updateMusic() {
+        int target;
+        if (mState == GAME_TITLE)     target = AssetIds::SOUND_MUSIC_TITLE;
+        else if (mState == GAME_OVER) target = -1;
+        else                          target = AssetIds::SOUND_MUSIC_GAME;
+        if (target == mMusicId) return;          // already correct
+        if (mMusicChannel >= 0) {                // stop the old track
+            mSfx.stopChannel(mMusicChannel);
+            mMusicChannel = -1;
+        }
+        mMusicId = target;
+        if (mMusicId >= 0)
+            mMusicChannel = mSfx.play(mMusicId); // -1: retried next frame
+    }
+
     // saucer warble: a LOOPING sound, so it must be started once at
     // launch and stopped by CHANNEL (audio.h has no stop-by-sound) when
     // it exits or dies. -1 means the warble is not playing.
@@ -1710,6 +1743,8 @@ private:
     int mSaucerSfxChannel;        // warble's channel, -1 when not playing
     int mTitleTick;               // title-wave animation clock
     int mSine[16];                // one sine period, amplitude 5
+    int mMusicChannel;            // music loop's channel, -1 when silent
+    int mMusicId;                 // sound id of the current track, -1 none
 };
 
 } // namespace si

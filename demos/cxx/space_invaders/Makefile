@@ -70,6 +70,8 @@ vsnd:
 	$(SOUND_TOOL)   sounds/march6.wav       -o sounds/march6.vsnd
 	$(SOUND_TOOL)   sounds/menu_move.wav    -o sounds/menu_move.vsnd
 	$(SOUND_TOOL)   sounds/menu_select.wav  -o sounds/menu_select.vsnd
+	$(SOUND_TOOL)   sounds/music_game.wav   -o sounds/music_game.vsnd
+	$(SOUND_TOOL)   sounds/music_title.wav  -o sounds/music_title.vsnd
 	$(SOUND_TOOL)   sounds/player_death.wav -o sounds/player_death.vsnd
 	$(SOUND_TOOL)   sounds/saucer_death.wav -o sounds/saucer_death.vsnd
 	$(SOUND_TOOL)   sounds/saucer.wav       -o sounds/saucer.vsnd

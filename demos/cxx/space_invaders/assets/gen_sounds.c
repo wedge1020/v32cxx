@@ -19,6 +19,8 @@
  *   13  bunker_hit.wav     shield chip: short muffled thud
  *   14  menu_move.wav      title menu: cursor moved (short blip)
  *   15  menu_select.wav    title menu: game started (two-tone confirm)
+ *   16  music_title.wav    looping title theme (march-like, 8 notes)
+ *   17  music_game.wav     looping gameplay theme (ominous bass ostinato)
  *
  * All synthesis is deterministic (own LCG for noise), so output is
  * reproducible. Keep everything 16-bit MONO -- one word per sample.
@@ -41,6 +43,8 @@
  *   #sound WAV_BUNKER_HIT   "sounds/bunker_hit.wav"
  *   #sound WAV_MENU_MOVE    "sounds/menu_move.wav"
  *   #sound WAV_MENU_SELECT  "sounds/menu_select.wav"
+ *   #sound WAV_MUSIC_TITLE  "sounds/music_title.wav"
+ *   #sound WAV_MUSIC_GAME   "sounds/music_game.wav"
  *
  * Hint order == cart sound id == AssetIds::Sounds value. The hint macro
  * names deliberately do NOT reuse the enum names (WAV_*, not
@@ -116,8 +120,39 @@ static double square(double phase) {
 }
 
 /* one sound = one array built sample by sample */
-#define MAX_SAMPLES (RATE * 4)
+#define MAX_SAMPLES (RATE * 8)
 static short buf[MAX_SAMPLES];
+
+/* ---- tiny note sequencer (used by the music tracks) ---------------------
+ * Renders 'count' notes of 'note_dur' seconds each from a frequency
+ * table (Hz, 0 = rest) as a square wave with a soft 50/50 duty trim,
+ * then returns the sample count. Loop-friendly: the last note's release
+ * ends exactly at the loop point, so set_sound_loop seamless-repeats.  */
+static int render_melody(const double *freqs, int count, double note_dur)
+{
+    int n = (int)(note_dur * count * RATE);
+    double phase = 0;
+    for (int i = 0; i < n; ++i) {
+        double t   = (double)i / RATE;
+        int   note = (int)(t / note_dur);
+        if (note >= count) note = count - 1;
+        double tt  = t - note * note_dur;      /* time within the note  */
+        double f   = freqs[note];
+        double s   = 0;
+        if (f > 0) {
+            phase += f / RATE;
+            s = square(phase);
+            /* gentle envelope: quick attack, decay to sustain, clean
+             * release at the very end so the loop point is click-free */
+            double env = 1.0;
+            if (tt < 0.01)  env = tt / 0.01;
+            if (tt > note_dur - 0.02) env = (note_dur - tt) / 0.02;
+            s *= env;
+        }
+        buf[i] = (short)(8000 * s);
+    }
+    return n;
+}
 
 int main(void) {
     /* -- 0: shoot -- fast downward square sweep, hard decay ------------- */
@@ -272,6 +307,32 @@ int main(void) {
             buf[i] = (short)(11000 * env * square(phase));
         }
         write_wav("menu_select.wav", n, buf);
+    }
+
+    /* -- 16: music_title -- march-flavored 8-note loop --------------------
+     * Two-voice feel from one channel: low square bass with a higher
+     * answer every other bar. 8 notes x 0.25s = a clean 2.0s loop.  */
+    {
+        /* A2 A2 C3 C3 E3 E3 D3 D3 -> answers G3 G3 A3 A3 ... on repeat;
+         * rendered as a single 16-note phrase so the loop breathes   */
+        double notes[16] = {
+            110.0, 110.0, 130.8, 130.8, 164.8, 164.8, 146.8, 146.8,
+            196.0, 196.0, 220.0, 220.0, 164.8, 146.8, 130.8, 110.0
+        };
+        int n = render_melody(notes, 16, 0.25);
+        write_wav("music_title.wav", n, buf);
+    }
+
+    /* -- 17: music_game -- ominous bass ostinato, 2-bar loop ---------------
+     * Semitone-staggered E minor descent (E2 D2 C2 B1), the classic
+     * "invaders are coming" downward pressure. 8 x 0.3s = 2.4s loop.  */
+    {
+        double notes[8] = {
+             82.4,  82.4,  73.4,  73.4,
+             65.4,  65.4,  61.7,  61.7
+        };
+        int n = render_melody(notes, 8, 0.30);
+        write_wav("music_game.wav", n, buf);
     }
 
     return 0;
