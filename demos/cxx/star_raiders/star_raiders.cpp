@@ -82,7 +82,7 @@
 #define GEAR_MAX            8
 #define GEAR_SPEED          3    // units per frame per gear step
 
-#define WARP_FRAMES        90
+#define WARP_FRAMES       480    // 8 seconds of acceleration to jump
 #define WARP_SPEED         60
 #define TURN_ACCEL      0.0018  // angular acceleration (the ship has mass)
 #define TURN_DAMP        0.90   // velocity damping per frame
@@ -132,6 +132,22 @@
 
 // red alert klaxon duration (frames)
 #define ALERT_FRAMES      150
+
+// hyperspace navigation: during the 8 s acceleration the pilot must
+// keep the ship aligned with the course (marker near the reticle);
+// more error than this at jump time = off course, wrong quadrant.
+// Drift is a random walk -- noticeable work to counter.
+#define NAV_TOLERANCE     0.10
+#define NAV_DRIFT       0.0038
+
+// emerging from hyperspace: deceleration from warp speed back down
+// to the set engine gear (frames)
+#define DECEL_FRAMES      110
+
+// controls are heavier in hyperspace: stronger damping and a lower
+// turn rate cap than in normal space
+#define WARP_TURN_DAMP    0.80
+#define WARP_TURN_MAX     0.020
 
 // explosion debris: block fragments that fly apart and fade
 #define DEBRIS_COUNT       24
@@ -201,6 +217,7 @@ int s_pause[7]      = { 80, 65, 85, 83, 69, 68, 0 };                            
 int s_ph1[16]       = { 83, 84, 65, 82, 84, 43, 65, 58, 32, 65, 84, 84, 65, 67, 75, 0 }; // "START+A: ATTACK"
 int s_ph2[17]       = { 83, 84, 65, 82, 84, 43, 66, 58, 32, 83, 72, 73, 69, 76, 68, 83, 0 }; // "START+B: SHIELDS"
 int s_move[16]      = { 90, 89, 76, 79, 78, 83, 32, 83, 72, 73, 70, 84, 73, 78, 71, 0 };  // "ZYLONS SHIFTING"
+int s_offcourse[11] = { 79, 70, 70, 32, 67, 79, 85, 82, 83, 69, 0 };                       // "OFF COURSE"
 int s_astfield[10]  = { 65, 83, 84, 69, 82, 79, 73, 68, 83, 0 };                 // "ASTEROIDS"
 int s_fullstop[24]  = { 68, 79, 67, 75, 73, 78, 71, 32, 82, 69, 81, 85, 73, 82, 69, 83, 32, 70, 85, 76, 76, 32, 83, 0 }; // "DOCKING REQUIRES FULL "
 
@@ -462,6 +479,14 @@ public:
     int migrate_t;    // Zylon migration clock (frames)
     int move_t;       // "ZYLONS SHIFTING" message timer
     int alert_t;      // red alert klaxon timer
+    int offc_t;       // "OFF COURSE" message timer
+    int engine_on;    // engine loop currently playing (channel 0)
+    int decel_t;      // post-warp deceleration frames remaining
+    int target_qx;    // pending chart warp destination
+    int target_qy;
+
+    float mk_yaw;     // hyperspace course marker (radians, ship-relative)
+    float mk_pitch;
     int galaxy_map[64];
     int cleared[64];
     int ast_map[64];    // asteroid fields per quadrant
@@ -650,6 +675,13 @@ public:
         migrate_t = 0;
         move_t = 0;
         alert_t = 0;
+        offc_t = 0;
+        engine_on = 1;
+        decel_t = 0;
+        target_qx = 0;
+        target_qy = 0;
+        mk_yaw = 0;
+        mk_pitch = 0;
         chart_cx = start_qx;
         chart_cy = start_qy;
         // fresh layout every game: salt the per-quadrant seeds with
@@ -667,6 +699,10 @@ public:
         set_sound_loop_end( 88200 );
         set_sound_loop( true );
         play_sound_in_channel( SFX_ENGINE, 0 );
+
+        // missiles fire into their own channel, kept at half volume
+        select_channel( 1 );
+        set_channel_volume( 0.45 );
         prev_bl = 0;
         prev_br = 0;
         prev_bu = 0;
@@ -747,15 +783,82 @@ public:
 
     // ------------------------------------------------------------------
 
-    // engine hum volume for the current gear / warp state
+    // engine hum: silent at rest, starts with motion, volume follows
+    // the throttle; full blast during warp
     void update_engine_sound()
     {
         float vol;
+        if (gear == 0 && warp_t == 0 && decel_t == 0)
+        {
+            if (engine_on != 0)
+            {
+                stop_channel( 0 );
+                engine_on = 0;
+            }
+            return;
+        }
+        if (engine_on == 0)
+        {
+            play_sound_in_channel( SFX_ENGINE, 0 );
+            engine_on = 1;
+        }
         vol = 0.12 + gear_frac() * 0.7;
         if (warp_t > 0)
             vol = 1.0;
         select_channel( 0 );
         set_channel_volume( vol );
+    }
+
+    // begin a hyperspace run: reset the course marker near center
+    // (small random error) and start the jump sound in channel 3
+    void nav_start_warp()
+    {
+        mk_yaw = rng.between( -6, 6 ) * 0.01;
+        mk_pitch = rng.between( -6, 6 ) * 0.01;
+        play_sound_in_channel( SFX_HYPERSPACE, 3 );
+    }
+
+    // alignment check at jump time
+    int nav_misaligned()
+    {
+        if (mk_yaw > NAV_TOLERANCE)
+            return 1;
+        if (mk_yaw < 0 - NAV_TOLERANCE)
+            return 1;
+        if (mk_pitch > NAV_TOLERANCE)
+            return 1;
+        if (mk_pitch < 0 - NAV_TOLERANCE)
+            return 1;
+        return 0;
+    }
+
+    // misaligned jump: we surface one quadrant off, randomly
+    void warp_offcourse()
+    {
+        int dir;
+        int nqx;
+        int nqy;
+        dir = rng.between( 0, 3 );
+        nqx = qx;
+        nqy = qy;
+        if (dir == 0)
+            nqy = qy - 1;
+        else if (dir == 1)
+            nqx = qx + 1;
+        else if (dir == 2)
+            nqy = qy + 1;
+        else
+            nqx = qx - 1;
+        while (nqx < 0)
+            nqx = nqx + GALAXY_QUADS;
+        while (nqx >= GALAXY_QUADS)
+            nqx = nqx - GALAXY_QUADS;
+        while (nqy < 0)
+            nqy = nqy + GALAXY_QUADS;
+        while (nqy >= GALAXY_QUADS)
+            nqy = nqy - GALAXY_QUADS;
+        enter_quadrant( nqx, nqy );
+        offc_t = MSG_FRAMES;
     }
 
     void update()
@@ -841,16 +944,34 @@ public:
             pitch_vel = pitch_vel - TURN_ACCEL;
         if (gamepad_down() > 0)
             pitch_vel = pitch_vel + TURN_ACCEL;
-        yaw_vel = yaw_vel * TURN_DAMP;
-        pitch_vel = pitch_vel * TURN_DAMP;
-        if (yaw_vel > TURN_MAX)
-            yaw_vel = TURN_MAX;
-        if (yaw_vel < 0 - TURN_MAX)
-            yaw_vel = 0 - TURN_MAX;
-        if (pitch_vel > TURN_MAX)
-            pitch_vel = TURN_MAX;
-        if (pitch_vel < 0 - TURN_MAX)
-            pitch_vel = 0 - TURN_MAX;
+        // hyperspace feels heavier: stronger damping and a lower
+        // rate cap than open-space handling
+        if (warp_t != 0)
+        {
+            yaw_vel = yaw_vel * WARP_TURN_DAMP;
+            pitch_vel = pitch_vel * WARP_TURN_DAMP;
+            if (yaw_vel > WARP_TURN_MAX)
+                yaw_vel = WARP_TURN_MAX;
+            if (yaw_vel < 0 - WARP_TURN_MAX)
+                yaw_vel = 0 - WARP_TURN_MAX;
+            if (pitch_vel > WARP_TURN_MAX)
+                pitch_vel = WARP_TURN_MAX;
+            if (pitch_vel < 0 - WARP_TURN_MAX)
+                pitch_vel = 0 - WARP_TURN_MAX;
+        }
+        else
+        {
+            yaw_vel = yaw_vel * TURN_DAMP;
+            pitch_vel = pitch_vel * TURN_DAMP;
+            if (yaw_vel > TURN_MAX)
+                yaw_vel = TURN_MAX;
+            if (yaw_vel < 0 - TURN_MAX)
+                yaw_vel = 0 - TURN_MAX;
+            if (pitch_vel > TURN_MAX)
+                pitch_vel = TURN_MAX;
+            if (pitch_vel < 0 - TURN_MAX)
+                pitch_vel = 0 - TURN_MAX;
+        }
         if (yaw_vel > 0.0005 || yaw_vel < -0.0005)
         {
             yaw = yaw + yaw_vel;
@@ -865,6 +986,11 @@ public:
         }
         else
             pitch_vel = 0;
+        // steering also moves the hyperspace course marker (it is
+        // fixed in space; we rotate around it). Vertical response
+        // is flipped, as if trimming against the course directly.
+        mk_yaw = mk_yaw - yaw_vel;
+        mk_pitch = mk_pitch - pitch_vel;
         if (pitch > 0.61)
             pitch = 0.61;
         if (pitch < -0.61)
@@ -883,6 +1009,16 @@ public:
         speed = engine_speed();
         if (engine_dmg != 0)
             speed = speed * 0.5;
+        // emerging from hyperspace: still hauling faster than the
+        // engines can push; bleed down to the set gear smoothly
+        if (decel_t > 0)
+        {
+            float f;
+            decel_t = decel_t - 1;
+            f = decel_t;
+            f = f / DECEL_FRAMES;
+            speed = speed + ( WARP_SPEED - speed ) * f;
+        }
 
         // warp on A (not while Start is held: that is a combo)
         if (warp_t == 0)
@@ -893,20 +1029,51 @@ public:
                 energy = energy - WARP_COST;
                 warp_t = 1;
                 warp_dir = heading();
-                play_sound( SFX_HYPERSPACE );
+                nav_start_warp();
             }
         }
         else
         {
             speed = WARP_SPEED;
             warp_t = warp_t + 1;
+            // the course drifts during acceleration: keep the
+            // marker on the reticle to stay aligned
+            mk_yaw = mk_yaw + rng.between( 0 - 1, 1 ) * NAV_DRIFT;
+            mk_pitch = mk_pitch + rng.between( 0 - 1, 1 ) * NAV_DRIFT;
+            if (mk_yaw > 0.35)
+                mk_yaw = 0.35;
+            if (mk_yaw < -0.35)
+                mk_yaw = -0.35;
+            if (mk_pitch > 0.35)
+                mk_pitch = 0.35;
+            if (mk_pitch < -0.35)
+                mk_pitch = -0.35;
             if (warp_t > WARP_FRAMES)
             {
+                int offc;
                 warp_t = 0;
+                stop_channel( 3 );
+                offc = nav_misaligned();
                 if (warp_targeted != 0)
+                {
                     warp_targeted = 0;
+                    shipx = QUAD_HALF;
+                    shipy = QUAD_HALF;
+                    if (offc != 0)
+                        warp_offcourse();
+                    else
+                        enter_quadrant( target_qx, target_qy );
+                }
                 else
-                    arrive();
+                {
+                    if (offc != 0)
+                        warp_offcourse();
+                    else
+                        arrive();
+                }
+                // emerge fast: decelerate from warp speed back down
+                // to the previously set engine gear
+                decel_t = DECEL_FRAMES;
             }
         }
 
@@ -1068,6 +1235,8 @@ public:
             msg_t = msg_t - 1;
         if (move_t > 0)
             move_t = move_t - 1;
+        if (offc_t > 0)
+            offc_t = offc_t - 1;
         // klaxon cutoff: never let the alert outlive its welcome
         if (alert_t > 0)
         {
@@ -1120,7 +1289,7 @@ public:
                 missiles[i].side = side;
                 missiles[i].active = 1;
                 energy = energy - MISSILE_COST;
-                play_sound( SFX_MISSILE );
+                play_sound_in_channel( SFX_MISSILE, 1 );
                 return;
             }
             i = i + 1;
@@ -1686,12 +1855,15 @@ public:
 
     void warp_to( int nqx, int nqy )
     {
-        shipx = QUAD_HALF;
-        shipy = QUAD_HALF;
-        enter_quadrant( nqx, nqy );
+        // NOTE: we do NOT enter the destination yet -- the sector
+        // (and anything hostile in it) only comes into existence
+        // when we emerge from hyperspace at the end of the run
+        target_qx = nqx;
+        target_qy = nqy;
         warp_t = 1;
         warp_targeted = 1;
         chart_on = 0;
+        nav_start_warp();
     }
 
     // ------------------------------------------------------------------
@@ -2145,6 +2317,22 @@ public:
             print_at( CENTER_X - 30, CENTER_Y - 50, s_pause );
             print_at( CENTER_X - 80, CENTER_Y - 10, s_ph1 );
             print_at( CENTER_X - 80, CENTER_Y + 20, s_ph2 );
+        }
+
+        // hyperspace course marker: an amber diamond the pilot must
+        // align with the reticle during the warp acceleration
+        if (warp_t > 0 && computer_on != 0)
+        {
+            float mx;
+            float my;
+            float ms;
+            mx = CENTER_X + mk_yaw * FOCAL;
+            my = CENTER_Y - mk_pitch * FOCAL;
+            ms = 0.9 + 0.15 * ( get_frame_counter() % 20 );
+            select_region( ASCII_PLUS );
+            set_multiply_color( make_color_rgb( 255, 200, 40 ) );
+            draw_zoomed_centered( mx, my, ms );
+            draw_zoomed_centered( mx, my, ms * 0.55 );
         }
 
         // reticle last: nothing may draw over the aiming cross
@@ -2678,6 +2866,8 @@ public:
         if (move_t > 0)
             print_at( CENTER_X - 60, CENTER_Y - 70, s_move );
         }
+        if (offc_t > 0)
+            print_at( CENTER_X - 45, CENTER_Y - 70, s_offcourse );
     }
 
     int sector_x()
