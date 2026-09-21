@@ -178,6 +178,9 @@
 
 int hud_line[64];
 int hud_num[16];
+int sub_line[64];    // momentary subtitle text
+int sub_t;           // subtitle frames remaining (0 = none)
+int sub_hold;        // 1 = held for the duration (no countdown)
 
 int s_quadrant[10]  = { 81, 85, 65, 68, 82, 65, 78, 84, 32, 0 };          // "QUADRANT "
 int s_comma[2]      = { 44, 0 };                                          // ","
@@ -251,12 +254,47 @@ int pat_E[35] = { 1,1,1,1,1, 1,0,0,0,0, 1,0,0,0,0, 1,1,1,1,0, 1,0,0,0,0, 1,0,0,0
 // "STAR RAIDERS": indices into the pattern set (S=0 T=1 A=2 R=3 I=4 D=5 E=6)
 int title_word[11] = { 0, 1, 2, 3, 3, 2, 4, 5, 6, 3, 0 };
 int s_astfield[10]  = { 65, 83, 84, 69, 82, 79, 73, 68, 83, 0 };                 // "ASTEROIDS"
+int s_starbase[9]   = { 83, 84, 65, 82, 66, 65, 83, 69, 0 };                     // "STARBASE"
+int s_sub_aft[9]    = { 65, 70, 84, 32, 86, 73, 69, 87, 0 };                     // "AFT VIEW"
+int s_sub_fore[10]  = { 70, 79, 82, 69, 32, 86, 73, 69, 87, 0 };                 // "FORE VIEW"
+int s_sub_enter[20] = { 69, 78, 84, 69, 82, 73, 78, 71, 32, 72, 89, 80, 69, 82, 83, 80, 65, 67, 69, 0 };  // "ENTERING HYPERSPACE" (19+1)
+int s_sub_exit[19]  = { 69, 88, 73, 84, 73, 78, 71, 32, 72, 89, 80, 69, 82, 83, 80, 65, 67, 69, 0 };     // "EXITING HYPERSPACE" (18+1)
+int s_sub_ac_on[27] = { 65, 84, 84, 65, 67, 75, 32, 67, 79, 77, 80, 85, 84, 69, 82, 32, 69, 78, 65, 66, 76, 69, 68, 0 };   // "ATTACK COMPUTER ENABLED" (23+1)
+int s_sub_ac_off[28]= { 65, 84, 84, 65, 67, 75, 32, 67, 79, 77, 80, 85, 84, 69, 82, 32, 68, 73, 83, 65, 66, 76, 69, 68, 0 }; // "ATTACK COMPUTER DISABLED" (24+1)
+int s_sub_sh_on[17] = { 83, 72, 73, 69, 76, 68, 83, 32, 69, 78, 65, 66, 76, 69, 68, 0 };    // "SHIELDS ENABLED" (15+1)
+int s_sub_sh_off[18]= { 83, 72, 73, 69, 76, 68, 83, 32, 68, 73, 83, 65, 66, 76, 69, 68, 0 }; // "SHIELDS DISABLED" (16+1)
 int s_fullstop[24]  = { 68, 79, 67, 75, 73, 78, 71, 32, 82, 69, 81, 85, 73, 82, 69, 83, 32, 70, 85, 76, 76, 32, 83, 0 }; // "DOCKING REQUIRES FULL "
 
 void hud_append_int( int v )
 {
     itoa( v, hud_num, 10 );
     strcat( hud_line, hud_num );
+}
+
+// length of an ASCII-code string (chars before the terminating 0)
+int str_len( int* text )
+{
+    int n;
+    n = 0;
+    while (text[n] != 0)
+        n = n + 1;
+    return n;
+}
+
+// momentary subtitle: shows for 120 frames (2 seconds)
+void show_sub( int* text )
+{
+    strcpy( sub_line, text );
+    sub_t = 120;
+    sub_hold = 0;
+}
+
+// held subtitle: stays on screen until something replaces it
+void hold_sub( int* text )
+{
+    strcpy( sub_line, text );
+    sub_hold = 1;
+    sub_t = 1;
 }
 
 // ---------------------------------------------------------------------------
@@ -714,6 +752,8 @@ public:
         move_t = 0;
         alert_t = 0;
         offc_t = 0;
+        sub_t = 0;
+        sub_hold = 0;
         engine_on = 1;
         decel_t = 0;
         target_qx = 0;
@@ -877,6 +917,7 @@ public:
             i = i + 1;
         }
         play_sound_in_channel( SFX_HYPERSPACE, 3 );
+        hold_sub( s_sub_enter );
     }
 
     // alignment check at jump time
@@ -1186,13 +1227,23 @@ public:
             {
                 // a destroyed computer cannot be switched back on
                 if (comp_hp[COMP_CMP] > 0)
+                {
                     computer_on = 1 - computer_on;
+                    if (computer_on != 0)
+                        show_sub( s_sub_ac_on );
+                    else
+                        show_sub( s_sub_ac_off );
+                }
                 start_combo = 1;
                 play_sound( SFX_BEEP );
             }
             if (gamepad_button_b() > 0 && prev_bb <= 0)
             {
                 shields_on = 1 - shields_on;
+                if (shields_on != 0)
+                    show_sub( s_sub_sh_on );
+                else
+                    show_sub( s_sub_sh_off );
                 start_combo = 1;
                 play_sound( SFX_BEEP );
             }
@@ -1227,7 +1278,13 @@ public:
         if (gamepad_button_start() <= 0 && chart_on == 0)
         {
             if (gamepad_button_b() > 0 && prev_bb <= 0)
+            {
                 aft_on = 1 - aft_on;
+                if (aft_on != 0)
+                    hold_sub( s_sub_aft );
+                else
+                    show_sub( s_sub_fore );
+            }
             prev_bb = gamepad_button_b();
         }
 
@@ -1387,6 +1444,7 @@ public:
                 // emerge fast: decelerate from warp speed back down
                 // to the previously set engine gear
                 decel_t = DECEL_FRAMES;
+                show_sub( s_sub_exit );
             }
         }
 
@@ -1561,6 +1619,10 @@ public:
             move_t = move_t - 1;
         if (offc_t > 0)
             offc_t = offc_t - 1;
+        // momentary subtitles count down unless held (aft view,
+        // "ENTERING HYPERSPACE" stay until replaced)
+        if (sub_hold == 0 && sub_t > 0)
+            sub_t = sub_t - 1;
         // klaxon cutoff: never let the alert outlive its welcome
         if (alert_t > 0)
         {
@@ -3117,9 +3179,12 @@ public:
         hud_append_int( nearest_dist( 1 ) );
         print_at( 8, 306, hud_line );
 
-        // asteroid field notice for the selected quadrant
+        // notices for the selected quadrant (right column, clear of
+        // the chart grid: starbases and asteroid fields can coexist)
+        if (is_starbase_quad( chart_cx, chart_cy ) != 0)
+            print_at( 440, 104, s_starbase );
         if (ast_map[chart_cy * GALAXY_QUADS + chart_cx] > 0)
-            print_at( 240, 58, s_astfield );
+            print_at( 440, 124, s_astfield );
     }
 
     // throttle bar fraction: gear -1..8 maps to 0.1..1.0
@@ -3238,6 +3303,14 @@ public:
         }
         if (offc_t > 0)
             print_at( CENTER_X - 45, CENTER_Y - 70, s_offcourse );
+
+        // momentary subtitle, centered below the reticle area
+        if (sub_t > 0 || sub_hold != 0)
+        {
+            set_multiply_color( make_color_rgb( 200, 230, 255 ) );
+            print_at( CENTER_X - str_len( sub_line ) * 5, 120, sub_line );
+            set_multiply_color( color_white );
+        }
     }
 
     int sector_x()
