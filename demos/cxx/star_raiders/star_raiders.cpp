@@ -127,6 +127,16 @@
 #define ENGINE_HIT_ODDS     4
 #define SHIELD_HIT_ODDS     5
 
+// component damage: 4 systems, each with a 9-position gauge
+// (3 red / 3 yellow / 3 green, 8 = perfect, 0 = destroyed).
+// Hits add damage POINTS; every 3 points steps the gauge down.
+// Difficulty sets points per hit: easy 1, medium 2, hard 3.
+#define COMP_ENG  0
+#define COMP_SHD  1
+#define COMP_CMP  2
+#define COMP_CAN  3
+#define COMP_COUNT 4
+
 // shields & attack computer
 #define SHIELD_DRAIN     0.012
 
@@ -218,6 +228,26 @@ int s_ph1[16]       = { 83, 84, 65, 82, 84, 43, 65, 58, 32, 65, 84, 84, 65, 67, 
 int s_ph2[17]       = { 83, 84, 65, 82, 84, 43, 66, 58, 32, 83, 72, 73, 69, 76, 68, 83, 0 }; // "START+B: SHIELDS"
 int s_move[16]      = { 90, 89, 76, 79, 78, 83, 32, 83, 72, 73, 70, 84, 73, 78, 71, 0 };  // "ZYLONS SHIFTING"
 int s_offcourse[11] = { 79, 70, 70, 32, 67, 79, 85, 82, 83, 69, 0 };                       // "OFF COURSE"
+int s_leng[4]       = { 69, 78, 71, 0 };                    // "ENG"
+int s_lshd[4]       = { 83, 72, 68, 0 };                    // "SHD"
+int s_lcmp[4]       = { 67, 77, 80, 0 };                    // "CMP"
+int s_lcan[4]       = { 67, 65, 78, 0 };                    // "CAN"
+int s_easy[5]       = { 69, 65, 83, 89, 0 };                // "EASY"
+int s_medium[7]     = { 77, 69, 68, 73, 85, 77, 0 };        // "MEDIUM"
+int s_hard[5]       = { 72, 65, 82, 68, 0 };                // "HARD"
+int s_select[19]    = { 83, 69, 76, 69, 67, 84, 32, 68, 73, 70, 70, 73, 67, 85, 76, 84, 89, 0 }; // "SELECT DIFFICULTY" (18 chars + null = 19)
+
+// 5x7 block font for the title word "STAR RAIDERS" (row-major,
+// 1 = draw a block cell). Letters: S T A R I D E.
+int pat_S[35] = { 0,1,1,1,1, 1,0,0,0,0, 1,0,0,0,0, 0,1,1,1,0, 0,0,0,0,1, 0,0,0,0,1, 1,1,1,1,0 };
+int pat_T[35] = { 1,1,1,1,1, 0,0,1,0,0, 0,0,1,0,0, 0,0,1,0,0, 0,0,1,0,0, 0,0,1,0,0, 0,0,1,0,0 };
+int pat_A[35] = { 0,1,1,1,0, 1,0,0,0,1, 1,0,0,0,1, 1,1,1,1,1, 1,0,0,0,1, 1,0,0,0,1, 1,0,0,0,1 };
+int pat_R[35] = { 1,1,1,1,0, 1,0,0,0,1, 1,0,0,0,1, 1,1,1,1,0, 1,0,1,0,0, 1,0,0,1,0, 1,0,0,0,1 };
+int pat_I[35] = { 1,1,1,1,1, 0,0,1,0,0, 0,0,1,0,0, 0,0,1,0,0, 0,0,1,0,0, 0,0,1,0,0, 1,1,1,1,1 };
+int pat_D[35] = { 1,1,1,1,0, 1,0,0,0,1, 1,0,0,0,1, 1,0,0,0,1, 1,0,0,0,1, 1,0,0,0,1, 1,1,1,1,0 };
+int pat_E[35] = { 1,1,1,1,1, 1,0,0,0,0, 1,0,0,0,0, 1,1,1,1,0, 1,0,0,0,0, 1,0,0,0,0, 1,1,1,1,1 };
+// "STAR RAIDERS": indices into the pattern set (S=0 T=1 A=2 R=3 I=4 D=5 E=6)
+int title_word[11] = { 0, 1, 2, 3, 3, 2, 4, 5, 6, 3, 0 };
 int s_astfield[10]  = { 65, 83, 84, 69, 82, 79, 73, 68, 83, 0 };                 // "ASTEROIDS"
 int s_fullstop[24]  = { 68, 79, 67, 75, 73, 78, 71, 32, 82, 69, 81, 85, 73, 82, 69, 83, 32, 70, 85, 76, 76, 32, 83, 0 }; // "DOCKING REQUIRES FULL "
 
@@ -441,8 +471,8 @@ public:
     int msg_t;
     int dead;
 
-    int cannons;        // 2 = both, 1 = right only, 0 = none
-    int engine_dmg;
+    int comp_hp[4];     // component health (8 = perfect, 0 = destroyed)
+    int comp_pts[4];    // pending damage points (3 points = 1 step)
     int flash_t;
 
     int gear;           // -1 reverse .. 8 fastest
@@ -457,8 +487,6 @@ public:
     int pause_on;
     int computer_on;
     int shields_on;
-    int shield_dmg;
-
     int sb_active;
     float sb_x;
     float sb_y;
@@ -466,7 +494,7 @@ public:
     int docked_t;
     int dock_hint;      // 1 = near base but not stopped
 
-    int rep_active;     // repair shuttle in flight
+    int rep_state;     // repair shuttle: 0 docked at base, 1 outbound, 2 returning
     int rep_t;          // flight progress (frames)
     int rep_had_dmg;    // choose the completion message
 
@@ -484,6 +512,9 @@ public:
     int decel_t;      // post-warp deceleration frames remaining
     int target_qx;    // pending chart warp destination
     int target_qy;
+    int screen;       // 0 = title / menu, 1 = game
+    int title_sel;    // menu cursor: 0 easy, 1 medium, 2 hard
+    int diff;         // active difficulty (0/1/2)
 
     float mk_yaw;     // hyperspace course marker (radians, ship-relative)
     float mk_pitch;
@@ -650,11 +681,17 @@ public:
         msg_t = 0;
         docked_t = 0;
         dock_hint = 0;
-        rep_active = 0;
+        rep_state = 0;
         rep_t = 0;
         rep_had_dmg = 0;
-        cannons = 2;
-        engine_dmg = 0;
+        // all component gauges perfect
+        i = 0;
+        while (i < COMP_COUNT)
+        {
+            comp_hp[i] = 8;
+            comp_pts[i] = 0;
+            i = i + 1;
+        }
         flash_t = 0;
         gear = 2;
         fire_side = -1;
@@ -668,7 +705,6 @@ public:
         pause_on = 0;
         computer_on = 0;
         shields_on = 0;
-        shield_dmg = 0;
         chart_on = 0;
         aft_on = 0;
         prev_y = 0;
@@ -680,6 +716,7 @@ public:
         decel_t = 0;
         target_qx = 0;
         target_qy = 0;
+        screen = 1;
         mk_yaw = 0;
         mk_pitch = 0;
         chart_cx = start_qx;
@@ -883,11 +920,221 @@ public:
         offc_t = MSG_FRAMES;
     }
 
+    // ------------------------------------------------------------------
+    //  title screen / difficulty menu
+    // ------------------------------------------------------------------
+
+    void init_title()
+    {
+        int i;
+        screen = 0;
+        title_sel = 1;
+        prev_ba = 0;
+        prev_bu = 0;
+        prev_bd = 0;
+        prev_start = 0;
+        rng.seed( rand() % 1000000 );
+        i = 0;
+        while (i < STAR_COUNT)
+        {
+            stars[i].randomize( &rng );
+            i = i + 1;
+        }
+    }
+
+    void start_game()
+    {
+        diff = title_sel;
+        init( 3, 4 );
+    }
+
+    void update_title()
+    {
+        int i;
+        // slow starfield drift
+        i = 0;
+        while (i < STAR_COUNT)
+        {
+            stars[i].z = stars[i].z - 9;
+            if (stars[i].z < 0 - FAR_Z - 150)
+                stars[i].respawn( &rng );
+            i = i + 1;
+        }
+        // menu navigation
+        if (gamepad_up() > 0 && prev_bu <= 0)
+            title_sel = title_sel - 1;
+        if (gamepad_down() > 0 && prev_bd <= 0)
+            title_sel = title_sel + 1;
+        if (title_sel < 0)
+            title_sel = 2;
+        if (title_sel > 2)
+            title_sel = 0;
+        prev_bu = gamepad_up();
+        prev_bd = gamepad_down();
+        if ((gamepad_button_a() > 0 && prev_ba <= 0) ||
+            (gamepad_button_start() > 0 && prev_start <= 0))
+        {
+            play_sound( SFX_BEEP );
+            start_game();
+            return;
+        }
+        prev_ba = gamepad_button_a();
+        prev_start = gamepad_button_start();
+    }
+
+    // draw one title letter from its 5x7 pattern; shade picks the
+    // block density (0 = full solid 0x14 ... 3 = lightest 0x11)
+    void draw_title_letter( int letter, int x0, int y0, int shade, int shadow )
+    {
+        int* pat;
+        int r;
+        int c;
+        pat = pat_S;
+        if (letter == 1)
+            pat = pat_T;
+        else if (letter == 2)
+            pat = pat_A;
+        else if (letter == 3)
+            pat = pat_R;
+        else if (letter == 4)
+            pat = pat_I;
+        else if (letter == 5)
+            pat = pat_D;
+        else if (letter == 6)
+            pat = pat_E;
+        r = 0;
+        while (r < 7)
+        {
+            c = 0;
+            while (c < 5)
+            {
+                if (pat[r * 5 + c] != 0)
+                {
+                    if (shadow != 0)
+                    {
+                        select_region( ASCII_BLK4 );
+                        set_multiply_color( make_color_rgb( 25, 25, 35 ) );
+                    }
+                    else
+                    {
+                        select_region( ASCII_BLK4 - shade );
+                        set_multiply_color( color_white );
+                    }
+                    set_drawing_scale( 0.8, 0.4 );
+                    draw_region_zoomed_at( x0 + c * 8, y0 + r * 8 );
+                }
+                c = c + 1;
+            }
+            r = r + 1;
+        }
+    }
+
+    void draw_title()
+    {
+        int i;
+        int lx;
+        float d;
+        float sx;
+        float sy;
+        set_blending_mode( blending_alpha );
+        set_multiply_color( color_white );
+        clear_screen( make_color_rgb( 2, 4, 12 ) );
+
+        // starfield
+        select_texture( -1 );
+        select_region( ASCII_DOT );
+        set_blending_mode( blending_add );
+        i = 0;
+        while (i < STAR_COUNT)
+        {
+            d = stars[i].z;
+            if (d >= NEAR_Z)
+            {
+                int b;
+                float s;
+                sx = CENTER_X + stars[i].x / d * FOCAL;
+                sy = CENTER_Y - stars[i].y / d * FOCAL;
+                if (sx > -20 && sx < 660 && sy > -20 && sy < 380)
+                {
+                    b = 255 - d * 0.19;
+                    if (b < 60)
+                        b = 60;
+                    s = 420 / d;
+                    if (s < 0.5)
+                        s = 0.5;
+                    if (s > 3.5)
+                        s = 3.5;
+                    set_multiply_color( make_color_rgb( b, b, b ) );
+                    draw_zoomed_centered( sx, sy, s );
+                }
+            }
+            i = i + 1;
+        }
+        set_blending_mode( blending_alpha );
+
+        // "STAR RAIDERS" -- 11 letters, progressively lighter
+        // blocks (0x14 -> 0x11), with a drop shadow
+        lx = 52;
+        i = 0;
+        while (i < 11)
+        {
+            draw_title_letter( title_word[i], lx + 6, 80 + 6, 0, 1 );
+            i = i + 1;
+            lx = lx + 48;
+            if (i == 4)
+                lx = lx + 16;
+        }
+        lx = 52;
+        i = 0;
+        while (i < 11)
+        {
+            draw_title_letter( title_word[i], lx, 80, i / 3, 0 );
+            i = i + 1;
+            lx = lx + 48;
+            if (i == 4)
+                lx = lx + 16;
+        }
+
+        // difficulty menu
+        set_multiply_color( color_white );
+        print_at( 258, 210, s_select );
+        if (title_sel == 0)
+            set_multiply_color( make_color_rgb( 0, 230, 130 ) );
+        else
+            set_multiply_color( make_color_rgb( 130, 130, 150 ) );
+        print_at( 292, 250, s_easy );
+        if (title_sel == 1)
+            set_multiply_color( make_color_rgb( 0, 230, 130 ) );
+        else
+            set_multiply_color( make_color_rgb( 130, 130, 150 ) );
+        print_at( 286, 280, s_medium );
+        if (title_sel == 2)
+            set_multiply_color( make_color_rgb( 0, 230, 130 ) );
+        else
+            set_multiply_color( make_color_rgb( 130, 130, 150 ) );
+        print_at( 292, 310, s_hard );
+        // blinking selection marker
+        if (get_frame_counter() % 40 < 25)
+        {
+            select_region( ASCII_PLUS );
+            set_multiply_color( make_color_rgb( 0, 230, 130 ) );
+            draw_zoomed_centered( 262, 260 + title_sel * 30, 0.8 );
+        }
+        set_multiply_color( color_white );
+    }
+
     void update()
     {
         float speed;
         int i;
         int d;
+        float drift;
+
+        if (screen == 0)
+        {
+            update_title();
+            return;
+        }
 
         if (dead != 0)
         {
@@ -904,7 +1151,9 @@ public:
                 start_combo = 0;
             if (gamepad_button_a() > 0 && prev_ba <= 0)
             {
-                computer_on = 1 - computer_on;
+                // a destroyed computer cannot be switched back on
+                if (comp_hp[COMP_CMP] > 0)
+                    computer_on = 1 - computer_on;
                 start_combo = 1;
                 play_sound( SFX_BEEP );
             }
@@ -1029,7 +1278,10 @@ public:
         prev_r = d;
 
         speed = engine_speed();
-        if (engine_dmg != 0)
+        // engine damage: yellow band = half speed, red = dead stick
+        if (comp_hp[COMP_ENG] <= 0)
+            speed = 0;
+        else if (comp_hp[COMP_ENG] < 6)
             speed = speed * 0.5;
         // emerging from hyperspace: still hauling faster than the
         // engines can push; bleed down to the set gear smoothly
@@ -1059,9 +1311,15 @@ public:
             speed = WARP_SPEED;
             warp_t = warp_t + 1;
             // the course drifts during acceleration: keep the
-            // marker on the reticle to stay aligned
-            mk_yaw = mk_yaw + rng.between( 0 - 1, 1 ) * NAV_DRIFT;
-            mk_pitch = mk_pitch + rng.between( 0 - 1, 1 ) * NAV_DRIFT;
+            // marker on the reticle to stay aligned. Harder
+            // difficulty = a much jumpier course.
+            drift = NAV_DRIFT;
+            if (diff == 1)
+                drift = NAV_DRIFT * 1.7;
+            else if (diff == 2)
+                drift = NAV_DRIFT * 2.4;
+            mk_yaw = mk_yaw + rng.between( 0 - 1, 1 ) * drift;
+            mk_pitch = mk_pitch + rng.between( 0 - 1, 1 ) * drift;
             if (mk_yaw > 0.35)
                 mk_yaw = 0.35;
             if (mk_yaw < -0.35)
@@ -1162,12 +1420,13 @@ public:
                 if (gear == 0)
                 {
                     dock_hint = 0;
-                    if (rep_active == 0)
+                    if (rep_state == 0)
                     {
-                        rep_active = 1;
+                        rep_state = 1;
                         rep_t = 0;
                         rep_had_dmg = 0;
-                        if (cannons < 2 || engine_dmg != 0 || shield_dmg != 0)
+                        if (comp_hp[COMP_ENG] < 8 || comp_hp[COMP_SHD] < 8 ||
+                            comp_hp[COMP_CMP] < 8 || comp_hp[COMP_CAN] < 8)
                             rep_had_dmg = 1;
                     }
                 }
@@ -1178,22 +1437,32 @@ public:
                 dock_hint = 0;
         }
 
-        // repair shuttle flight: fly out, apply repairs on arrival;
-        // leaving (any motion) sends it back
-        if (rep_active != 0)
+        // repair shuttle: flies out, services us, then RETURNS to the
+        // starbase and docks before another can be sent. Departing
+        // mid-flight sends it straight home.
+        if (rep_state == 1)
         {
             if (gear != 0 || sb_active == 0)
             {
-                rep_active = 0;
+                rep_state = 2;
             }
             else
             {
                 rep_t = rep_t + 1;
                 if (rep_t >= REPAIR_STEPS)
                 {
-                    rep_active = 0;
                     dock();
+                    rep_state = 2;
                 }
+            }
+        }
+        else if (rep_state == 2)
+        {
+            rep_t = rep_t - 1;
+            if (rep_t <= 0)
+            {
+                rep_t = 0;
+                rep_state = 0;
             }
         }
 
@@ -1289,10 +1558,10 @@ public:
     {
         int i;
         int side;
-        if (cannons <= 0 || energy < MISSILE_COST)
+        if (comp_hp[COMP_CAN] < 2 || energy < MISSILE_COST)
             return;
         // pick the cannon: with both, alternate; with one, right only
-        if (cannons == 2)
+        if (comp_hp[COMP_CAN] >= 6)
         {
             side = fire_side;
             fire_side = 0 - fire_side;
@@ -1496,11 +1765,13 @@ public:
 
     void take_hit( float dmg )
     {
-        int roll;
         flash_t = FLASH_FRAMES;
         if (shields_on == 0)
         {
+            // hit with shields down: game over, boom
             dead = 1;
+            play_sound( SFX_EXPLOSION );
+            add_explosion( 0, 0, 350 );
             return;
         }
         shields = shields - dmg;
@@ -1508,27 +1779,40 @@ public:
         {
             shields = 0;
             dead = 1;
+            play_sound( SFX_EXPLOSION );
+            add_explosion( 0, 0, 350 );
             return;
         }
-        roll = rng.between( 1, CANNON_HIT_ODDS + ENGINE_HIT_ODDS + SHIELD_HIT_ODDS );
-        if (roll <= CANNON_HIT_ODDS)
+        apply_component_damage();
+    }
+
+    // a shield hit strains a random system: damage points pile up
+    // (easy 1 / medium 2 / hard 3 per hit) and every 3 points steps
+    // that system's gauge down by one position
+    void apply_component_damage()
+    {
+        int c;
+        int pts;
+        c = rng.between( 0, COMP_COUNT - 1 );
+        pts = diff + 1;
+        comp_pts[c] = comp_pts[c] + pts;
+        while (comp_pts[c] >= 3)
         {
-            if (cannons > 0)
-                cannons = cannons - 1;
+            comp_pts[c] = comp_pts[c] - 3;
+            if (comp_hp[c] > 0)
+                comp_hp[c] = comp_hp[c] - 1;
         }
-        else if (roll <= CANNON_HIT_ODDS + ENGINE_HIT_ODDS)
-        {
-            engine_dmg = 1;
-        }
-        else
-        {
-            shield_dmg = 1;
-        }
+        // destroyed systems have consequences
+        if (comp_hp[COMP_SHD] <= 0)
+            shields_on = 0;
+        if (comp_hp[COMP_CMP] <= 0)
+            computer_on = 0;
     }
 
     void update_enemies()
     {
         int i;
+        int cd;
         i = 0;
         while (i < 8)
         {
@@ -1571,10 +1855,16 @@ public:
                         enemies[i].y > -lim && enemies[i].y < lim)
                     {
                         enemy_fire( i );
+                        // harder difficulty = faster return fire
                         if (enemies[i].kind == 1)
-                            enemies[i].cd = rng.between( 50, 100 );
+                            cd = rng.between( 50, 100 );
                         else
-                            enemies[i].cd = rng.between( 80, 160 );
+                            cd = rng.between( 80, 160 );
+                        if (diff == 0)
+                            cd = cd * 1.6;
+                        else if (diff == 2)
+                            cd = cd * 0.65;
+                        enemies[i].cd = cd;
                     }
                 }
             }
@@ -1892,14 +2182,18 @@ public:
 
     void dock()
     {
+        int i;
         shields = 100;
         energy = 100;
-        cannons = 2;
-        engine_dmg = 0;
-        shield_dmg = 0;
+        i = 0;
+        while (i < COMP_COUNT)
+        {
+            comp_hp[i] = 8;
+            comp_pts[i] = 0;
+            i = i + 1;
+        }
         docked_t = MSG_FRAMES;
         dock_hint = 0;
-        rep_active = 0;
         play_sound( SFX_REPLENISH );
     }
 
@@ -1954,6 +2248,12 @@ public:
 
     void draw()
     {
+        if (screen == 0)
+        {
+            draw_title();
+            return;
+        }
+
         if (chart_on != 0)
         {
             draw_chart();
@@ -2113,8 +2413,8 @@ public:
         }
 
         // repair shuttle: lerps from the starbase's screen position
-        // to our hull while the repair flight is in progress
-        if (rep_active != 0 && sb_active != 0)
+        // to our hull outbound, and back home on the return leg
+        if (rep_state != 0 && sb_active != 0)
         {
             float d;
             float bsx;
@@ -2311,13 +2611,18 @@ public:
             set_multiply_color( color_white );
         }
 
-        // shield tint: light blue while up; flickers when damaged
+        // shield tint: light blue while up; the more damaged the
+        // shield SYSTEM, the more it flickers
         if (shields_on != 0)
         {
             int show;
+            int ontime;
             show = 1;
-            if (shield_dmg != 0)
-                show = (get_frame_counter() % 16) < 11;
+            ontime = 16 - ( 8 - comp_hp[COMP_SHD] ) * 2;
+            if (ontime < 2)
+                ontime = 2;
+            if (comp_hp[COMP_SHD] < 8)
+                show = (get_frame_counter() % 16) < ontime;
             if (show != 0)
             {
                 select_region( ASCII_BLK4 );
@@ -2477,6 +2782,33 @@ public:
             set_drawing_scale( 1.0, 1.4 );
             draw_region_zoomed_at( CENTER_X - 5, CENTER_Y - 14 );
         }
+    }
+
+    // 9-position damage gauge: 3 red / 3 yellow / 3 green cells,
+    // filled up to the current health
+    void draw_gauge( int x, int y, int hp )
+    {
+        int i;
+        i = 0;
+        while (i < 9)
+        {
+            select_region( ASCII_BLK4 );
+            if (i < hp)
+            {
+                if (i < 3)
+                    set_multiply_color( make_color_rgb( 230, 60, 50 ) );
+                else if (i < 6)
+                    set_multiply_color( make_color_rgb( 235, 200, 50 ) );
+                else
+                    set_multiply_color( make_color_rgb( 70, 220, 90 ) );
+            }
+            else
+                set_multiply_color( make_color_rgb( 35, 35, 45 ) );
+            set_drawing_scale( 1.0, 0.45 );
+            draw_region_zoomed_at( x + i * 12, y );
+            i = i + 1;
+        }
+        set_multiply_color( color_white );
     }
 
     // horizontal bar: the '-' glyph zoomed non-uniformly
@@ -2725,26 +3057,23 @@ public:
         draw_bar( 8, 148, shields / 100, 80, 140, 255 );
         print_at( 8, 172, s_spd );
         draw_bar( 8, 194, gear_frac(), 255, 200, 40 );
-        if (cannons == 2)
-            print_at( 8, 218, s_dmg_c2 );
-        else if (cannons == 1)
-            print_at( 8, 218, s_dmg_c1 );
-        else
-            print_at( 8, 218, s_dmg_c0 );
-        strcpy( hud_line, s_dmg_e0 );
-        if (engine_dmg == 0)
-            strcat( hud_line, s_dmg_ok );
-        else
-            strcat( hud_line, s_dmg_bad );
-        print_at( 8, 240, hud_line );
+        // component status gauges
+        print_at( 8, 218, s_leng );
+        draw_gauge( 60, 226, comp_hp[COMP_ENG] );
+        print_at( 8, 240, s_lshd );
+        draw_gauge( 60, 248, comp_hp[COMP_SHD] );
+        print_at( 8, 262, s_lcmp );
+        draw_gauge( 60, 270, comp_hp[COMP_CMP] );
+        print_at( 8, 284, s_lcan );
+        draw_gauge( 60, 292, comp_hp[COMP_CAN] );
         if (shields_on != 0)
-            print_at( 8, 262, s_sh_on );
+            print_at( 200, 218, s_sh_on );
         else
-            print_at( 8, 262, s_sh_off );
+            print_at( 200, 218, s_sh_off );
         if (computer_on != 0)
-            print_at( 8, 284, s_ac_on );
+            print_at( 200, 240, s_ac_on );
         else
-            print_at( 8, 284, s_ac_off );
+            print_at( 200, 240, s_ac_off );
         strcpy( hud_line, s_near );
         strcat( hud_line, s_zch );
         strcat( hud_line, s_sp );
@@ -2812,37 +3141,33 @@ public:
         print_at( 440, 56, s_shields );
         draw_bar( 440, 80, shields / 100, 80, 140, 255 );
 
-        // system status
-        if (cannons == 2)
-            print_at( 440, 104, s_dmg_c2 );
-        else if (cannons == 1)
-            print_at( 440, 104, s_dmg_c1 );
-        else
-            print_at( 440, 104, s_dmg_c0 );
-        strcpy( hud_line, s_dmg_e0 );
-        if (engine_dmg == 0)
-            strcat( hud_line, s_dmg_ok );
-        else
-            strcat( hud_line, s_dmg_bad );
-        print_at( 440, 128, hud_line );
+        // component status gauges
+        print_at( 440, 104, s_leng );
+        draw_gauge( 492, 112, comp_hp[COMP_ENG] );
+        print_at( 440, 126, s_lshd );
+        draw_gauge( 492, 134, comp_hp[COMP_SHD] );
+        print_at( 440, 148, s_lcmp );
+        draw_gauge( 492, 156, comp_hp[COMP_CMP] );
+        print_at( 440, 170, s_lcan );
+        draw_gauge( 492, 178, comp_hp[COMP_CAN] );
 
         // engine speed bar
-        print_at( 440, 152, s_spd );
-        draw_bar( 440, 176, gear_frac(), 255, 200, 40 );
+        print_at( 440, 196, s_spd );
+        draw_bar( 440, 220, gear_frac(), 255, 200, 40 );
 
         // shields / attack computer state
         if (shields_on != 0)
-            print_at( 440, 200, s_sh_on );
+            print_at( 440, 244, s_sh_on );
         else
-            print_at( 440, 200, s_sh_off );
+            print_at( 440, 244, s_sh_off );
         if (computer_on != 0)
-            print_at( 440, 224, s_ac_on );
+            print_at( 440, 268, s_ac_on );
         else
-            print_at( 440, 224, s_ac_off );
+            print_at( 440, 268, s_ac_off );
         if (aft_on != 0)
-            print_at( 440, 248, s_aft );
+            print_at( 440, 292, s_aft );
         else
-            print_at( 440, 248, s_fwd );
+            print_at( 440, 292, s_fwd );
 
         // bottom-left: engines + heading
         if (warp_t > 0)
@@ -2923,7 +3248,7 @@ Starfield g_field;
 
 void main( void )
 {
-    g_field.init( 3, 4 );
+    g_field.init_title();
 
     while (1)
     {
