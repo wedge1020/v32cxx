@@ -740,6 +740,29 @@ typedef enum {
                               even more strictly than standard C) just
                               has no way to know that on its own, so an
                               explicit cast has to say so. */
+    AST_ASM,               /* list=AST_STRING_LIT per string literal of
+                              the body, in source order; str1 unused.
+                              ival=0 when written in Vircon32 brace form
+                              (`asm { "..." }`), 1 when written in GCC
+                              basic-asm parenthesized form (`asm("...")`)
+                              -- which only changes what --target=standard
+                              mode prints, since Vircon32 output is ALWAYS
+                              the brace form (the Vircon32 C compiler is
+                              the one that understands it). Pure
+                              pass-through: nothing in sema.c or lower.c
+                              interprets the body, and the `{param}`
+                              interpolation inside each literal (see
+                              video.h's own GPU wrappers) is resolved by
+                              the Vircon32 C compiler, not by us. The
+                              lexer already stripped each literal's quotes
+                              and left escapes raw; codegen.c's existing
+                              re-quote rule (see AST_STRING_LIT's own
+                              print case) round-trips them exactly. A leaf
+                              statement -- never an expression, matching
+                              basic asm in real compilers; the standard
+                              library's own `int f() { asm { "in R0, X" } }`
+                              pattern works as-is because Vircon32 C
+                              treats the block's R0 as the return value. */
     AST_SIZEOF             /* Exactly one of type/a is set, never both --
                               real C++'s own dual grammar for sizeof:
                               type=target type for `sizeof(Type)`

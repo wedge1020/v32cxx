@@ -338,6 +338,11 @@ static void rewrite_stmt(AstNode **slot, AstNode *class_decl, LocalVarType **loc
             *locals = lv;
             break;
         }
+        case AST_ASM:
+            /* Nothing to do: an asm body is opaque string literals --
+             * no `this`, member references, or references to rewrite.
+             * Passed through to codegen.c verbatim. */
+            break;
         default:
             /* AST_TYPEDEF_DECL, ... -- nothing to rewrite. */
             break;
@@ -2131,6 +2136,11 @@ static void inject_reference_return_address_stmt(AstNode **slot, AstNode *class_
             *locals = lv;
             break;
         }
+        case AST_ASM:
+            /* Nothing to do: an asm body is opaque string literals --
+             * no `this`, member references, or references to rewrite.
+             * Passed through to codegen.c verbatim. */
+            break;
         default:
             break;
     }
@@ -3991,6 +4001,11 @@ static void destruct_scope_stmt(AstNode **slot, DestructScope *scope,
              * the true top), so this doesn't need its own special-cased
              * fallback either. */
             install_destructor_sequence(slot, scope, loop_boundary, n);
+            break;
+        case AST_ASM:
+            /* Nothing to do: an asm body is opaque string literals --
+             * no `this`, member references, or references to rewrite.
+             * Passed through to codegen.c verbatim. */
             break;
         case AST_RETURN: {
             AstNode *final_return;

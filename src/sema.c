@@ -2090,6 +2090,11 @@ static void check_node(AstNode *n, AstNode *current_class, LocalVarType **locals
             break;
         case AST_DEFAULT:
             break; /* no fields -- a bare label */
+        case AST_ASM:
+            /* Nothing to do: an asm body is opaque string literals --
+             * no `this`, member references, or references to rewrite.
+             * Passed through to codegen.c verbatim. */
+            break;
         case AST_BREAK:
             /* Valid inside EITHER a loop or a switch, whichever is
              * innermost -- real C's own rule. (Which one it actually

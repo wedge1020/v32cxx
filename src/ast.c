@@ -137,6 +137,9 @@ static const char *kind_name(AstKind k) {
         case AST_CONTINUE: return "Continue";
         case AST_GOTO: return "Goto";
         case AST_LABEL: return "Label";
+        case AST_ASM: return "Asm";  /* list=one StringLit per asm
+            string literal; ival=0 brace form, 1 GCC parenthesized
+            form -- see AST_ASM's own doc comment in ast.h */
         case AST_SWITCH: return "Switch";
         case AST_CASE: return "Case";
         case AST_DEFAULT: return "Default";

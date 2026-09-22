@@ -50,6 +50,7 @@ These constructs transpile cleanly today and make a good regression suite:
 - Namespaces, typedefs, unions, enums; out-of-line method definitions
 - Default construction of unmentioned class-typed fields in ctor init lists (relies on this for `Entity::mPos`, `Swarm::mOffset`, `Bullet::mVel`)
 - Non-trivial global object construction (`Random g_rng;` namespace-level global with custom ctor)
+- inline assembly (code passthrough to the C compiler, which passes it through to the assembler)
 
 ## Prioritized development suggestions
 

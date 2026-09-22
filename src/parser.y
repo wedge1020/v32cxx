@@ -277,6 +277,8 @@ static AstNode *string_literal_init_list(int line, const char *text)
 %token COLONCOLON ARROW EQ NE LE GE ANDAND OROR
 %token PLUSEQ MINUSEQ STAREQ SLASHEQ INC DEC
 %token SHL SHR ANDEQ OREQ XOREQ SHLEQ SHREQ
+%token ASM
+%token VOLATILE
 
 %type <node> program top_decl namespace_decl class_decl member
 %type <node> func_decl func_def func_header var_decl typedef_decl out_of_line_def
@@ -291,6 +293,7 @@ static AstNode *string_literal_init_list(int line, const char *text)
 %type <list> member_init_list
 %type <list> switch_body enumerator_list union_member_list func_ptr_param_list opt_func_ptr_param_list array_bracket_list
 %type <list> more_plain_declarators
+%type <list> asm_string_list
 
 %type <str> name_tok func_name operator_symbol
 %type <access> access_spec
@@ -1696,6 +1699,51 @@ stmt:
             $$->str1 = strdup($1);
             $$->a = $3;
         }
+	| ASM '{' asm_string_list '}'
+        {
+            /* Vircon32 C's own native form -- pure pass-through. */
+            $$ = ast_new(AST_ASM, @1.first_line);
+            $$->list = $3;
+            $$->ival = 0;  /* written in brace form */
+        }
+    | ASM '(' asm_string_list ')' ';'
+        {
+            /* GCC/Clang basic asm. No operands allowed (basic asm has
+             * none); codegen re-emits this as Vircon32 brace form when
+             * targeting Vircon32, or keeps the parenthesized spelling
+             * in --target=standard. An extended asm (with ':'
+             * constraint sections) does NOT parse here -- the ':' after
+             * the string list is a syntax error at this rule; see the
+             * targeted diagnostic note below. */
+            $$ = ast_new(AST_ASM, @1.first_line);
+            $$->list = $3;
+            $$->ival = 1;  /* written in GCC parenthesized form */
+        }
+    | VOLATILE ASM '(' asm_string_list ')' ';'
+        {
+            /* `asm volatile("...")` -- the qualifier only governs
+             * optimization/reordering, which this transpiler performs
+             * neither of, so it is accepted and dropped. */
+            $$ = ast_new(AST_ASM, @2.first_line);
+            $$->list = $4;
+            $$->ival = 1;
+        }
+    | ASM VOLATILE '(' asm_string_list ')' ';'
+        {
+            /* __volatile__ spelled after the keyword (GCC documents
+             * both orders historically; harmless to accept). */
+            $$ = ast_new(AST_ASM, @1.first_line);
+            $$->list = $4;
+            $$->ival = 1;
+        }
+	| ASM '(' asm_string_list ':' /* deliberately incomplete */
+        {
+            yyerror("extended asm with operand constraints is not "
+                    "supported: Vircon32 C uses '{param}' interpolation "
+                    "inside the literal instead; write the operands "
+                    "directly in the instruction text");
+            YYERROR;
+        }
     | var_decl ';'      { $$ = $1; }
     | typedef_decl ';'  { $$ = $1; }
     | expr ';'
@@ -2135,6 +2183,30 @@ opt_arg_list:
 arg_list:
       expr                  { $$ = ast_list_new(); ast_list_append(&$$, $1); }
     | arg_list ',' expr      { $$ = $1; ast_list_append(&$$, $3); }
+    ;
+
+/* Consecutive string literals forming one asm body -- `asm { "a" "b" }`
+ * and asm("a" "b") both allow implicit concatenation, same as real C's
+ * own adjacent-literal rule. One AST_STRING_LIT per literal, in source
+ * order; codegen re-quotes and prints one per line. The lexer already
+ * stripped the quotes and left escapes raw, so a `{param}` inside the
+ * literal (Vircon32's own operand-interpolation syntax, see video.h)
+ * survives this round trip verbatim -- we never interpret the body. */
+ asm_string_list:
+      STRING_LITERAL
+        {
+            $$ = ast_list_new();
+            AstNode *lit = ast_new(AST_STRING_LIT, @1.first_line);
+            lit->str1 = $1;
+            ast_list_append(&$$, lit);
+        }
+    | asm_string_list STRING_LITERAL
+        {
+            $$ = $1;
+            AstNode *lit = ast_new(AST_STRING_LIT, @2.first_line);
+            lit->str1 = $2;
+            ast_list_append(&$$, lit);
+        }
     ;
 
 /* ---- member-initializer lists: `Derived::Derived(args) : Base(base_args)

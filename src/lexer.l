@@ -184,6 +184,11 @@ ALNUM   [A-Za-z0-9_]
 "break"      { g_last_ident_sym = NULL; return BREAK; }
 "continue"   { g_last_ident_sym = NULL; return CONTINUE; }
 "goto"       { g_last_ident_sym = NULL; return GOTO; }
+"asm"        { g_last_ident_sym = NULL; return ASM; }
+"__asm"      { g_last_ident_sym = NULL; return ASM; }
+"__asm__"    { g_last_ident_sym = NULL; return ASM; }
+"volatile"         { g_last_ident_sym = NULL; return VOLATILE; }
+"__volatile__"     { g_last_ident_sym = NULL; return VOLATILE; }
 "switch"     { g_last_ident_sym = NULL; return SWITCH; }
 "case"       { g_last_ident_sym = NULL; return CASE; }
 "default"    { g_last_ident_sym = NULL; return DEFAULT; }

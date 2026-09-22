@@ -1639,6 +1639,43 @@ static void print_stmt(FILE *out, const AstNode *s, int indent, int strip_return
             indent_spaces(out, indent);
             fprintf(out, "/* WARNING: unlowered AST_DELETE reached codegen */;\n");
             break;
+        case AST_ASM:
+            /* Pure pass-through: the Vircon32 C compiler is the one that
+             * actually assembles this. TARGET_VIRCON32 always emits the
+             * brace form regardless of which dialect was written, since
+             * that's the only form Vircon32's compiler accepts; TARGET_
+             * STANDARD keeps the dialect as written (gcc/clang accept the
+             * parenthesized basic-asm spelling natively, and a brace-form
+             * body re-wrapped in parentheses is equally valid there).
+             * One string literal per line, matching how video.h itself
+             * formats multi-instruction blocks -- purely cosmetic.
+             * Re-quoting each literal is the same round-trip rule as
+             * AST_STRING_LIT's own case above: the lexer stored the inner
+             * text with escapes still raw, so wrapping it back in quotes
+             * reproduces the source literal exactly, `{param}` braces
+             * included. */
+            if (s->ival == 1 && g_target == TARGET_STANDARD) {
+                indent_spaces(out, indent);
+                fprintf(out, "asm(");
+                for (int i = 0; i < s->list.count; i++) {
+                    if (i > 0) fprintf(out, " ");
+                    fprintf(out, "\"%s\"", s->list.items[i]->str1);
+                }
+                fprintf(out, ");\n");
+            }
+            else {
+                indent_spaces(out, indent);
+                fprintf(out, "asm\n");
+                indent_spaces(out, indent);
+                fprintf(out, "{\n");
+                for (int i = 0; i < s->list.count; i++) {
+                    indent_spaces(out, indent + 1);
+                    fprintf(out, "\"%s\"\n", s->list.items[i]->str1);
+                }
+                indent_spaces(out, indent);
+                fprintf(out, "}\n");
+            }
+            break;
         default:
             indent_spaces(out, indent);
             fprintf(out, "/* WARNING: unhandled statement kind in codegen */;\n");
