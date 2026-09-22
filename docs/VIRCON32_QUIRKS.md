@@ -309,13 +309,15 @@ important default to protect.
 - **Standard C**: supports the ternary operator natively; standard-mode
   output keeps `cond ? a : b` exactly as the C++ source wrote it, no
   rewriting at all.
-- **Status**: Reported directly by Matthew, and independently
-  CONFIRMED by an actual Vircon32 compiler run: a ternary nested inside
-  a call argument (`add(x > y ? x : y, 1)`) transpiled with the literal
-  `?`/`:` characters still in it, and the real Vircon32 C compiler
-  rejected it with "character '?' is not a valid identifier start" --
-  its own lexer doesn't even recognize the character, confirming this
-  is a hard, unconditional rejection, not merely a parser-level one.
+
+- **Status**: CONFIRMED  by an  actual Vircon32  compiler run:  a ternary
+  nested inside a call argument (`add(x > y ? x : y, 1)`) transpiled with
+  the literal  `?`/`:` characters still  in it,  and the real  Vircon32 C
+  compiler  rejected it  with "character  '?' is  not a  valid identifier
+  start"  --  its  own  lexer   doesn't  even  recognize  the  character,
+  confirming  this  is a  hard,  unconditional  rejection, not  merely  a
+  parser-level one.
+
 - **Where**: a new, dedicated lowering phase (`lower.c`, phase 10,
   `rewrite_ternary_*`) rather than a `codegen.c` conditional -- this is
   a genuine AST-level rewrite (ternary expression -> if/else

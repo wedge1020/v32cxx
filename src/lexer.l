@@ -2,39 +2,51 @@
 /*
  * lexer.l -- flex scanner.
  *
- * The interesting part is IDENTIFIER classification and the COLONCOLON
- * rule right below it: together they implement the "lexer hack" (deciding
- * TYPE_NAME vs IDENTIFIER by consulting the symbol table) plus qualified-
- * name (`v32::Timer`) support, entirely in scan order. See the long
- * comment on symtab_arm_qualifier() in symtab.h for *why* this lives here
- * and not in a parser reduction action.
+
+ * The interesting  part is IDENTIFIER classification  and the COLONCOLON
+ * rule  right  below  it:  together  they  implement  the  "lexer  hack"
+ * (deciding TYPE_NAME vs IDENTIFIER by consulting the symbol table) plus
+ * qualified- name  (`v32::Timer`) support,  entirely in scan  order. See
+ * the long comment on symtab_arm_qualifier()  in symtab.h for *why* this
+ * lives here and not in a parser reduction action.
  *
- * SIMPLIFICATION: no real preprocessor. Real C++ source needs macro
+ * SIMPLIFICATION:  no real  preprocessor.  Real C++  source needs  macro
  * expansion and conditional compilation handled before this scanner ever
  * sees it -- neither happens here. As an interim measure, though, a line
- * starting with '#' is no longer silently discarded: it's captured
+ * starting  with '#'  is  no longer  silently  discarded: it's  captured
  * verbatim (see g_preprocessor_lines, driver.h) so codegen.c can re-emit
- * it at the top of the generated file, ahead of everything else. This
- * means a `#include "video.h"` a person actually wrote now survives the
- * round trip instead of having to be manually re-added by hand every
- * time -- but it is still just pass-through, not preprocessing: no
- * macro expansion, no #include resolution, no #ifdef evaluation, and a
- * captured #ifdef/#endif pair doesn't actually gate anything this
+ * it at  the top of the  generated file, ahead of  everything else. This
+ * means a `#include "video.h"` a  person actually wrote now survives the
+ * round trip  instead of having  to be  manually re-added by  hand every
+ * time -- but it is still just pass-through, not preprocessing: no macro
+ * expansion,  no  #include  resolution,  no  #ifdef  evaluation,  and  a
+ * captured  #ifdef/#endif  pair  doesn't  actually  gate  anything  this
  * scanner sees, since it never interprets what was captured at all.
  *
- * ONE exception to "every `#`-line is just passed through unread": cart
- * hints (`#texture NAME "file.png"` / `#sound NAME "file.wav"`), a
- * targeted special-case recognized directly below, NOT the start of a
- * general preprocessor -- these two specific forms get parsed for their
- * NAME/filename and registered (see g_cart_textures/g_cart_sounds,
- * driver.h), instead of falling through to the generic pass-through
- * above. Modeled directly on v32lua's own `--#texture`/`--#sound` cart
- * hints. */
+ * As of  the include  pre-scan (see  prescan.c/prescan.h, run  by main.c
+ * before  yyparse),  `#include`  lines  targeting  .hpp/.cpp  files  are
+ * resolved  and expanded  into  the source  stream  BEFORE this  scanner
+ * ever  sees  them  -- so  this  scanner  only  ever  lays eyes  on  the
+ * pass-through  kind (.h/system  includes). The  line markers  that keep
+ * g_lex_lineno/g_current_filename  honest   across  that   splicing  are
+ * consumed by the dedicated rule below, and everything else about #-line
+ * handling here is unchanged.
+ *
+ * ONE exception to "every `#`-line  is just passed through unread": cart
+ * hints  (`#texture  NAME "file.png"`  /  `#sound  NAME "file.wav"`),  a
+ * targeted special-case  recognized directly below,  NOT the start  of a
+ * general  preprocessor  -- these  two  specific  forms get  parsed  for
+ * their NAME/filename and registered (see g_cart_textures/g_cart_sounds,
+ * driver.h),  instead of  falling  through to  the generic  pass-through
+ * above. Modeled  directly on v32lua's own  `--#texture`/`--#sound` cart
+ * hints.
+ */
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include "driver.h"
 #include "parser.h"
+#include "prescan.h" /* line-marker consumption -- see the new rule below */
 
 /* Suppresses a warning in flex's OWN generated scanning machinery
  * (yy_get_next_buffer's buffer-resize check compares yy_size_t, an
@@ -145,6 +157,24 @@ ALNUM   [A-Za-z0-9_]
     if (sscanf(yytext, "#version %63s", version) == 1) {
         free(g_cart_version);
         g_cart_version = strdup(version);
+    }
+}
+
+    /* Line marker emitted by prescan.c (see prescan.h): `# N "file"`.
+     * Consumed HERE, never passed through, because it is this
+     * project's own bookkeeping, not the person's source. Sets
+     * g_lex_lineno directly to N rather than N-1 because this
+     * pattern swallows the marker's own newline -- the \n rule's
+     * increment never runs for this line, so the next content line
+     * is already counted as N. g_current_filename is re-pointed at
+     * an interned copy (see prescan_intern_filename) so the storage
+     * stays valid for the rest of the run. */
+^"#"[ \t]+{DIGIT}+[ \t]+\"[^\"]*\"[ \t]*\n  {
+    int line_no;
+    char fname[512];
+    if (sscanf(yytext, "# %d \"%511[^\"]\"", &line_no, fname) == 2) {
+        g_lex_lineno = line_no;
+        g_current_filename = prescan_intern_filename(fname);
     }
 }
 

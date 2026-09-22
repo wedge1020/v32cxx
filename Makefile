@@ -59,10 +59,12 @@ $(SRC_DIR)/parser.o: $(SRC_DIR)/parser.c | $(OBJ_DIR)
 $(SRC_DIR)/lexer.o: $(SRC_DIR)/lexer.c | $(OBJ_DIR)
 	$(CC) $(CFLAGS) -I$(INC_DIR) -c $< -o $@
 
-$(BIN_DIR)/v32c++: $(OBJ_DIR)/parser.o $(OBJ_DIR)/lexer.o \
-                          $(OBJ_DIR)/ast.o $(OBJ_DIR)/symtab.o $(OBJ_DIR)/sema.o \
-                          $(OBJ_DIR)/lower.o $(OBJ_DIR)/codegen.o $(OBJ_DIR)/pathutil.o \
-                          $(OBJ_DIR)/cartxml.o $(OBJ_DIR)/debugmap.o $(OBJ_DIR)/main.o | $(BIN_DIR)
+$(BIN_DIR)/v32c++: $(OBJ_DIR)/parser.o   $(OBJ_DIR)/lexer.o   \
+                   $(OBJ_DIR)/ast.o      $(OBJ_DIR)/symtab.o  \
+				   $(OBJ_DIR)/prescan.o  $(OBJ_DIR)/sema.o    \
+                   $(OBJ_DIR)/lower.o    $(OBJ_DIR)/codegen.o \
+				   $(OBJ_DIR)/pathutil.o $(OBJ_DIR)/cartxml.o \
+				   $(OBJ_DIR)/debugmap.o $(OBJ_DIR)/main.o | $(BIN_DIR)
 	$(CC) $(CFLAGS) -o $@ $^
 # If linking fails looking for yywrap/yy_flex_* symbols on your system,
 # add -lfl to this link line (some flex installs need it even with
@@ -155,6 +157,7 @@ test: all | $(OUT_DIR)
 	$(BIN)  -vvv    -o out/84program.c tests/84sample.cpp 1> out/84sample.txt 2>&1
 	$(BIN)  -vvv    -o out/85program.c tests/85sample.cpp 1> out/85sample.txt 2>&1
 	$(BIN)  -vvv    -o out/86program.c tests/86sample.cpp 1> out/86sample.txt 2>&1
+	$(BIN)  -vvv    -o out/87program.c tests/87sample.cpp 1> out/87sample.txt 2>&1
 # `-vvv` (this project's own verbosity flag, a later round -- see
 # main.c) is passed to every sample specifically so `make test`'s own
 # output still captures the full AST/semantic-analysis/lowering dumps

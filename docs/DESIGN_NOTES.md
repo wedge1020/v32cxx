@@ -6703,3 +6703,153 @@ expected-fail entries, now 82 total samples. A full `--target=standard`
 + gcc sweep across every sample: the same 5 pre-existing, already-
 documented `video.h`/`audio.h`-missing-header failures as every prior
 round, nothing new.
+
+## Inline assembly (`asm` statements)
+
+### What and why
+
+Vircon32 C supports inline assembly natively — the entire standard library
+(`video.h`, and the rest of the STL headers with it) is built from one-line
+`asm { ... }` wrappers around GPU/CPU port writes, with the compiler itself
+resolving `{param}`-style interpolation of enclosing-scope names directly
+inside the string literals. Until now, none of that was reachable from
+v32c++ source: the grammar had no `asm` production, so a program that called
+a `video.h` function worked fine (the header's own C never passes through
+this transpiler), but a program that wanted to *write* a GPU wrapper of its
+own — or port a hand-tuned routine — hit a generic syntax error at the `asm`
+keyword.
+
+This round adds statement-level inline assembly as a pure pass-through
+construct: the body is stored verbatim and re-emitted verbatim, with nothing
+in this transpiler interpreting, validating, or rewriting the assembly text.
+The Vircon32 C compiler remains the sole authority on what the body means —
+exactly the division of labor `#include` lines already use (captured and
+re-emitted, never preprocessed).
+
+### Accepted spellings
+
+**Vircon32 native brace form** — `asm { "mov R0, {texture_id}" "out ..." }`.
+This is the form every wrapper in `video.h` uses, and the ONLY form the real
+Vircon32 compiler accepts, so it is also the form every dialect below is
+normalized into when targeting Vircon32. Multiple adjacent string literals
+are allowed, following real C's own adjacent-literal concatenation rule —
+stored as one `AST_STRING_LIT` per literal, in source order, rather than
+pre-concatenated, so codegen can print one instruction per line the way
+`video.h` itself formats multi-instruction blocks (purely cosmetic; the
+concatenation the Vircon32 compiler sees is identical either way).
+
+**GCC/Clang basic asm** — `asm("...")`, plus the `__asm` / `__asm__`
+spellings. Accepted so that GCC-oriented code ports without edits, and
+re-emitted as Vircon32 brace form under `--target=vircon32`; kept in its
+parenthesized spelling under `--target=standard`, where gcc/clang accept it
+natively.
+
+**`asm volatile` / `__volatile__`** — the qualifier is lexed (a new
+`VOLATILE` token), accepted in either position, and dropped. The qualifier
+only governs whether the compiler may elide or reorder the block relative to
+optimization; this transpiler performs neither, so dropping it is
+semantically exact here, not a simplification. Note `volatile` was previously
+not a keyword at all (README lists it as unsupported); it now lexes as
+VOLATILE everywhere, which reserves it project-wide rather than only in asm
+context — the simpler of the two options, matching GCC's own treatment, but
+worth knowing if a future round adds general `volatile` type-qualifier
+support.
+
+### What is deliberately NOT supported
+
+**GCC extended asm** — `asm("..." : "=r"(x) : "r"(y) : "cc")`. Operand
+constraints have no Vircon32 equivalent at all: the Vircon32 dialect's own
+`{param}` interpolation inside the literal is the intended substitute, and a
+constraint-based body cannot be mechanically translated into one. Rejected
+with a targeted parser diagnostic ("extended asm with operand constraints is
+not supported: Vircon32 C uses `{param}` interpolation...") rather than the
+generic GLR "syntax error, unexpected ':'" — the single added rule fires on
+the first `:` after the string list, which every extended form necessarily
+has.
+
+**MSVC form** — `__asm { mov eax, 1 }` with unquoted mnemonics. Nothing to
+translate: the brace form is only accepted when every instruction is a quoted
+string literal, i.e. exactly the Vircon32 shape. A program writing MSVC-style
+x86 asm inside it is targeting the wrong instruction set anyway.
+
+**Asm expressions** — `int x = asm(...)`. Basic asm in real compilers is
+statement-only, and the Vircon32 idiom for returning a value needs no
+expression form: the standard library's own value-returning wrappers
+(`int get_selected_texture() { asm { "in R0, GPU_SelectedTexture" } }`)
+rely on Vircon32 C treating the block's R0 as the function's return value.
+Statement-level support covers the entire standard-library pattern as-is.
+
+### Scope, stated explicitly rather than silently gapped
+
+**This-injection must NOT reach inside asm literals.** `{this->x}` is not
+valid Vircon32 interpolation; the caller hoists to a local first and
+interpolates the local. `rewrite_stmt`'s AST\_ASM case is an explicit no-op
+with a comment saying so, rather than relying on its `default:` arm — the
+same "accidentally correct vs. deliberately correct" distinction the
+`AST_CAST`-in-`rewrite_expr` gap already taught this project to flag.
+
+**Registers clobbered across an asm block are the programmer's problem**,
+exactly as in real C. The transpiler makes no attempt to model what the body
+clobbers, and no attempt to preserve anything across it beyond what ordinary
+statement boundaries already guarantee.
+
+**A `goto` jumping over an asm statement** interacts with asm exactly as it
+interacts with any other opaque statement — see the goto round's own known
+gap for the destructor case; asm adds nothing new to it.
+
+### Implementation shape
+
+One token (`ASM`, `VOLATILE`), one AST kind (`AST_ASM`: `list` = one
+`AST_STRING_LIT` per literal, `ival` = 0 for brace form / 1 for GCC
+parenthesized form), one list nonterminal (`asm_string_list`, `%type <list>`)
+plus five statement rules in `parser.y` (four accepting productions plus the
+extended-asm diagnostic rule). `sema.c` and `lower.c` are deliberately
+no-ops: an asm body contains no expressions, declarations, `this` references,
+or calls — nothing for sema to resolve and nothing for any lowering phase to
+rewrite. The string literals round-trip exactly the way `AST_STRING_LIT`
+already does elsewhere (lexer stores inner text with escapes raw, codegen
+re-quotes), so `{param}` braces and any escape pairs survive verbatim with
+zero new machinery.
+
+Per the sweep method used for `AST_TERNARY`/`AST_SIZEOF`/`AST_LABEL` (search
+every statement-walking switch, use a leaf statement as the template, add the
+case everywhere a reader would wonder about it rather than only where the
+`default:` happens to be correct), explicit AST\_ASM cases were added at four
+walkers: `sema.c`'s `check_node` (next to AST\_DEFAULT — same leaf-statement
+shape, no fields to check), `lower.c`'s `rewrite_stmt` (before its
+`default:` — the load-bearing no-op, see above),
+`inject_reference_return_address_stmt` (nothing inside can need
+address-of), and `destruct_scope_stmt` (opaque leaf: introduces no
+destructible locals, control never branches because of it — the case is
+explicit since that phase's whole job is reasoning about scope exits and asm
+is exactly the kind of statement a reader will wonder about there). The
+expression-only walkers (`rewrite_expr`, `finalize_calls_expr`,
+`fix_reference_access_expr`, `new_delete_rewrite_expr`) never see an AST\_ASM
+— the asm body holds no AST expression nodes at all — so their `default:`
+arms are correct without a new case. `ast.c`'s `kind_name` gains
+`case AST_ASM: return "Asm"` (its switch is exhaustive, no `default:`, so
+`-Wswitch` enforces this). codegen's `print_stmt` gains the one printing
+case; brace form is emitted for BOTH written dialects under
+`--target=vircon32`, the written dialect preserved under `--target=standard`.
+
+### Verification
+
+`tests/sample86.cpp` exercises, in order: the brace form with multi-literal
+bodies copied verbatim from `video.h` (renamed `my_*` to avoid colliding
+with the header's own definitions at the C-compiler stage); the
+value-returned-via-R0 idiom; the pointer-out idiom (`push R1` / `mov [R1], R0`); GCC basic asm with adjacent-literal concatenation; `__asm` /
+`asm volatile` / `__asm__` spellings; asm inside a method (post
+this-injection) interpolating a hoisted local, nested in a loop body, so
+sema's loop-depth walk and lower.c's destructor phase both pass over an
+AST\_ASM; a commented-out extended-asm case that must produce the targeted
+diagnostic rather than a generic syntax error; and asm mixed with a
+destructible local (phase 9 must append the destructor call around the asm
+statement, never inside or before it). Sections using mnemonics written from
+memory (`SUB`/`JNZ`/`CMP`) still need confirmation against the real Vircon32
+assembler — the transpiler behavior under test is unaffected either way,
+since the body is opaque pass-through, but the sample's own run-to-completion
+on hardware does depend on them. Generated-C output should be checked for:
+byte-identical brace blocks, one-literal-per-line normalization of
+parenthesized forms, `--target=standard` keeping the GCC spelling, and
+`Clipper::step_right`'s output showing the injected `this` parameter with
+an untouched asm body.
