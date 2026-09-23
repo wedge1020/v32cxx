@@ -249,11 +249,19 @@ install: all
 uninstall:
 	rm -f $(HOME)/bin/v32c++
 
+put: clean
+	@mkdir -p put
+	@rm -f put/*
+	@cp inc/*.h src/*.c docs/* v32/* README.md c_api/*.h put/
+	@cp man/v32c++.1  put/v32c++.1.txt
+	@cp src/lexer.l   put/lexer.l.txt
+	@cp src/parser.y  put/parser.y.txt
+
 archive: clean
-	zip v32cxx-project.zip docs/* inc/* Makefile man/* README.md src/* tests/*
+	zip v32cxx-project.zip demos/* docs/* inc/* Makefile man/* README.md src/* tests/* v32/*
 
 clean:
-	rm -f $(BIN_DIR)/* $(OBJ_DIR)/* $(SRC_DIR)/parser.output $(OUT_DIR)/*
+	rm -f $(BIN_DIR)/* $(OBJ_DIR)/* $(SRC_DIR)/parser.output $(OUT_DIR)/* put/*
 	$(MAKE) -C demos clean
 	#rm -f $(SRC_DIR)/parser.c $(SRC_DIR)/lexer.c $(INC_DIR)/parser.h
 # Removing the bison/flex-generated files here (not just objects/binary) is

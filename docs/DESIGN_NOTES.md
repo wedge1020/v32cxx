@@ -6853,3 +6853,38 @@ byte-identical brace blocks, one-literal-per-line normalization of
 parenthesized forms, `--target=standard` keeping the GCC spelling, and
 `Clipper::step_right`'s output showing the injected `this` parameter with
 an untouched asm body.
+
+## Function-pointer initialization: no implicit `&` in Vircon32 C
+
+Real Vircon32 C, unlike standard C, does NOT implicitly decay a bare
+function name to a function-pointer value: it rejects
+`Callback cb = doubleIt__int;` with "types are not compatible: cannot
+assign int(int) to int(int)*" -- it treats a bare function name as
+having plain function type, not pointer type, and requires an explicit
+`&` to form the pointer value. Standard C treats a bare function name
+and `&functionName` as exactly the same pointer value, so always
+emitting the explicit `&` form is correct and portable across both of
+this project's target dialects; no g_target special-casing is needed.
+
+lower.c therefore rewrites the narrow case that needs the fix: a
+VarDecl initializer or a plain `=` assignment whose TARGET is
+(possibly through a typedef chain) a function-pointer type, and whose
+SOURCE is a bare identifier naming a free function -- including a
+QUALIFIED identifier (`v32::draw`), since the v32 veneer is where the
+transpiler itself expects fn-ptr values to come from. The check runs
+BEFORE finalize_calls_expr recurses into the identifier, so the
+existing AST_IDENT mangling of the bare name happens exactly once,
+inside the new AST_UNOP `&` wrapper -- no double-wrapping, and
+function-pointer-typed VARIABLES (`Callback cb2 = cb;`) are never
+touched.
+
+Implementation note: the helper `is_bare_free_function_ref` routes all
+name lookups through a single local `name` variable rather than reading
+`expr->str1` directly. For AST_QUALIFIED_ID nodes the name lives in
+the LAST list component's `str1`; `expr->str1` itself is meaningless
+(NULL/garbage) on those nodes. Reading it unconditionally was the
+cause of a transpiler segfault on every sample with ordinary
+assignments (22sample.cpp was merely the first to hit it) -- a reminder
+that any helper widened beyond AST_IDENT must re-derive the name for
+each node kind it now accepts, and NULL-guard it (`list.count == 0`,
+`name == NULL`) since call sites may pass absent operands.

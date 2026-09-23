@@ -215,6 +215,22 @@ static char *resolve_include(const char *target, int angle, const char *includin
 static PathSet g_once_set;    /* canonical paths of #pragma once files */
 static PathSet g_stack;       /* canonical paths currently being expanded */
 static PathSet g_interned;    /* see prescan_intern_filename */
+/* Files whose #include line was already EMITTED verbatim once
+ * this run -- a second include of the same file (by any path
+ * spelling) drops the line instead. g_once_set already does
+ * exactly this job for #pragma-once .hpp/.cpp expansions; this
+ * extends the same canonical-path discipline to the lines that
+ * pass through instead of expanding. */
+static PathSet g_verbatim_set;   /* same struct family as g_once_set */
+
+/* INVARIANT: every set above is static, zero-initialized, whole-run state
+ * that only grows -- nothing here is ever reset, so prescan_expand() must
+ * be called AT MOST ONCE per process. A second call would inherit stale
+ * g_once_set/g_verbatim_set/g_interned entries and wrongly suppress
+ * legitimate re-inclusion (g_stack alone self-cleans via path_set_pop).
+ * If multi-file transpiles in one process ever arrive, each set needs an
+ * explicit reset at the top of prescan_expand -- added then, not now. */
+
 
 const char *prescan_intern_filename(const char *filename) {
     for (int i = 0; i < g_interned.count; i++)
@@ -312,9 +328,46 @@ static int expand_file(const char *path, FILE *out,
                 if (rc != 0) break;
                 continue;
             }
-            /* .h / system includes and anything unrecognized: verbatim,
-             * so lexer.l's existing pass-through sees them unchanged. */
-            free(target);
+            else if (target != NULL) {
+                /* A non-expanding include (the SDK's .h headers, or anything
+                 * the prescan doesn't own): resolve it the same way the
+                 * expanding branch does, so dedupe keys on the CANONICAL
+                 * path -- never on the raw spelling, which two headers can
+                 * write differently while naming the same file. When the
+                 * same file was already emitted once (verbatim) this run,
+                 * drop the line entirely: lexer.l's pass-through would
+                 * otherwise re-emit it at the top of the generated C. Safe
+                 * even without guards on the target's side -- a second
+                 * inclusion of an UNGUARDED .h would be a real redefinition
+                 * problem downstream, and dropping it is strictly closer to
+                 * what #pragma once semantics already do for .hpp files. */
+                char *resolved = resolve_include(target, angle, path, dirs, ndirs);
+                if (resolved != NULL) {
+                    char *canonical = canonical_path(resolved);
+                    if (path_set_contains(&g_verbatim_set, canonical)) {
+                        /* already emitted once this run: skip the line
+                         * entirely (fall through to the free/continue path,
+                         * without copying the line out) */
+                        free(canonical);
+                        free(resolved);
+                        free(target);
+                        free(word);
+                        /* re-sync the line marker as the expanding branch
+                         * does, since a line was consumed */
+                        emit_marker(out, lineno + 1, path);
+                        continue;
+                    }
+                    path_set_add(&g_verbatim_set, canonical);
+                    free(canonical);
+                    free(resolved);
+                }
+                /* resolution failure here is NOT an error -- unlike the
+                 * expanding branch, an unresolvable verbatim include is
+                 * today's normal passthrough case (the downstream Vircon32
+                 * C compiler owns those paths, e.g. SDK headers in its own
+                 * include dir). Just emit it verbatim, exactly as before. */
+                free(target);
+            }
         }
         else if (strcmp(word, "pragma") == 0) {
             const char *p = rest;

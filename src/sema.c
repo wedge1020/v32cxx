@@ -1754,6 +1754,18 @@ static void resolve_call(AstNode *call, AstNode *current_class, LocalVarType *lo
              * called unqualified from inside a method. */
             collect_free_function_candidates(name, &candidates, &count, &cap);
         }
+    } else if (callee->kind == AST_QUALIFIED_ID) {
+        /* A namespace-qualified free-function call (v32::draw(...)).
+         * The free-function registry is flat and namespace-name-blind
+         * by construction: collect_declarations registers namespace-
+         * nested functions into it, and mangling keys off the bare
+         * final name -- the same "take the last component" precedent
+         * infer_expr_type's own AST_QUALIFIED_ID case already set. So
+         * candidates are collected by the FINAL segment's name, with
+         * no member-function fallback (a qualifier means the caller
+         * deliberately reached past the enclosing class's scope). */
+        name = callee->list.items[callee->list.count - 1]->str1;
+        collect_free_function_candidates(name, &candidates, &count, &cap);
     } else {
         return; /* other callee shapes (e.g. a call through a computed
                     function pointer) not handled */

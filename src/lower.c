@@ -1377,13 +1377,23 @@ static void finalize_call(AstNode *call, AstNode *class_decl, LocalVarType *loca
             call->a = ast_ident(target_mangled, call->line);
             prepend_arg(&call->list, arg);
         }
-    } else if (callee->kind == AST_IDENT) {
-        /* A free-function call -- just finalize the callee to its
-         * mangled name; there's no receiver to thread through. */
+    } else if (callee->kind == AST_IDENT || callee->kind == AST_QUALIFIED_ID) {
+        /* A free-function call, qualified or not -- finalize the
+         * callee to its mangled name; there's no receiver to thread
+         * through. AST_QUALIFIED_ID arrives here via resolve_call's
+         * qualified branch (Fix 1); the qualifier prefix is dropped
+         * wholesale because mangling is already namespace-blind. */
         call->a = ast_ident(target_mangled, call->line);
+    } else {
+        /* A call sema RESOLVED, whose callee shape we don't produce.
+         * Emitting it unlowered silently means an unresolved symbol
+         * downstream -- the exact path that let qualified calls slip
+         * through unnoticed. Use the file's existing diagnostic
+         * helper (same one rewrite_ternary_block reports through). */
+        lower_note(call->line,
+            "internal: resolved call to '%s' has unhandled callee shape %d",
+            target->str1, (int)callee->kind);
     }
-    /* else: some other callee shape this project doesn't produce --
-     * left untouched. */
 }
 
 /* ---- phase 4: operator-overload-to-function-call rewriting -------------
@@ -1453,6 +1463,22 @@ static void rewrite_operator_use(AstNode **slot, AstNode *lhs_or_operand, AstNod
     finalize_call(call, class_decl, locals);
 }
 
+/* is_bare_free_function_ref currently begins by checking the
+ * initializer's shape -- a bare AST_IDENT whose name is not a local
+ * and names exactly one registered free function. Widen its entry
+ * to also accept an AST_QUALIFIED_ID (e.g. `v32::draw`): take the
+ * FINAL segment's name and apply the identical not-a-local,
+ * exactly-one-candidate test, same flat-registry "last component
+ * wins" precedent as finalize_calls_expr's own AST_QUALIFIED_ID
+ * case (Fix 2-optional) and resolve_call's qualified branch.
+ *
+ * Everything downstream then composes unchanged: the AST_VAR_DECL /
+ * AST_ASSIGN wrap sites call this BEFORE recursing, so the user's
+ * original QualifiedId gets the implicit `&` wrapped around it
+ * exactly once; the AST_UNOP case recurses into the operand; and
+ * finalize_calls_expr's AST_QUALIFIED_ID case rewrites the operand
+ * to the mangled name -- producing `(&draw__int_int_int)`, exactly
+ * the shape the bare and address-of spellings already produce. */
 /*
  * Real Vircon32 C, unlike standard C, does NOT implicitly decay a bare
  * function name to a function-pointer VALUE -- confirmed against the
@@ -1482,12 +1508,22 @@ static void rewrite_operator_use(AstNode **slot, AstNode *lhs_or_operand, AstNod
  * getting wrapped twice or a variable reference getting wrapped at all.
  */
 static int is_bare_free_function_ref(const AstNode *expr, LocalVarType *locals) {
-    if (expr == NULL || expr->kind != AST_IDENT) return 0;
-    if (find_local(locals, expr->str1) != NULL) return 0; /* a local/param
+    const char *name;
+    if (expr == NULL) return 0;
+    if (expr->kind == AST_IDENT) {
+        name = expr->str1;
+    } else if (expr->kind == AST_QUALIFIED_ID) {
+        if (expr->list.count == 0) return 0;
+        name = expr->list.items[expr->list.count - 1]->str1;
+    } else {
+        return 0;
+    }
+    if (name == NULL) return 0; /* belt-and-braces: str1 can be NULL even for IDENT */
+    if (find_local(locals, name) != NULL) return 0; /* a local/param
         of this name always wins, matching the AST_IDENT case below */
     AstNode **candidates = NULL;
     int count = 0, cap = 0;
-    collect_free_function_candidates(expr->str1, &candidates, &count, &cap);
+    collect_free_function_candidates(name, &candidates, &count, &cap);
     free(candidates);
     return count == 1; /* same "unambiguous or don't touch it" rule as the
         AST_IDENT case below */
@@ -1604,6 +1640,37 @@ static void finalize_calls_expr(AstNode **slot, AstNode *class_decl, LocalVarTyp
             if (count == 1) {
                 FuncSemaInfo *info = (FuncSemaInfo *)candidates[0]->sema_info;
                 const char *mangled = (info != NULL) ? info->mangled_name : candidates[0]->str1;
+                *slot = ast_ident(mangled, n->line);
+            }
+            free(candidates);
+            break;
+        }
+        case AST_QUALIFIED_ID: {
+            /* The same "function used as a VALUE" rewrite, for a
+             * namespace-qualified reference (`Callback cb = v32::doubleIt;`
+             * or `&v32::doubleIt`). Same reasoning as the AST_IDENT case
+             * above, with the same registry precedent as Fix 1: the
+             * free-function registry is flat and namespace-blind, and
+             * mangling keys off the bare final name, so candidates are
+             * collected by the FINAL segment only. A local cannot hide
+             * here the way it can for a bare identifier -- the final
+             * segment is checked against locals anyway, so a
+             * same-named local still wins, matching the scoping rule
+             * real C++ itself applies to the unqualified form. An
+             * ambiguous (>1) or missing (0) candidate is left completely
+             * untouched -- no argument list exists here to disambiguate
+             * against, and this project deliberately doesn't model
+             * matching against the function pointer's declared type. */
+            if (n->list.count == 0) break;
+            const char *final = n->list.items[n->list.count - 1]->str1;
+            if (find_local(locals, final) != NULL) break;
+            AstNode **candidates = NULL;
+            int count = 0, cap = 0;
+            collect_free_function_candidates(final, &candidates, &count, &cap);
+            if (count == 1) {
+                FuncSemaInfo *info = (FuncSemaInfo *)candidates[0]->sema_info;
+                const char *mangled = (info != NULL) ? info->mangled_name
+                                                     : candidates[0]->str1;
                 *slot = ast_ident(mangled, n->line);
             }
             free(candidates);
@@ -3863,6 +3930,26 @@ static AstNode *build_dtor_call_stmt(DestructibleLocal *dl) {
     return expr_stmt;
 }
 
+/* True when control provably cannot fall past this statement.
+ * Deliberately conservative -- only the three shapes this
+ * project actually produces that always exit: a bare return, a
+ * block whose LAST statement always returns (the shape the
+ * return-with-destructibles rewrite itself produces), and an
+ * if whose BOTH branches always return. Anything else returns
+ * 0, meaning "emit destructors as before". */
+static int stmt_always_returns(AstNode *n)
+{
+    if (n == NULL ) return 0;
+    if (n->kind == AST_RETURN ) return 1;
+    if (n->kind == AST_BLOCK ) {
+        if (n->list.count == 0) return 0;
+        return stmt_always_returns(n->list.items[n->list.count - 1]);
+    }
+    if (n->kind == AST_IF )
+        return stmt_always_returns(n->b) && stmt_always_returns(n->c);
+    return 0;
+}
+
 static void destruct_scope_block(AstNode *block, DestructScope *parent_scope,
                                   DestructScope *loop_boundary,
                                   DestructScope *break_boundary,
@@ -4103,16 +4190,18 @@ static void destruct_scope_block(AstNode *block, DestructScope *parent_scope,
     }
 
     /* Fall-through exit: this block's own destructibles, reverse
-     * declaration order (already the natural order of this_scope.locals,
-     * since each was prepended as it was found). For a switch body
-     * (this function reused directly on an AST_SWITCH node, not just an
-     * AST_BLOCK -- see that case in destruct_scope_stmt), "fall-through"
-     * correctly means "control reached the end of the switch body
-     * without an explicit break" -- the same real-C behavior whether no
-     * case matched at all or the last matching case didn't break,
-     * requiring no special handling here beyond what already exists. */
-    for (DestructibleLocal *dl = this_scope.locals; dl != NULL; dl = dl->next) {
-        ast_list_append(&new_list, build_dtor_call_stmt(dl));
+     * declaration order -- but SKIPPED entirely when control
+     * provably cannot reach the block's end (e.g. the last
+     * statement is the always-returning block a return-with-
+     * destructibles rewrite just produced). Emitting them there
+     * would be unreachable dead code, duplicate with the dtor
+     * calls the return path itself already emitted. */
+    AstNode *fallthrough_stmt =
+        (new_list.count > 0) ? new_list.items[new_list.count - 1] : NULL;
+    if (!stmt_always_returns(fallthrough_stmt)) {
+        for (DestructibleLocal *dl = this_scope.locals; dl != NULL; dl = dl->next) {
+            ast_list_append(&new_list, build_dtor_call_stmt(dl));
+        }
     }
 
     block->list = new_list;

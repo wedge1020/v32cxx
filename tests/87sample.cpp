@@ -19,6 +19,13 @@
 //      (the __v32_tern_tmpN hoisting path). NO ternary inside a for-loop's
 //      init/cond/incr clauses — that boundary is still open by design.
 //   5. The enum-typed blending setter instead of a raw hex constant.
+//   6. QUALIFIED function-as-value: `v32::`-qualified free functions used
+//      as VALUES (function pointer init and assignment), exercising
+//      finalize_calls_expr's AST_QUALIFIED_ID case — the qualified sibling
+//      of the bare-name rewrite sample64 introduced. Both spellings are
+//      tested: plain (`cb = v32::fn;`) and address-of (`&v32::fn`), since
+//      the AST_UNOP case must recurse into the operand and hit the new
+//      case exactly once (no double-wrap).
 //
 //  Deliberately NOT exercised (known boundaries, not silently missed):
 //   - ternary in for-loop clauses (untouched by lowering today)
@@ -28,6 +35,10 @@
 // ---- pilot headers (v32pp inlines these; lines below are what it expands) --
 #include "v32/video.hpp"
 #include "v32/string.hpp"
+
+// ---- C headers used directly by this sample's own code ----------------------
+// (end_frame lives in time.h; the pilot headers don't pull it in)
+#include "time.h"
 
 // ---- global state for the frame loop ----------------------------------------
 
@@ -116,6 +127,28 @@ void main( void )
     v32::String health_line( "health color id: " );
     health_line.append_int( health_color, 10 );
     health_line.print_at_xy( 20, 300 );
+
+    // ---- 6. qualified function-as-value (function pointers) --------------------
+    // exercise finalize_calls_expr's AST_QUALIFIED_ID rewrite: a v32::
+    // qualified free function used as a VALUE must lower to its mangled
+    // name, same as the bare-name form sample64 tests. Expected in the
+    // generated C: the initializer/assignments read
+    // screen_center__Point_ptr / draw__int_int_int (NOT bare
+    // screen_center / draw), and both indirect calls run.
+
+    // pointer to the qualified free function, initialized with the
+    // plain qualified spelling
+    void (*draw_fn)( int, int, int ) = v32::draw;
+    draw_fn( 0, 400, 200 );   // indirect call through the pointer
+
+    // assignment spelling, through a second pointer
+    void (*draw_fn2)( int, int, int );
+    draw_fn2 = &v32::draw;
+    draw_fn2( 1, 420, 210 );
+
+    // and the bare-name form alongside, to confirm it still works too
+    void (*draw_fn3)( int, int, int ) = draw;
+    draw_fn3( 2, 440, 220 );
 
     // ---- frame loop (no ternary in the for clauses — open boundary) -----------
 
