@@ -162,6 +162,20 @@ static void free_typedef_registry(void) {
     g_typedef_registry = NULL;
 }
 
+/* Flat enum registry -- enum NAME -> EnumDecl node, and enum CONSTANT name
+ * -> owning EnumDecl node. Namespace-blind on purpose, exactly like the
+ * free-function and typedef registries: this project's flat registries all
+ * key off the bare final name, and no v32:: header ever re-uses one name
+ * in two namespaces (the same guarantee collect_free_function_candidates
+ * already relies on). Nested/class-member enums don't parse at all, so
+ * top-level + namespace-level is the complete universe. */
+//static AstNode **g_enum_decls  = NULL;  /* by enum name, e.g. "Button" */
+//static char    **g_enum_names  = NULL;
+//static AstNode **g_enum_const_owner = NULL;  /* by constant name, e.g. "ButtonY" */
+//static char    **g_enum_const_names = NULL;
+//static int g_enum_count = 0, g_enum_cap = 0;
+//static int g_enum_const_count = 0, g_enum_const_cap = 0;
+
 /* ---- flat free-function registry, grouping ALL top-level (and
  * namespace-nested) functions -- entries share a name whenever two
  * functions are genuinely overloaded (different signatures), but
@@ -295,6 +309,66 @@ static void free_global_var_registry(void) {
     g_global_var_registry = NULL;
 }
 
+/* ---- flat enum registries ------------------------------------------------
+ * Enum NAME -> its AST_ENUM_DECL, and enum CONSTANT name -> the owning
+ * AST_ENUM_DECL. Namespace-blind on purpose, exactly like the free-function,
+ * global-var, and typedef registries: this project's registries all key off
+ * the bare final name, and nested/class-member enums don't parse at all, so
+ * top-level + namespace-level is the complete universe. Populated in
+ * collect_declarations, consulted from infer_expr_type's AST_IDENT and
+ * AST_QUALIFIED_ID cases (see those cases for why the constant's type is
+ * its owning enum's name). Freed in sema_cleanup alongside every other
+ * registry this file builds. */
+typedef struct EnumRegEntry {
+    const char *name;   /* not owned -- points into the ENUM_DECL's str1 */
+    AstNode *decl;       /* not owned -- the AST_ENUM_DECL itself */
+    struct EnumRegEntry *next;
+} EnumRegEntry;
+
+typedef struct EnumConstRegEntry {
+    const char *name;   /* not owned -- the ENUM_VALUE's own str1 */
+    AstNode *owner;      /* not owned -- the owning AST_ENUM_DECL */
+    struct EnumConstRegEntry *next;
+} EnumConstRegEntry;
+
+static EnumRegEntry *g_enum_registry = NULL;
+static EnumConstRegEntry *g_enum_const_registry = NULL;
+
+static void enum_registry_add(const char *name, AstNode *decl) {
+    EnumRegEntry *e = malloc(sizeof(EnumRegEntry));
+    e->name = name;
+    e->decl = decl;
+    e->next = g_enum_registry;
+    g_enum_registry = e;
+}
+
+static void enum_const_registry_add(const char *name, AstNode *owner) {
+    EnumConstRegEntry *e = malloc(sizeof(EnumConstRegEntry));
+    e->name = name;
+    e->owner = owner;
+    e->next = g_enum_const_registry;
+    g_enum_const_registry = e;
+}
+
+/* The one lookup that matters semantically: an enum constant's TYPE is
+ * its owning enum. Returns the owning AST_ENUM_DECL, or NULL if `name`
+ * is not a registered enum constant. */
+static AstNode *enum_const_owner_lookup(const char *name) {
+    for (EnumConstRegEntry *e = g_enum_const_registry; e != NULL; e = e->next) {
+        if (strcmp(e->name, name) == 0) return e->owner;
+    }
+    return NULL;
+}
+
+static void free_enum_registries(void) {
+    EnumRegEntry *e = g_enum_registry;
+    while (e != NULL) { EnumRegEntry *next = e->next; free(e); e = next; }
+    g_enum_registry = NULL;
+    EnumConstRegEntry *c = g_enum_const_registry;
+    while (c != NULL) { EnumConstRegEntry *next = c->next; free(c); c = next; }
+    g_enum_const_registry = NULL;
+}
+
 /* ---- pass 1: collect every class, typedef, AND free function, recursing
  * into namespace bodies (was collect_classes; renamed since it now does
  * all three) ------------------------------------------------------------ */
@@ -322,6 +396,14 @@ static void collect_declarations(AstList *decls) {
             register_global_var(n);
         } else if (n->kind == AST_NAMESPACE_DECL) {
             collect_declarations(&n->list);
+        }
+        else if (n->kind == AST_ENUM_DECL) {
+            enum_registry_add(n->str1, n);                 /* the type name */
+            for (int i = 0; i < n->list.count; i++)        /* every constant */
+                if (n->list.items[i]->kind == AST_ENUM_VALUE)
+                    enum_const_registry_add(n->list.items[i]->str1, n);
+            /* do NOT fall through to other handling -- nothing else should
+             * touch enum decls here; continue the walk as before */
         }
     }
 }
@@ -1173,33 +1255,37 @@ AstNode *infer_expr_type(const AstNode *expr, AstNode *current_class, LocalVarTy
         case AST_CHAR_LIT: return ast_ident("char", expr->line);
         case AST_THIS:
             return (current_class != NULL) ? ast_ident(current_class->str1, expr->line) : NULL;
-        case AST_IDENT:
-            return lookup_ident_expr_type(expr->str1, current_class, locals);
+        case AST_IDENT: {
+            AstNode *t = lookup_ident_expr_type(expr->str1, current_class, locals);
+            if (t != NULL) return t;
+            /* Not a local/member/global: an enum constant's type is its
+             * owning enum -- a bare AST_IDENT spelling of the enum's name,
+             * the exact shape a parameter's type node already has, so
+             * type_matches_param's exact-name check binds it to the
+             * enum-typed overload and nothing else. */
+            AstNode *owner = enum_const_owner_lookup(expr->str1);
+            if (owner != NULL) {
+                AstNode *et = ast_new(AST_IDENT, expr->line);
+                et->str1 = owner->str1;
+                return et;
+            }
+            return NULL;
+        }
         case AST_QUALIFIED_ID: {
-            /* A namespace-qualified name used as a VALUE (`si::g_rng`),
-             * built by `qualified_id_expr` in the grammar -- the exact
-             * same shape (a list of AST_IDENT components, the real name
-             * last) that type_to_class's own AST_QUALIFIED_ID case
-             * already resolves for a namespace-qualified TYPE. This
-             * project's own registries (classes, free functions, and
-             * now global variables) are all flat and namespace-name-
-             * blind by construction -- mangling and lookup both key off
-             * the bare final name only, matching type_to_class's own
-             * established "just take the last component" precedent --
-             * so the same lookup AST_IDENT uses above applies unchanged
-             * once the qualifier prefix is stripped down to that name.
-             * A real, previously-undiscovered gap: without this case,
-             * every qualified value reference fell through to the
-             * default "unknown" case below, discovered specifically by
-             * a global variable's own METHOD CALL written with an
-             * explicit namespace qualifier (`si::g_rng.seed(...)`,
-             * called from outside the `si` namespace) -- the exact same
-             * failure mode find_global_var_type's own doc comment
-             * describes for a global with no qualifier at all, just one
-             * more AST shape it can arrive in. */
             if (expr->list.count == 0) return NULL;
-            return lookup_ident_expr_type(expr->list.items[expr->list.count - 1]->str1,
-                                           current_class, locals);
+            const char *last = expr->list.items[expr->list.count - 1]->str1;
+            AstNode *t = lookup_ident_expr_type(last, current_class, locals);
+            if (t != NULL) return t;
+            /* Same enum-constant fallback as AST_IDENT above, keyed off the
+             * qualified name's last component -- the same "take the last
+             * segment" precedent this case's global lookup already set. */
+            AstNode *owner = enum_const_owner_lookup(last);
+            if (owner != NULL) {
+                AstNode *et = ast_new(AST_IDENT, expr->line);
+                et->str1 = owner->str1;
+                return et;
+            }
+            return NULL;
         }
         case AST_MEMBER: {
             AstNode *obj_class = type_to_class(infer_expr_type(expr->a, current_class, locals));
@@ -1208,6 +1294,22 @@ AstNode *infer_expr_type(const AstNode *expr, AstNode *current_class, LocalVarTy
             AstNode *member = find_member_in_hierarchy(obj_class, expr->str2, &owner);
             if (member == NULL || member->kind != AST_VAR_DECL) return NULL;
             return member->type;
+        }
+        case AST_STRING_LIT: {
+            /* A string literal used as a VALUE has type `int *` in this
+             * dialect -- the same model the parser already documents
+             * ("string literals are int-array initializers"), and the
+             * reason a literal binds to any `int *` parameter (String's
+             * own operator+= et al). Without this case, a ternary with
+             * string-literal branches fell through to "unknown", and
+             * hoist_ternaries_in_expr's best-effort default typed its
+             * temp `int` -- producing an int temp assigned an int* and
+             * then passed to an int* parameter, both rejected by real
+             * Vircon32 C. First noticed via tests/88sample.cpp's
+             * `line += v32::left() ? "1" : "0";`. */
+            AstNode *ptr = ast_new(AST_POINTER_TYPE, expr->line);
+            ptr->a = ast_ident("int", expr->line);
+            return ptr;
         }
         case AST_NEW: {
             /* `new T(...)`'s type is "pointer to T" -- reuses expr->type
@@ -1653,6 +1755,21 @@ static void resolve_overload_generic(AstNode *site, const char *name, AstNode **
             sema_error(site->line, "'%s' expects between %d and %d argument(s), but %d were given",
                        name, min_required_args(candidates[0]), candidates[0]->list.count, arg_count);
         }
+
+/*
+        if (arity_match_count == 1) {
+            CallResolution *cr = calloc(1, sizeof(CallResolution));
+            cr->resolved_target = arity_match;
+            site->sema_info = cr;
+        } else if (arity_match_count == 0) {
+            sema_error(site->line, "no matching overload of '%s' for this call", name);
+        } else {
+            sema_error(site->line,
+                "cannot resolve overloaded call to '%s': %d candidates match by "
+                "arity but an argument's type is unknown",
+                name, arity_match_count);
+        }
+        */
         free(candidates);
         return;
     }
@@ -1672,8 +1789,7 @@ static void resolve_overload_generic(AstNode *site, const char *name, AstNode **
          * call against Vec2() and Vec2(int, int) has only one possible
          * match). Resolving on unique arity is not a guess -- it's the
          * same certainty the single-candidate branch above already
-         * accepts. Only when arity leaves 0 or 2+ candidates does this
-         * still give up silently, exactly as before. */
+         * accepts. */
         AstNode *arity_match = NULL;
         int arity_match_count = 0;
         for (int i = 0; i < count; i++) {
@@ -1687,6 +1803,13 @@ static void resolve_overload_generic(AstNode *site, const char *name, AstNode **
             CallResolution *cr = calloc(1, sizeof(CallResolution));
             cr->resolved_target = arity_match;
             site->sema_info = cr;
+        } else if (arity_match_count == 0) {
+            sema_error(site->line, "no matching overload of '%s' for this call", name);
+        } else {
+            sema_error(site->line,
+                "cannot resolve overloaded call to '%s': %d candidates match by "
+                "arity but an argument's type is unknown",
+                name, arity_match_count);
         }
         free(arg_types);
         free(candidates);
@@ -2589,6 +2712,7 @@ void sema_cleanup(void) {
     free_typedef_registry();
     free_free_func_registry();
     free_global_var_registry();
+    free_enum_registries();
 }
 
 /* ---- dump ---------------------------------------------------------- */

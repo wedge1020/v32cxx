@@ -84,6 +84,12 @@ namespace v32
                 strcat( buffer, text );
             }
 
+            // whole-string replacement; the natural spelling of assign()
+            void operator=( int* text )
+            {
+                strcpy( buffer, text );
+            }
+
             // append a formatted integer (bases 2-16, base 10 signed)
             void append_int( int value, int base )
             {

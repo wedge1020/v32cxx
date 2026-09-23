@@ -6888,3 +6888,34 @@ assignments (22sample.cpp was merely the first to hit it) -- a reminder
 that any helper widened beyond AST_IDENT must re-derive the name for
 each node kind it now accepts, and NULL-guard it (`list.count == 0`,
 `name == NULL`) since call sites may pass absent operands.
+
+## Enum registry + typed enum constants (88sample round)
+
+88sample (input.hpp pilot) forced four fixes that landed as one arc:
+
+1. **Enum constant registry.** `collect_declarations` now registers each
+   enum constant with its owning enum (e.g. ButtonY -> Button), and
+   `infer_expr_type` resolves constant identifiers through that registry
+   instead of returning "unknown". This is what makes
+   `button_frames_held(ButtonA)` pick the Button overload rather than the
+   int overload. The enum-name->decl registry also exists but currently
+   has no consumer; it is forward-looking for the qualified-cast fix.
+
+2. **AST_STRING_LIT typing.** `infer_expr_type` gained an AST_STRING_LIT
+   case returning int*, fixing the const-qualified errors from 88sample's
+   string ternaries (`line += v32::left() ? "1" : "0"`), a pattern
+   87sample never exercised.
+
+3. **String operator=.** v32::String's `operator=` maps to assign()
+   (strcpy), matching operator+=.
+
+4. **Loud unresolved-call diagnostics.** Unresolved calls now fail
+   loudly instead of passing through silently.
+
+Proof: 88sample.cpp -> 88program.c -> 88program.asm compiles cleanly.
+The transpiled C is by-construction only (it does not need to compile
+under desktop gcc; the Vircon32 toolchain is the target).
+
+Known boundary: switch fall-through between cases is still untested by
+design; gamepad_direction_normalized() remains unwrapped (needs a float
+Point).
