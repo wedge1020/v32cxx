@@ -6919,3 +6919,44 @@ under desktop gcc; the Vircon32 toolchain is the target).
 Known boundary: switch fall-through between cases is still untested by
 design; gamepad_direction_normalized() remains unwrapped (needs a float
 Point).
+
+## Round: v32/time.hpp pilot, 89sample, and the pass-through boundary named
+
+Fourth pilot veneer (after video/string/input): v32/time.hpp wraps time.h with
+v32::Date / v32::TimeOfDay (class-holder conversions, since date_info*/time_info*
+are unnamable in the subset -- the #include is pass-through text, so C struct
+types never enter the symbol table and can't be lexed as TYPE_NAME), v32::Stopwatch
+(the FIRST float-returning method in any v32:: header), v32::FrameScope (the third
+scope-guard class and the first whose dtor makes a real call: ~FrameScope ->
+end_frame()), FramesPerSecond enum, and frames_to_seconds/seconds_to_frames/
+wait_seconds free helpers. time.h's own translate_date/translate_time are
+deliberately NOT called; their pure-math conversions live in the classes instead.
+
+tests/89sample.cpp exercises all of it end to end, plus three grammar paths in a
+test file for the first time: braced array initializer lists inside a v32::
+header (int month_days[12] = {...}), string-literal array initializers in sample
+code (int msg[8] = "Hi"), and ternaries in expression position per the corrected
+pilot stance (the transpiler rewrites both; they are NOT to be avoided).
+
+Two sample bugs found by the round, both in test code, not the transpiler:
+- append_float takes ONE argument (ftoa has no precision param) -- sema's
+  overload resolution caught both call sites loudly, first proof of that
+  path on the new header.
+- Expected-date off-by-one: get_date()'s day field is 0-indexed, so the
+  leap-year divergence lives at index 59 (2023-3-1 vs 2024-2-29), not 58.
+  Date::set_from itself was correct end to end; the sample's comments
+  conflated 1-indexed day-of-year with the 0-indexed field.
+
+Known boundary, named as the trigger for the next design decision: the .h
+pass-through makes C struct types unnamable (#include is re-emitted, never
+parsed) and pass-through calls existence-unchecked. This round worked around it
+with pure-math re-expression, but memcard.h cannot be worked around the same
+way -- card_signature_matches is hardware access (cmps R0), not math.
+DECISION (pre-made, so it isn't re-derived under pressure): a `native Name;`
+opaque-type declaration -- inserts the name into the symbol table, emits
+nothing, lets source write `date_info* out;` and call the real C function --
+is the chosen fix when memcard.h's pilot lands. v32pp-side struct/#define
+sniffing remains the fallback for the #define visibility half of the gap.
+
+Proof: tests/89sample.cpp -> 89program.c transpiles clean; on-screen readings
+verified (2023-3-1, 2024-2-29, 1:1:1, 0.5s -> 30 frames, msg len 2).
