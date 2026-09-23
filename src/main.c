@@ -46,7 +46,7 @@ static void print_usage(const char *prog_name) {
                      "                and other non-obvious points; -vvv additionally\n"
                      "                prints the AST/semantic-analysis/lowering dumps.\n"
                      "                Silent by default (no -v at all).\n");
-	fprintf(stderr,  "  -I <dir>      add <dir> to the #include search path. Only\n"
+    fprintf(stderr,  "  -I <dir>      add <dir> to the #include search path. Only\n"
                      "                .hpp/.cpp includes are resolved by v32c++\n"
                      "                (.h and system includes pass through to the\n"
                      "                generated C unchanged). May be repeated.\n");
@@ -235,6 +235,20 @@ int  main (int  argc, char **argv)
     }
     yyin = f;
     g_current_filename = input_filename;
+
+    if (verbosity >= 3) {
+        /* Dump the post-prescan stream EXACTLY as the lexer will see it.
+         * Rewind afterwards -- yyparse() must read from the start. */
+        printf("---- post-prescan expanded source (as fed to the lexer) ----\n");
+        int c, dump_lineno = 1, bol = 1;
+        while ((c = fgetc(yyin)) != EOF) {
+            if (bol) { printf("%5d: ", dump_lineno); bol = 0; }
+            putchar(c);
+            if (c == '\n') { dump_lineno++; bol = 1; }
+        }
+        rewind(yyin);
+        printf("---- end expanded source ----\n");
+    }
 
     char *derived_output = NULL;
     if (output_filename == NULL) {

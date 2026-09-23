@@ -1,3 +1,4 @@
+#pragma once
 // *****************************************************************************
 //  v32/video.hpp — pilot C++ veneer over Vircon32's "video.h"
 //

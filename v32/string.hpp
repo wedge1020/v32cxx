@@ -1,3 +1,4 @@
+#pragma once
 // *****************************************************************************
 //  v32/string.hpp — pilot C++ layer over Vircon32's "string.h"
 //
