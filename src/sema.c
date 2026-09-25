@@ -16,6 +16,43 @@ static void sema_error(int line, const char *fmt, ...) {
     g_error_count++;
 }
 
+/* Native types have no known layout (defined in a C header this
+ * transpiler does not parse). By-value use would silently produce
+ * wrong-size stack slots/fields, so reject it loudly; pointer/reference
+ * use is always one word and always safe. Deliberately stricter than C.
+ *
+ * `const` is peeled first -- `const date_info d;` is every bit as much a
+ * by-value use as `date_info d;` -- but pointer/reference wrappers stop
+ * the check immediately (that's the allowed shape). The typedef registry
+ * lookup lives further down this file (typedef_registry_is_native,
+ * declared in sema.h). */
+
+static void check_native_pointer_only(const AstNode *type, int line)
+{
+    while (type != NULL && type->kind == AST_CONST_TYPE) type = type->a;
+    if (type == NULL || type->kind != AST_IDENT || type->str1 == NULL) return;
+    if (!typedef_registry_is_native(type->str1)) return;
+    sema_error(line,
+        "native type '%s' may only be used by pointer or reference "
+        "(its layout is defined in a C header this transpiler does not parse)",
+        type->str1);
+}
+
+/* Return type + every parameter of one function/method, prototype or
+ * definition alike. Called exactly once per function (see
+ * access_check_methods / access_check_free_functions), so a by-value
+ * native in a signature is reported once, at the declaration that
+ * spelled it -- never re-reported by the body walk or by lower.c. */
+static void check_native_signature(const AstNode *func)
+{
+    check_native_pointer_only(func->type, func->line);        /* return */
+    for (int i = 0; i < func->list.count; i++) {
+        const AstNode *param = func->list.items[i];
+        if (param != NULL && param->kind == AST_PARAM)
+            check_native_pointer_only(param->type, param->line);
+    }
+}
+
 /* Same shape as sema_error above, deliberately -- same line-number-
  * prefixed stderr message, same varargs signature -- but for something
  * that should NOT stop the transpile: g_warning_count is tracked
@@ -132,6 +169,9 @@ static void free_registry(void) {
 typedef struct TypedefRegEntry {
     const char *name;
     AstNode *underlying_type;   /* the AST_TYPEDEF_DECL's own `type` field */
+    int is_native;              /* registered by `native X;` (AST_NATIVE_DECL):
+                                 * an opaque, layout-unknown C type -- see
+                                 * docs/NATIVE_PASSTHROUGH.md */
     struct TypedefRegEntry *next;
 } TypedefRegEntry;
 
@@ -141,15 +181,36 @@ static void register_typedef(AstNode *typedef_decl) {
     TypedefRegEntry *e = malloc(sizeof(TypedefRegEntry));
     e->name = typedef_decl->str1;
     e->underlying_type = typedef_decl->type;
+    e->is_native = (typedef_decl->kind == AST_NATIVE_DECL);
     e->next = g_typedef_registry;
     g_typedef_registry = e;
 }
 
+/* A native entry deliberately reports NO target: its synthetic
+ * self-named underlying type (see collect_declarations) exists only so
+ * code reading the AST_NATIVE_DECL node's own `type` never sees NULL.
+ * Returning it here would make resolve_typedef_chain spin X -> X -> X
+ * until its 64-step guard tripped; returning NULL instead stops the
+ * chain at the native name itself on the first step -- exactly the
+ * "non-typedef AST_IDENT" terminal that function is documented to stop
+ * at, which is what a native name semantically is. */
 static AstNode *find_typedef_target(const char *name) {
     for (TypedefRegEntry *e = g_typedef_registry; e != NULL; e = e->next) {
-        if (strcmp(e->name, name) == 0) return e->underlying_type;
+        if (strcmp(e->name, name) == 0) return e->is_native ? NULL : e->underlying_type;
     }
     return NULL;
+}
+
+/* True iff `name` was registered by a `native name;` declaration. Exposed
+ * (sema.h) so lower.c/codegen.c can ask the same question; valid from
+ * collect_declarations (early in sema_run) until sema_cleanup(). Same
+ * flat, bare-name keying as the rest of this registry. */
+int typedef_registry_is_native(const char *name) {
+    if (name == NULL) return 0;
+    for (TypedefRegEntry *e = g_typedef_registry; e != NULL; e = e->next) {
+        if (strcmp(e->name, name) == 0) return e->is_native;
+    }
+    return 0;
 }
 
 static void free_typedef_registry(void) {
@@ -404,6 +465,34 @@ static void collect_declarations(AstList *decls) {
                     enum_const_registry_add(n->list.items[i]->str1, n);
             /* do NOT fall through to other handling -- nothing else should
              * touch enum decls here; continue the walk as before */
+        }
+        else if (n->kind == AST_NATIVE_DECL) {
+            /* register_typedef reads n->type, but a native has no underlying
+             * type -- the layout lives in a C header this transpiler never
+             * parses. A synthetic self-named underlying keeps anything that
+             * reads n->type (the dump, register_typedef itself) off NULL;
+             * find_typedef_target deliberately never returns it, so typedef
+             * chasing (resolve_typedef_chain, type_to_class) stops at the
+             * native name itself rather than looping X -> X. */
+            if (n->type == NULL) n->type = ast_ident(n->str1, n->line);
+            if (typedef_registry_is_native(n->str1)) {
+                /* Repeat `native X;` (the same name declared by two
+                 * v32/ headers, say) -- idempotent, nothing to add. */
+            } else if (find_class(n->str1) != NULL ||
+                       find_typedef_target(n->str1) != NULL) {
+                /* Only reachable via parser.y's `NATIVE TYPE_NAME`
+                 * alternative: the name was ALREADY a class/struct or an
+                 * ordinary typedef in this translation unit. Marking it
+                 * native now would silently retroactively forbid every
+                 * by-value use of a type whose layout v32c++ actually
+                 * does know. */
+                sema_error(n->line,
+                    "'native %s;' conflicts with an earlier declaration of "
+                    "'%s' as a class, struct, or typedef in this program",
+                    n->str1, n->str1);
+            } else {
+                register_typedef(n);
+            }
         }
     }
 }
@@ -895,6 +984,7 @@ static void compute_layout(AstNode *class_decl) {
         }
         if (member->kind == AST_VAR_DECL) {
             member->access = current_access;
+            check_native_pointer_only(member->type, member->line);
             ast_list_append(&layout->data_members, member);
         } else if (member->kind == AST_FUNC_DECL || member->kind == AST_FUNC_DEF) {
             member->access = current_access;
@@ -2174,6 +2264,25 @@ static int g_sema_switch_depth = 0; /* same "global, incremented/decremented
     (whichever is innermost) while `continue` is valid ONLY inside a
     loop -- a single shared counter couldn't distinguish the two. */
 
+/* Unwraps the expression's inferred type through const/pointer/reference
+ * layers; returns the AST_IDENT of the base if that base is a
+ * native-registered name, NULL otherwise (including when the type is
+ * unknown -- same "nothing to check" stance as everything else here). */
+static AstNode *native_base_of(const AstNode *expr,
+                               AstNode *current_class,
+                               LocalVarType *locals)
+{
+    const AstNode *t = infer_expr_type(expr, current_class, locals);
+    while (t != NULL &&
+           (t->kind == AST_POINTER_TYPE ||
+            t->kind == AST_REFERENCE_TYPE ||
+            t->kind == AST_CONST_TYPE)) {
+        t = t->a;
+    }
+    if (t == NULL || t->kind != AST_IDENT || t->str1 == NULL) return NULL;
+    return typedef_registry_is_native(t->str1) ? (AstNode *)t : NULL;
+}
+
 static void check_node(AstNode *n, AstNode *current_class, LocalVarType **locals) {
     if (n == NULL) return;
     switch (n->kind) {
@@ -2295,9 +2404,14 @@ static void check_node(AstNode *n, AstNode *current_class, LocalVarType **locals
              * this file) makes an explicit `if (n->a != NULL)` check
              * here unnecessary -- calling it with a NULL a is already
              * a safe no-op. */
+            /* sizeof(X) for a native X has no answer this transpiler can
+             * vouch for (the layout is in a header it never reads); the
+             * pointer form, sizeof(X*), is always one word and passes. */
+            check_native_pointer_only(n->type, n->line);
             check_node(n->a, current_class, locals);
             break;
         case AST_VAR_DECL: {
+            check_native_pointer_only(n->type, n->line);
             if (n->a != NULL && n->a->kind == AST_DIRECT_INIT) {
                 /* `Shape shape(7);` -- the AST_DIRECT_INIT marker doesn't
                  * carry its own type from the parser (it's built before
@@ -2412,6 +2526,23 @@ static void check_node(AstNode *n, AstNode *current_class, LocalVarType **locals
                     if (member != NULL) {
                         check_member_access(n->line, n->str2, member, owner, current_class);
                     }
+                } else {
+                    /* obj_class == NULL covers BOTH a genuinely unresolvable
+                     * base (unknown type -- not this pass's job, same as the
+                     * "no such member" note above) AND a native-typed base,
+                     * which this pass DOES own an opinion about: the base's
+                     * layout lives in a C header this transpiler never parses,
+                     * so the member name is uncheckable here, and emitting it
+                     * silently would push any field-name error (or typo) onto
+                     * the downstream C compiler, far from this line. */
+                    const AstNode *core = native_base_of(n->a, current_class, *locals);
+                    if (core != NULL) {
+                        sema_error(n->line,
+                            "member access on native type '%s' is not supported: "
+                            "its layout is defined in a C header this transpiler "
+                            "does not parse (pass the pointer to a C function instead)",
+                            core->str1);
+                    }
                 }
             }
             break;
@@ -2520,6 +2651,7 @@ static void check_implicit_base_construction(AstNode *func, AstNode *current_cla
 }
 
 static void check_function_body(AstNode *func, AstNode *current_class) {
+    check_native_signature(func); /* prototypes too -- before the DEF-only return */
     if (func->kind != AST_FUNC_DEF) return; /* only definitions have bodies to walk */
     LocalVarType *locals = NULL;
     for (int i = 0; i < func->list.count; i++) {
@@ -2583,6 +2715,12 @@ static void access_check_free_functions(AstList *decls) {
              * incorrectly flag every private/protected access in every
              * out-of-line method body. */
             check_function_body(n, NULL);
+        } else if (n->kind == AST_FUNC_DECL && n->b == NULL) {
+            /* A free-function prototype has no body to walk, but its
+             * signature can still name a native by value -- e.g. a
+             * forward declaration of a helper whose definition lives in
+             * another translation unit. */
+            check_native_signature(n);
         }
     }
 }
@@ -2613,6 +2751,7 @@ static void check_globals(AstList *decls) {
     for (int i = 0; i < decls->count; i++) {
         AstNode *n = decls->items[i];
         if (n->kind == AST_VAR_DECL) {
+            check_native_pointer_only(n->type, n->line);
             LocalVarType *locals = NULL;
             check_node(n->a, NULL, &locals);
         } else if (n->kind == AST_NAMESPACE_DECL) {

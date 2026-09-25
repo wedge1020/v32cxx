@@ -1,4 +1,4 @@
-.TH V32C++ 1 "September 2026" "v32c++ 20260917-dev" "User Commands"
+.TH V32C++ 1 "September 2026" "v32c++ 20260925-dev" "User Commands"
 .SH NAME
 v32c++ \- transpile a subset of C++ to Vircon32 C
 .SH SYNOPSIS
@@ -7,6 +7,12 @@ v32c++ \- transpile a subset of C++ to Vircon32 C
 .IR output.c ]
 .RB [ \-c ]
 .RB [ \-v ... ]
+.RB [ \-I
+.IR dir ]...
+.RB [ \-x ]
+.RB [ \-b ]
+.RB [ \-g ]
+.RB [ \-\-target=vircon32 | standard ]
 .I input.cpp
 .br
 .B v32c++
@@ -118,6 +124,28 @@ of every method and function body \(em genuinely useful for following
 along with what the tool understood about a given program and how it
 transformed it, not just debugging output.
 .RE
+.TP
+.BI \-I " dir\fR, " \-\-include= dir
+Add
+.I dir
+to the search path for
+.I .hpp
+and
+.I .cpp
+includes (see
+.B HEADERS AND C TYPES
+below). May be repeated; directories are searched in command-line
+order. A quoted
+.B #include
+looks in the including file's own directory first, then in each
+.IR dir ;
+an angle-bracket
+.B #include
+looks only in the
+.I dir
+list. Has no effect on
+.I .h
+includes, which always pass through to the generated C unchanged.
 .TP
 .B \-\-version
 Print version, author, and project URL information, and exit
@@ -239,6 +267,24 @@ writing an output file anywhere the caller didn't ask for:
 v32c++ \-vvv sprite.cpp
 .fi
 .RE
+.PP
+Build a game that uses the C++ API headers from a v32c++ checkout
+.RI ( "#include <v32/video.hpp>" ):
+.PP
+.RS
+.nf
+v32c++ \-I ~/src/v32c++ \-o build/game.c game.cpp
+.fi
+.RE
+.PP
+Produce portable C instead, for checking with a desktop compiler:
+.PP
+.RS
+.nf
+v32c++ \-\-target=standard \-o /tmp/game.c game.cpp
+gcc \-std=c99 \-c /tmp/game.c
+.fi
+.RE
 .SH LANGUAGE NOTES
 This section is a brief summary, not a complete reference \(em see the
 project's own README and
@@ -265,13 +311,40 @@ and
 .BR delete ,
 including array forms; arrays, in either standard C declarator syntax
 or Vircon32's own native style, accepted interchangeably as C++-side
-input; a preprocessor
-.I pass-through
-(a
+input;
+.I .hpp / .cpp
 .B #include
-or other
+resolution with
+.B #pragma once
+(every other
 .B #
-line is carried into the output verbatim, not expanded or resolved);
+line is carried into the output verbatim; see
+.B HEADERS AND C TYPES
+below);
+.B native
+opaque type declarations for C types defined in pass-through headers
+(see
+.B HEADERS AND C TYPES
+below);
+inline assembly
+.RI ( "asm { \(dq...\(dq }" ,
+Vircon32's own form, passed through; GCC-style basic
+.I asm(\(dq...\(dq)
+and its
+.BR __asm__ / volatile
+spellings are accepted and re-emitted in Vircon32 form; extended asm
+with operand constraints is rejected);
+default parameter values;
+.B friend
+classes and functions;
+.BR nullptr ;
+direct-initialization with constructor arguments
+.RI ( "Shape shape(7);" );
+multiple declarators in one statement
+.RI ( "int a, *b, c = 5;" );
+function-pointer
+.BR typedef s
+in either declarator style;
 .B break
 and
 .BR continue .
@@ -421,9 +494,11 @@ produces a
 not an error \(em printed to stderr, never blocking the transpile.
 Warnings are a diagnostic category separate from the semantic errors
 described throughout this section \(em they never affect this tool's
-own exit status \(em and
-.B dynamic_cast
-is currently the only thing that triggers one.
+own exit status. The other warning, under
+.B \-\-target=vircon32
+only, flags a class or struct larger than one word passed or returned
+by value: the Vircon32 C compiler only accepts one-word parameters and
+return values, so pass a pointer instead.
 .PP
 Not yet supported:
 class-typed member-field initializers (
@@ -437,11 +512,12 @@ anywhere in this project yet); virtual destructor dispatch through
 specifically (plain
 .B delete
 through a base pointer already dispatches correctly); a real
-preprocessor (macro expansion, conditional compilation); a
-standard-C output mode (Vircon32-specific output quirks are tracked
-in
-.I docs/VIRCON32_QUIRKS.md
-toward this).
+preprocessor (macro expansion, C++-side visibility of
+.BR #define d
+names, conditional compilation);
+.B static
+class members; range-based
+.BR for .
 .PP
 The original list of basic, non-OOP C syntax gaps (confirmed directly
 by checking the grammar rather than assumed) is now complete: bitwise
@@ -460,19 +536,20 @@ source-level
 function pointers, and multi-dimensional arrays are all supported now.
 .PP
 A fresh audit (confirmed directly, not assumed) found a further,
-separate round of common C gaps, one of which
-.RB ( const )
-is now closed too (see above and BUGS below for its own exact
-boundary) \(em still open:
-.BR volatile ", " static ", " extern ", " inline ,
+separate round of common C gaps.
+.BR const ,
+multiple declarators in one statement, and function-pointer
+.BR typedef s
+are now closed (see above, and BUGS below for
+.BR const 's
+exact boundary). Still open:
+.BR static ", " extern ", " inline ,
 and
 .B register
-(none recognized at all); no multiple declarators in one statement
-.RI ( "int a, b, c;" ,
-only one variable per declaration is currently accepted); no
-function-pointer
-.B typedef
-.RI ( "typedef int (*Callback)(int);" );
+(none recognized at all;
+.B volatile
+only inside
+.BR "asm volatile" );
 no adjacent string-literal concatenation
 .RI ( "\(dqfoo\(dq \(dqbar\(dq"
 does not become
@@ -487,6 +564,89 @@ as a single expression). None of these are implemented yet.
 .PP
 Never supported, by design: templates, exceptions, RTTI, multiple
 inheritance.
+.SH HEADERS AND C TYPES
+.B v32c++
+is not a C preprocessor, but it does resolve C++ headers. Before
+parsing, every
+.B #include
+of a file ending in
+.I .hpp
+or
+.I .cpp
+is replaced by that file's contents, recursively. Lookup follows the
+same order real compilers use (see
+.BR \-I ).
+A header containing
+.B #pragma once
+is inlined at most once, and an include cycle without it is an error.
+Diagnostics and
+.B \-g
+debug maps still report the original file and line inside an inlined
+header.
+.PP
+Every other
+.B #
+line, including every
+.I .h
+include, is passed through verbatim to the top of the generated C,
+where the Vircon32 C compiler handles it. Nothing is macro-expanded,
+and
+.BR #if / #ifdef
+are not evaluated.
+.PP
+The
+.I v32/
+directory of the source distribution holds C++ headers for the
+Vircon32 C API
+.RI ( video.hpp ", " input.hpp ", " string.hpp ", " time.hpp )
+in the
+.B v32
+namespace. They wrap the SDK's C functions without reimplementing any
+hardware access, and each one passes its own
+.I .h
+include through.
+.PP
+Because pass-through headers are never parsed, a C struct type they
+define is unknown to
+.BR v32c++ .
+A
+.B native
+declaration makes such a name usable:
+.PP
+.RS
+.nf
+native date_info;
+
+void stamp( date_info* out )
+{
+    translate_date( get_date(), out );   // the real C function
+}
+.fi
+.RE
+.PP
+.B native
+.I Name\fB;
+declares
+.I Name
+as an opaque type and emits no C of its own. It may be used by pointer
+or reference anywhere a type may appear: locals, globals, parameters,
+return types, class members, casts, and
+.IR sizeof(Name*) .
+Every by-value use is a semantic error that names the type:
+a by-value local, global, parameter, return type, or member
+(including a
+.B const
+one),
+.IR sizeof(Name) ,
+and member access through a pointer to it. The layout lives in a
+header
+.B v32c++
+never reads, so it can't size the type or check its field names.
+Declaring the same native again is harmless. Declaring a name native
+when it's already a class, struct, or typedef is an error. A native
+declared inside a namespace is still emitted under its bare C name.
+.B native
+is a reserved word.
 .SH CART PACKAGING
 Alongside the generated
 .IR .c ,
@@ -739,6 +899,12 @@ coincidence.
 .I *.cpp
 Input source, in the C++ subset this tool accepts.
 .TP
+.I *.hpp
+C++ headers, inlined into the translation unit when
+.BR #include d
+(see
+.BR \-I ).
+.TP
 .I *.c
 Generated Vircon32 C, ready to be handed to the Vircon32 C compiler
 directly.
@@ -769,8 +935,9 @@ and
 .BR free ,
 or a video/graphics header for console-specific routines) via
 .B #include
-lines carried through from the input by the preprocessor
-pass-through \(em these headers are provided by the Vircon32 SDK, not
+lines carried through from the input (or from an inlined
+.I .hpp
+header) by the preprocessor pass-through \(em these headers are provided by the Vircon32 SDK, not
 by
 .BR v32c++ ,
 and must be available wherever the generated C is actually compiled.
@@ -814,17 +981,44 @@ function, the generated
 parameter's own type \(em with real violations left for the downstream
 C/C++ compiler to catch.
 .PP
-No direct-initialization with constructor arguments on a
-stack-allocated local
-.RI ( "Shape shape(7);" ,
-valid, idiomatic C++, confirmed a real gap rather than a rejected
-feature).
-Only an explicit
-.B =
-initializer or no initializer at all (triggering this project's own
-zero-argument-constructor injection) are accepted. Workaround in the
-meantime: default-construct, then set public fields directly. On the
-list for an upcoming round.
+A reference parameter's
+.I .member
+accesses and its forwarding to another reference parameter lower
+correctly, but a
+.I scalar
+reference
+.RI ( int& ", " float& )
+read or written directly
+.RI ( "y = b; b = 3;" ),
+or
+.I &ref
+of any reference, reads, writes, or takes the address of the
+underlying pointer instead. Use an explicit pointer parameter for
+primitive out-parameters until this is fixed.
+.PP
+Two constructs are
+.I silently
+mistranslated rather than rejected: an in-class default member
+initializer
+.RI ( "int size = 5;"
+on a field declaration) is dropped, and a namespace-scope object
+direct-initialized with constructor arguments
+.RI ( "Counter g(100);" )
+produces an invalid initializer.
+.PP
+A
+.B native
+type can be pointed to but not created: v32c++ source has no way to
+allocate storage for one, so the pointer must come from C code.
+.PP
+An unresolvable
+.I .h
+include (the usual case when the SDK headers aren't next to the
+source) is passed through every time it appears, so two headers that
+both include it produce the same
+.B #include
+line twice.
+.PP
 .PP
 Report issues, including anything this tool transpiles incorrectly or
 any real C++ feature you'd like to see prioritized, via the project

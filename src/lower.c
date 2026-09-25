@@ -4935,6 +4935,11 @@ static void warn_if_multiword_by_value(const AstNode *type, int line, const char
 }
 
 static void check_word_size_in_func(AstNode *func) {
+    /* By-value NATIVE params/returns are not checked here: sema.c's
+     * check_native_signature already rejected them (as errors, once per
+     * function) before lowering ever runs. A native type has no
+     * StructLayout, so bare_class_type() below returns NULL for it and
+     * this word-size warning correctly stays silent. */
     warn_if_multiword_by_value(func->type, func->line, "return value");
     for (int i = 0; i < func->list.count; i++) {
         AstNode *param = func->list.items[i];

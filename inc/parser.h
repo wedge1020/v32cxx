@@ -119,8 +119,9 @@ extern int yydebug;
     SHREQ = 325,                   /* SHREQ  */
     ASM = 326,                     /* ASM  */
     VOLATILE = 327,                /* VOLATILE  */
-    SIZEOF_TYPE_PREC = 328,        /* SIZEOF_TYPE_PREC  */
-    LOWER_THAN_ELSE = 329          /* LOWER_THAN_ELSE  */
+    NATIVE = 328,                  /* NATIVE  */
+    SIZEOF_TYPE_PREC = 329,        /* SIZEOF_TYPE_PREC  */
+    LOWER_THAN_ELSE = 330          /* LOWER_THAN_ELSE  */
   };
   typedef enum yytokentype yytoken_kind_t;
 #endif
@@ -138,7 +139,7 @@ union YYSTYPE
     double fval;
     AccessSpec access;
 
-#line 142 "inc/parser.h"
+#line 143 "inc/parser.h"
 
 };
 typedef union YYSTYPE YYSTYPE;

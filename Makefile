@@ -7,7 +7,13 @@ OUT_DIR = out
 BIN     = $(BIN_DIR)/v32c++
 
 CC      = gcc
-CFLAGS  = -Wall -Wextra -g -I$(INC_DIR)
+CFLAGS  = -Wall -Wextra -g -I$(INC_DIR) -MMD -MP
+# -MMD -MP: every object also writes obj/<name>.d listing the headers it
+# actually included, pulled in by the `-include` at the bottom of this
+# file. Without it make only compared each .o against its own .c, so
+# editing a header (inc/v32cxx.h's VERSION, a struct in ast.h, a
+# prototype in sema.h) silently left stale objects in place -- `make`
+# would report nothing to do and --version kept printing the old string.
 BISON   = bison
 FLEX    = flex
 
@@ -160,6 +166,8 @@ test: all | $(OUT_DIR)
 	$(BIN)  -vvv    -o out/87program.c tests/87sample.cpp 1> out/87sample.txt 2>&1
 	$(BIN)  -vvv    -o out/88program.c tests/88sample.cpp 1> out/88sample.txt 2>&1
 	$(BIN)  -vvv    -o out/89program.c tests/89sample.cpp 1> out/89sample.txt 2>&1
+	$(BIN)  -vvv    -o out/90program.c tests/90sample.cpp 1> out/90sample.txt 2>&1
+	-$(BIN) -vvv    -o out/91failure.c tests/91sample.cpp 1> out/91sample.txt 2>&1
 # `-vvv` (this project's own verbosity flag, a later round -- see
 # main.c) is passed to every sample specifically so `make test`'s own
 # output still captures the full AST/semantic-analysis/lowering dumps
@@ -260,7 +268,10 @@ put: clean
 	@cp src/parser.y  put/parser.y.txt
 
 archive: clean
-	zip v32cxx-project.zip demos/* docs/* inc/* Makefile man/* README.md src/* tests/* v32/*
+	zip -r v32cxx-project.zip demos docs inc Makefile man README.md src tests v32
+# -r matters: without it, `demos/*` stores only the demos/c and demos/cxx
+# directory ENTRIES, not the files inside them, so the archive silently
+# ships empty demo folders.
 
 clean:
 	rm -f $(BIN_DIR)/* $(OBJ_DIR)/* $(SRC_DIR)/parser.output $(OUT_DIR)/* put/*
@@ -273,3 +284,7 @@ clean:
 # were copied/touched), `make` will happily relink a STALE parser.c against
 # a newer parser.y without complaint -- no error, just the old behavior
 # persisting invisibly. Forcing full regeneration on `clean` closes that gap.
+
+# Auto-generated header dependencies (see -MMD -MP on CFLAGS above).
+# The leading '-' keeps a fresh checkout (no .d files yet) quiet.
+-include $(wildcard $(OBJ_DIR)/*.d)

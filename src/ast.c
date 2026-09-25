@@ -120,6 +120,7 @@ static const char *kind_name(AstKind k) {
             (a labeled, if unexpected, node) rather than falling through to
             this function's own "?" fallback for a truly unknown kind */
         case AST_TYPEDEF_DECL: return "TypedefDecl";
+        case AST_NATIVE_DECL:  return "NativeDecl";
         case AST_ENUM_DECL: return "EnumDecl";
         case AST_ENUM_VALUE: return "EnumValue";
         case AST_UNION_DECL: return "UnionDecl";

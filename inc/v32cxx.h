@@ -19,7 +19,7 @@
  * convention this project is locked into.
  */
 
-#define  VERSION  "20260923-dev"
+#define  VERSION  "20260925-dev"
 #define  AUTHOR   "Matthew Haas"
 #define  URL      "https://github.com/wedge1020/v32cxx"
 

@@ -6960,3 +6960,153 @@ sniffing remains the fallback for the #define visibility half of the gap.
 
 Proof: tests/89sample.cpp -> 89program.c transpiles clean; on-screen readings
 verified (2023-3-1, 2024-2-29, 1:1:1, 0.5s -> 30 frames, msg len 2).
+
+## Include resolution: `-I`, `.hpp`/`.cpp` inlining, `#pragma once` (catch-up entry)
+
+This landed across the video/string/input/time pilot rounds without an
+entry of its own. It's recorded here because the README and manual page
+both still said "no `#include` resolution at all", which stopped being
+true when prescan.c arrived.
+
+`prescan_expand()` (prescan.c/prescan.h) runs **before** the lexer and
+is the only preprocessor behavior v32c++ implements:
+
+- `#include "x.hpp"` / `#include "x.cpp"` is replaced by that file's
+  recursively expanded contents. Including a `.cpp` is allowed on
+  purpose, for the standard Vircon32 "one monolithic translation unit"
+  strategy.
+- Every other `#include` (the SDK's `.h` headers, system headers) is
+  copied through verbatim to the lexer's pass-through and ends up at the
+  top of the generated C, as before. If the `.h` actually resolves on
+  disk, a second inclusion of the same canonical file is dropped. If it
+  doesn't resolve (the usual case on a machine without the SDK headers
+  next to the source), repeats are **not** deduplicated, and two `v32/`
+  headers that both include `"time.h"` produce two identical `#include`
+  lines. That's harmless with guarded SDK headers. It's noted here as a
+  known edge.
+- `#pragma once` is consumed and recorded by canonical (`realpath`)
+  identity. A cycle without it is a hard error that names the file.
+- Quote-form lookup: the including file's own directory first, then
+  each `-I` directory in command-line order. Angle-form: `-I` only.
+  `--include=<dir>` is the long spelling of `-I`.
+- GCC-style line markers (`# <line> "<file>"`) are written around every
+  splice, and lexer.l consumes them, so diagnostics and `-g` debug maps
+  keep pointing at the right file and line. One cosmetic side effect:
+  `-vvv`'s numbered source listing is of the **prescanned** text, so its
+  line numbers can run one ahead of the original file's. The AST and
+  every diagnostic use the real ones.
+
+No macro expansion, no `#define` visibility, and no `#if`/`#ifdef`
+evaluation. Those are still the job of the eventual `v32pp` (or of the
+downstream C compiler, for pass-through lines).
+
+## Round: `native` opaque types (90/91 samples), build fix, header dependencies — 20260925-dev
+
+The `native Name;` feature designed in docs/NATIVE_PASSTHROUGH.md was
+mid-implementation and didn't build. What was wrong, what was fixed,
+and what the audit around it turned up.
+
+### The build errors
+
+- `typedef_registry_is_native()` was called in three places and defined
+  nowhere. It's now defined in sema.c next to `find_typedef_target`,
+  backed by a new `is_native` field on `TypedefRegEntry` (set in
+  `register_typedef` from the node kind), and declared in sema.h.
+- `semantic_error()` doesn't exist. The file's reporter is `sema_error()`.
+- lower.c called `check_native_pointer_only()`, which is `static` in
+  sema.c. That was an implicit declaration at compile time and an
+  undefined reference at link time. The call is removed rather than
+  exported. See "one check site per position" below.
+
+### Real bugs found beyond the compile errors
+
+1. **Double semicolon in the grammar.** `native_decl: NATIVE IDENTIFIER
+   ';'` *and* `top_decl: native_decl ';'`. `native date_info;` was a
+   syntax error at the following token, and only `native date_info;;`
+   parsed. Fixed by dropping the rule's own `';'` to match `typedef_decl`.
+2. **Redeclaration was a syntax error.** After the first `native X;`,
+   the lexer returns `X` as `TYPE_NAME`, so a second `native X;` (the
+   same native declared by two `v32/` headers, the expected case once
+   memcard.hpp and time.hpp both exist) couldn't parse. A
+   `NATIVE TYPE_NAME` alternative makes it idempotent. sema skips
+   re-registering a name that's already native, and **rejects** it when
+   the earlier declaration was a class, struct, or ordinary typedef.
+3. **Self-referential typedef chain.** The synthetic `n->type =
+   ast_ident(n->str1)` meant `resolve_typedef_chain("date_info")`
+   resolved to `date_info`, then to `date_info` again, until the 64-step
+   guard stopped it. It terminated, but only because of the guard.
+   `find_typedef_target` now returns NULL for native entries, so the
+   chain stops on the first step.
+4. **Missing rejection sites.** The spec requires by-value returns,
+   prototype parameters, and `sizeof(X)` to be rejected, but only
+   definition parameters, locals, globals, and members were checked, and
+   `const X` (wrapped in `AST_CONST_TYPE`) slipped past the bare-ident
+   test. Now covered by `check_native_signature()` (return + params,
+   every function and method, prototype or definition, called once per
+   function), an `AST_SIZEOF` check, and `const`-peeling in
+   `check_native_pointer_only()`.
+
+**One check site per position.** The draft checked parameters in both
+`check_function_body` (sema) and `check_word_size_in_func` (lower).
+Every by-value method parameter would have been reported twice, if it
+had linked. The rule is now that native diagnostics live only in sema.c
+and each position is checked at exactly one site. The table in
+NATIVE_PASSTHROUGH.md's "As built" section lists them.
+
+### Verification
+
+- `tests/90sample.cpp` (legal uses: pointer locals, params, returns,
+  members, `const` pointer, reference params, `sizeof(X*)`, a repeated
+  `native`, a namespace-scoped native, real `translate_date` /
+  `translate_time` calls) transpiles cleanly in both targets. The
+  `--target=standard` output compiles with gcc against a stub `time.h`
+  whose `date_info`/`time_info` are ordinary structs, with no warnings
+  beyond the expected `void main`.
+- `tests/91sample.cpp` (deliberately invalid) reports exactly eight
+  errors, one per numbered line: by-value member, return (prototype),
+  parameter (prototype), `const` parameter, `sizeof`, member access
+  through a native, a conflict with an existing typedef, and a by-value
+  local.
+- A baseline build of the pre-round tree, patched only enough to
+  compile, was run over samples 01–89 alongside this round's build.
+  Every generated `.c` and every `-vvv` dump is byte-identical, so the
+  round introduced no output changes outside `native`.
+
+### Found during the audit, not fixed this round
+
+- **Scalar references are not dereferenced, and `&ref` is not
+  rewritten.** Phase 5 (reference-to-pointer, lower.c) only rewrites
+  `ref.field` to `ref->field`. Given `void f(int& b) { int y = b; b = 3;
+  int* q = &b; }`, the output is `int y = b; b = 3; int * q = (&b);`,
+  which reads and writes the *pointer*. `&someClassRef` produces a
+  `T **` the same way. Call-site forwarding (`g(a)` where `a` is itself
+  a reference) is correct. Nothing in tests/ reads or writes a scalar
+  reference, which is why no sample caught it. Fix sketch: in
+  `fix_reference_access_expr`, turn a bare `was_reference` identifier
+  into `(*id)`, and collapse `&(*id)` to `id`. Ordering matters with the
+  call-site implicit-`&` insertion for reference parameters, which
+  already knows reference-to-reference forwarding needs no `&`.
+- **Natives have no storage story yet** (see NATIVE_PASSTHROUGH.md "As
+  built"). v32c++ source can hold a `date_info*` but can't create the
+  `date_info` it points at. This blocks the sample90 A/B comparison
+  against `v32::Date` that the spec planned, and it's the next design
+  decision for `native` (sized natives vs. layout-bearing natives).
+  memcard.hpp is unaffected: it only needs pointers.
+- **`native` is now a reserved word.** Any existing source using
+  `native` as an identifier stops parsing. Nothing in tests/, demos/,
+  or v32/ does.
+
+### Build hygiene
+
+- **Header dependencies.** The Makefile only compared each `.o` with its
+  own `.c`. Editing `inc/v32cxx.h` (this round's VERSION bump) left
+  `obj/main.o` stale, and `--version` kept printing the old string. The
+  same trap is behind the "stale object file" lesson in the
+  ternary/do-while/enum round. `CFLAGS` now has `-MMD -MP`, and the
+  Makefile `-include`s the generated `obj/*.d`.
+- The CLI usage line now lists `-I dir` (the option existed but the
+  synopsis omitted it), and the `-I` help entry names its
+  `--include=<dir>` long form.
+- `make test` runs samples 90 (must pass) and 91 (`-` prefix, expected
+  to fail).
+- VERSION → `20260925-dev`.

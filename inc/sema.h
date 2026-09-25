@@ -380,6 +380,15 @@ AstNode *type_to_class(const AstNode *type);
  * in lower.c). */
 const AstNode *resolve_typedef_chain(const AstNode *type);
 
+/* True iff `name` was introduced by a `native name;` declaration (an
+ * opaque type whose layout lives in a C header v32c++ never parses --
+ * see docs/NATIVE_PASSTHROUGH.md). Backed by the same flat, bare-name
+ * typedef registry as resolve_typedef_chain, so it has the same
+ * lifetime: valid once sema_run() has started, until sema_cleanup().
+ * Every by-value-use diagnostic lives in sema.c; this is exposed so
+ * later passes can ask the same question without re-deriving it. */
+int typedef_registry_is_native(const char *name);
+
 void sema_warning(int line, const char *fmt, ...); /* see its own doc
     comment in sema.c -- non-fatal, exposed so lower.c can reuse the
     same counting/formatting machinery for its own diagnostics */

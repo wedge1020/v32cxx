@@ -32,7 +32,7 @@ char *g_cart_version = NULL;
 extern FILE *yyin;
 
 static void print_usage(const char *prog_name) {
-    fprintf(stderr, "usage: %s [-o output.c] [-c] [-v[v[v]]] [-x] [-b] [-g] [--target=vircon32|standard] [--version] <input.cpp>\n", prog_name);
+    fprintf(stderr, "usage: %s [-o output.c] [-c] [-v[v[v]]] [-I dir] [-x] [-b] [-g] [--target=vircon32|standard] [--version] <input.cpp>\n", prog_name);
     fprintf(stderr, "  -o output.c   write generated Vircon32 C to this file (default:\n"
                      "                <input> with its extension replaced by .c)\n");
     fprintf(stderr,  "  -c            transpile without requiring a `main` to exist --\n"
@@ -46,7 +46,7 @@ static void print_usage(const char *prog_name) {
                      "                and other non-obvious points; -vvv additionally\n"
                      "                prints the AST/semantic-analysis/lowering dumps.\n"
                      "                Silent by default (no -v at all).\n");
-    fprintf(stderr,  "  -I <dir>      add <dir> to the #include search path. Only\n"
+    fprintf(stderr,  "  -I <dir>, --include=<dir>\n                add <dir> to the #include search path. Only\n"
                      "                .hpp/.cpp includes are resolved by v32c++\n"
                      "                (.h and system includes pass through to the\n"
                      "                generated C unchanged). May be repeated.\n");

@@ -39,6 +39,17 @@ typedef enum {
                               on the class actually having virtual
                               methods/constructors to begin with, not on
                               which keyword declared it. */
+    AST_NATIVE_DECL,      /* str1 = native type name; emits nothing.
+                              `native X;` -- an opaque type whose layout
+                              lives in a pass-through C header (see
+                              docs/NATIVE_PASSTHROUGH.md). type is left
+                              NULL by the parser and set by sema's
+                              collect_declarations to a synthetic
+                              AST_IDENT of the same name, so readers of
+                              `type` never see NULL; the typedef
+                              registry deliberately never resolves
+                              through it. Pointer/reference use only --
+                              sema.c rejects every by-value use. */
     AST_ACCESS_SPEC,      /* access=the new default access for what follows */
     AST_FRIEND_CLASS,     /* str1=friended class's name, as written --
                               `friend class X;` inside a class body. A

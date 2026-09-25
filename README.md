@@ -16,9 +16,10 @@ compiler do the rest.
 > confirmed against the real Vircon32 C compiler across dozens of test
 > programs (classes, inheritance, virtual dispatch, constructors and
 > destructors, `new`/`delete`, arrays, and `break`/`continue` all
-> compile and run). It's still genuinely early, though: a real
-> preprocessor doesn't exist yet (only pass-through), and a few other
-> pieces are deliberately partial for now — see
+> compile and run). It's still genuinely early, though: there's no
+> macro preprocessor yet (only `.hpp`/`.cpp` include resolution, with
+> everything else passed through), and a few other pieces are
+> deliberately partial for now — see
 > [Current status](#current-status) for the honest, detailed picture,
 > and [`docs/DESIGN_NOTES.md`](docs/DESIGN_NOTES.md) for the full
 > round-by-round story of how it got here, including the real bugs
@@ -241,13 +242,57 @@ allocation-only for now — no per-element construction happens yet, since
 there's no per-element analogue of stack-array construction or any
 loop-emission machinery in the code generator yet.
 
-**A preprocessor pass-through exists, but there's still no real
-preprocessor.** A `#include`, `#define`, or other `#`-line is no longer
-silently discarded — it's captured and re-emitted verbatim at the top of
-the generated file, so a `#include "video.h"` you actually wrote
-survives the round trip. Nothing is interpreted, though: no macro
-expansion, no `#include` resolution, no `#ifdef` evaluation. A real
-preprocessor is still future work.
+**`#include` resolution for C++ headers, pass-through for everything
+else.** An `#include` of a `.hpp` (or `.cpp`) file is resolved and
+inlined before parsing, recursively. Lookup is the including file's own
+directory first, then each `-I <dir>` in order; angle-bracket includes
+search only the `-I` directories. `#pragma once` is honored, and an
+include cycle without it is reported as an error. Every other `#`-line
+(`#include "video.h"`, `#define`, `#ifdef`, …) is captured and re-emitted
+verbatim at the top of the generated C, where the Vircon32 C compiler
+handles it. Line numbers in diagnostics and `-g` debug maps still point
+at the original file and line inside an inlined header. What doesn't
+exist yet: macro expansion, `#define` visibility on the C++ side, and
+`#if`/`#ifdef` evaluation. Those belong to a future `v32pp`.
+
+**C++ headers for the Vircon32 C API** live in `v32/`: `video.hpp`,
+`input.hpp`, `string.hpp`, and `time.hpp`. Each one wraps the matching
+SDK header in the `v32::` namespace (typed enums instead of `#define`s,
+small classes such as `v32::Date`, `v32::Stopwatch`, and scope-guard
+classes like `v32::FrameScope`). Every hardware access still goes
+through the real C function, and each header `#include`s its SDK `.h`
+as a pass-through line. Use them with `-I`, e.g.
+`v32c++ -I path/to/v32c++ game.cpp` with `#include <v32/video.hpp>`.
+These are pilots, and the set is still growing.
+
+**`native Name;` — naming C types v32c++ never parses.** Because `.h`
+headers are passed through rather than parsed, a struct type they define
+(`date_info`, `time_info`, `game_signature`) is unknown to v32c++ and
+can't be written in source. `native date_info;` declares the name as an
+opaque type: it can then be used **by pointer or reference** anywhere a
+type can appear (locals, globals, parameters, return types, class
+members, casts, `sizeof(date_info*)`), and passed straight to the real C
+function (`translate_date(get_date(), p)`). The declaration itself
+generates no C at all. By-value use, meaning a `date_info` local,
+parameter, return, or member, `sizeof(date_info)`, or `p->year` member
+access, is a semantic error naming the type, since v32c++ has no idea
+how big the type is or what's in it. Repeating the same `native` (two
+headers declaring it) is fine. Declaring a name native that's already a
+class, struct, or typedef is an error. A native may be declared inside
+a namespace. The name is still emitted bare, since that's what the C
+header defines. The current limit: v32c++ source can hold a pointer to
+a native but can't create one, so the storage must come from the C
+side. See [`docs/NATIVE_PASSTHROUGH.md`](docs/NATIVE_PASSTHROUGH.md)
+and `tests/90sample.cpp`/`91sample.cpp`.
+
+**Inline assembly** (`asm { "..." }` statements) passes through
+unchanged in Vircon32's own brace form, so a thin wrapper over a
+hardware port can be written the way the SDK's own headers do it.
+GCC/Clang basic `asm("...")`, `__asm`/`__asm__`, and `asm volatile` are
+accepted too and re-emitted in Vircon32 brace form (or kept
+parenthesized under `--target=standard`). GCC *extended* asm (operand
+constraints) is rejected with a specific diagnostic. See
+[`docs/INLINE_ASSEMBLY_SUPPORT.md`](docs/INLINE_ASSEMBLY_SUPPORT.md).
 
 **Cart-packing XML is generated automatically**, alongside the
 generated `.c`, matching v32lua's own output — one less manual,
@@ -316,13 +361,22 @@ emitted alongside it.
   C++'s own declaration-order semantics (members initialize in the
   order they're *declared*, not the order they're *written* in the
   list).
-- **Standard-C output mode.** Every Vircon32-specific output quirk this
-  project works around is tracked in
-  [`docs/VIRCON32_QUIRKS.md`](docs/VIRCON32_QUIRKS.md) toward an eventual
-  flag that targets an ordinary, portable C compiler instead — not
-  implemented yet.
-- **A real preprocessor.** Only pass-through exists (see above) — no
-  macro expansion, `#include` resolution, or `#ifdef` evaluation.
+- ~~**Standard-C output mode.**~~ — **DONE**: `--target=standard`
+  (see [Trying it out](#trying-it-out)); every place the two dialects
+  differ is itemized in
+  [`docs/VIRCON32_QUIRKS.md`](docs/VIRCON32_QUIRKS.md).
+- **A real preprocessor.** `.hpp`/`.cpp` include resolution and
+  `#pragma once` exist (see above). There's still no macro expansion,
+  no C++-side visibility of `#define`d names, and no `#if`/`#ifdef`
+  evaluation.
+- **Scalar references aren't dereferenced.** A reference parameter's
+  `.member` access and passing it on to another reference parameter
+  both lower correctly. Reading or writing an `int&`/`float&` directly
+  (`int y = b; b = 3;`), or taking `&ref` of any reference, does not:
+  the generated C reads, writes, or takes the address of the underlying
+  *pointer*. Until this is fixed, use an explicit pointer parameter for
+  out-parameters of primitive type. See `docs/DESIGN_NOTES.md`
+  ("Round: `native` opaque types").
 - **The original "basic, non-OOP C syntax" gap list is now complete.**
   Bitwise operators, `switch`/`case`, bare `struct`, C-style casts,
   C++-style casts, hex/octal/binary literals with suffixes, ternary,
@@ -334,8 +388,9 @@ emitted alongside it.
 - **A second round of basic C gaps, found by a fresh audit**: `const`
   is now supported (see below), and so are multiple declarators in one
   statement and function-pointer `typedef`s (both also below) —
-  `volatile`, `static`, `extern`, `inline`, and `register` are still
-  not (none of these keywords are recognized at all); no adjacent
+  `static`, `extern`, `inline`, and `register` are still not (none of
+  these keywords are recognized at all; `volatile` is recognized only
+  in `asm volatile`); no adjacent
   string-literal concatenation (`"foo" "bar"` does not become
   `"foobar"`); no bit-fields (`unsigned x : 4;` inside a `struct`/
   `union`); no comma operator (`a, b, c` as a single expression, e.g.
@@ -805,7 +860,10 @@ explanatory comments directly into the generated `.c` itself (see
 below); `-vvv` additionally prints the full AST, semantic-analysis, and
 lowering dumps, useful for following along with what the tool
 understood and how it transformed your code. Use `-c` if your input is
-a library/module fragment without its own `main`.
+a library/module fragment without its own `main`. Use `-I <dir>`
+(repeatable; long form `--include=<dir>`) to add a directory to the
+search path for `.hpp`/`.cpp` includes, such as the directory holding
+`v32/`.
 
 `-vvv` also prints a **lowering notes log**, right after the lowering
 dump: one line per site where a lowering phase rewrote your code
@@ -939,30 +997,42 @@ development — see `docs/DESIGN_NOTES.md` for that history.
 ## Project layout
 
 ```
-src/
+src/            implementation (.c, plus the flex/bison sources)
   lexer.l       flex scanner
   parser.y      bison GLR grammar
-  ast.h/.c      the AST built while parsing
-  symtab.h/.c   scoped symbol table (backs typedef/class-name lookup and
-                the lexer's qualified-name handling)
-  sema.h/.c     semantic-analysis pass: class layouts, out-of-line
+  prescan.c     include resolution (.hpp/.cpp inlining, -I, #pragma
+                once) -- runs before the lexer
+  ast.c         the AST built while parsing
+  symtab.c      scoped symbol table (backs typedef/class-name/native
+                lookup and the lexer's qualified-name handling)
+  sema.c        semantic-analysis pass: class layouts, out-of-line
                 definition matching, name mangling, access control,
-                call-site overload resolution
-  lower.h/.c    lowering passes: struct layout, this-injection, call
+                call-site overload resolution, native-type checks
+  lower.c       lowering passes: struct layout, this-injection, call
                 finalization, reference-to-pointer, new/delete,
-                vtable init, constructor/destructor invocation
-  codegen.h/.c  Vircon32 C code generator
-  cartxml.h/.c  Vircon32 cart-packing XML generation
-  pathutil.h/.c shared filename-extension-swapping helper
-  debugmap.h/.c C-line/C++-line debug map (-g) tracking and output
+                vtable init, constructor/destructor invocation,
+                Vircon32 quirk rewrites (ternaries, &function, casts)
+  codegen.c     C code generator (Vircon32 or --target=standard)
+  cartxml.c     Vircon32 cart-packing XML generation
+  pathutil.c    shared filename-extension-swapping helper
+  debugmap.c    C-line/C++-line debug map (-g) tracking and output
+  main.c        CLI entry point (-o, -c, -v, -I, -x, -b, -g, --target,
+                --version)
+inc/            headers for the above (one per .c, plus:)
   driver.h      shared state between the lexer and parser
   v32cxx.h      project identity (VERSION/AUTHOR/URL) and build-time
                 configuration constants
-  main.c        CLI entry point (-o, -c, -v, -x, -b, -g, --target, --version)
-tests/          example .cpp inputs, including intentionally-invalid
-                ones and several real, hand-written programs
-docs/           design notes, implementation deep-dives, and the
-                Vircon32-specific output-quirk catalog
+v32/            C++ headers wrapping the Vircon32 C API (video, input,
+                string, time) in namespace v32 -- include with -I
+tests/          NNsample.cpp inputs run by `make test`, including
+                intentionally-invalid ones and several real,
+                hand-written programs
+demos/          example programs as C (demos/c) and C++ (demos/cxx);
+                demos/Makefile builds every subdirectory that has a
+                Makefile of its own
+docs/           design notes, implementation deep-dives (inline asm,
+                native types), and the Vircon32-specific output-quirk
+                catalog
 man/            v32c++.1 -- a Unix section 1 manual page; view it
                 directly with `man ./man/v32c++.1`, or `make install`
                 to put v32c++ itself on your PATH (see below)

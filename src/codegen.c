@@ -563,6 +563,12 @@ static void print_type_and_name(FILE *out, const AstNode *type, const char *name
 
 /* ---- typedefs -------------------------------------------------------- */
 
+/* NOTE: AST_NATIVE_DECL is deliberately NOT emitted by any walk in
+ * this file -- a `native X;` is a compile-time-only declaration
+ * (sema registers X as an opaque type; the real X is defined by a
+ * pass-through #include, resolved by the downstream C compiler).
+ * Uses of X in generated code print as the bare name via print_type. */
+
 static void emit_typedefs(FILE *out, const AstList *decls) {
     for (int i = 0; i < decls->count; i++) {
         const AstNode *n = decls->items[i];

@@ -205,6 +205,7 @@ ALNUM   [A-Za-z0-9_]
 "protected"  { g_last_ident_sym = NULL; return PROTECTED; }
 "namespace"  { g_last_ident_sym = NULL; return NAMESPACE; }
 "typedef"    { g_last_ident_sym = NULL; return TYPEDEF; }
+"native"     { g_last_ident_sym = NULL; return NATIVE; }
 "return"     { g_last_ident_sym = NULL; return RETURN; }
 "if"         { g_last_ident_sym = NULL; return IF; }
 "else"       { g_last_ident_sym = NULL; return ELSE; }

@@ -277,11 +277,10 @@ static AstNode *string_literal_init_list(int line, const char *text)
 %token COLONCOLON ARROW EQ NE LE GE ANDAND OROR
 %token PLUSEQ MINUSEQ STAREQ SLASHEQ INC DEC
 %token SHL SHR ANDEQ OREQ XOREQ SHLEQ SHREQ
-%token ASM
-%token VOLATILE
+%token ASM VOLATILE NATIVE
 
 %type <node> program top_decl namespace_decl class_decl member
-%type <node> func_decl func_def func_header var_decl typedef_decl out_of_line_def
+%type <node> func_decl func_def func_header var_decl typedef_decl out_of_line_def native_decl
 %type <node> enum_decl enumerator union_decl func_ptr_param_type
 %type <node> opt_member_init_list member_init
 %type <node> block stmt for_init opt_initializer opt_array_initializer
@@ -335,15 +334,46 @@ top_decl_list:
     ;
 
 top_decl:
-      namespace_decl    { $$ = $1; }
-    | class_decl ';'    { $$ = $1; }
+      namespace_decl     { $$ = $1; }
+    | class_decl ';'     { $$ = $1; }
     | enum_decl ';'      { $$ = $1; }
-    | union_decl ';'      { $$ = $1; }
-    | func_def          { $$ = $1; }
-    | func_decl ';'     { $$ = $1; }
+    | union_decl ';'     { $$ = $1; }
+    | func_def           { $$ = $1; }
+    | func_decl ';'      { $$ = $1; }
     | var_decl ';'       { $$ = $1; }
     | typedef_decl ';'   { $$ = $1; }
+    | native_decl ';'    { $$ = $1; }
     | out_of_line_def    { $$ = $1; }
+    ;
+
+/* `native X;` -- declares X as an opaque type whose real definition
+ * lives in a C header v32c++ passes through but never parses (see
+ * docs/NATIVE_PASSTHROUGH.md). The terminating ';' belongs to top_decl's
+ * `native_decl ';'` alternative, exactly like typedef_decl -- this rule
+ * must NOT also consume one (an earlier draft did, which silently
+ * demanded `native X;;` and turned a plain `native X;` into a syntax
+ * error at whatever token followed).
+ *
+ * The TYPE_NAME alternative makes redeclaration idempotent: once `X` is
+ * in the symbol table the lexer hands it back as TYPE_NAME, and the
+ * same `native date_info;` legitimately appears in more than one v32/
+ * header (time.hpp and anything else that touches date_info), so a
+ * second inclusion must not be a syntax error. No second symtab insert
+ * is needed -- the name is already there. Whether the earlier entry was
+ * itself a `native` (rather than an ordinary typedef/class of the same
+ * name) is sema's question, not the grammar's. */
+native_decl:
+      NATIVE IDENTIFIER
+        {
+            symtab_insert(g_symtab, g_symtab->current, $2, SYM_TYPEDEF);
+            $$ = ast_new(AST_NATIVE_DECL, @1.first_line);
+            $$->str1 = strdup($2);
+        }
+    | NATIVE TYPE_NAME
+        {
+            $$ = ast_new(AST_NATIVE_DECL, @1.first_line);
+            $$->str1 = strdup($2);
+        }
     ;
 
 /* ---- namespaces --------------------------------------------------- */
