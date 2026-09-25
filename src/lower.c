@@ -1523,7 +1523,10 @@ static int is_bare_free_function_ref(const AstNode *expr, LocalVarType *locals) 
         of this name always wins, matching the AST_IDENT case below */
     AstNode **candidates = NULL;
     int count = 0, cap = 0;
-    collect_free_function_candidates(name, &candidates, &count, &cap);
+    if (expr->kind == AST_QUALIFIED_ID)
+        collect_qualified_free_function_candidates(expr, &candidates, &count, &cap);
+    else
+        collect_free_function_candidates(name, &candidates, &count, &cap);
     free(candidates);
     return count == 1; /* same "unambiguous or don't touch it" rule as the
         AST_IDENT case below */
@@ -1649,10 +1652,9 @@ static void finalize_calls_expr(AstNode **slot, AstNode *class_decl, LocalVarTyp
             /* The same "function used as a VALUE" rewrite, for a
              * namespace-qualified reference (`Callback cb = v32::doubleIt;`
              * or `&v32::doubleIt`). Same reasoning as the AST_IDENT case
-             * above, with the same registry precedent as Fix 1: the
-             * free-function registry is flat and namespace-blind, and
-             * mangling keys off the bare final name, so candidates are
-             * collected by the FINAL segment only. A local cannot hide
+             * above; candidates come from the qualifier's namespace only
+             * (collect_qualified_free_function_candidates -- see sema.c's
+             * "namespace-aware free-function lookup"). A local cannot hide
              * here the way it can for a bare identifier -- the final
              * segment is checked against locals anyway, so a
              * same-named local still wins, matching the scoping rule
@@ -1666,7 +1668,7 @@ static void finalize_calls_expr(AstNode **slot, AstNode *class_decl, LocalVarTyp
             if (find_local(locals, final) != NULL) break;
             AstNode **candidates = NULL;
             int count = 0, cap = 0;
-            collect_free_function_candidates(final, &candidates, &count, &cap);
+            collect_qualified_free_function_candidates(n, &candidates, &count, &cap);
             if (count == 1) {
                 FuncSemaInfo *info = (FuncSemaInfo *)candidates[0]->sema_info;
                 const char *mangled = (info != NULL) ? info->mangled_name
@@ -2235,7 +2237,15 @@ static void finalize_calls_classes(AstList *decls) {
                 }
             }
         } else if (n->kind == AST_NAMESPACE_DECL) {
+            /* Free-function name lookup inside this body is relative to
+             * the namespace it's in -- see sema.c's "namespace-aware
+             * free-function lookup". */
+            const char *saved = sema_get_lookup_namespace();
+            char *inner = sema_ns_join(saved, n->str1);
+            sema_set_lookup_namespace(inner);
             finalize_calls_classes(&n->list);
+            sema_set_lookup_namespace(saved);
+            free(inner);
         }
     }
 }
@@ -2244,7 +2254,15 @@ static void finalize_calls_free_functions(AstList *decls) {
     for (int i = 0; i < decls->count; i++) {
         AstNode *n = decls->items[i];
         if (n->kind == AST_NAMESPACE_DECL) {
+            /* Free-function name lookup inside this body is relative to
+             * the namespace it's in -- see sema.c's "namespace-aware
+             * free-function lookup". */
+            const char *saved = sema_get_lookup_namespace();
+            char *inner = sema_ns_join(saved, n->str1);
+            sema_set_lookup_namespace(inner);
             finalize_calls_free_functions(&n->list);
+            sema_set_lookup_namespace(saved);
+            free(inner);
         } else if (n->kind == AST_FUNC_DEF && n->b == NULL) {
             /* n->b == NULL: a genuine free function, not an out-of-line
              * method's top-level duplicate (see attach_out_of_line and

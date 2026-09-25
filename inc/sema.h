@@ -225,7 +225,11 @@ typedef struct FuncSemaInfo {
                             * "~Counter" spelling, since that's not a legal
                             * C identifier character -- see mangle() in
                             * sema.c). Free functions omit the class
-                            * component: "clamp__int_int_int". Two
+                            * component: "clamp__int_int_int" -- unless
+                            * declared inside a namespace, whose path takes
+                            * the class slot: "v32__clamp__int_int_int",
+                            * "outer__inner__f__void" (see sema.c's
+                            * "namespace-aware free-function lookup"). Two
                             * overloads (different parameter types) of the
                             * same name now get distinct mangled names --
                             * see the syntactic-vs-semantic type comparison
@@ -401,6 +405,19 @@ void sema_warning(int line, const char *fmt, ...); /* see its own doc
  * sema.c's own call resolution already looks for free functions in
  * general. */
 void collect_free_function_candidates(const char *name, AstNode ***out, int *out_count, int *out_cap);
+
+/* Namespace-aware free-function lookup (see "namespace-aware free-function
+ * lookup" in sema.c). collect_free_function_candidates above is the
+ * UNQUALIFIED form: it searches the current lookup namespace, then each
+ * enclosing one, then falls back to every namespace. The qualified form
+ * takes an AST_QUALIFIED_ID and matches only its qualifier's namespace.
+ * Any pass that resolves free-function names inside a namespace body
+ * must set the lookup namespace while it's in there (and restore it):
+ * sema's own walkers do; lower.c's call-finalization walkers do too. */
+void collect_qualified_free_function_candidates(const AstNode *qid, AstNode ***out, int *out_count, int *out_cap);
+const char *sema_get_lookup_namespace(void);
+void sema_set_lookup_namespace(const char *ns);   /* caller owns storage */
+char *sema_ns_join(const char *outer, const char *name);  /* malloc'd */
 
 /* Prints a human-readable summary of every class's computed layout,
  * every function's mangled name, and (in a "call resolutions:" section)

@@ -225,3 +225,25 @@ lower to pointers like any other reference. `touch(d)` forwarding and
 It's the general reference-lowering gap recorded in DESIGN_NOTES.md
 ("Round: `native` opaque types"), so sample90 doesn't use that spelling.
 
+
+## The memcard pilot (landed)
+
+`v32/memcard.hpp` is the first real consumer. It declares
+`native game_signature;` at file scope and avoids the storage problem
+above without any new language feature. A `game_signature` *is* a
+`typedef int[20]`, so the veneer's API takes a plain `int*` to 20 words,
+which the caller can declare (`int sig[20] = "MYGAME";`), and casts it
+at the C boundary:
+
+```cpp
+bool card_matches( int* signature )
+{
+    return card_signature_matches( (game_signature*)signature );
+}
+```
+
+Verified end to end: the real Vircon32 compiler accepts the cast, and
+`tests/94sample.cpp` runs on the emulated console with a memory card
+inserted. The card file afterwards holds the signature at word 0. The
+sized/layout-bearing native options above are still the general answer
+for C structs whose fields game code needs to read (`date_info`).

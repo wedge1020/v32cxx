@@ -224,11 +224,13 @@ static void free_typedef_registry(void) {
 }
 
 /* Flat enum registry -- enum NAME -> EnumDecl node, and enum CONSTANT name
- * -> owning EnumDecl node. Namespace-blind on purpose, exactly like the
- * free-function and typedef registries: this project's flat registries all
- * key off the bare final name, and no v32:: header ever re-uses one name
- * in two namespaces (the same guarantee collect_free_function_candidates
- * already relies on). Nested/class-member enums don't parse at all, so
+ * -> owning EnumDecl node. Namespace-blind on purpose, like the typedef
+ * and class registries: they key off the bare final name, and no v32::
+ * header re-uses an enum name in two namespaces. (The free-function
+ * registry USED to be namespace-blind too; it no longer is -- see
+ * "namespace-aware free-function lookup". Enum constants are emitted
+ * as bare C enumerators either way, so namespacing them here would not
+ * prevent a C-level clash.) Nested/class-member enums don't parse at all, so
  * top-level + namespace-level is the complete universe. */
 //static AstNode **g_enum_decls  = NULL;  /* by enum name, e.g. "Button" */
 //static char    **g_enum_names  = NULL;
@@ -252,10 +254,67 @@ static int param_lists_match(const AstList *a, const AstList *b);
 
 typedef struct FreeFuncRegEntry {
     AstNode *func;
+    char *ns;       /* enclosing namespace path, "" at file scope,
+                     * "v32" or "outer::inner" otherwise -- see
+                     * "namespace-aware free-function lookup" below */
     struct FreeFuncRegEntry *next;
 } FreeFuncRegEntry;
 
 static FreeFuncRegEntry *g_free_func_registry = NULL;
+
+/* ---- namespace-aware free-function lookup ------------------------------
+ *
+ * The registry above used to be completely namespace-blind: a function
+ * was keyed by its bare name, and mangling dropped the namespace too. So
+ * `namespace v32 { void draw(int,int,int); }` and a user's own file-scope
+ * `void draw(int,int,int)` were registered as ONE function (the
+ * prototype/definition dedupe below matched them), both mangled to
+ * `draw__int_int_int`, and the generated C defined that symbol twice --
+ * with every call, qualified or not, bound to whichever body was seen
+ * first. Exactly the v32-veneer hazard the header plan called out.
+ *
+ * Now every entry records its namespace path, namespaced free functions
+ * mangle with it (`v32__draw__int_int_int`, see mangle_free_functions),
+ * and lookup follows C++'s own scoping:
+ *
+ *   - QUALIFIED (`v32::draw`): only functions whose namespace is the
+ *     qualifier, tried relative to the calling namespace first
+ *     (`inner::f` from inside `outer` means `outer::inner::f`), then as
+ *     written. No bare-name fallback -- a qualifier that names the wrong
+ *     namespace is a real "no matching overload", not a silent match.
+ *   - UNQUALIFIED (`draw`): the calling code's own namespace, then each
+ *     enclosing one out to file scope; the first scope that declares the
+ *     name at all wins (C++ name hiding). If NO scope on that chain has
+ *     it, fall back to every same-named function anywhere -- the old
+ *     namespace-blind behavior, kept so an unqualified call to a v32::
+ *     function from outside the namespace (not valid C++, but accepted
+ *     until now, and roughly what argument-dependent lookup would find
+ *     for a free operator) keeps working.
+ *
+ * "The calling code's own namespace" is g_lookup_ns: set by every walker
+ * that descends into a namespace body before it resolves anything inside
+ * (sema's check walkers here, lower.c's call-finalization walkers via
+ * sema_set_lookup_namespace), restored on the way back out. */
+
+static const char *g_lookup_ns = "";
+static char *ns_mangle_prefix(const char *ns);   /* defined with mangling */
+
+const char *sema_get_lookup_namespace(void) {
+    return g_lookup_ns;
+}
+
+void sema_set_lookup_namespace(const char *ns) {
+    g_lookup_ns = (ns != NULL) ? ns : "";
+}
+
+/* "outer" + "inner" -> "outer::inner"; "" + "v32" -> "v32". malloc'd. */
+char *sema_ns_join(const char *outer, const char *name) {
+    if (outer == NULL || outer[0] == '\0') return strdup(name);
+    size_t len = strlen(outer) + 2 + strlen(name) + 1;
+    char *out = malloc(len);
+    snprintf(out, len, "%s::%s", outer, name);
+    return out;
+}
 
 /* If an existing registered entry has the SAME name AND the SAME
  * parameter signature, this is the "other half" of an entirely ordinary
@@ -277,9 +336,11 @@ static FreeFuncRegEntry *g_free_func_registry = NULL;
  * first one registered wins; not this pass's job to flag a duplicate
  * body as an error, only to avoid the ambiguous-overload
  * misdiagnosis. */
-static void register_free_function(AstNode *func) {
+static void register_free_function(AstNode *func, const char *ns) {
     for (FreeFuncRegEntry *e = g_free_func_registry; e != NULL; e = e->next) {
-        if (strcmp(e->func->str1, func->str1) == 0 && param_lists_match(&e->func->list, &func->list)) {
+        if (strcmp(e->ns, ns) == 0 &&   /* same name+signature in a DIFFERENT
+                                           namespace is a different function */
+            strcmp(e->func->str1, func->str1) == 0 && param_lists_match(&e->func->list, &func->list)) {
             if (func->kind == AST_FUNC_DEF && e->func->kind != AST_FUNC_DEF) {
                 e->func = func;
             }
@@ -288,6 +349,7 @@ static void register_free_function(AstNode *func) {
     }
     FreeFuncRegEntry *e = malloc(sizeof(FreeFuncRegEntry));
     e->func = func;
+    e->ns = strdup(ns);
     e->next = g_free_func_registry;
     g_free_func_registry = e;
 }
@@ -296,6 +358,7 @@ static void free_free_func_registry(void) {
     FreeFuncRegEntry *e = g_free_func_registry;
     while (e != NULL) {
         FreeFuncRegEntry *next = e->next;
+        free(e->ns);
         free(e);
         e = next;
     }
@@ -421,6 +484,16 @@ static AstNode *enum_const_owner_lookup(const char *name) {
     return NULL;
 }
 
+/* Enum TYPE name -> its AST_ENUM_DECL, or NULL. The first consumer of
+ * g_enum_registry: unary-minus type inference, which promotes an enum
+ * operand to int. */
+static AstNode *find_enum_decl_by_name(const char *name) {
+    for (EnumRegEntry *e = g_enum_registry; e != NULL; e = e->next) {
+        if (e->name != NULL && strcmp(e->name, name) == 0) return e->decl;
+    }
+    return NULL;
+}
+
 static void free_enum_registries(void) {
     EnumRegEntry *e = g_enum_registry;
     while (e != NULL) { EnumRegEntry *next = e->next; free(e); e = next; }
@@ -434,7 +507,7 @@ static void free_enum_registries(void) {
  * into namespace bodies (was collect_classes; renamed since it now does
  * all three) ------------------------------------------------------------ */
 
-static void collect_declarations(AstList *decls) {
+static void collect_declarations_in(AstList *decls, const char *ns) {
     for (int i = 0; i < decls->count; i++) {
         AstNode *n = decls->items[i];
         if (n->kind == AST_CLASS_DECL) {
@@ -448,7 +521,7 @@ static void collect_declarations(AstList *decls) {
              * class's method being defined outside the class body, and
              * its real, callable identity lives on the class's member
              * list, found via the class registry instead. */
-            register_free_function(n);
+            register_free_function(n, ns);
         } else if (n->kind == AST_VAR_DECL) {
             /* A file-scope or namespace-scope global -- see
              * find_global_var_type's own doc comment for exactly why this
@@ -456,7 +529,9 @@ static void collect_declarations(AstList *decls) {
              * field read, is what actually breaks without it). */
             register_global_var(n);
         } else if (n->kind == AST_NAMESPACE_DECL) {
-            collect_declarations(&n->list);
+            char *inner = sema_ns_join(ns, n->str1);
+            collect_declarations_in(&n->list, inner);
+            free(inner);
         }
         else if (n->kind == AST_ENUM_DECL) {
             enum_registry_add(n->str1, n);                 /* the type name */
@@ -495,6 +570,10 @@ static void collect_declarations(AstList *decls) {
             }
         }
     }
+}
+
+static void collect_declarations(AstList *decls) {
+    collect_declarations_in(decls, "");
 }
 
 /* ---- type-signature comparison and mangling ---------------------------
@@ -1036,10 +1115,21 @@ static void compute_layout(AstNode *class_decl) {
              * for check_member_access's own lookup -- see that field's
              * doc comment (sema.h) for the name-only-matching scope
              * limit this implies. */
+            /* A friend function belongs to the namespace ENCLOSING the
+             * class (C++'s rule), so it registers and mangles there --
+             * matching the namespace-scope definition it befriends.
+             * compute_layouts keeps g_lookup_ns pointed at that
+             * namespace while it walks. */
             if (member->sema_info == NULL) {
-                member->sema_info = make_func_info(NULL, member->str1, &member->list, 0);
+                if (g_lookup_ns[0] == '\0') {
+                    member->sema_info = make_func_info(NULL, member->str1, &member->list, 0);
+                } else {
+                    char *prefix = ns_mangle_prefix(g_lookup_ns);
+                    member->sema_info = make_func_info(prefix, member->str1, &member->list, 0);
+                    free(prefix);
+                }
             }
-            register_free_function(member);
+            register_free_function(member, g_lookup_ns);
             ast_list_append(&layout->friend_function_names, ast_ident(member->str1, member->line));
         }
     }
@@ -1077,7 +1167,12 @@ static void compute_layouts(AstList *decls) {
         if (n->kind == AST_CLASS_DECL) {
             compute_layout(n);
         } else if (n->kind == AST_NAMESPACE_DECL) {
+            const char *saved = g_lookup_ns;
+            char *inner = sema_ns_join(saved, n->str1);
+            g_lookup_ns = inner;
             compute_layouts(&n->list);
+            g_lookup_ns = saved;
+            free(inner);
         }
     }
 }
@@ -1085,15 +1180,47 @@ static void compute_layouts(AstList *decls) {
 /* ---- pass 4: mangle free functions (anything not already handled by a
  * class's layout pass above) --------------------------------------------- */
 
-static void mangle_free_functions(AstList *decls) {
+/* A namespaced free function mangles with its namespace path in the
+ * class-name slot ("::" -> "__"): `v32::draw(int,int,int)` becomes
+ * `v32__draw__int_int_int`, distinct from a file-scope
+ * `draw__int_int_int`. Using the class slot also means a function named
+ * `main` inside a namespace is mangled like anything else -- only the
+ * file-scope `main` is the cartridge entry point. A class and a
+ * namespace can't share a name in one scope, so `v32__draw__...` can
+ * never collide with a method of some class `v32`. */
+static char *ns_mangle_prefix(const char *ns) {
+    size_t len = strlen(ns);
+    char *out = malloc(len + 1);
+    size_t j = 0;
+    for (size_t i = 0; i < len; i++) {
+        if (ns[i] == ':' && ns[i + 1] == ':') { out[j++] = '_'; out[j++] = '_'; i++; }
+        else out[j++] = ns[i];
+    }
+    out[j] = '\0';
+    return out;
+}
+
+static void mangle_free_functions_in(AstList *decls, const char *ns) {
     for (int i = 0; i < decls->count; i++) {
         AstNode *n = decls->items[i];
         if (n->kind == AST_NAMESPACE_DECL) {
-            mangle_free_functions(&n->list);
+            char *inner = sema_ns_join(ns, n->str1);
+            mangle_free_functions_in(&n->list, inner);
+            free(inner);
         } else if ((n->kind == AST_FUNC_DECL || n->kind == AST_FUNC_DEF) && n->sema_info == NULL) {
-            n->sema_info = make_func_info(NULL, n->str1, &n->list, 0);
+            if (ns[0] == '\0') {
+                n->sema_info = make_func_info(NULL, n->str1, &n->list, 0);
+            } else {
+                char *prefix = ns_mangle_prefix(ns);
+                n->sema_info = make_func_info(prefix, n->str1, &n->list, 0);
+                free(prefix);
+            }
         }
     }
+}
+
+static void mangle_free_functions(AstList *decls) {
+    mangle_free_functions_in(decls, "");
 }
 
 /* ---- pass 5: access-control enforcement --------------------------------
@@ -1536,6 +1663,37 @@ AstNode *infer_expr_type(const AstNode *expr, AstNode *current_class, LocalVarTy
                 ptr->a = operand_type;
                 return ptr;
             }
+            /* `!x` is always bool. */
+            if (expr->str1 != NULL && strcmp(expr->str1, "!") == 0) {
+                return ast_ident("bool", expr->line);
+            }
+            /* `-x` and `~x`: float stays float; every integral operand
+             * (int, char, bool, an enum constant) is promoted to int, as
+             * in C++. Previously these were "unknown", which made a plain
+             * negative literal argument (`v32::absolute(-7)`) unresolvable
+             * against an int/float overload pair. `++x`/`--x` keep their
+             * operand's type exactly. */
+            if (expr->str1 != NULL &&
+                (strcmp(expr->str1, "neg") == 0 || strcmp(expr->str1, "~") == 0)) {
+                const AstNode *operand_type = resolve_typedef_chain(
+                    infer_expr_type(expr->a, current_class, locals));
+                while (operand_type != NULL && operand_type->kind == AST_CONST_TYPE)
+                    operand_type = operand_type->a;
+                if (operand_type == NULL || operand_type->kind != AST_IDENT ||
+                    operand_type->str1 == NULL) return NULL;
+                if (strcmp(operand_type->str1, "float") == 0)
+                    return strcmp(expr->str1, "neg") == 0 ? ast_ident("float", expr->line) : NULL;
+                if (strcmp(operand_type->str1, "int") == 0 ||
+                    strcmp(operand_type->str1, "char") == 0 ||
+                    strcmp(operand_type->str1, "bool") == 0 ||
+                    find_enum_decl_by_name(operand_type->str1) != NULL)
+                    return ast_ident("int", expr->line);
+                return NULL;
+            }
+            if (expr->str1 != NULL &&
+                (strcmp(expr->str1, "pre++") == 0 || strcmp(expr->str1, "pre--") == 0)) {
+                return infer_expr_type(expr->a, current_class, locals);
+            }
             return NULL;
         }
         case AST_BINOP: {
@@ -1677,16 +1835,76 @@ static void collect_method_candidates(AstNode *class_decl, const char *name,
     }
 }
 
-void collect_free_function_candidates(const char *name, AstNode ***out, int *out_count, int *out_cap) {
+/* Appends every registered free function called `name` whose namespace
+ * is exactly `ns` (or ANY namespace, when ns == NULL). Returns how many
+ * it appended. */
+static int collect_free_in_ns(const char *name, const char *ns,
+                              AstNode ***out, int *out_count, int *out_cap) {
+    int added = 0;
     for (FreeFuncRegEntry *e = g_free_func_registry; e != NULL; e = e->next) {
-        if (strcmp(e->func->str1, name) == 0) {
-            if (*out_count == *out_cap) {
-                *out_cap = *out_cap ? *out_cap * 2 : 4;
-                *out = realloc(*out, sizeof(AstNode *) * (size_t)(*out_cap));
-            }
-            (*out)[(*out_count)++] = e->func;
+        if (strcmp(e->func->str1, name) != 0) continue;
+        if (ns != NULL && strcmp(e->ns, ns) != 0) continue;
+        if (*out_count == *out_cap) {
+            *out_cap = *out_cap ? *out_cap * 2 : 4;
+            *out = realloc(*out, sizeof(AstNode *) * (size_t)(*out_cap));
         }
+        (*out)[(*out_count)++] = e->func;
+        added++;
     }
+    return added;
+}
+
+/* Drops the innermost component: "a::b" -> "a", "a" -> "". In place. */
+static void ns_pop(char *scope) {
+    char *cut = NULL;
+    for (char *p = scope; *p != '\0'; p++)
+        if (p[0] == ':' && p[1] == ':') cut = p;
+    if (cut != NULL) *cut = '\0';
+    else scope[0] = '\0';
+}
+
+/* UNQUALIFIED lookup -- see "namespace-aware free-function lookup" above. */
+void collect_free_function_candidates(const char *name, AstNode ***out, int *out_count, int *out_cap) {
+    char *scope = strdup(g_lookup_ns);
+    for (;;) {
+        if (collect_free_in_ns(name, scope, out, out_count, out_cap) > 0) {
+            free(scope);
+            return;
+        }
+        if (scope[0] == '\0') break;
+        ns_pop(scope);
+    }
+    free(scope);
+    collect_free_in_ns(name, NULL, out, out_count, out_cap);  /* legacy fallback */
+}
+
+/* QUALIFIED lookup for an AST_QUALIFIED_ID callee/value (`v32::draw`,
+ * `outer::inner::f`) -- see "namespace-aware free-function lookup". */
+void collect_qualified_free_function_candidates(const AstNode *qid, AstNode ***out, int *out_count, int *out_cap) {
+    if (qid == NULL || qid->list.count == 0) return;
+    const char *name = qid->list.items[qid->list.count - 1]->str1;
+    if (name == NULL) return;
+
+    /* qualifier = every component but the last, joined with "::" */
+    char *qual = strdup("");
+    for (int i = 0; i < qid->list.count - 1; i++) {
+        const char *part = qid->list.items[i]->str1;
+        if (part == NULL) continue;
+        char *next = sema_ns_join(qual, part);
+        free(qual);
+        qual = next;
+    }
+
+    char *scope = strdup(g_lookup_ns);
+    for (;;) {
+        char *full = sema_ns_join(scope, qual);
+        int added = collect_free_in_ns(name, full, out, out_count, out_cap);
+        free(full);
+        if (added > 0 || scope[0] == '\0') break;
+        ns_pop(scope);
+    }
+    free(scope);
+    free(qual);
 }
 
 /* Real, previously-undiscovered bug found while auditing common intro-
@@ -1889,6 +2107,39 @@ static void resolve_overload_generic(AstNode *site, const char *name, AstNode **
                 arity_match_count++;
             }
         }
+        if (arity_match_count > 1) {
+            /* Second narrowing step: the arguments whose types ARE known
+             * still rule candidates out. `v32::minimum(rand(), 10)` has
+             * an unknown first argument (rand() is a pass-through C call
+             * sema has no prototype for) but a known `int` second one,
+             * which only minimum(int, int) accepts. A candidate survives
+             * only if every KNOWN argument matches its parameter; an
+             * unknown argument rules nothing out. Exactly one survivor is
+             * as certain as the unique-arity case above -- every other
+             * candidate was excluded by a type sema actually knows. This
+             * is what makes overloaded v32:: wrappers usable with SDK
+             * #define constants and C API call results as arguments. */
+            AstNode *typed_match = NULL;
+            int typed_match_count = 0;
+            for (int i = 0; i < count; i++) {
+                if (!(arg_count <= candidates[i]->list.count &&
+                      arg_count >= min_required_args(candidates[i]))) continue;
+                int viable = 1;
+                for (int j = 0; j < arg_count && viable; j++) {
+                    if (arg_types[j] == NULL) continue;
+                    if (!type_matches_param(candidates[i]->list.items[j]->type, arg_types[j]))
+                        viable = 0;
+                }
+                if (viable) {
+                    typed_match = candidates[i];
+                    typed_match_count++;
+                }
+            }
+            if (typed_match_count == 1) {
+                arity_match = typed_match;
+                arity_match_count = 1;
+            }
+        }
         if (arity_match_count == 1) {
             CallResolution *cr = calloc(1, sizeof(CallResolution));
             cr->resolved_target = arity_match;
@@ -1898,7 +2149,9 @@ static void resolve_overload_generic(AstNode *site, const char *name, AstNode **
         } else {
             sema_error(site->line,
                 "cannot resolve overloaded call to '%s': %d candidates match by "
-                "arity but an argument's type is unknown",
+                "arity but an argument's type is unknown (a pass-through C "
+                "call or #define constant?) -- store it in a typed local "
+                "first, e.g. `int v = rand();`",
                 name, arity_match_count);
         }
         free(arg_types);
@@ -1969,16 +2222,32 @@ static void resolve_call(AstNode *call, AstNode *current_class, LocalVarType *lo
         }
     } else if (callee->kind == AST_QUALIFIED_ID) {
         /* A namespace-qualified free-function call (v32::draw(...)).
-         * The free-function registry is flat and namespace-name-blind
-         * by construction: collect_declarations registers namespace-
-         * nested functions into it, and mangling keys off the bare
-         * final name -- the same "take the last component" precedent
-         * infer_expr_type's own AST_QUALIFIED_ID case already set. So
-         * candidates are collected by the FINAL segment's name, with
-         * no member-function fallback (a qualifier means the caller
-         * deliberately reached past the enclosing class's scope). */
+         * Only functions declared in the qualifier's namespace are
+         * candidates (resolved relative to the calling namespace first
+         * -- see "namespace-aware free-function lookup"), with no
+         * member-function fallback: a qualifier means the caller
+         * deliberately reached past the enclosing class's scope. */
         name = callee->list.items[callee->list.count - 1]->str1;
-        collect_free_function_candidates(name, &candidates, &count, &cap);
+        collect_qualified_free_function_candidates(callee, &candidates, &count, &cap);
+        if (count == 0) {
+            /* An UNqualified call with no candidates is normal -- it's a
+             * pass-through call into a C header (select_texture, ...) and
+             * resolves downstream. A QUALIFIED one can never be that: C
+             * functions don't live in namespaces. Emitting it anyway would
+             * print just the final name, silently binding to whatever
+             * file-scope function (or C API function) shares it. */
+            char *qual = strdup("");
+            for (int i = 0; i < callee->list.count - 1; i++) {
+                char *next = sema_ns_join(qual, callee->list.items[i]->str1);
+                free(qual);
+                qual = next;
+            }
+            sema_error(call->line, "no function '%s' is declared in namespace '%s'",
+                       name, qual);
+            free(qual);
+            free(candidates);
+            return;
+        }
     } else {
         return; /* other callee shapes (e.g. a call through a computed
                     function pointer) not handled */
@@ -2696,7 +2965,12 @@ static void access_check_methods(AstList *decls) {
                 }
             }
         } else if (n->kind == AST_NAMESPACE_DECL) {
+            const char *saved = g_lookup_ns;
+            char *inner = sema_ns_join(saved, n->str1);
+            g_lookup_ns = inner;
             access_check_methods(&n->list);
+            g_lookup_ns = saved;
+            free(inner);
         }
     }
 }
@@ -2705,7 +2979,12 @@ static void access_check_free_functions(AstList *decls) {
     for (int i = 0; i < decls->count; i++) {
         AstNode *n = decls->items[i];
         if (n->kind == AST_NAMESPACE_DECL) {
+            const char *saved = g_lookup_ns;
+            char *inner = sema_ns_join(saved, n->str1);
+            g_lookup_ns = inner;
             access_check_free_functions(&n->list);
+            g_lookup_ns = saved;
+            free(inner);
         } else if (n->kind == AST_FUNC_DEF && n->b == NULL) {
             /* n->b == NULL excludes out-of-line method definitions' own
              * top-level duplicate (see attach_out_of_line) -- those get
@@ -2755,7 +3034,12 @@ static void check_globals(AstList *decls) {
             LocalVarType *locals = NULL;
             check_node(n->a, NULL, &locals);
         } else if (n->kind == AST_NAMESPACE_DECL) {
+            const char *saved = g_lookup_ns;
+            char *inner = sema_ns_join(saved, n->str1);
+            g_lookup_ns = inner;
             check_globals(&n->list);
+            g_lookup_ns = saved;
+            free(inner);
         }
     }
 }
@@ -2808,6 +3092,7 @@ int sema_run(AstNode *program) {
     free_free_func_registry(); /* same */
     free_global_var_registry(); /* same */
 
+    g_lookup_ns = "";
     collect_declarations(&program->list);
     attach_out_of_line(&program->list);
     compute_layouts(&program->list);

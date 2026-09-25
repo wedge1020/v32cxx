@@ -1,4 +1,5 @@
 #include <stdio.h>
+#include <string.h>
 #include <stdlib.h>
 #include "cartxml.h"
 #include "driver.h"
@@ -61,7 +62,17 @@ void emit_cart_xml(const char *output_filename, int is_bios) {
             is_bios ? "bios" : "cartridge",
             (g_cart_title != NULL) ? g_cart_title : "Vircon32 Program",
             (g_cart_version != NULL) ? g_cart_version : "1.0");
-    fprintf(xml, "<binary path=\"%s\" />\n", vbin_path);
+    /* The packer (Vircon32's packrom) resolves every path in this file
+     * relative to the XML file's OWN directory, not the current one. The
+     * .vbin is always written next to the .xml (both derive from the
+     * output filename), so the file name alone is the correct relative
+     * path. Writing vbin_path as given broke every build whose -o pointed
+     * into another directory: `-o out/game.c` produced
+     * <binary path="out/game.vbin"/>, which packrom opened as
+     * out/out/game.vbin. */
+    const char *vbin_name = strrchr(vbin_path, '/');
+    vbin_name = (vbin_name != NULL) ? vbin_name + 1 : vbin_path;
+    fprintf(xml, "<binary path=\"%s\" />\n", vbin_name);
     emit_resource_list(xml, &g_cart_textures, "texture", ".vtex");
     emit_resource_list(xml, &g_cart_sounds, "sound", ".vsnd");
     fprintf(xml, "</rom-definition>\n");

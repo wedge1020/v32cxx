@@ -17,7 +17,7 @@ CFLAGS  = -Wall -Wextra -g -I$(INC_DIR) -MMD -MP
 BISON   = bison
 FLEX    = flex
 
-.PHONY: all clean test install uninstall
+.PHONY: all clean test realcheck install uninstall
 
 all: $(BIN_DIR)/v32c++
 
@@ -168,6 +168,9 @@ test: all | $(OUT_DIR)
 	$(BIN)  -vvv    -o out/89program.c tests/89sample.cpp 1> out/89sample.txt 2>&1
 	$(BIN)  -vvv    -o out/90program.c tests/90sample.cpp 1> out/90sample.txt 2>&1
 	-$(BIN) -vvv    -o out/91failure.c tests/91sample.cpp 1> out/91sample.txt 2>&1
+	$(BIN)  -vvv    -o out/92program.c tests/92sample.cpp 1> out/92sample.txt 2>&1
+	-$(BIN) -vvv    -o out/93failure.c tests/93sample.cpp 1> out/93sample.txt 2>&1
+	$(BIN)  -vvv -I . -o out/94program.c tests/94sample.cpp 1> out/94sample.txt 2>&1
 # `-vvv` (this project's own verbosity flag, a later round -- see
 # main.c) is passed to every sample specifically so `make test`'s own
 # output still captures the full AST/semantic-analysis/lowering dumps
@@ -250,6 +253,13 @@ test: all | $(OUT_DIR)
 # start failing, that's a real regression and `make test` should stop and
 # report it, not paper over it the same way.
 
+# realcheck: `make test`, then push every generated program through the
+# REAL Vircon32 compiler/assembler/packer and boot every self-checking
+# sample (one that declares `int test_errors`) on a headless console.
+# Needs tools/vircon32/bin: run tools/vircon32/build-tools.sh once first.
+realcheck: test
+	tools/vircon32/check.sh
+
 install: all
 	mkdir -p $(HOME)/bin
 	cp $(BIN) $(HOME)/bin/
@@ -268,7 +278,8 @@ put: clean
 	@cp src/parser.y  put/parser.y.txt
 
 archive: clean
-	zip -r v32cxx-project.zip demos docs inc Makefile man README.md src tests v32
+	zip -r v32cxx-project.zip demos docs inc Makefile man README.md src tests v32 tools \
+	    -x 'tools/vircon32/bin/*' 'tools/vircon32/ComputerSoftware/*'
 # -r matters: without it, `demos/*` stores only the demos/c and demos/cxx
 # directory ENTRIES, not the files inside them, so the archive silently
 # ships empty demo folders.

@@ -597,14 +597,45 @@ are not evaluated.
 The
 .I v32/
 directory of the source distribution holds C++ headers for the
-Vircon32 C API
-.RI ( video.hpp ", " input.hpp ", " string.hpp ", " time.hpp )
+Vircon32 C API, one per SDK header
+.RI ( video.hpp ", " input.hpp ", " string.hpp ", " time.hpp ,
+.IR audio.hpp ", " math.hpp ", " misc.hpp ", " memcard.hpp )
 in the
 .B v32
 namespace. They wrap the SDK's C functions without reimplementing any
 hardware access, and each one passes its own
 .I .h
-include through.
+include through. What they add: typed enums for the SDK's
+.BR #define s,
+int/float overload sets
+.RB ( v32::minimum ", " v32::clamp ", ...),"
+scope-guard classes that restore the console's selected
+texture, gamepad, sound or channel at the closing brace, and small
+handle classes
+.RB ( v32::Channel ", " v32::MemoryCard ", " v32::HeapBlock ", ...)."
+Wrapper names never reuse a C function's name, so the raw C API stays
+available alongside them.
+.PP
+A free function declared inside a namespace is emitted under a C name
+that includes the namespace
+.RI ( v32::draw(int,int,int)
+becomes
+.IR v32__draw__int_int_int ),
+so it can't collide with a function of the same name and parameters
+elsewhere. A qualified call
+.RI ( v32::draw(...) )
+considers only functions in that namespace, and is an error if there
+are none. An unqualified call inside a namespace finds that
+namespace's functions before those of enclosing scopes.
+.PP
+An overloaded call whose arguments include an SDK
+.B #define
+or a C API call result (whose types
+.B v32c++
+cannot see) still resolves when the remaining arguments' known types
+leave exactly one candidate, e.g.
+.IR "v32::minimum(rand(), 10)" .
+Otherwise it is an error; assign the value to a typed local first.
 .PP
 Because pass-through headers are never parsed, a C struct type they
 define is unknown to
@@ -1005,6 +1036,14 @@ on a field declaration) is dropped, and a namespace-scope object
 direct-initialized with constructor arguments
 .RI ( "Counter g(100);" )
 produces an invalid initializer.
+.PP
+A class declared inside a namespace keeps its bare C name
+.RI ( v32::String
+is emitted as
+.IR String ),
+so a program's own class with the same name as a
+.B v32
+header class collides in the generated C.
 .PP
 A
 .B native

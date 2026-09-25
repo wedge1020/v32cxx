@@ -255,15 +255,39 @@ at the original file and line inside an inlined header. What doesn't
 exist yet: macro expansion, `#define` visibility on the C++ side, and
 `#if`/`#ifdef` evaluation. Those belong to a future `v32pp`.
 
-**C++ headers for the Vircon32 C API** live in `v32/`: `video.hpp`,
-`input.hpp`, `string.hpp`, and `time.hpp`. Each one wraps the matching
-SDK header in the `v32::` namespace (typed enums instead of `#define`s,
-small classes such as `v32::Date`, `v32::Stopwatch`, and scope-guard
-classes like `v32::FrameScope`). Every hardware access still goes
-through the real C function, and each header `#include`s its SDK `.h`
-as a pass-through line. Use them with `-I`, e.g.
-`v32c++ -I path/to/v32c++ game.cpp` with `#include <v32/video.hpp>`.
-These are pilots, and the set is still growing.
+**C++ headers for the Vircon32 C API** live in `v32/`, one per SDK
+header: `video.hpp`, `input.hpp`, `string.hpp`, `time.hpp`, `audio.hpp`,
+`math.hpp`, `misc.hpp` and `memcard.hpp`. Each one wraps its SDK header
+in the `v32::` namespace and adds only what the C API can't express
+well. That means typed enums instead of `#define`s; overload sets
+(`v32::minimum`, `v32::clamp`, `v32::absolute` for both int and float);
+RAII scope guards for the console's implicit "selected"
+texture/gamepad/sound/channel state (`TextureScope`, `GamepadScope`,
+`SoundScope`, `ChannelScope`, `FrameScope`); and small handle classes
+(`v32::Channel`, `v32::MemoryCard`, `v32::HeapBlock`, `v32::String`,
+`v32::Stopwatch`). Every hardware access still goes through the real C
+function, and each header passes its SDK `#include` through. Use them
+with `-I`, e.g. `v32c++ -I path/to/v32c++ game.cpp` with
+`#include <v32/video.hpp>`. Wrapper names never reuse a C function's
+name (`minimum`, not `min`), so the raw C API stays callable unchanged
+alongside them.
+
+**Namespaced functions get namespaced C names.** `v32::draw(int,int,int)`
+becomes `v32__draw__int_int_int` in the generated C, so it can't collide
+with a `draw(int,int,int)` of your own. Calls resolve the way C++ scopes
+them: `v32::draw(...)` means only the one in `v32`, and an unqualified
+call inside a namespace finds that namespace's function before an outer
+one. A qualified call to a function the namespace doesn't declare is an
+error. (Classes are not namespaced this way yet: a class of your own
+named like a `v32::` class, such as `String` or `Channel`, will clash
+in the generated C. Pick a different name for now.)
+
+**Overloads and pass-through arguments.** v32c++ doesn't know the types
+of SDK `#define`s or C API calls. An overloaded call still resolves when
+the arguments it does know settle it (`v32::clamp(x, 0, screen_width)`
+with `int x`, or `v32::minimum(rand(), 10)`). When none do
+(`v32::absolute(rand())`), it's an error: store the value in a typed
+local first.
 
 **`native Name;` — naming C types v32c++ never parses.** Because `.h`
 headers are passed through rather than parsed, a struct type they define
@@ -369,6 +393,10 @@ emitted alongside it.
   `#pragma once` exist (see above). There's still no macro expansion,
   no C++-side visibility of `#define`d names, and no `#if`/`#ifdef`
   evaluation.
+- **Classes inside a namespace keep their bare C name.** Free functions
+  in a namespace are mangled with it (`v32__draw__...`), but a class
+  isn't: `v32::String` is `struct String` in the generated C, and a
+  user class of the same name collides.
 - **Scalar references aren't dereferenced.** A reference parameter's
   `.member` access and passing it on to another reference parameter
   both lower correctly. Reading or writing an `int&`/`float&` directly
@@ -844,6 +872,31 @@ programs in one step:
 make test
 ```
 
+### Checking the output with the real Vircon32 toolchain
+
+`make test` only shows that the transpile succeeded. To check that the
+generated C is valid Vircon32 C and that programs behave correctly on
+the console, build the official Vircon32 compiler, assembler and ROM
+packer, plus a headless console runner, once (about a minute; needs
+`git` and a C++17 `g++`, no SDL):
+
+```sh
+tools/vircon32/build-tools.sh
+```
+
+Then:
+
+```sh
+make realcheck
+```
+
+This runs `make test`, compiles and assembles every generated program
+with the real tools, and packs each one into a cartridge. It then boots
+every *self-checking* sample on the emulated console with the standard
+BIOS and a fresh memory card. A self-checking sample declares
+`int test_errors = -1;` and stores its error count there before halting,
+and the check requires 0. See `tests/94sample.cpp` for the pattern.
+
 ## Trying it out
 
 ```sh
@@ -1023,7 +1076,8 @@ inc/            headers for the above (one per .c, plus:)
   v32cxx.h      project identity (VERSION/AUTHOR/URL) and build-time
                 configuration constants
 v32/            C++ headers wrapping the Vircon32 C API (video, input,
-                string, time) in namespace v32 -- include with -I
+                string, time, audio, math, misc, memcard) in namespace
+                v32 -- include with -I
 tests/          NNsample.cpp inputs run by `make test`, including
                 intentionally-invalid ones and several real,
                 hand-written programs
@@ -1036,6 +1090,9 @@ docs/           design notes, implementation deep-dives (inline asm,
 man/            v32c++.1 -- a Unix section 1 manual page; view it
                 directly with `man ./man/v32c++.1`, or `make install`
                 to put v32c++ itself on your PATH (see below)
+tools/vircon32/ builds the real Vircon32 compiler/assembler/packer and
+                a headless console runner (build-tools.sh), and checks
+                `make test` output with them (check.sh, `make realcheck`)
 ```
 
 ## Installing

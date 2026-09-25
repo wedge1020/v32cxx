@@ -7110,3 +7110,162 @@ NATIVE_PASSTHROUGH.md's "As built" section lists them.
 - `make test` runs samples 90 (must pass) and 91 (`-` prefix, expected
   to fail).
 - VERSION → `20260925-dev`.
+
+## Round: Option 1 veneers completed (audio/math/misc/memcard), namespace-aware mangling, and the real toolchain in the loop
+
+Option 1 of the header plan is to add a thin `v32` veneer per SDK header,
+adding only what the C API can't express. It now covers all eight SDK
+headers. This round added `v32/audio.hpp`, `v32/math.hpp`,
+`v32/misc.hpp` and `v32/memcard.hpp`, and had to fix three transpiler
+problems first. It also brought the real Vircon32 compiler, assembler,
+packer and a headless console into the test loop.
+
+### 1. The plan's naming caveat was real: namespaced functions collided
+
+The plan said to "verify the mangling keeps `v32::draw` distinct from any
+free `draw` the user writes." It didn't. Mangling ignored namespaces, and
+the flat free-function registry deduplicated by name + signature, so
+`v32::draw(int,int,int)` and a file-scope `draw(int,int,int)` became
+**one** registry entry and **one** C name (`draw__int_int_int`) defined
+twice, with every call bound to the first body. There was no diagnostic.
+
+Fix (sema.c, "namespace-aware free-function lookup"):
+- Each registry entry records its namespace path (`""`, `"v32"`,
+  `"outer::inner"`). Prototype/definition dedupe requires the same
+  namespace.
+- Namespaced free functions mangle with the path in the class-name slot:
+  `v32__draw__int_int_int`, `outer__inner__twice__int`. A `main` inside a
+  namespace is therefore an ordinary function. Only file-scope `main` is
+  the entry point.
+- Lookup follows C++ scoping. **Qualified** (`v32::draw`, `detail::f`)
+  resolves relative to the calling namespace first, then as written, and
+  has no bare-name fallback. **Unqualified** searches the calling
+  namespace, then each enclosing one; the first scope declaring the name
+  wins. If none does, it falls back to all namespaces, which is the old
+  behavior and roughly what ADL would find for a free operator.
+- The calling namespace (`g_lookup_ns`) is tracked by every walker that
+  resolves names inside namespace bodies: sema's layout/check walkers
+  and lower.c's call-finalization walkers, through
+  `sema_set_lookup_namespace()`.
+- A friend function declared in a namespaced class belongs to that
+  namespace, as in C++.
+- A **qualified** call that finds no candidate is now an error ("no
+  function 'draw' is declared in namespace 'v32'"). An unqualified one
+  still passes through silently, because that's how every SDK C call
+  works. A C function can't be namespaced, so the old silent pass-through
+  of a qualified call emitted the bare final name and bound it to the
+  wrong function.
+
+Tests: `tests/92sample.cpp` (same-signature `v32::draw` and `::draw`,
+inner-namespace hiding, reaching an enclosing namespace, relative
+qualification, `outer::inner::`, function-pointer values of both, a
+friend in a namespaced class) and `tests/93sample.cpp` (wrong qualifier,
+must fail). Output for samples 01–89 is unchanged except that `v32::`
+functions in 87–89 gained their `v32__` prefix (checked by diffing with
+the prefix stripped).
+
+**Not fixed: class names.** A class inside a namespace still emits its
+bare name (`struct String`, `struct Channel`), so a user class with the
+same name as a `v32::` class collides in the generated C. Class-name
+mangling touches every type-printing path in codegen and is left for its
+own round. Until then, the v32 headers pick class names unlikely to
+clash (`HeapBlock`, `MemoryCard`, `SoundScope`, `ChannelScope`), and the
+README documents the limit.
+
+### 2. Overloads with a pass-through argument were unresolvable
+
+Overloaded wrappers are the point of math.hpp (`minimum(int,int)` /
+`minimum(float,float)`), but sema has no type for a pass-through C call
+(`rand()`) or an SDK `#define` (`screen_width`). When any argument's type
+was unknown and more than one candidate had the right arity,
+resolution gave up, so `v32::minimum(rand(), 10)` and
+`v32::clamp(x, 0, screen_width)` were errors.
+`resolve_overload_generic` now narrows by the arguments whose types
+**are** known: a candidate survives only if every known argument matches
+its parameter. One survivor resolves the call, as certain as the
+unique-arity case, since every other candidate was excluded by a known
+type. When nothing can be decided (`v32::absolute(rand())`), the error
+message now says why and suggests a typed local.
+
+The same work found that **unary operators had no inferred type**.
+`-7` was "unknown", so `v32::absolute(-7)` was unresolvable. Now `!x`
+is bool; `-x`/`~x` are float for a float operand and int for any
+integral operand (int, char, bool, enum constant); `++x`/`--x` keep
+their operand's type. This added the first consumer of the enum
+name→decl registry (`find_enum_decl_by_name`).
+
+### 3. The cart XML's `<binary path>` broke every `-o` into another directory
+
+Found by actually packing a cartridge. packrom resolves every path in the
+XML relative to the XML's own directory, and v32c++ wrote the `.vbin`
+path as given. So `-o out/game.c` produced `<binary path="out/game.vbin"/>`,
+which packrom opened as `out/out/game.vbin`. Every `make test` sample's
+XML was unpackable. cartxml.c now writes the bare file name, since the
+`.vbin` always sits next to the `.xml`. `#texture`/`#sound` paths are
+unchanged: they're whatever the user wrote, relative to the XML.
+
+### The four new headers
+
+- **math.hpp**: overload sets the C API can't have (`minimum`, `maximum`,
+  `absolute`, `clamp`, `sign` for int and float), `to_radians` /
+  `to_degrees`, `lerp`, `distance`, `distance_squared`. Wrapper names
+  never reuse a C name. Inside `namespace v32`, an unqualified `min()`
+  would now correctly find `v32::min` first, and the wrapper would call
+  itself.
+- **audio.hpp**: typed `ChannelState` / `SoundChannels` / `NoFreeChannel`;
+  `SoundScope` and `ChannelScope` RAII guards (the TextureScope pattern);
+  and `Channel`, whose every method acts on its own channel and restores
+  the caller's selection. That includes the C calls that select a
+  channel and *don't* restore (`play_channel`, `get_channel_state`,
+  `play_sound`).
+- **misc.hpp**: `random_below` / `random_between` / `random_chance` /
+  `random_unit` / `seed_random`; int* word helpers over
+  memset/memcpy/memcmp; `HeapBlock`, an RAII owner of one malloc'd block;
+  `halt()`. The allocator itself is deliberately untouched. Two facts
+  were checked against the emulator source rather than assumed: `rand()`
+  only returns 1..0x7FFFFFFE, the minstd_rand generator. **Seeding with
+  any value whose low 31 bits are 0x7FFFFFFF, including -1, makes the
+  generator emit 0 forever.** `seed_random` replaces that seed and 0
+  with 1.
+- **memcard.hpp**: the first real consumer of `native`
+  (`native game_signature;`). Signatures are passed as plain 20-word int
+  arrays and cast at the C boundary, which works around natives having
+  no storage. `MemoryCard` re-checks connection and ownership on every
+  operation, refuses to `claim()` another game's card, bounds-checks,
+  and **offsets game data past the signature**. The 20-word signature is
+  the first 20 words of the same address range `card_read_data` /
+  `card_write_data` index from 0, so a raw `card_write_data(buf, 0, n)`
+  overwrites it. Geometry comes from the console definitions (262144
+  words).
+
+### Real toolchain and emulator in the loop
+
+`tools/vircon32/build-tools.sh` builds the official Vircon32 C compiler,
+assembler and ROM packer from `vircon32/ComputerSoftware` (pinned commit,
+compiler v26.04.24), with no SDL (a 20-line `shim/SDL.h` stands in; the
+tools only use SDL to find their own directory). It also builds
+`v32run`, a headless console that links the emulator's own ConsoleLogic
+with no-op video/audio callbacks, boots the standard BIOS plus a
+cartridge plus an optional memory card, runs until `hlt`, and prints one
+RAM word.
+
+`make realcheck` (`make test` then `tools/vircon32/check.sh`):
+- compiles and assembles every `out/NNprogram.c` with the real tools and
+  packs it (packing is skipped, not failed, for samples whose
+  `#texture`/`#sound` assets aren't in the repo: 33 and 34);
+- boots every **self-checking** sample, meaning one whose source declares
+  `int test_errors` (starts at -1, main stores its error count), and
+  requires it to halt with 0.
+
+Result this round: **66/66 programs compile and assemble with the real
+compiler**, the first time the whole suite has been checked against it
+rather than gcc. `tests/94sample.cpp` (all four new headers, including
+the file-scope `clamp`/`halt` that coexist with the `v32::` ones) runs to
+`test_errors == 0` on the emulated console. The runner was checked in
+both directions: a copy with two deliberately wrong expectations reports
+exactly 2. The memory-card file afterwards has the signature at card
+word 0 and the saved `{11, 22, 33}` at word 20. The runner also exposed
+a mistake in its own first draft: `CreateMemoryCard` only writes a blank
+file, so without `LoadMemoryCard` the card isn't inserted and the
+memcard checks silently took their "no card" branch. That first
+"passing" run hadn't tested the memory card at all.
