@@ -7194,15 +7194,33 @@ integral operand (int, char, bool, enum constant); `++x`/`--x` keep
 their operand's type. This added the first consumer of the enum
 name→decl registry (`find_enum_decl_by_name`).
 
-### 3. The cart XML's `<binary path>` broke every `-o` into another directory
+### 3. The cart XML's `<binary path>` -- changed, then reverted
 
-Found by actually packing a cartridge. packrom resolves every path in the
-XML relative to the XML's own directory, and v32c++ wrote the `.vbin`
-path as given. So `-o out/game.c` produced `<binary path="out/game.vbin"/>`,
-which packrom opened as `out/out/game.vbin`. Every `make test` sample's
-XML was unpackable. cartxml.c now writes the bare file name, since the
-`.vbin` always sits next to the `.xml`. `#texture`/`#sound` paths are
-unchanged: they're whatever the user wrote, relative to the XML.
+`<binary path>` is written exactly as `-o` was given (`-o obj/game.c`
+gives `<binary path="obj/game.vbin"/>`). packrom resolves every path in
+the XML (binary, textures, sounds) relative to the XML file's own
+directory. That makes the XML right for a project that packs from the
+directory v32c++ ran in, with the definition there referencing `obj/`
+for the `.vbin` and `sounds/` for the `.vsnd` files. That is exactly
+the course demos' layout.
+
+This round briefly "fixed" it to write only the file name, because
+packing `out/NN.xml` from inside `out/` failed. That was the wrong call:
+it traded a real, established workflow (the C++ demos, which had never
+needed a hand-edited XML) for the convenience of one test script, and
+it changed the output format without asking. **Reverted:** cartxml.c is
+back to its original code, and all 75 XML files `make test` produces
+are byte-identical to before. The test script adapts instead:
+tools/vircon32/check.sh packs a temporary `NNprogram.pack.xml` copy
+whose binary path is rewritten to the bare file name, leaving v32c++'s
+output alone.
+
+Lesson recorded for future rounds: output formats other tools and
+existing projects consume (the generated C's symbol names, the XML,
+the debug map) are interfaces. A change to one is a decision for
+Matthew, not a drive-by fix. The namespace-mangling change above does
+alter generated symbol names, but only for functions in namespaces, and
+those names were colliding outright.
 
 ### The four new headers
 
