@@ -77,6 +77,12 @@
 #define IN_RX 34
 #define IN_RY 18
 
+// A/B KILL-SWITCH for the white-out bug: 1 = normal (additive glow),
+// 0 = every "glow" draw becomes solid. If the screen STILL fades to
+// white with GLOW 0, blending is exonerated and the suspect becomes
+// the clear/present path (or the emulator's scaled-region handling).
+#define GLOW 0
+
 // ---------------------------------------------------------------------------
 //  ALL mutable game state lives here, on the heap (see header comment)
 // ---------------------------------------------------------------------------
@@ -227,6 +233,14 @@ int hue( int h )
     return make_color( 255, 0, 255 - f );
 }
 
+// All additive ("glow") drawing routes through here, so the GLOW
+// toggle can flip the entire game to solid rendering in one place.
+void set_glow_blend()
+{
+    if( GLOW ) set_blending_mode( v32::BlendAdd );
+    else set_blending_mode( BLEND_SOLID );
+}
+
 // ---------------------------------------------------------------------------
 //  Glyph renderer — the ONLY draw primitive in the whole game
 // ---------------------------------------------------------------------------
@@ -297,7 +311,7 @@ void draw_party_text( G* g, char* s, float x, float y, float size, int huebase )
     }
 }
 
-void draw_text( char* s, float x, float y, float size, int c )
+void draw_text( G* g, char* s, float x, float y, float size, int c )
 {
     int i = 0;
     while( s[ i ] != 0 )
@@ -646,7 +660,7 @@ void render_web( G* g )
 void render_spikes( G* g )
 {
     int i;
-    set_blending_mode( v32::BlendAdd );
+    set_glow_blend();
     for( i = 0; i < LANES; i++ )
     {
         if( g->SPIKE[ i ] <= 0 ) continue;
@@ -678,7 +692,7 @@ void render_player( G* g )
     set_multiply_color( make_color( 255, 220, 60 ) );
     draw_glyph( g, 'X', x, y, 20 * s, 24 * s );
 
-    set_blending_mode( v32::BlendAdd );
+    set_glow_blend();
     set_multiply_color( make_color( 255, 120, 40 ) );
     draw_glyph( g, 'O', x, y - 8 * s, 12 * s, 12 * s );
     draw_glyph( g, '<', x - 16 * s, y - 2 * s, 12 * s, 14 * s );
@@ -704,21 +718,21 @@ void render_enemies( G* g )
         {
             set_multiply_color( hue( 160 + ( ( i * 40 + g->frame ) >> 2 ) ) );
             draw_glyph( g, 'W', x, y + wob, 26 * s, 20 * s );
-            set_blending_mode( v32::BlendAdd );
+            set_glow_blend();
             draw_glyph( g, '*', x, y + wob, 14 * s, 14 * s );
         }
         else if( g->ENEMIES[ i ].type == 1 )
         {
             set_multiply_color( make_color( 255, 80, 160 ) );
             draw_glyph( g, 'H', x, y, 26 * s, 24 * s );
-            set_blending_mode( v32::BlendAdd );
+            set_glow_blend();
             draw_glyph( g, '#', x, y, 14 * s, 14 * s );
         }
         else
         {
             set_multiply_color( make_color( 255, 150, 40 ) );
             draw_glyph( g, 'M', x, y, 22 * s, 18 * s );
-            set_blending_mode( v32::BlendAdd );
+            set_glow_blend();
             draw_glyph( g, 'v', x, y + 10 * s, 12 * s, 10 * s );
         }
         set_blending_mode( BLEND_SOLID );
@@ -728,7 +742,7 @@ void render_enemies( G* g )
 void render_bullets( G* g )
 {
     int i;
-    set_blending_mode( v32::BlendAdd );
+    set_glow_blend();
     for( i = 0; i < MAX_BULLETS; i++ )
     {
         if( !g->BULLETS[ i ].alive ) continue;
@@ -744,7 +758,7 @@ void render_bullets( G* g )
 void render_particles( G* g )
 {
     int i;
-    set_blending_mode( v32::BlendAdd );
+    set_glow_blend();
     for( i = 0; i < MAX_PARTICLES; i++ )
     {
         if( !g->PARTICLES[ i ].alive ) continue;
@@ -796,7 +810,7 @@ void render_hud( G* g )
     lvl[ 4 ] = '0' + ( g->level / 10 ) % 10;
     lvl[ 5 ] = '0' + g->level % 10;
     lvl[ 6 ] = 0;
-    draw_text( lvl, 20, 344, 12, make_color( 120, 200, 255 ) );
+    draw_text( g, lvl, 20, 344, 12, make_color( 120, 200, 255 ) );
 
     // superzapper charges
     set_multiply_color( make_color( 255, 255, 255 ) );
@@ -936,6 +950,10 @@ void main()
         g->frame++;
 
         // -- render ---------------------------------------------------------
+        // insurance: force known GPU state before the clear, so no
+        // stale blending mode or multiply color can interfere with it
+        set_blending_mode( BLEND_SOLID );
+        set_multiply_color( make_color( 255, 255, 255 ) );
         clear_screen( make_color( 2, 2, 8 ) );
         render_web( g );
         render_spikes( g );
