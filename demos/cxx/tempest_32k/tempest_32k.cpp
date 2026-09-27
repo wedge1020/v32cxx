@@ -78,9 +78,13 @@
 #define IN_RY 18
 
 // A/B KILL-SWITCHES for the additive-glow white-out bug, per layer.
-// 1 = layer uses ADD blending, 0 = layer draws solid. Bisect the culprit
-// by leaving one at 1 and the rest at 0. GLOW_ALL flips everything.
-#define GLOW_ALL   0
+// BISECTION RESULT: BlendAdd (0x21) white-screens the real emulator
+// in this game no matter which layer uses it; BlendAlpha (0x20) works
+// perfectly. A single static unscaled glyph does NOT reproduce, so
+// the Add bug needs varying scale / color / position (Zoomed path?).
+// DEFAULT: alpha glow everywhere.
+#define GLOW_MODE  2   // 0 = solid, 1 = BlendAdd (0x21), 2 = BlendAlpha (0x20)
+#define GLOW_ALL   1
 #define GLOW_BULLET 0   // bullets
 #define GLOW_PART   0   // particles
 #define GLOW_SPIKE  0   // spikes
@@ -237,8 +241,10 @@ int hue( int h )
     return make_color( 255, 0, 255 - f );
 }
 
-// All additive ("glow") drawing routes through here, gated per layer
-// by the GLOW_* switches so the white-out culprit can be bisected.
+// All "glow" drawing routes through here, gated per layer by the
+// GLOW_* switches; GLOW_MODE picks the blending used by enabled
+// layers: 0 = solid, 1 = Add, 2 = Alpha. (Alpha blending is the
+// fallback glow if the emulator's Add path proves broken.)
 void set_glow( int layer )
 {
     int on = GLOW_ALL;
@@ -247,8 +253,9 @@ void set_glow( int layer )
     if( layer == 2 ) { if( GLOW_SPIKE )  on = 1; }
     if( layer == 3 ) { if( GLOW_CLAW )   on = 1; }
     if( layer == 4 ) { if( GLOW_ENEMY )  on = 1; }
-    if( on ) set_blending_mode( v32::BlendAdd );
-    else set_blending_mode( BLEND_SOLID );
+    if( !on || GLOW_MODE == 0 ) set_blending_mode( BLEND_SOLID );
+    else if( GLOW_MODE == 1 ) set_blending_mode( v32::BlendAdd );
+    else set_blending_mode( v32::BlendAlpha );
 }
 
 // ---------------------------------------------------------------------------
