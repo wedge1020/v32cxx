@@ -77,11 +77,15 @@
 #define IN_RX 34
 #define IN_RY 18
 
-// A/B KILL-SWITCH for the white-out bug: 1 = normal (additive glow),
-// 0 = every "glow" draw becomes solid. If the screen STILL fades to
-// white with GLOW 0, blending is exonerated and the suspect becomes
-// the clear/present path (or the emulator's scaled-region handling).
-#define GLOW 0
+// A/B KILL-SWITCHES for the additive-glow white-out bug, per layer.
+// 1 = layer uses ADD blending, 0 = layer draws solid. Bisect the culprit
+// by leaving one at 1 and the rest at 0. GLOW_ALL flips everything.
+#define GLOW_ALL   0
+#define GLOW_BULLET 0   // bullets
+#define GLOW_PART   0   // particles
+#define GLOW_SPIKE  0   // spikes
+#define GLOW_CLAW   0   // player claw accents
+#define GLOW_ENEMY  0   // enemy cores
 
 // ---------------------------------------------------------------------------
 //  ALL mutable game state lives here, on the heap (see header comment)
@@ -233,11 +237,17 @@ int hue( int h )
     return make_color( 255, 0, 255 - f );
 }
 
-// All additive ("glow") drawing routes through here, so the GLOW
-// toggle can flip the entire game to solid rendering in one place.
-void set_glow_blend()
+// All additive ("glow") drawing routes through here, gated per layer
+// by the GLOW_* switches so the white-out culprit can be bisected.
+void set_glow( int layer )
 {
-    if( GLOW ) set_blending_mode( v32::BlendAdd );
+    int on = GLOW_ALL;
+    if( layer == 0 ) { if( GLOW_BULLET ) on = 1; }
+    if( layer == 1 ) { if( GLOW_PART )   on = 1; }
+    if( layer == 2 ) { if( GLOW_SPIKE )  on = 1; }
+    if( layer == 3 ) { if( GLOW_CLAW )   on = 1; }
+    if( layer == 4 ) { if( GLOW_ENEMY )  on = 1; }
+    if( on ) set_blending_mode( v32::BlendAdd );
     else set_blending_mode( BLEND_SOLID );
 }
 
@@ -660,7 +670,7 @@ void render_web( G* g )
 void render_spikes( G* g )
 {
     int i;
-    set_glow_blend();
+    set_glow( 2 );
     for( i = 0; i < LANES; i++ )
     {
         if( g->SPIKE[ i ] <= 0 ) continue;
@@ -692,7 +702,7 @@ void render_player( G* g )
     set_multiply_color( make_color( 255, 220, 60 ) );
     draw_glyph( g, 'X', x, y, 20 * s, 24 * s );
 
-    set_glow_blend();
+    set_glow( 3 );
     set_multiply_color( make_color( 255, 120, 40 ) );
     draw_glyph( g, 'O', x, y - 8 * s, 12 * s, 12 * s );
     draw_glyph( g, '<', x - 16 * s, y - 2 * s, 12 * s, 14 * s );
@@ -718,21 +728,21 @@ void render_enemies( G* g )
         {
             set_multiply_color( hue( 160 + ( ( i * 40 + g->frame ) >> 2 ) ) );
             draw_glyph( g, 'W', x, y + wob, 26 * s, 20 * s );
-            set_glow_blend();
+            set_glow( 4 );
             draw_glyph( g, '*', x, y + wob, 14 * s, 14 * s );
         }
         else if( g->ENEMIES[ i ].type == 1 )
         {
             set_multiply_color( make_color( 255, 80, 160 ) );
             draw_glyph( g, 'H', x, y, 26 * s, 24 * s );
-            set_glow_blend();
+            set_glow( 4 );
             draw_glyph( g, '#', x, y, 14 * s, 14 * s );
         }
         else
         {
             set_multiply_color( make_color( 255, 150, 40 ) );
             draw_glyph( g, 'M', x, y, 22 * s, 18 * s );
-            set_glow_blend();
+            set_glow( 4 );
             draw_glyph( g, 'v', x, y + 10 * s, 12 * s, 10 * s );
         }
         set_blending_mode( BLEND_SOLID );
@@ -742,7 +752,7 @@ void render_enemies( G* g )
 void render_bullets( G* g )
 {
     int i;
-    set_glow_blend();
+    set_glow( 0 );
     for( i = 0; i < MAX_BULLETS; i++ )
     {
         if( !g->BULLETS[ i ].alive ) continue;
@@ -758,7 +768,7 @@ void render_bullets( G* g )
 void render_particles( G* g )
 {
     int i;
-    set_glow_blend();
+    set_glow( 1 );
     for( i = 0; i < MAX_PARTICLES; i++ )
     {
         if( !g->PARTICLES[ i ].alive ) continue;
