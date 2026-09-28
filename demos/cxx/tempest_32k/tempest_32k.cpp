@@ -613,24 +613,28 @@ void project( G* g, float lane, float z )
 
 // SIXTEEN distinct webs now, cycling by level — with 32 levels each
 // web is visited exactly twice (the second pass plays harder). New in
-// the roster: a crisp square, a triangle, a hinge (open: two unequal
-// arms), a mild curly-cue, a split curly-cue (open), an egg, a
-// 6-spike saw star, and a shattered ring (open: three arcs). Five
-// kinds are OPEN webs: the rim outline has gaps (CONN[i] = 0), so the
-// web cannot be circumnavigated — the claw clamps at gap vertices
-// (run_bounds), flippers can't flip across gaps, spikers bounce, and
-// the rim/far-cap bars simply aren't drawn over the missing edges.
-// Polygon radius trick (triangle): fold the angle into one wedge
-// (while-loop mod), then r = R * cos(pi/n) / cos(u - pi/n) — this is
-// the exact regular-n-gon radius; the 0.62 + 0.38 * part softens the
-// triangle's deep mid-sides so the web stays playable.
+// the roster: a crisp square, a tilted square, a triangle, a hinge
+// (open: two unequal arms), a mild curly-cue, a split curly-cue
+// (open), an egg, a 6-spike saw star, and a shattered ring (open:
+// three arcs). Five kinds are OPEN webs: the rim outline has gaps
+// (CONN[i] = 0), so the web cannot be circumnavigated — the claw
+// clamps at gap vertices (run_bounds), flippers can't flip across
+// gaps, spikers bounce, and the rim/far-cap bars simply aren't drawn
+// over the missing edges.
+// Polygon radius trick (square/triangle) — the EXACT regular-n-gon
+// outline, because mild cos-shaped approximations read as wobbly
+// circles at 16 lanes: square r = 1/(|cos t| + |sin t|) has genuinely
+// FLAT sides (the sampled lanes lie ON the sides, so the chord
+// outline IS the square); triangle folds the angle into one
+// 120-degree wedge and takes r = 0.5/cos(u - 60 deg), whose deep 0.5
+// mid-sides give it a real triangular read.
 void make_shape( G* g )
 {
     int i;
     int kind = ( g->level - 1 ) % 16;
     for( i = 0; i < LANES; i++ ) g->CONN[ i ] = 1;
     if( kind == 4 ) { g->CONN[ 0 ] = 0; g->CONN[ 8 ] = 0; }   // OPEN: split arcs
-    if( kind == 7 ) g->CONN[ 4 ] = 0;                         // OPEN: crescent
+    if( kind == 7 ) g->CONN[ 4 ] = 0;                         // OPEN: square doorway
     if( kind == 10 ) { g->CONN[ 2 ] = 0; g->CONN[ 9 ] = 0; }  // OPEN: hinge arms
     if( kind == 12 ) g->CONN[ 3 ] = 0;                        // OPEN: split curly
     if( kind == 15 ) { g->CONN[ 0 ] = 0; g->CONN[ 5 ] = 0; g->CONN[ 10 ] = 0; } // OPEN: 3 arcs
@@ -645,24 +649,29 @@ void make_shape( G* g )
         if( kind == 4 ) w = 0.95 + 0.1 * cos32( g, t * 2 );         // open: two arcs
         if( kind == 5 ) w = 0.88 + 0.28 * cos32( g, t * 3 );        // trefoil wave
         if( kind == 6 ) w = 0.55 + 0.5 * fabs_sin( g, t );          // peanut lobes
-        if( kind == 7 ) w = 0.72 + 0.38 * cos32( g, t * 4 + 0.6 );  // open: tilted square
-        if( kind == 8 )   // square: max(|cos t|, |sin t|) gives flat
-        {                 // sides and sharp vertices at lanes 0/4/8/12
+        if( kind == 7 )   // open: tilted square — TRUE square radius,
+        {                 // rotated 22.5 deg: vertices at lanes 3/7/11/15
+            float ca = fabs_sin( g, t + 1.9634954 );   // |cos(t+pi/8)|
+            float sb = fabs_sin( g, t + 0.3926991 );   // |sin(t+pi/8)|
+            w = 1.0 / ( ca + sb );
+        }
+        if( kind == 8 )   // square: TRUE radius 1/(|cos t|+|sin t|) —
+        {                 // vertices at lanes 0/4/8/12, flat sides
             float ca = fabs_sin( g, t + 1.5707963 );   // |cos t|
             float sb = fabs_sin( g, t );               // |sin t|
-            w = ca; if( sb > ca ) w = sb;
+            w = 1.0 / ( ca + sb );
         }
         if( kind == 9 )   // triangle: fold to one 120-degree wedge,
-        {                 // vertices at 0/120/240 degrees
+        {                 // vertices at 0/120/240 degrees — EXACT radius
             float u = t;
             while( u >= 2.0943951 ) u -= 2.0943951;   // mod 120 deg
-            w = 0.62 + 0.38 * ( 0.5 / cos32( g, u - 1.0471976 ) );
+            w = 0.5 / cos32( g, u - 1.0471976 );
         }
-        if( kind == 10 ) w = 0.80 + 0.20 * cos32( g, t * 2 - 4.7123890 ); // open: hinge
-        if( kind == 11 ) w = 0.84 + 0.09 * cos32( g, t * 3 )
-                                  + 0.07 * cos32( g, t * 5 + 0.9 );  // curly-cue
-        if( kind == 12 ) w = 0.84 + 0.09 * cos32( g, t * 3 )
-                                  + 0.07 * cos32( g, t * 5 + 0.9 );  // open: split curly
+        if( kind == 10 ) w = 0.68 + 0.32 * cos32( g, t * 2 - 4.7123890 ); // open: hinge
+        if( kind == 11 ) w = 0.76 + 0.14 * cos32( g, t * 3 )
+                                  + 0.10 * cos32( g, t * 5 + 0.9 );  // curly-cue
+        if( kind == 12 ) w = 0.76 + 0.14 * cos32( g, t * 3 )
+                                  + 0.10 * cos32( g, t * 5 + 0.9 );  // open: split curly
         if( kind == 13 ) w = 0.78 + 0.16 * cos32( g, t )
                                   + 0.06 * cos32( g, t * 2 );        // egg (lopsided)
         if( kind == 14 ) w = 0.68 + 0.32 * fabs_sin( g, t * 3 + 0.3926991 ); // saw star
@@ -1461,10 +1470,16 @@ void update_stars( G* g )
     // the new web's fly-in they calm back down
     float boost = 1.0;
     if( g->warp > 0 && g->warp < 1.0 ) boost = 1.0 + g->warp * 5.0;
+    // the stream radiates from the web's FAR END — the same swaying
+    // vanishing point project() uses at z=1 (CX + cam_x, CY + cam_y).
+    // Streaming from the fixed screen centre instead looked detached
+    // from the tunnel whenever the camera leaned toward the player.
+    float ox = CX + g->cam_x;
+    float oy = CY + g->cam_y;
     for( i = 0; i < MAX_STARS; i++ )
     {
-        float dx = g->STARFIELD[ i ].x - CX;
-        float dy = g->STARFIELD[ i ].y - CY;
+        float dx = g->STARFIELD[ i ].x - ox;
+        float dy = g->STARFIELD[ i ].y - oy;
         float d = sqrt( dx * dx + dy * dy );
         if( d < 1 ) d = 1;
         g->STARFIELD[ i ].x += dx / d * g->STARFIELD[ i ].spd * boost;
@@ -1475,8 +1490,8 @@ void update_stars( G* g )
             // respawn near the vanishing point so the stream is endless
             float a = frand( g ) * 6.28318;
             float r = 4 + frand( g ) * 30;
-            g->STARFIELD[ i ].x = CX + cos32( g, a ) * r;
-            g->STARFIELD[ i ].y = CY + sin32( g, a ) * r;
+            g->STARFIELD[ i ].x = ox + cos32( g, a ) * r;
+            g->STARFIELD[ i ].y = oy + sin32( g, a ) * r;
             g->STARFIELD[ i ].spd = 0.8 + frand( g ) * 1.6;
         }
     }
@@ -1596,6 +1611,10 @@ void render_title( G* g )
             ci++;
         }
     }
+
+    // gameplay controls legend
+    draw_text( g, "A: FIRE  B: SUPERZAP  Y: JUMP",
+               230, 268, 10, make_color( 120, 130, 160 ) );
 
     // controls hint
     draw_text( g, "UP/DOWN: SELECT  LEFT/RIGHT: DIFFICULTY  A: GO",
@@ -1937,10 +1956,11 @@ void render_hud( G* g )
     lvl[ 6 ] = 0;
     draw_text( g, lvl, 20, 344, 12, make_color( 120, 200, 255 ) );
 
-    // superzapper charges
+    // superzapper charges — bottom row spread out so the pod timers
+    // (AI / LASER) never crowd them or each other
     set_multiply_color( make_color( 255, 255, 255 ) );
     for( l = 0; l < g->superzaps; l++ )
-        draw_glyph( g, 'Z', 288 + l * 18, 344, 12, 12 );
+        draw_glyph( g, 'Z', 256 + l * 20, 344, 12, 12 );
 
     // AI buddy countdown (seconds remaining) while it is online
     if( g->buddy_timer > 0 )
@@ -1951,7 +1971,7 @@ void render_hud( G* g )
         bud[ 3 ] = '0' + ( secs / 10 ) % 10;
         bud[ 4 ] = '0' + secs % 10;
         bud[ 5 ] = 0;
-        draw_text( g, bud, 372, 344, 12, make_color( 120, 255, 160 ) );
+        draw_text( g, bud, 336, 344, 12, make_color( 120, 255, 160 ) );
     }
 
     // super laser countdown while active (blinks in the final seconds)
@@ -1966,7 +1986,7 @@ void render_hud( G* g )
             las[ 6 ] = '0' + ( secs / 10 ) % 10;
             las[ 7 ] = '0' + secs % 10;
             las[ 8 ] = 0;
-            draw_text( g, las, 430, 344, 12, make_color( 80, 220, 255 ) );
+            draw_text( g, las, 452, 344, 12, make_color( 80, 220, 255 ) );
         }
     }
 }
@@ -2076,18 +2096,28 @@ void render_scores( G* g )
     int i;
     for( i = 0; i < 5; i++ )
     {
-        char row[ 18 ];
-        row[ 0 ] = '1' + i;
-        row[ 1 ] = '.';
-        row[ 2 ] = ' ';
-        row[ 3 ] = g->HIINIT[ i ][ 0 ];
-        row[ 4 ] = g->HIINIT[ i ][ 1 ];
-        row[ 5 ] = g->HIINIT[ i ][ 2 ];
-        row[ 6 ] = ' ';
-        score_str( g->HISCORE[ i ], &row[ 7 ] );
+        int y = 130 + i * 32;
         int colr = make_color( 120, 130, 160 );
         if( i == 0 ) colr = hue( g->frame );
-        draw_text( g, row, 268, 130 + i * 32, 14, colr );
+        char rk[ 3 ];
+        rk[ 0 ] = '1' + i;
+        rk[ 1 ] = '.';
+        rk[ 2 ] = 0;
+        draw_text( g, &rk[ 0 ], 246, y, 14, colr );
+        // initials: drawn one letter at a time with a WIDER advance —
+        // the plain row advance (size * 0.62) crams 14px glyphs into
+        // 8.7px slots and the letters read as a scrunched block
+        int j;
+        for( j = 0; j < 3; j++ )
+        {
+            char ch[ 2 ];
+            ch[ 0 ] = g->HIINIT[ i ][ j ];
+            ch[ 1 ] = 0;
+            draw_text( g, &ch[ 0 ], 288 + j * 15, y, 14, colr );
+        }
+        char sbuf[ 12 ];
+        score_str( g->HISCORE[ i ], &sbuf[ 0 ] );
+        draw_text( g, &sbuf[ 0 ], 348, y, 14, colr );
     }
     draw_text( g, "A: BACK", 296, 330, 10, make_color( 120, 130, 160 ) );
 }
