@@ -178,8 +178,19 @@ float cos_taylor( float x );   // fwd: used by build_tables below
 
 float sin_taylor( float x )
 {
+    // wrap to [-pi, pi] first
     while( x > 3.14159265 ) x -= 6.28318531;
     while( x < -3.14159265 ) x += 6.28318531;
+    // THEN fold into [-pi/2, pi/2] via symmetry: the 4-term series is
+    // excellent there (error ~2e-5) but GARBAGE near +/-pi, where it
+    // gave sin(pi) = -0.075 instead of 0. That corrupted the tables
+    // around index 128 (sin, due west) and 64 (cos, due south), which
+    // tilted every west/south-pointing bar ~4.3 degrees — the east
+    // spokes visibly missing the far cap, the bottom juts, misaligned
+    // vertex endings. sin(x) = sin(pi - x) for x in (pi/2, pi];
+    // sin(x) = sin(-pi - x) for x in [-pi, -pi/2).
+    if( x > 1.57079632 )   x = 3.14159265 - x;
+    if( x < -1.57079632 )  x = -3.14159265 - x;
     float x2 = x * x;
     return x * ( 1.0
           - x2 / 6.0
@@ -446,7 +457,17 @@ void draw_text( G* g, char* s, float x, float y, float size, int c )
 void project( G* g, float lane, float z )
 {
     float ang = -1.57079632 + ( lane / LANES ) * 6.28318531;
-    float rx = lerp( OUT_RX, IN_RX, z ) * g->SHAPE[ ( (int)lane ) % LANES ];
+    // interpolate SHAPE across fractional lanes: the player glides
+    // (0.09/frame) and rings use i+0.5; a truncated index made the
+    // radius step discretely while the angle glided, so the claw
+    // visibly jumped off the outline on non-circle levels. Integer
+    // lanes hit exact values — the web bars are unaffected.
+    int li = ( (int)lane ) % LANES;
+    if( li < 0 ) li += LANES;
+    int ln = ( li + 1 ) % LANES;
+    float f = lane - (int)lane;
+    float shape = g->SHAPE[ li ] + ( g->SHAPE[ ln ] - g->SHAPE[ li ] ) * f;
+    float rx = lerp( OUT_RX, IN_RX, z ) * shape;
     float ry = lerp( OUT_RY, IN_RY, z );
     g->px = CX + cos32( g, ang ) * rx;
     g->py = CY + sin32( g, ang ) * ry;
@@ -755,13 +776,26 @@ void render_web( G* g )
     // blending = same visual result as solid for our purposes.
     set_blending_mode( v32::BlendAlpha );
 
-    // lane edges: thin solid bars from rim to far end (static per level)
-    set_multiply_color( make_color( 25, 70, 110 ) );
+    // lane edges (SPOKES) — DIAGNOSTIC BUILD: bright green so they
+    // can't be confused with red spikes or the cyan rim, and a white
+    // 3x3 marker drawn ON TOP at each spoke's computed far endpoint
+    // (the cap vertex). Read: marker on vertex + bar hits marker =
+    // spoke fine (the mystery lines are something else); marker on
+    // vertex + bar misses marker = bar geometry wrong for that
+    // direction; marker off vertex = endpoint computation wrong.
+    set_multiply_color( make_color( 0, 255, 0 ) );
     for( i = 0; i < LANES; i++ )
     {
         project( g, i, 0 );  float x0 = g->px; float y0 = g->py;
-        project( g, i, 1 );
-        draw_segment( g, x0, y0, g->px, g->py, 2.0 );
+        project( g, i, 1 );  float x1 = g->px; float y1 = g->py;
+        draw_segment( g, x0, y0, x1, y1, 2.0 );
+
+        set_multiply_color( 0xFFFFFFFF );
+        select_region( 20 );
+        set_drawing_scale( 0.3, 0.15 );     // 3 x 3 px
+        draw_region_zoomed_at( (int)( x1 - 1 ), (int)( y1 - 1 ) );
+        g->last_region = -1;
+        set_multiply_color( make_color( 0, 255, 0 ) );
     }
 
     // far end cap: full outline, every lane joined (16 bars) — 2-lane
@@ -771,6 +805,19 @@ void render_web( G* g )
     {
         project( g, i, 1 );     float x0 = g->px; float y0 = g->py;
         project( g, i + 1, 1 ); draw_segment( g, x0, y0, g->px, g->py, 2.0 );
+    }
+
+    // far-cap vertex caps: the cap polygon is tiny, so a 1-2px angular
+    // miss at a spoke joint reads as a clear disconnect (most visible
+    // on the right side). Small blocks at each cap vertex cover the
+    // joints, matching the rim's point markers. 16 cheap zoomed draws.
+    for( i = 0; i < LANES; i++ )
+    {
+        project( g, i, 1 );
+        select_region( 20 );
+        set_drawing_scale( 0.5, 0.35 );     // ~5 x 7 px block
+        draw_region_zoomed_at( (int)( g->px - 3 ), (int)( g->py - 3 ) );
+        g->last_region = -1;
     }
 
     // depth rings: cheap zoomed DOTS (the rotozoomed command is the
