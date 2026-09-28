@@ -223,7 +223,7 @@ struct G
     int   warp_phase;          // transition: 0 = old web flying out, 1 = new web flying in
     int   warp_bounce;         // transition: spike hit on EASY — skip the level advance
     int   menu_row;            // title menu: selected row (0 play 1 scores 2 levels 3 difficulty)
-    int   select_level;        // level select screen: chosen level (1..16)
+    int   select_level;        // level select screen: chosen level (1..32)
     int   HISCORE[ 5 ];        // high score table, highest first (memcard)
     int   HIINIT[ 5 ][ 3 ];    // 3-letter initials per high score entry
     int   hs_rank;             // rank of the score currently being entered
@@ -611,18 +611,29 @@ void project( G* g, float lane, float z )
     g->pscale = lerp( 1.0, 0.10, z );
 }
 
-// EIGHT distinct webs now, cycling by level. Two of them are OPEN
-// webs: the rim outline has gaps (CONN[i] = 0), so the web cannot be
-// circumnavigated — the claw clamps at gap vertices (run_bounds),
-// flippers can't flip across gaps, spikers bounce, and the rim/far-cap
-// bars simply aren't drawn over the missing edges.
+// SIXTEEN distinct webs now, cycling by level — with 32 levels each
+// web is visited exactly twice (the second pass plays harder). New in
+// the roster: a crisp square, a triangle, a hinge (open: two unequal
+// arms), a mild curly-cue, a split curly-cue (open), an egg, a
+// 6-spike saw star, and a shattered ring (open: three arcs). Five
+// kinds are OPEN webs: the rim outline has gaps (CONN[i] = 0), so the
+// web cannot be circumnavigated — the claw clamps at gap vertices
+// (run_bounds), flippers can't flip across gaps, spikers bounce, and
+// the rim/far-cap bars simply aren't drawn over the missing edges.
+// Polygon radius trick (triangle): fold the angle into one wedge
+// (while-loop mod), then r = R * cos(pi/n) / cos(u - pi/n) — this is
+// the exact regular-n-gon radius; the 0.62 + 0.38 * part softens the
+// triangle's deep mid-sides so the web stays playable.
 void make_shape( G* g )
 {
     int i;
-    int kind = ( g->level - 1 ) % 8;
+    int kind = ( g->level - 1 ) % 16;
     for( i = 0; i < LANES; i++ ) g->CONN[ i ] = 1;
-    if( kind == 4 ) { g->CONN[ 0 ] = 0; g->CONN[ 8 ] = 0; }  // OPEN: split arcs
-    if( kind == 7 ) g->CONN[ 4 ] = 0;                       // OPEN: crescent
+    if( kind == 4 ) { g->CONN[ 0 ] = 0; g->CONN[ 8 ] = 0; }   // OPEN: split arcs
+    if( kind == 7 ) g->CONN[ 4 ] = 0;                         // OPEN: crescent
+    if( kind == 10 ) { g->CONN[ 2 ] = 0; g->CONN[ 9 ] = 0; }  // OPEN: hinge arms
+    if( kind == 12 ) g->CONN[ 3 ] = 0;                        // OPEN: split curly
+    if( kind == 15 ) { g->CONN[ 0 ] = 0; g->CONN[ 5 ] = 0; g->CONN[ 10 ] = 0; } // OPEN: 3 arcs
     for( i = 0; i < LANES; i++ )
     {
         float w = 1.0;
@@ -635,6 +646,27 @@ void make_shape( G* g )
         if( kind == 5 ) w = 0.88 + 0.28 * cos32( g, t * 3 );        // trefoil wave
         if( kind == 6 ) w = 0.55 + 0.5 * fabs_sin( g, t );          // peanut lobes
         if( kind == 7 ) w = 0.72 + 0.38 * cos32( g, t * 4 + 0.6 );  // open: tilted square
+        if( kind == 8 )   // square: max(|cos t|, |sin t|) gives flat
+        {                 // sides and sharp vertices at lanes 0/4/8/12
+            float ca = fabs_sin( g, t + 1.5707963 );   // |cos t|
+            float sb = fabs_sin( g, t );               // |sin t|
+            w = ca; if( sb > ca ) w = sb;
+        }
+        if( kind == 9 )   // triangle: fold to one 120-degree wedge,
+        {                 // vertices at 0/120/240 degrees
+            float u = t;
+            while( u >= 2.0943951 ) u -= 2.0943951;   // mod 120 deg
+            w = 0.62 + 0.38 * ( 0.5 / cos32( g, u - 1.0471976 ) );
+        }
+        if( kind == 10 ) w = 0.80 + 0.20 * cos32( g, t * 2 - 4.7123890 ); // open: hinge
+        if( kind == 11 ) w = 0.84 + 0.09 * cos32( g, t * 3 )
+                                  + 0.07 * cos32( g, t * 5 + 0.9 );  // curly-cue
+        if( kind == 12 ) w = 0.84 + 0.09 * cos32( g, t * 3 )
+                                  + 0.07 * cos32( g, t * 5 + 0.9 );  // open: split curly
+        if( kind == 13 ) w = 0.78 + 0.16 * cos32( g, t )
+                                  + 0.06 * cos32( g, t * 2 );        // egg (lopsided)
+        if( kind == 14 ) w = 0.68 + 0.32 * fabs_sin( g, t * 3 + 0.3926991 ); // saw star
+        if( kind == 15 ) w = 1.0;                                    // open: 3 arcs (ring)
         g->SHAPE[ i ] = w;
     }
 }
@@ -695,8 +727,8 @@ void sfx( G* g, int snd )
 // takes the CHANNEL id first, unlike play_sound_in_channel).
 void play_track( G* g, int track )
 {
-    if( track < 0 ) track = 0;
-    if( track > 3 ) track = 3;
+    if( track > 3 ) track = 0;   // wrap: the cycle loops 1->2->3->4->1
+    if( track < 0 ) track = 3;
     g->music_index = track;
     stop_channel( 0 );
     select_channel( 0 );
@@ -704,6 +736,19 @@ void play_track( G* g, int track )
     assign_channel_sound( 0, M_TRACK1 + track );
     play_channel( 0 );
     set_channel_volume( g->music_volume );   // play_channel selected 0
+}
+
+// the 32 levels are split into 8-level MUSIC BANDS: track 1 plays on
+// levels 1-8, track 2 on 9-16, track 3 on 17-24, track 4 on 25-32 —
+// and past level 32 the bands wrap (4 -> 1), so an endless run never
+// runs out of music. Within a level the tracks still hand off
+// 1->2->3->4->1 as each one finishes (update_music); start_level
+// re-stamps the band track whenever the level crosses a band edge.
+int level_track( G* g )
+{
+    int t = ( ( g->level - 1 ) / 8 ) % 4;
+    if( t < 0 ) t = 0;
+    return t;
 }
 
 // title theme on the music channel, loop ON (same stop-first rule)
@@ -2049,7 +2094,8 @@ void render_scores( G* g )
 
 // state 8: level select — a slowly ROTATING wireframe of the chosen
 // level's web silhouette (real SHAPE data + real CONN gaps), LEFT/RIGHT
-// cycles the level. Levels beyond 8 reuse the 8 shapes (harder pacing).
+// cycles the level (1..32). Sixteen webs; each is visited twice across
+// the 32 levels, the second pass playing harder.
 void render_levelselect( G* g )
 {
     draw_party_text( g, "LEVEL SELECT", 320, 46, 18, 200 );
@@ -2122,6 +2168,10 @@ void start_level( G* g )
     for( i = 0; i < LANES; i++ ) g->SPIKE[ i ] = 0;
     g->launched = 0;
     make_shape( g );
+    // crossed a music band edge (or respawn)? stamp the band's track —
+    // if the current track already IS the band track this is a no-op
+    int bt = level_track( g );
+    if( bt != g->music_index ) play_track( g, bt );
     g->warp = 0;              // insurance: no transition residue in play
     g->warp_phase = 0;
     g->warp_bounce = 0;
@@ -2440,7 +2490,7 @@ void main()
             {
                 if( g->menu_row == 0 )
                 {
-                    play_track( g, g->music_index );   // begin the track run
+                    play_track( g, level_track( g ) );   // begin the track run
                     start_level( g );
                 }
                 else if( g->menu_row == 1 ) g->state = 7;   // high scores
@@ -2464,16 +2514,24 @@ void main()
                 if( gamepad_up() > 0 )
                 {
                     int l = g->entry_letters[ g->entry_pos ] + 1;
+                    // 'A'..'Z' then '0'..'9'. All letters are ABOVE '9'
+                    // in ASCII, so a bare "l > '9'" catches every letter
+                    // and pins the cursor at 'A' — the gap test must be
+                    // the RANGE between '9' and 'A' (chars ':' .. '@').
                     if( l > 'Z' ) l = '0';
-                    if( l > '9' ) l = 'A';
+                    else if( l > '9' && l < 'A' ) l = 'A';
                     g->entry_letters[ g->entry_pos ] = l;
                     g->menu_cooldown = 9; sfx( g, BLIP );
                 }
                 else if( gamepad_down() > 0 )
                 {
                     int l = g->entry_letters[ g->entry_pos ] - 1;
-                    if( l < '0' ) l = 'Z';   // order matters: below '0'
-                    if( l < 'A' ) l = '9';  // then the A/9 boundary
+                    // mirror of the UP wrap: below '0' jumps to 'Z',
+                    // and the 'A' -> '9' step uses the same gap RANGE
+                    // (digits are all BELOW 'A', so a bare "l < 'A'"
+                    // would catch every digit and pin at '9').
+                    if( l < '0' ) l = 'Z';
+                    else if( l > '9' && l < 'A' ) l = '9';
                     g->entry_letters[ g->entry_pos ] = l;
                     g->menu_cooldown = 9; sfx( g, BLIP );
                 }
@@ -2525,7 +2583,7 @@ void main()
                 if( gamepad_right() > 0 )
                 {
                     g->select_level++;
-                    if( g->select_level > 16 ) g->select_level = 1;
+                    if( g->select_level > 32 ) g->select_level = 1;
                     g->level = g->select_level;
                     make_shape( g );      // refresh the rotating preview
                     g->menu_cooldown = 10; sfx( g, BLIP );
@@ -2533,7 +2591,7 @@ void main()
                 else if( gamepad_left() > 0 )
                 {
                     g->select_level--;
-                    if( g->select_level < 1 ) g->select_level = 16;
+                    if( g->select_level < 1 ) g->select_level = 32;
                     g->level = g->select_level;
                     make_shape( g );
                     g->menu_cooldown = 10; sfx( g, BLIP );
@@ -2542,7 +2600,7 @@ void main()
             if( gamepad_button_a() == 1 || gamepad_button_start() == 1 )
             {
                 g->level = g->select_level;
-                play_track( g, g->music_index );   // begin the track run
+                play_track( g, level_track( g ) );   // begin the track run
                 start_level( g );
             }
             else if( gamepad_button_b() == 1 )
