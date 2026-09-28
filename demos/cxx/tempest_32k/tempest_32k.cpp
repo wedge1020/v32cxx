@@ -52,6 +52,13 @@
 #include <v32/input.hpp>
 #include <v32/time.hpp>
 #include <v32/math.hpp>     // sqrt() for segment lengths (hardware pow)
+#include "audio.h"         // SPU: stop/assign/play channel, channel states
+
+// SPU channel-state register values (audio.h reads them raw): the
+// music succession logic compares against these
+#define CH_STOPPED 0x40
+#define CH_PAUSED  0x41
+#define CH_PLAYING 0x42
 
 // 0 = solid (no blending); the v32 enum only names alpha/add/subtract
 #define BLEND_SOLID 0
@@ -60,7 +67,26 @@
 //  Cart metadata (parsed by the v32c++ lexer; delete if your build rejects)
 // ---------------------------------------------------------------------------
 #title "TEMPEST 32K"
-#version 0.2
+#version 0.3
+
+// CART SOUND RESOURCES — v32c++ lexer hints (#sound NAME "file"). The
+// transpiler emits `#define NAME id` in declaration order, so NAME is a
+// compile-time constant usable anywhere below. IDs M_TRACK1..M_TRACK4
+// are CONSECUTIVE (music succession relies on M_TRACK1 + n arithmetic).
+// Generate the .wav files with the companion gen_sounds.c program.
+#sound PEWPEW  "sounds/shootsound.wav"
+#sound BOOM    "sounds/boom.wav"
+#sound DEATH   "sounds/death.wav"
+#sound ZAPSND  "sounds/zap.wav"
+#sound JUMP    "sounds/jump.wav"
+#sound PICKUP  "sounds/pickup.wav"
+#sound CLEAR   "sounds/clear.wav"
+#sound BLIP    "sounds/blip.wav"
+#sound M_TITLE  "sounds/m_title.wav"
+#sound M_TRACK1 "sounds/m_track1.wav"
+#sound M_TRACK2 "sounds/m_track2.wav"
+#sound M_TRACK3 "sounds/m_track3.wav"
+#sound M_TRACK4 "sounds/m_track4.wav"
 
 // ---------------------------------------------------------------------------
 //  Tunables — #define, NOT const variables: reading a const on the RHS of
@@ -120,6 +146,7 @@ struct Enemy
     float z;
     int cooldown;
     int wig;
+    int dir;           // spiker patrol direction (+1/-1); bounces at rim gaps
 };
 
 struct Particle
@@ -163,6 +190,7 @@ struct G
 
     // web geometry
     float SHAPE[ 16 ];
+    int   CONN[ 16 ];          // CONN[i]: 1 = rim edge between lanes i,i+1 exists
     float px; float py; float pscale;   // project() outputs
 
     // entities
@@ -187,8 +215,9 @@ struct G
     int   superzaps;
     int   spawn_timer;
     int   spawn_interval;
-    int   state;               // 0 play, 1 dying, 2 warp-out, 3 game over, 4 title
+    int   state;               // 0 play, 1 dying, 2 warp-out, 3 game over, 4 title, 5 pause
     int   warp_phase;          // transition: 0 = old web flying out, 1 = new web flying in
+    int   warp_bounce;         // transition: spike hit on EASY — skip the level advance
     int   difficulty;          // 0 easy, 1 medium, 2 hard (set on title screen)
     int   menu_cooldown;       // title screen: frames between L/R difficulty nudges
     int   state_timer;
@@ -202,6 +231,10 @@ struct G
     int   buddy_timer;      // AI buddy drone: frames remaining
     int   buddy_cooldown;   // AI buddy: frames until next auto-shot
     int   powerup_timer;    // frames until the next power-up spawns
+    int   music_index;      // gameplay track currently queued (0..3)
+    int   sfx_channel;      // round-robin SFX channel allocator (2..13)
+    float music_volume;     // channel 0 volume 0..2 (gameplay + title tracks)
+    float sfx_volume;       // channels 2..13 volume 0..2 (effects)
     int   frame;
     int   rng_state;
 
@@ -547,18 +580,121 @@ void project( G* g, float lane, float z )
     g->pscale = lerp( 1.0, 0.10, z );
 }
 
+// EIGHT distinct webs now, cycling by level. Two of them are OPEN
+// webs: the rim outline has gaps (CONN[i] = 0), so the web cannot be
+// circumnavigated — the claw clamps at gap vertices (run_bounds),
+// flippers can't flip across gaps, spikers bounce, and the rim/far-cap
+// bars simply aren't drawn over the missing edges.
 void make_shape( G* g )
 {
     int i;
+    int kind = ( g->level - 1 ) % 8;
+    for( i = 0; i < LANES; i++ ) g->CONN[ i ] = 1;
+    if( kind == 4 ) { g->CONN[ 0 ] = 0; g->CONN[ 8 ] = 0; }  // OPEN: split arcs
+    if( kind == 7 ) g->CONN[ 4 ] = 0;                       // OPEN: crescent
     for( i = 0; i < LANES; i++ )
     {
         float w = 1.0;
         float t = i * 0.392699081;   // i * PI/8
-        if( g->level % 4 == 1 ) w = 1.0;                                    // circle
-        if( g->level % 4 == 2 ) w = 0.72 + 0.38 * cos32( g, t * 4 );        // rounded square
-        if( g->level % 4 == 3 ) w = 0.65 + 0.45 * fabs_sin( g, t * 2 + g->level ); // star
-        if( g->level % 4 == 0 ) w = 0.85 + 0.3 * cos32( g, t * 8 );         // flower
+        if( kind == 0 ) w = 1.0;                                    // circle
+        if( kind == 1 ) w = 0.72 + 0.38 * cos32( g, t * 4 );        // rounded square
+        if( kind == 2 ) w = 0.65 + 0.45 * fabs_sin( g, t * 2 );    // star
+        if( kind == 3 ) w = 0.85 + 0.3 * cos32( g, t * 8 );         // flower
+        if( kind == 4 ) w = 0.95 + 0.1 * cos32( g, t * 2 );         // open: two arcs
+        if( kind == 5 ) w = 0.88 + 0.28 * cos32( g, t * 3 );        // trefoil wave
+        if( kind == 6 ) w = 0.55 + 0.5 * fabs_sin( g, t );          // peanut lobes
+        if( kind == 7 ) w = 0.72 + 0.38 * cos32( g, t * 4 + 0.6 );  // open: tilted square
         g->SHAPE[ i ] = w;
+    }
+}
+
+// 1 = the rim is fully connected (no gaps): movement is unrestricted
+// and pods may spawn in any lane. MUST be checked before run_bounds —
+// on a closed web its walks wrap all the way around and come back as
+// a bogus "single-lane run" (that bug froze the claw at integer lanes).
+int web_full( G* g )
+{
+    int i;
+    for( i = 0; i < LANES; i++ ) if( !g->CONN[ i ] ) return 0;
+    return 1;
+}
+
+// contiguous rim run containing lane li: walks outward over existing
+// edges (circularly — a run may wrap the lane 15 -> 0 seam). *lo..*hi
+// is the run; lo > hi means the run wraps.
+void run_bounds( G* g, int li, int* lo, int* hi )
+{
+    int a = li; int b = li; int k;
+    for( k = 0; k < LANES - 1; k++ )
+    {
+        int prev = a - 1; if( prev < 0 ) prev += LANES;
+        if( !g->CONN[ prev ] ) break;
+        a = prev;
+    }
+    for( k = 0; k < LANES - 1; k++ )
+    {
+        if( !g->CONN[ b ] ) break;
+        b += 1;
+        if( b >= LANES ) b -= LANES;
+    }
+    *lo = a; *hi = b;
+}
+
+// ---------------------------------------------------------------------------
+//  Audio — SFX round-robin over channels 2..13; channel 0 is reserved
+//  for music, 1 is spare. Gameplay tracks play one after another (loop
+//  OFF); the title theme loops. Channel state register: 0x40 stopped,
+//  0x41 paused, 0x42 playing.
+// ---------------------------------------------------------------------------
+void sfx( G* g, int snd )
+{
+    if( g->sfx_channel < 2 || g->sfx_channel > 13 ) g->sfx_channel = 2;
+    play_sound_in_channel( snd, g->sfx_channel );
+    // play_sound_in_channel leaves this channel selected — apply the
+    // SFX volume live so pause-menu changes reach every channel
+    set_channel_volume( g->sfx_volume );
+    g->sfx_channel++;
+}
+
+// play gameplay track n (0..3) on the music channel, loop OFF.
+// NEVER stack: play_sound_in_channel only assigns + plays — on real
+// hardware a Play command on an already-playing channel layers the
+// new track over the old one instead of replacing it. So: STOP the
+// channel first, then assign and play (note assign_channel_sound
+// takes the CHANNEL id first, unlike play_sound_in_channel).
+void play_track( G* g, int track )
+{
+    if( track < 0 ) track = 0;
+    if( track > 3 ) track = 3;
+    g->music_index = track;
+    stop_channel( 0 );
+    select_channel( 0 );
+    set_channel_loop( 0 );   // loop OFF (0/1, not bool literals)
+    assign_channel_sound( 0, M_TRACK1 + track );
+    play_channel( 0 );
+    set_channel_volume( g->music_volume );   // play_channel selected 0
+}
+
+// title theme on the music channel, loop ON (same stop-first rule)
+void play_title_music( G* g )
+{
+    stop_channel( 0 );
+    select_channel( 0 );
+    set_channel_loop( 1 );   // loop ON
+    assign_channel_sound( 0, M_TITLE );
+    play_channel( 0 );
+    set_channel_volume( g->music_volume );
+}
+
+// gameplay track succession: roll to the next track when the current
+// one finishes (called only during play/dying/transition/pause)
+void update_music( G* g )
+{
+    if( get_channel_state( 0 ) == CH_STOPPED )
+    {
+        int t = g->music_index + 1;
+        if( t > 3 ) t = 0;
+        play_track( g, t );
     }
 }
 
@@ -587,6 +723,7 @@ void spawn_enemy( G* g, int type )
             else            g->ENEMIES[ i ].z = 1.0;
             g->ENEMIES[ i ].cooldown = 30 + rng( g ) % 40;
             g->ENEMIES[ i ].wig = rng( g ) % 256;
+            g->ENEMIES[ i ].dir = ( rng( g ) % 2 ) * 2 - 1;
             return;
         }
     }
@@ -606,6 +743,7 @@ void spawn_near( G* g, float lane, float z )
             g->ENEMIES[ i ].z = z;
             g->ENEMIES[ i ].cooldown = 20;
             g->ENEMIES[ i ].wig = rng( g ) % 256;
+            g->ENEMIES[ i ].dir = ( rng( g ) % 2 ) * 2 - 1;
             return;
         }
     }
@@ -680,6 +818,7 @@ void fire( G* g )
 {
     if( g->fire_cooldown > 0 ) return;
     g->fire_cooldown = 6;
+    sfx( g, PEWPEW );
     int i;
     for( i = 0; i < MAX_BULLETS; i++ )
     {
@@ -698,6 +837,7 @@ void superzap( G* g )
     if( g->superzaps <= 0 ) return;
     g->superzaps--;
     show_message( g, "SUPERZAPPER!" );
+    sfx( g, ZAPSND );
     int i;
     for( i = 0; i < MAX_ENEMIES; i++ )
     {
@@ -713,12 +853,36 @@ void superzap( G* g )
     if( g->spawn_timer > 999 && count_enemies( g ) == 0 ) level_clear( g );
 }
 
-void update_player( G* g )
+// claw movement, factored out of update_player so it can also run
+// during the warp-out transition (dodge the spikes streaming past!)
+void move_claw( G* g )
 {
     if( gamepad_left() > 0 )  g->player_lane -= 0.09;
     if( gamepad_right() > 0 ) g->player_lane += 0.09;
     if( g->player_lane < 0 ) g->player_lane += LANES;
     if( g->player_lane >= LANES ) g->player_lane -= LANES;
+
+    // OPEN WEBS: clamp the claw to its contiguous rim run so it can't
+    // slide over a missing outline edge (see run_bounds). Fully closed
+    // webs skip the clamp entirely — free movement all the way around.
+    if( !web_full( g ) )
+    {
+        int plo; int phi;
+        int pli = (int)g->player_lane;
+        if( pli >= LANES ) pli -= LANES;
+        run_bounds( g, pli, &plo, &phi );
+        if( plo == phi ) g->player_lane = plo;               // single-lane run
+        else if( plo < phi )
+        {
+            if( g->player_lane < plo ) g->player_lane = plo;
+            if( g->player_lane > phi ) g->player_lane = phi;
+        }
+        else  // wrapped run [plo..15]+[0..phi]: only the gap zone is invalid
+        {
+            if( g->player_lane > phi && g->player_lane < plo )
+                g->player_lane = plo;
+        }
+    }
 
     // camera sway: ease the vanishing point toward a fraction of the
     // claw's offset from the tube axis — the tube appears to lean and
@@ -728,14 +892,14 @@ void update_player( G* g )
     float camty = ( g->py - CY ) * CAM_SWAY;
     g->cam_x += ( camtx - g->cam_x ) * CAM_EASE;
     g->cam_y += ( camty - g->cam_y ) * CAM_EASE;
+}
 
-    if( gamepad_button_a() > 0 ) fire( g );
-    if( gamepad_button_b() == 1 ) superzap( g );   // == 1: just-pressed edge
-    if( g->fire_cooldown > 0 ) g->fire_cooldown--;
-
-    // JUMP (button Y): the claw leaps off the web toward the camera —
-    // airborne frames are invulnerable at the rim, so you can hop
-    // over a camper instead of only sliding away from it
+// JUMP (button Y), factored out so it also runs during the warp-out:
+// the claw leaps off the web toward the camera — airborne frames are
+// invulnerable at the rim, so you can hop over a camper, or over a
+// spike sweeping past during the level transition
+void claw_jump( G* g )
+{
     if( g->jump_cooldown > 0 ) g->jump_cooldown--;
     if( g->jump_timer > 0 ) g->jump_timer--;
     else if( gamepad_button_y() == 1 && g->jump_cooldown == 0 )
@@ -743,7 +907,17 @@ void update_player( G* g )
         g->jump_timer = 34;
         g->jump_cooldown = 60;   // lands at 34, 26 frames of recovery
         burst( g, g->px, g->py, 8, 1.5 );   // takeoff puff
+        sfx( g, JUMP );
     }
+}
+
+void update_player( G* g )
+{
+    move_claw( g );
+    claw_jump( g );
+    if( gamepad_button_a() > 0 ) fire( g );
+    if( gamepad_button_b() == 1 ) superzap( g );   // == 1: just-pressed edge
+    if( g->fire_cooldown > 0 ) g->fire_cooldown--;
 }
 
 void kill_player( G* g )
@@ -755,6 +929,7 @@ void kill_player( G* g )
     explode( g, g->px, g->py, 70, 5 );
     shockwave( g, g->px, g->py );   // double ring: both slots
     show_message( g, "OW!" );
+    sfx( g, DEATH );
 }
 
 void level_clear( G* g );
@@ -798,6 +973,7 @@ void collect_powerup( G* g, int i )
     }
     project( g, g->POWERUPS[ i ].lane, g->POWERUPS[ i ].z );
     explode( g, g->px, g->py, 20, 2.5 );
+    sfx( g, PICKUP );
     g->POWERUPS[ i ].alive = 0;
 }
 
@@ -808,7 +984,23 @@ void spawn_powerup( G* g )
     {
         if( g->POWERUPS[ i ].alive ) continue;
         g->POWERUPS[ i ].alive = 1;
-        g->POWERUPS[ i ].lane = rng( g ) % LANES;
+        // open webs: pods spawn inside the player's contiguous run so
+        // they are always reachable (closed webs: any lane)
+        if( web_full( g ) )
+        {
+            g->POWERUPS[ i ].lane = rng( g ) % LANES;
+        }
+        else
+        {
+            int plo; int phi;
+            int pli = (int)g->player_lane;
+            if( pli >= LANES ) pli -= LANES;
+            run_bounds( g, pli, &plo, &phi );
+            int span = phi - plo + 1;
+            if( span <= 0 ) span += LANES;   // wrapped run
+            g->POWERUPS[ i ].lane = plo + rng( g ) % span;
+            if( g->POWERUPS[ i ].lane >= LANES ) g->POWERUPS[ i ].lane -= LANES;
+        }
         g->POWERUPS[ i ].z = 1.0;
         int r = rng( g ) % 20;
         if( r < 9 )       g->POWERUPS[ i ].type = 0;
@@ -902,8 +1094,25 @@ void update_enemies( G* g )
             if( g->ENEMIES[ i ].cooldown > 0 ) g->ENEMIES[ i ].cooldown--;
             else
             {
-                g->ENEMIES[ i ].lane += 1;
-                if( g->ENEMIES[ i ].lane >= LANES ) g->ENEMIES[ i ].lane -= LANES;
+                // patrol with a direction; BOUNCE at missing rim edges
+                // (open webs) so spikes never appear on dead lanes
+                int sli = (int)g->ENEMIES[ i ].lane;
+                if( sli >= LANES ) sli -= LANES;
+                int ahead = sli;
+                int back = sli - 1; if( back < 0 ) back += LANES;
+                int blocked_ahead = !g->CONN[ ahead ];
+                int blocked_back = !g->CONN[ back ];
+                if( g->ENEMIES[ i ].dir > 0 && blocked_ahead ) g->ENEMIES[ i ].dir = -1;
+                if( g->ENEMIES[ i ].dir < 0 && blocked_back ) g->ENEMIES[ i ].dir = 1;
+                int canmove = 1;
+                if( g->ENEMIES[ i ].dir > 0 && blocked_ahead ) canmove = 0;
+                if( g->ENEMIES[ i ].dir < 0 && blocked_back ) canmove = 0;
+                if( canmove )
+                {
+                    g->ENEMIES[ i ].lane += g->ENEMIES[ i ].dir;
+                    if( g->ENEMIES[ i ].lane < 0 ) g->ENEMIES[ i ].lane += LANES;
+                    if( g->ENEMIES[ i ].lane >= LANES ) g->ENEMIES[ i ].lane -= LANES;
+                }
                 g->ENEMIES[ i ].cooldown = 26;
             }
             int li = ( (int)g->ENEMIES[ i ].lane ) % LANES;
@@ -922,8 +1131,20 @@ void update_enemies( G* g )
                 float diff = g->player_lane - g->ENEMIES[ i ].lane;
                 if( diff > LANES / 2 ) diff -= LANES;
                 if( diff < -LANES / 2 ) diff += LANES;
-                if( diff > 0.5 ) g->ENEMIES[ i ].lane += 1;
-                else if( diff < -0.5 ) g->ENEMIES[ i ].lane -= 1;
+                // open webs: a flipper cannot cross a missing rim edge —
+                // gate the lane switch on CONN (it just camps at the end)
+                if( diff > 0.5 )
+                {
+                    int fli = (int)g->ENEMIES[ i ].lane;
+                    if( fli >= LANES ) fli -= LANES;
+                    if( g->CONN[ fli ] ) g->ENEMIES[ i ].lane += 1;
+                }
+                else if( diff < -0.5 )
+                {
+                    int fli = (int)g->ENEMIES[ i ].lane - 1;
+                    if( fli < 0 ) fli += LANES;
+                    if( g->CONN[ fli ] ) g->ENEMIES[ i ].lane -= 1;
+                }
                 if( g->ENEMIES[ i ].lane < 0 ) g->ENEMIES[ i ].lane += LANES;
                 if( g->ENEMIES[ i ].lane >= LANES ) g->ENEMIES[ i ].lane -= LANES;
                 g->ENEMIES[ i ].cooldown = 14;
@@ -1000,6 +1221,7 @@ void update_bullets( G* g )
                 g->BULLETS[ i ].alive = 0;
                 project( g, g->ENEMIES[ j ].lane, g->ENEMIES[ j ].z );
                 explode( g, g->px, g->py, 26, 3.0 );
+                sfx( g, BOOM );
 
                 if( g->ENEMIES[ j ].type == 1 )
                 {
@@ -1026,8 +1248,10 @@ void level_clear( G* g )
     g->state = 2;
     g->state_timer = 160;     // exactly 160 * 0.0125 = warp 2.0: fly-out + fly-in
     g->warp_phase = 0;
+    g->warp_bounce = 0;       // fresh exit: spikes CAN reject you (once)
     g->warp = 0;
     show_message( g, "EXCELLENT!" );
+    sfx( g, CLEAR );
     g->score += 1000 + g->level * 250;
 }
 
@@ -1185,6 +1409,9 @@ void render_title( G* g )
         float sel = 0;
         if( d == g->difficulty ) sel = 1;
         float msz = 14 + sel * 4;
+        // selected option gets wider letter spacing (0.78 vs 0.62)
+        float adv = msz * 0.62;
+        if( sel > 0 ) adv = msz * 0.78;
         ci = 0;
         while( names[ d ][ ci ] != 0 )
         {
@@ -1194,14 +1421,14 @@ void render_title( G* g )
             else
                 set_multiply_color( make_color( 90, 100, 125 ) );
             draw_glyph( g, names[ d ][ ci ],
-                        320 + ( ci - string_len( names[ d ] ) / 2.0 ) * msz * 0.62,
+                        320 + ( ci - ( string_len( names[ d ] ) - 1 ) / 2.0 ) * adv,
                         160 + d * 30 + wob, msz, msz );
             ci++;
         }
     }
 
     // controls hint
-    draw_text( g, "L/R: DIFFICULTY   A: PLAY", 232, 296, 10, make_color( 120, 130, 160 ) );
+    draw_text( g, "UP/DOWN: DIFFICULTY   A: PLAY", 232, 296, 10, make_color( 120, 130, 160 ) );
 }
 
 // ---------------------------------------------------------------------------
@@ -1234,6 +1461,7 @@ void render_web( G* g )
     set_multiply_color( make_color( 40, 90, 130 ) );
     for( i = 0; i < LANES; i++ )
     {
+        if( !g->CONN[ i ] ) continue;   // open web: cap mirrors the rim gap
         project( g, i, 1 );     float x0 = g->px; float y0 = g->py;
         project( g, i + 1, 1 ); draw_segment( g, x0, y0, g->px, g->py, 2.0 );
     }
@@ -1273,6 +1501,7 @@ void render_web( G* g )
     set_multiply_color( make_color( 60, 180, pulse ) );
     for( i = 0; i < LANES; i++ )
     {
+        if( !g->CONN[ i ] ) continue;   // open web: no bar over the gap
         project( g, i, 0 );     float x0 = g->px; float y0 = g->py;
         project( g, i + 1, 0 ); draw_segment( g, x0, y0, g->px, g->py, 3.5 );
     }
@@ -1562,6 +1791,69 @@ void render_message( G* g )
     g->message_timer--;
 }
 
+// pause veil: translucent dark overlay (region 20 + alpha — the proven
+// path) over the frozen scene, volume meters, track list. Music keeps
+// playing; nothing else updates (gated in main).
+
+// 10-segment volume meter at (x,y); 0..2 maps to 0..10 blocks
+void draw_meter( G* g, int x, int y, float vol )
+{
+    int segs = (int)( vol * 5.0 + 0.5 );
+    if( segs > 10 ) segs = 10;
+    int s;
+    for( s = 0; s < 10; s++ )
+    {
+        select_region( 20 );
+        set_drawing_scale( 2.0, 0.5 );          // 20 x 10 px blocks
+        if( s < segs ) set_multiply_color( make_color( 90, 220, 120 ) );
+        else          set_multiply_color( make_color( 30, 45, 40 ) );
+        draw_region_zoomed_at( x + s * 22, y );
+    }
+    g->last_region = -1;
+    g->last_scale_x = -9999.0;
+    g->last_scale_y = -9999.0;
+}
+
+void render_pause( G* g )
+{
+    set_blending_mode( v32::BlendAlpha );
+    select_region( 20 );
+    set_drawing_scale( 64.0, 16.8 );          // 640 x 336 fullscreen veil
+    set_multiply_color( make_color( 8, 8, 26 ) );
+    draw_region_zoomed_at( 0, 0 );
+    g->last_region = -1;
+    g->last_scale_x = -9999.0;
+    g->last_scale_y = -9999.0;
+    set_blending_mode( BLEND_SOLID );
+
+    draw_party_text( g, "PAUSED", 320, 48, 22, 90 );
+
+    // separate meters: MUSIC (channel 0) and SFX (channels 2..13)
+    draw_text( g, "MUSIC", 240, 96, 12, make_color( 150, 160, 190 ) );
+    draw_meter( g, 220, 118, g->music_volume );
+    draw_text( g, "SFX", 240, 148, 12, make_color( 150, 160, 190 ) );
+    draw_meter( g, 220, 170, g->sfx_volume );
+
+    // track list
+    draw_text( g, "TRACK", 240, 200, 12, make_color( 150, 160, 190 ) );
+    char* tracks[ 4 ];
+    tracks[ 0 ] = "1 WEB CRAWLER";
+    tracks[ 1 ] = "2 SPIKE SURFER";
+    tracks[ 2 ] = "3 HYPERSPACE";
+    tracks[ 3 ] = "4 FLIPPER STORM";
+    int t;
+    for( t = 0; t < 4; t++ )
+    {
+        int colr;
+        if( t == g->music_index ) colr = hue( g->frame + t * 20 );
+        else                      colr = make_color( 90, 100, 125 );
+        draw_text( g, tracks[ t ], 250, 218 + t * 18, 12, colr );
+    }
+
+    draw_text( g, "START: RESUME  LEFT/RIGHT: MUSIC  L/R: SFX  UP/DOWN: TRACK",
+               100, 300, 10, make_color( 120, 130, 160 ) );
+}
+
 // ---------------------------------------------------------------------------
 //  Level flow
 // ---------------------------------------------------------------------------
@@ -1579,6 +1871,7 @@ void start_level( G* g )
     make_shape( g );
     g->warp = 0;              // insurance: no transition residue in play
     g->warp_phase = 0;
+    g->warp_bounce = 0;
     g->spawn_interval = 70 - g->level * 2;
     // difficulty pacing: easy breathes, hard floods
     if( g->difficulty == 0 ) g->spawn_interval += 14;
@@ -1630,6 +1923,7 @@ void init_state( G* g )
     g->level = 1;
     g->warp = 0;
     g->warp_phase = 0;
+    g->warp_bounce = 0;
     g->frame = 0;
     g->rng_state = 12345;
     g->difficulty = 1;
@@ -1648,7 +1942,12 @@ void init_state( G* g )
     g->powerup_timer = 500;
     g->jump_timer = 0;
     g->jump_cooldown = 0;
+    g->music_index = 0;
+    g->sfx_channel = 2;
+    g->music_volume = 0.8;
+    g->sfx_volume = 0.8;
     int i;
+    for( i = 0; i < LANES; i++ ) g->CONN[ i ] = 1;   // closed until make_shape
     for( i = 0; i < 3; i++ ) g->SHOCKS[ i ].alive = 0;
     for( i = 0; i < 4; i++ ) g->POWERUPS[ i ].alive = 0;
     build_tables( g );
@@ -1670,19 +1969,29 @@ void main()
         // -- update ---------------------------------------------------------
         if( g->state == 0 )
         {
-            update_player( g );
-            update_spawning( g );
-            update_enemies( g );
-            update_bullets( g );
-            update_powerups( g );
-            update_buddy( g );
+            if( gamepad_button_start() == 1 ) g->state = 5;   // pause
+            else
+            {
+                update_player( g );
+                update_spawning( g );
+                update_enemies( g );
+                update_bullets( g );
+                update_powerups( g );
+                update_buddy( g );
+            }
         }
         else if( g->state == 1 )      // dying
         {
             g->state_timer--;
             if( g->state_timer <= 0 )
             {
-                if( g->lives <= 0 ) { g->state = 3; show_message( g, "GAME OVER" ); g->state_timer = 300; }
+                if( g->lives <= 0 )
+                {
+                    g->state = 3;
+                    show_message( g, "GAME OVER" );
+                    g->state_timer = 300;
+                    play_title_music( g );   // gameplay succession ends here
+                }
                 else start_level( g );
             }
         }
@@ -1693,10 +2002,62 @@ void main()
             // At the halfway point the level number and silhouette
             // switch, so what flies IN is the new level.
             g->warp += 0.0125;
+            // the claw stays live during the fly-out: you can slide
+            // between lanes and JUMP — the old web's spikes stream
+            // outward with it and sweep past the claw plane
+            move_claw( g );
+            claw_jump( g );
+            // SPIKE SWEEP (phase A): as the old web streams outward, the
+            // tip of any spike sweeps past the claw plane. The crossing
+            // is edge-detected per lane from fly_factor (a pure function
+            // of warp), so dodging into a DIFFERENT spiked lane still
+            // gets you at its own crossing frame — and a jump clears it
+            // cleanly, since airborne frames are invulnerable.
+            //   EASY        — deflected: replay the same level
+            //   MEDIUM/HARD — killed: lose a life AND replay the level
+            if( g->warp_phase == 0 && g->warp_bounce == 0 )
+            {
+                int li = (int)g->player_lane;
+                if( li >= LANES ) li -= LANES;
+                if( g->SPIKE[ li ] > 0.05 && g->jump_timer <= 0 )
+                {
+                    float ztip = 1.0 - g->SPIKE[ li ];
+                    float rad = lerp( OUT_RX, IN_RX, ztip );
+                    float wprev = g->warp - 0.0125;
+                    if( wprev < 0 ) wprev = 0;
+                    float fprev = 1.0 + wprev * wprev * 12.0;
+                    if( rad * fly_factor( g ) >= OUT_RX &&
+                        rad * fprev < OUT_RX )
+                    {
+                        project( g, g->player_lane, 0 );
+                        if( g->difficulty == 0 )
+                        {
+                            g->warp_bounce = 1;
+                            explode( g, g->px, g->py, 30, 3 );
+                            shockwave( g, g->px, g->py );
+                            show_message( g, "SPIKED! REPLAY LEVEL" );
+                            sfx( g, BOOM );
+                        }
+                        else
+                        {
+                            // kill, but do NOT advance the level —
+                            // start_level respawns on the same web
+                            g->warp = 0;
+                            g->warp_phase = 0;
+                            kill_player( g );
+                            show_message( g, "SPIKED!" );
+                        }
+                    }
+                }
+            }
             if( g->warp >= 1.0 && g->warp_phase == 0 )
             {
-                g->level++;
-                make_shape( g );
+                if( g->warp_bounce == 0 )
+                {
+                    g->level++;
+                    make_shape( g );
+                }
+                else g->warp_bounce = 0;   // bounced: same web flies back in
                 g->warp_phase = 1;
             }
             g->state_timer--;
@@ -1720,21 +2081,85 @@ void main()
         }
         else if( g->state == 4 )      // title screen
         {
+            // title theme loops; (re)start it if it isn't running
+            if( get_channel_state( 0 ) != CH_PLAYING ) play_title_music( g );
             if( g->menu_cooldown > 0 ) g->menu_cooldown--;
             if( g->menu_cooldown == 0 )
             {
-                if( gamepad_left() > 0 && g->difficulty > 0 )
-                { g->difficulty--; g->menu_cooldown = 12; }
-                else if( gamepad_right() > 0 && g->difficulty < 2 )
-                { g->difficulty++; g->menu_cooldown = 12; }
+                if( gamepad_up() > 0 && g->difficulty > 0 )
+                { g->difficulty--; g->menu_cooldown = 12; sfx( g, BLIP ); }
+                else if( gamepad_down() > 0 && g->difficulty < 2 )
+                { g->difficulty++; g->menu_cooldown = 12; sfx( g, BLIP ); }
             }
             if( gamepad_button_a() == 1 || gamepad_button_b() == 1 ||
                 gamepad_button_start() == 1 )
+            {
+                play_track( g, g->music_index );   // begin the track run
                 start_level( g );
+            }
         }
-        update_particles( g );
-        update_shocks( g );
-        update_stars( g );
+        else if( g->state == 5 )      // PAUSE: music keeps playing
+        {
+            if( g->menu_cooldown > 0 ) g->menu_cooldown--;
+            if( g->menu_cooldown == 0 )
+            {
+                // LEFT/RIGHT: music volume. L/R buttons: SFX volume.
+                // UP/DOWN: soundtrack (switches live).
+                if( gamepad_right() > 0 )
+                {
+                    g->music_volume += 0.1;
+                    if( g->music_volume > 2.0 ) g->music_volume = 2.0;
+                    select_channel( 0 );
+                    set_channel_volume( g->music_volume );
+                    g->menu_cooldown = 8; sfx( g, BLIP );
+                }
+                else if( gamepad_left() > 0 )
+                {
+                    g->music_volume -= 0.1;
+                    if( g->music_volume < 0 ) g->music_volume = 0;
+                    select_channel( 0 );
+                    set_channel_volume( g->music_volume );
+                    g->menu_cooldown = 8; sfx( g, BLIP );
+                }
+                else if( gamepad_button_r() > 0 )
+                {
+                    g->sfx_volume += 0.1;
+                    if( g->sfx_volume > 2.0 ) g->sfx_volume = 2.0;
+                    g->menu_cooldown = 8;   // BLIP plays at the new level
+                    sfx( g, BLIP );
+                }
+                else if( gamepad_button_l() > 0 )
+                {
+                    g->sfx_volume -= 0.1;
+                    if( g->sfx_volume < 0 ) g->sfx_volume = 0;
+                    g->menu_cooldown = 8;
+                    sfx( g, BLIP );
+                }
+                else if( gamepad_down() > 0 )
+                {
+                    int t = g->music_index + 1;
+                    if( t > 3 ) t = 0;
+                    play_track( g, t );
+                    g->menu_cooldown = 12; sfx( g, BLIP );
+                }
+                else if( gamepad_up() > 0 )
+                {
+                    int t = g->music_index - 1;
+                    if( t < 0 ) t = 3;
+                    play_track( g, t );
+                    g->menu_cooldown = 12; sfx( g, BLIP );
+                }
+            }
+            if( gamepad_button_start() == 1 ) g->state = 0;
+        }
+        if( g->state != 5 )   // paused: the whole world freezes
+        {
+            update_particles( g );
+            update_shocks( g );
+            update_stars( g );
+        }
+        if( g->state != 3 && g->state != 4 )
+            update_music( g );   // track succession (incl. during pause)
         g->frame++;
 
         // -- render ---------------------------------------------------------
@@ -1760,6 +2185,7 @@ void main()
         render_particles( g );
         render_shocks( g );
         render_hud( g );
+        if( g->state == 5 ) render_pause( g );
         render_message( g );
 
         end_frame();

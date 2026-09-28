@@ -20,7 +20,7 @@ DEBUG_FLAGS   =
 ASM_DEBUG_FLAGS =
 
 # --- Phony Targets ---
-.PHONY: all asm vbin v32 debug clean
+.PHONY: all asm vbin vsnd v32 debug clean
 
 # Default target: Performs all steps in order
 all: prep clang asm vbin v32
@@ -79,18 +79,22 @@ textures/$(DEMO)_sprites.vtex: textures/$(DEMO)_sprites.png
 	$(TEXTURE_TOOL) textures/$(DEMO)_sprites.png -o textures/$(DEMO)_sprites.vtex
 
 vsnd:
-	$(SOUND_TOOL)   sounds/alert.wav      -o sounds/alert.vsnd
-	$(SOUND_TOOL)   sounds/beep.wav       -o sounds/beep.vsnd
-	$(SOUND_TOOL)   sounds/gameplay.wav   -o sounds/gameplay.vsnd
-	$(SOUND_TOOL)   sounds/engine.wav     -o sounds/engine.vsnd
-	$(SOUND_TOOL)   sounds/explosion.wav  -o sounds/explosion.vsnd
-	$(SOUND_TOOL)   sounds/hyperspace.wav -o sounds/hyperspace.vsnd
-	$(SOUND_TOOL)   sounds/missile.wav    -o sounds/missile.vsnd
-	$(SOUND_TOOL)   sounds/replenish.wav  -o sounds/replenish.vsnd
-	$(SOUND_TOOL)   sounds/title.wav      -o sounds/title.vsnd
+	$(SOUND_TOOL)   sounds/blip.wav       -o sounds/blip.vsnd
+	$(SOUND_TOOL)   sounds/boom.wav       -o sounds/boom.vsnd
+	$(SOUND_TOOL)   sounds/clear.wav      -o sounds/clear.vsnd
+	$(SOUND_TOOL)   sounds/death.wav      -o sounds/death.vsnd
+	$(SOUND_TOOL)   sounds/jump.wav       -o sounds/jump.vsnd
+	$(SOUND_TOOL)   sounds/m_title.wav    -o sounds/m_title.vsnd
+	$(SOUND_TOOL)   sounds/m_track1.wav   -o sounds/m_track1.vsnd
+	$(SOUND_TOOL)   sounds/m_track2.wav   -o sounds/m_track2.vsnd
+	$(SOUND_TOOL)   sounds/m_track3.wav   -o sounds/m_track3.vsnd
+	$(SOUND_TOOL)   sounds/m_track4.wav   -o sounds/m_track4.vsnd
+	$(SOUND_TOOL)   sounds/pickup.wav     -o sounds/pickup.vsnd
+	$(SOUND_TOOL)   sounds/shootsound.wav -o sounds/shootsound.vsnd
+	$(SOUND_TOOL)   sounds/zap.wav        -o sounds/zap.vsnd
 
 # Pack ROM cartridge (Depends on the binary and texture to ensure they are built first)
-v32: bin/$(DEMO).v32
+v32: vsnd bin/$(DEMO).v32
 
 bin/$(DEMO).v32: obj/$(DEMO).vbin
 	$(PACKER) $(DEMO).xml    -o bin/$(DEMO).v32
