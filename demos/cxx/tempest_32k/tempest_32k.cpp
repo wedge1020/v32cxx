@@ -55,6 +55,7 @@
 #include <v32/time.hpp>
 #include <v32/math.hpp>     // sqrt() for segment lengths (hardware pow)
 #include "audio.h"         // SPU: stop/assign/play channel, channel states
+#include "memcard.h"       // memory card: card_is_connected/read/write data
 
 // SPU channel-state register values (audio.h reads them raw): the
 // music succession logic compares against these
@@ -99,7 +100,7 @@
 #define MAX_BULLETS 32
 #define MAX_ENEMIES 24
 #define MAX_PARTICLES 220
-#define MAX_STARS 40
+#define MAX_STARS 80
 
 #define CX 320
 #define CY 168
@@ -167,9 +168,10 @@ struct Shock
     int life;
 };
 
-// background starfield: screen-space stars drifting outward from the
+// background starfield: screen-space stars streaming outward from the
 // vanishing point (matches the fly-into-the-tunnel camera), streaking
-// during warp-out. Deliberately mild — dim dots, low speed.
+// during warp-out. Bright and plainly visible — the original dim/slow
+// version was practically invisible against the dark background.
 struct Star
 {
     float x; float y;
@@ -179,7 +181,7 @@ struct Star
 struct PowerUp
 {
     int alive;
-    int type;        // 0 = superzap refill, 1 = AI buddy, 2 = extra life
+    int type;        // 0 = superzap, 1 = AI buddy, 2 = extra life, 3 = super laser
     float lane;
     float z;
 };
@@ -205,7 +207,7 @@ struct G
     // array size MUST be an int literal (v32c++ grammar rule — macros
     // like MAX_STARS are fine in expressions but NOT in declarations;
     // same reason LANES is spelled 16 everywhere below)
-    Star     STARFIELD[ 40 ];
+    Star     STARFIELD[ 80 ];
     float SPIKE[ 16 ];
 
     // game state
@@ -217,9 +219,16 @@ struct G
     int   superzaps;
     int   spawn_timer;
     int   spawn_interval;
-    int   state;               // 0 play, 1 dying, 2 warp-out, 3 game over, 4 title, 5 pause
+    int   state;               // 0 play, 1 dying, 2 warp-out, 3 game over, 4 title, 5 pause, 6 initials, 7 scores, 8 level select
     int   warp_phase;          // transition: 0 = old web flying out, 1 = new web flying in
     int   warp_bounce;         // transition: spike hit on EASY — skip the level advance
+    int   menu_row;            // title menu: selected row (0 play 1 scores 2 levels 3 difficulty)
+    int   select_level;        // level select screen: chosen level (1..16)
+    int   HISCORE[ 5 ];        // high score table, highest first (memcard)
+    int   HIINIT[ 5 ][ 3 ];    // 3-letter initials per high score entry
+    int   hs_rank;             // rank of the score currently being entered
+    int   entry_pos;           // initials entry: cursor 0..2
+    int   entry_letters[ 3 ];  // initials entry: current letters (char codes)
     int   difficulty;          // 0 easy, 1 medium, 2 hard (set on title screen)
     int   menu_cooldown;       // title screen: frames between L/R difficulty nudges
     int   state_timer;
@@ -232,6 +241,8 @@ struct G
     int   jump_cooldown;    // frames until the next leap is allowed
     int   buddy_timer;      // AI buddy drone: frames remaining
     int   buddy_cooldown;   // AI buddy: frames until next auto-shot
+    float buddy_lane;       // AI buddy: its OWN lane (eases to targets)
+    int   laser_timer;      // super laser power-up: frames remaining
     int   powerup_timer;    // frames until the next power-up spawns
     int   music_index;      // gameplay track currently queued (0..3)
     int   sfx_channel;      // round-robin SFX channel allocator (2..13)
@@ -532,6 +543,24 @@ void draw_text( G* g, char* s, float x, float y, float size, int c )
     }
 }
 
+// decimal string of n in out (out must hold >= 9 chars: max 7 digits + 0)
+void score_str( int n, char* out )
+{
+    char tmp[ 12 ];
+    int i = 0;
+    int len = 0;
+    if( n <= 0 ) { out[ 0 ] = '0'; out[ 1 ] = 0; return; }
+    while( n > 0 && i < 11 )
+    {
+        tmp[ i ] = '0' + n % 10;
+        n /= 10;
+        i++;
+    }
+    len = i;
+    for( i = 0; i < len; i++ ) out[ i ] = tmp[ len - 1 - i ];
+    out[ len ] = 0;
+}
+
 // ---------------------------------------------------------------------------
 //  Web geometry
 // ---------------------------------------------------------------------------
@@ -819,8 +848,34 @@ void level_clear( G* g );
 void fire( G* g )
 {
     if( g->fire_cooldown > 0 ) return;
-    g->fire_cooldown = 6;
     sfx( g, PEWPEW );
+    // SUPER LASER: three shots at once — the claw's own lane plus the
+    // two half-lanes either side of it, blanketing neighbouring rim
+    // lanes. Slightly slower cycle than the single blaster.
+    if( g->laser_timer > 0 )
+    {
+        g->fire_cooldown = 8;
+        int k;
+        for( k = -1; k <= 1; k++ )
+        {
+            float ln = g->player_lane + k * 1.5;
+            if( ln < 0 ) ln += LANES;
+            if( ln >= LANES ) ln -= LANES;
+            int i;
+            for( i = 0; i < MAX_BULLETS; i++ )
+            {
+                if( !g->BULLETS[ i ].alive )
+                {
+                    g->BULLETS[ i ].alive = 1;
+                    g->BULLETS[ i ].lane = ln;
+                    g->BULLETS[ i ].z = 0.02;
+                    break;
+                }
+            }
+        }
+        return;
+    }
+    g->fire_cooldown = 6;
     int i;
     for( i = 0; i < MAX_BULLETS; i++ )
     {
@@ -867,10 +922,16 @@ void move_claw( G* g )
     // OPEN WEBS: clamp the claw to its contiguous rim run so it can't
     // slide over a missing outline edge (see run_bounds). Fully closed
     // webs skip the clamp entirely — free movement all the way around.
-    if( !web_full( g ) )
+    // While AIRBORNE (jump) the clamp is suspended — leaping a rim gap
+    // is the one way to cross between a web's separated arcs.
+    // The run is looked up from the NEAREST lane, not the truncated
+    // one: a claw at 8.91 sits in the (8,9) gap and must fall back to
+    // lane 9's run — with truncation it clamped into the OTHER arc
+    // (the cross-half teleport bug).
+    if( !web_full( g ) && g->jump_timer <= 0 )
     {
         int plo; int phi;
-        int pli = (int)g->player_lane;
+        int pli = (int)( g->player_lane + 0.5 );
         if( pli >= LANES ) pli -= LANES;
         run_bounds( g, pli, &plo, &phi );
         if( plo == phi ) g->player_lane = plo;               // single-lane run
@@ -879,14 +940,19 @@ void move_claw( G* g )
             if( g->player_lane < plo ) g->player_lane = plo;
             if( g->player_lane > phi ) g->player_lane = phi;
         }
-        else  // wrapped run [plo..15]+[0..phi]: the gap is the open
-              // interval (phi,plo). Clamp back to whichever end the
-              // claw just left (nearest by run-midpoint), so it STOPS
-              // at the rim gap instead of teleporting across it.
+        else  // wrapped run [plo..15]+[0..phi]: the gap zone is the
+              // open interval (phi,plo) — ONLY positions there get
+              // clamped; everything else (including the 15->0 seam
+              // crossing) is legal run space. Snap back to whichever
+              // END of the gap the claw just left (nearest by run
+              // midpoint) — never across it.
         {
-            float mid = ( plo + phi ) * 0.5;
-            if( g->player_lane < mid ) g->player_lane = phi;
-            else                       g->player_lane = plo;
+            if( g->player_lane > phi && g->player_lane < plo )
+            {
+                float mid = ( plo + phi ) * 0.5;
+                if( g->player_lane < mid ) g->player_lane = phi;
+                else                       g->player_lane = plo;
+            }
         }
     }
 
@@ -921,6 +987,7 @@ void update_player( G* g )
 {
     move_claw( g );
     claw_jump( g );
+    if( g->laser_timer > 0 ) g->laser_timer--;
     if( gamepad_button_a() > 0 ) fire( g );
     if( gamepad_button_b() == 1 ) superzap( g );   // == 1: just-pressed edge
     if( g->fire_cooldown > 0 ) g->fire_cooldown--;
@@ -942,7 +1009,8 @@ void level_clear( G* g );
 
 // ---------------------------------------------------------------------------
 //  Power-ups: shoot the pods to collect them.
-//    type 0 = SUPERZAP refill, type 1 = AI buddy, type 2 = extra life
+//    type 0 = SUPERZAP refill, type 1 = AI buddy, type 2 = extra life,
+//    type 3 = SUPER LASER (triple-shot for a timed stretch)
 // ---------------------------------------------------------------------------
 void collect_powerup( G* g, int i )
 {
@@ -961,8 +1029,21 @@ void collect_powerup( G* g, int i )
     }
     else if( g->POWERUPS[ i ].type == 1 )
     {
-        g->buddy_timer = 12 * 60;
+        // easy keeps the buddy around much longer
+        int secs = 15;
+        if( g->difficulty == 0 ) secs = 30;
+        if( g->difficulty == 2 ) secs = 10;
+        g->buddy_timer = secs * 60;
+        g->buddy_lane = g->player_lane;
         show_message( g, "AI BUDDY ONLINE!" );
+    }
+    else if( g->POWERUPS[ i ].type == 3 )
+    {
+        int secs = 12;
+        if( g->difficulty == 0 ) secs = 20;
+        if( g->difficulty == 1 ) secs = 15;
+        g->laser_timer = secs * 60;
+        show_message( g, "SUPER LASER!" );
     }
     else
     {
@@ -1009,13 +1090,14 @@ void spawn_powerup( G* g )
         }
         g->POWERUPS[ i ].z = 1.0;
         int r = rng( g ) % 20;
-        if( r < 9 )       g->POWERUPS[ i ].type = 0;
-        else if( r < 18 )  g->POWERUPS[ i ].type = 1;
-        else               g->POWERUPS[ i ].type = 2;
+        if( r < 8 )       g->POWERUPS[ i ].type = 0;   // superzap
+        else if( r < 15 ) g->POWERUPS[ i ].type = 1;   // AI buddy
+        else if( r < 18 ) g->POWERUPS[ i ].type = 3;   // super laser
+        else              g->POWERUPS[ i ].type = 2;   // extra life
         // don't offer superzap refills when the player is already at
-        // the 4-charge cap — a wasted pod. Convert to a buddy instead.
+        // the 4-charge cap — a wasted pod. Convert to a laser instead.
         if( g->POWERUPS[ i ].type == 0 && g->superzaps >= 4 )
-            g->POWERUPS[ i ].type = 1;
+            g->POWERUPS[ i ].type = 3;
         // hard mode: no extra lives handed out — becomes a buddy
         if( g->POWERUPS[ i ].type == 2 && g->difficulty == 2 )
             g->POWERUPS[ i ].type = 1;
@@ -1049,12 +1131,18 @@ void update_powerups( G* g )
 
 // AI buddy: hovers by the claw, auto-fires at the enemy closest to the
 // player's lane every 30 frames while its timer lasts
+// AI buddy: an autonomous drone with its OWN lane — it swoops toward the
+// enemy nearest the player and fires FROM WHERE IT VISIBLY IS, once
+// aligned with the target. (Previously bullets spawned on the TARGET's
+// lane while the drone hovered beside the claw — shots looked like they
+// came from a completely different part of the web.)
 void update_buddy( G* g )
 {
     if( g->buddy_timer <= 0 ) return;
     g->buddy_timer--;
-    if( g->buddy_cooldown > 0 ) { g->buddy_cooldown--; return; }
+    if( g->buddy_cooldown > 0 ) g->buddy_cooldown--;
 
+    // pick the target: enemy closest to the PLAYER's lane
     int best = -1;
     float bestdiff = 999.0;
     int i;
@@ -1066,18 +1154,38 @@ void update_buddy( G* g )
         if( diff > LANES / 2 ) diff = LANES - diff;
         if( diff < bestdiff ) { bestdiff = diff; best = i; }
     }
-    if( best >= 0 )
+
+    // ease toward the target's lane (wrap-aware shortest arc); with no
+    // enemies alive, fall back to hovering beside the claw
+    float want = g->player_lane + 1.9;
+    if( best >= 0 ) want = g->ENEMIES[ best ].lane;
+    float d = want - g->buddy_lane;
+    while( d > LANES / 2 ) d -= LANES;
+    while( d < -LANES / 2 ) d += LANES;
+    g->buddy_lane += d * 0.2;
+    if( g->buddy_lane < 0 ) g->buddy_lane += LANES;
+    if( g->buddy_lane >= LANES ) g->buddy_lane -= LANES;
+
+    // fire only once ALIGNED, from the drone's own position
+    if( best >= 0 && g->buddy_cooldown <= 0 )
     {
-        int j;
-        for( j = 0; j < MAX_BULLETS; j++ )
+        float ad = g->ENEMIES[ best ].lane - g->buddy_lane;
+        while( ad > LANES / 2 ) ad -= LANES;
+        while( ad < -LANES / 2 ) ad += LANES;
+        if( ad < 0 ) ad = -ad;
+        if( ad < 0.6 )
         {
-            if( !g->BULLETS[ j ].alive )
+            int j;
+            for( j = 0; j < MAX_BULLETS; j++ )
             {
-                g->BULLETS[ j ].alive = 1;
-                g->BULLETS[ j ].lane = g->ENEMIES[ best ].lane;
-                g->BULLETS[ j ].z = 0.10;
-                g->buddy_cooldown = 30;
-                break;
+                if( !g->BULLETS[ j ].alive )
+                {
+                    g->BULLETS[ j ].alive = 1;
+                    g->BULLETS[ j ].lane = g->buddy_lane;
+                    g->BULLETS[ j ].z = 0.10;
+                    g->buddy_cooldown = 30;
+                    break;
+                }
             }
         }
     }
@@ -1288,7 +1396,7 @@ void update_particles( G* g )
 }
 
 // ---------------------------------------------------------------------------
-//  Background starfield — mild, cheap, always on
+//  Background starfield — bright, cheap, always on
 // ---------------------------------------------------------------------------
 void init_starfield( G* g )
 {
@@ -1297,7 +1405,7 @@ void init_starfield( G* g )
     {
         g->STARFIELD[ i ].x = frand( g ) * 640;
         g->STARFIELD[ i ].y = frand( g ) * 336;
-        g->STARFIELD[ i ].spd = 0.25 + frand( g ) * 0.5;
+        g->STARFIELD[ i ].spd = 0.8 + frand( g ) * 1.6;
     }
 }
 
@@ -1324,7 +1432,7 @@ void update_stars( G* g )
             float r = 4 + frand( g ) * 30;
             g->STARFIELD[ i ].x = CX + cos32( g, a ) * r;
             g->STARFIELD[ i ].y = CY + sin32( g, a ) * r;
-            g->STARFIELD[ i ].spd = 0.25 + frand( g ) * 0.5;
+            g->STARFIELD[ i ].spd = 0.8 + frand( g ) * 1.6;
         }
     }
 }
@@ -1335,11 +1443,17 @@ void render_starfield( G* g )
     set_blending_mode( BLEND_SOLID );
     for( i = 0; i < MAX_STARS; i++ )
     {
-        if( g->STARFIELD[ i ].spd > 0.45 )
-            set_multiply_color( make_color( 140, 150, 180 ) );
+        // fast/near stars: big and white; slow/far: smaller, cool blue
+        if( g->STARFIELD[ i ].spd > 1.6 )
+        {
+            set_multiply_color( make_color( 240, 245, 255 ) );
+            draw_glyph( g, '.', g->STARFIELD[ i ].x, g->STARFIELD[ i ].y, 5, 5 );
+        }
         else
-            set_multiply_color( make_color( 70, 80, 110 ) );
-        draw_glyph( g, '.', g->STARFIELD[ i ].x, g->STARFIELD[ i ].y, 3, 3 );
+        {
+            set_multiply_color( make_color( 150, 165, 215 ) );
+            draw_glyph( g, '.', g->STARFIELD[ i ].x, g->STARFIELD[ i ].y, 3, 3 );
+        }
     }
 }
 
@@ -1347,8 +1461,9 @@ void render_starfield( G* g )
 //  Title screen — block-letter "TEMPEST 32K" built from BIOS regions
 //  17-20 (graded 10x20 blocks: 20 solid down to 17 lightest), undulating
 //  horizontally with the wave phase picking the shade, plus a slow hue
-//  cycle. Difficulty menu underneath; all options wave, the selected
-//  one rides a bigger wave and color-cycles.
+//  cycle. Menu underneath (PLAY / HIGH SCORES / LEVEL SELECT /
+//  DIFFICULTY); all options wave, the selected one rides a bigger wave
+//  and color-cycles.
 // ---------------------------------------------------------------------------
 char* title_bitmap( int c )
 {
@@ -1403,38 +1518,43 @@ void render_title( G* g )
     g->last_scale_x = -9999.0;
     g->last_scale_y = -9999.0;
 
-    // difficulty menu — stacked, centered; every option undulates, the
-    // selection gets the bigger wave + hue cycle
-    char* names[ 3 ];
-    names[ 0 ] = "EASY";
-    names[ 1 ] = "MEDIUM";
-    names[ 2 ] = "HARD";
+    // menu — stacked, centered; every option undulates, the selection
+    // gets the bigger wave + hue cycle. Row 3 shows the difficulty;
+    // LEFT/RIGHT changes it while that row is selected.
+    char* rows[ 4 ];
+    rows[ 0 ] = "PLAY";
+    rows[ 1 ] = "HIGH SCORES";
+    rows[ 2 ] = "LEVEL SELECT";
+    if( g->difficulty == 0 )      rows[ 3 ] = "DIFFICULTY: EASY";
+    else if( g->difficulty == 1 ) rows[ 3 ] = "DIFFICULTY: MEDIUM";
+    else                          rows[ 3 ] = "DIFFICULTY: HARD";
     int d; int ci;
-    for( d = 0; d < 3; d++ )
+    for( d = 0; d < 4; d++ )
     {
         float sel = 0;
-        if( d == g->difficulty ) sel = 1;
+        if( d == g->menu_row ) sel = 1;
         float msz = 14 + sel * 4;
         // selected option gets wider letter spacing (0.78 vs 0.62)
         float adv = msz * 0.62;
         if( sel > 0 ) adv = msz * 0.78;
         ci = 0;
-        while( names[ d ][ ci ] != 0 )
+        while( rows[ d ][ ci ] != 0 )
         {
             float wob = sin32( g, ci * 0.6 + g->frame * 0.04 + d ) * ( 2 + sel * 4 );
-            if( d == g->difficulty )
+            if( d == g->menu_row )
                 set_multiply_color( hue( g->frame + ci * 14 ) );
             else
                 set_multiply_color( make_color( 90, 100, 125 ) );
-            draw_glyph( g, names[ d ][ ci ],
-                        320 + ( ci - ( string_len( names[ d ] ) - 1 ) / 2.0 ) * adv,
-                        160 + d * 30 + wob, msz, msz );
+            draw_glyph( g, rows[ d ][ ci ],
+                        320 + ( ci - ( string_len( rows[ d ] ) - 1 ) / 2.0 ) * adv,
+                        150 + d * 28 + wob, msz, msz );
             ci++;
         }
     }
 
     // controls hint
-    draw_text( g, "UP/DOWN: DIFFICULTY   A: PLAY", 232, 296, 10, make_color( 120, 130, 160 ) );
+    draw_text( g, "UP/DOWN: SELECT  LEFT/RIGHT: DIFFICULTY  A: GO",
+               172, 296, 10, make_color( 120, 130, 160 ) );
 }
 
 // ---------------------------------------------------------------------------
@@ -1701,6 +1821,7 @@ void render_powerups( G* g )
         int col;
         if( g->POWERUPS[ i ].type == 0 )      col = make_color( 255, 0, 255 );
         else if( g->POWERUPS[ i ].type == 1 ) col = make_color( 60, 255, 60 );
+        else if( g->POWERUPS[ i ].type == 3 ) col = make_color( 80, 220, 255 );
         else                                  col = make_color( 255, 220, 60 );
         set_blending_mode( BLEND_SOLID );
         set_multiply_color( col );
@@ -1711,14 +1832,13 @@ void render_powerups( G* g )
     }
 }
 
-// AI buddy drone: hovers beside the claw, bobbing; blinks out during
-// its final two seconds
+// AI buddy drone: swoops around the web on its OWN lane, bobbing;
+// blinks out during its final two seconds
 void render_buddy( G* g )
 {
     if( g->buddy_timer <= 0 ) return;
     if( g->buddy_timer < 120 && ( g->frame % 8 ) < 3 ) return;
-    float off = 1.9;
-    project( g, g->player_lane + off, 0.10 );
+    project( g, g->buddy_lane, 0.10 );
     float fly = fly_factor( g );
     float x = CX + ( g->px - CX ) / fly;
     float y = CY + ( g->py - CY ) / fly;
@@ -1787,6 +1907,22 @@ void render_hud( G* g )
         bud[ 4 ] = '0' + secs % 10;
         bud[ 5 ] = 0;
         draw_text( g, bud, 372, 344, 12, make_color( 120, 255, 160 ) );
+    }
+
+    // super laser countdown while active (blinks in the final seconds)
+    if( g->laser_timer > 0 )
+    {
+        if( g->laser_timer > 180 || ( g->frame % 8 ) < 4 )
+        {
+            char las[ 9 ];
+            int secs = g->laser_timer / 60;
+            las[ 0 ] = 'L'; las[ 1 ] = 'A'; las[ 2 ] = 'S'; las[ 3 ] = 'E';
+            las[ 4 ] = 'R'; las[ 5 ] = ' ';
+            las[ 6 ] = '0' + ( secs / 10 ) % 10;
+            las[ 7 ] = '0' + secs % 10;
+            las[ 8 ] = 0;
+            draw_text( g, las, 430, 344, 12, make_color( 80, 220, 255 ) );
+        }
     }
 }
 
@@ -1861,6 +1997,117 @@ void render_pause( G* g )
 }
 
 // ---------------------------------------------------------------------------
+//  High score screens — initials entry (state 6) and the table (state 7)
+// ---------------------------------------------------------------------------
+
+// state 6: "NEW HIGH SCORE" — big three-slot initials entry
+void render_entry( G* g )
+{
+    draw_party_text( g, "NEW HIGH SCORE!", 320, 70, 18, 300 );
+    char sbuf[ 12 ];
+    score_str( g->score, &sbuf[ 0 ] );
+    draw_party_text( g, &sbuf[ 0 ], 320, 120, 22, 40 );
+
+    // three big letter slots; the cursor slot hue-cycles
+    int i;
+    for( i = 0; i < 3; i++ )
+    {
+        char ch[ 2 ];
+        ch[ 0 ] = g->entry_letters[ i ];
+        ch[ 1 ] = 0;
+        int colr = make_color( 90, 100, 125 );
+        if( i == g->entry_pos ) colr = hue( g->frame );
+        draw_text( g, &ch[ 0 ], 320 + ( i - 1 ) * 56 - 10, 180, 30, colr );
+    }
+    draw_text( g, "ENTER YOUR INITIALS", 244, 160, 10, make_color( 120, 130, 160 ) );
+    draw_text( g, "UP/DOWN: LETTER  LEFT/RIGHT: MOVE  A: OK",
+               172, 280, 10, make_color( 120, 130, 160 ) );
+}
+
+// state 7: the stored table, top 5
+void render_scores( G* g )
+{
+    draw_party_text( g, "HIGH SCORES", 320, 56, 20, 80 );
+    int i;
+    for( i = 0; i < 5; i++ )
+    {
+        char row[ 18 ];
+        row[ 0 ] = '1' + i;
+        row[ 1 ] = '.';
+        row[ 2 ] = ' ';
+        row[ 3 ] = g->HIINIT[ i ][ 0 ];
+        row[ 4 ] = g->HIINIT[ i ][ 1 ];
+        row[ 5 ] = g->HIINIT[ i ][ 2 ];
+        row[ 6 ] = ' ';
+        score_str( g->HISCORE[ i ], &row[ 7 ] );
+        int colr = make_color( 120, 130, 160 );
+        if( i == 0 ) colr = hue( g->frame );
+        draw_text( g, row, 268, 130 + i * 32, 14, colr );
+    }
+    draw_text( g, "A: BACK", 296, 330, 10, make_color( 120, 130, 160 ) );
+}
+
+// state 8: level select — a slowly ROTATING wireframe of the chosen
+// level's web silhouette (real SHAPE data + real CONN gaps), LEFT/RIGHT
+// cycles the level. Levels beyond 8 reuse the 8 shapes (harder pacing).
+void render_levelselect( G* g )
+{
+    draw_party_text( g, "LEVEL SELECT", 320, 46, 18, 200 );
+    char lbuf[ 9 ];
+    lbuf[ 0 ] = 'L'; lbuf[ 1 ] = 'E'; lbuf[ 2 ] = 'V'; lbuf[ 3 ] = 'E';
+    lbuf[ 4 ] = 'L'; lbuf[ 5 ] = ' ';
+    lbuf[ 6 ] = '0' + ( g->select_level / 10 ) % 10;
+    lbuf[ 7 ] = '0' + g->select_level % 10;
+    lbuf[ 8 ] = 0;
+    draw_party_text( g, &lbuf[ 0 ], 320, 100, 16, 0 );
+
+    // rotating web preview: the real SHAPE outline spinning about the
+    // screen center (same draw_segment bar path the in-game web uses)
+    float spin = g->frame * 0.012;
+    float cx = 320;
+    float cy = 235;
+    float rx = 150;
+    float ry = 105;
+    int i;
+    set_blending_mode( v32::BlendAlpha );
+    for( i = 0; i < LANES; i++ )
+    {
+        if( !g->CONN[ i ] ) continue;   // open webs: mirror the rim gaps
+        int j = i + 1;
+        if( j >= LANES ) j -= LANES;
+        float a0 = spin + i * 0.392699081;   // i * PI/8
+        float a1 = spin + j * 0.392699081;
+        set_multiply_color( hue( g->frame + i * 16 ) );
+        draw_segment( g,
+                      cx + cos32( g, a0 ) * rx * g->SHAPE[ i ],
+                      cy + sin32( g, a0 ) * ry,
+                      cx + cos32( g, a1 ) * rx * g->SHAPE[ j ],
+                      cy + sin32( g, a1 ) * ry,
+                      5 );
+    }
+    g->last_region = -1;
+    g->last_scale_x = -9999.0;
+    g->last_scale_y = -9999.0;
+
+    // depth ring of dots at the tube's far end
+    set_blending_mode( BLEND_SOLID );
+    set_multiply_color( make_color( 90, 100, 130 ) );
+    for( i = 0; i < LANES; i++ )
+    {
+        float a = spin + i * 0.392699081 + 0.196;   // half-step between bars
+        draw_glyph( g, '.',
+                    cx + cos32( g, a ) * rx * g->SHAPE[ i ] * 0.45,
+                    cy + sin32( g, a ) * ry * 0.45, 3, 3 );
+    }
+    g->last_region = -1;
+    g->last_scale_x = -9999.0;
+    g->last_scale_y = -9999.0;
+
+    draw_text( g, "LEFT/RIGHT: LEVEL  A: START  B: BACK",
+               208, 330, 10, make_color( 120, 130, 160 ) );
+}
+
+// ---------------------------------------------------------------------------
 //  Level flow
 // ---------------------------------------------------------------------------
 void start_level( G* g )
@@ -1911,6 +2158,59 @@ void update_spawning( G* g )
 }
 
 // ---------------------------------------------------------------------------
+//  High scores — persisted on the Vircon32 memory card (raw layout; the
+//  card is a flat 32K-BYTE space = 8192 WORDS, and ALL memcard offsets
+//  and sizes are in WORDS — see the SDK's card_read_data asm: "movs"
+//  copies CR words; card_read_signature uses CR=20 for int[20]. Mixing
+//  in byte counts overflows the destination and SMASHES THE STACK —
+//  a 20-word buffer fed size=80 blew 60 words of stack, corrupting
+//  the return address: instant silent CPU halt at boot):
+//    words  0..19 : game signature, 20 words spelling "TEMPEST32KHS"
+//    words 20..24 : HISCORE[5]
+//    words 25..39 : HIINIT[5][3] as character codes
+//  A card whose signature doesn't match is treated as empty (defaults),
+//  and the first save claims the area. No card = defaults, saves skipped.
+//  Only card_is_connected/card_read_data/card_write_data are used, all
+//  with int* arguments — card_signature_matches' typedef'd pointer type
+//  (int[20]*) is deliberately avoided.
+// ---------------------------------------------------------------------------
+void hs_make_sig( char* tag, int* sig )
+{
+    int i;
+    for( i = 0; i < 20; i++ ) sig[ i ] = 0;
+    i = 0;
+    while( tag[ i ] != 0 && i < 20 ) { sig[ i ] = tag[ i ]; i++; }
+}
+
+void hs_load( G* g )
+{
+    int i; int j;
+    for( i = 0; i < 5; i++ )
+    {
+        g->HISCORE[ i ] = 0;
+        for( j = 0; j < 3; j++ ) g->HIINIT[ i ][ j ] = '-';
+    }
+    if( !card_is_connected() ) return;
+    int tag[ 20 ];
+    int got[ 20 ];
+    hs_make_sig( "TEMPEST32KHS", &tag[ 0 ] );
+    card_read_data( &got[ 0 ], 0, 20 );          // 20 WORDS, not bytes!
+    for( i = 0; i < 20; i++ ) if( got[ i ] != tag[ i ] ) return;
+    card_read_data( &g->HISCORE[ 0 ], 20, 5 );       // words 20..24
+    card_read_data( &g->HIINIT[ 0 ][ 0 ], 25, 15 );  // words 25..39
+}
+
+void hs_save( G* g )
+{
+    if( !card_is_connected() ) return;
+    int tag[ 20 ];
+    hs_make_sig( "TEMPEST32KHS", &tag[ 0 ] );
+    card_write_data( &tag[ 0 ], 0, 20 );
+    card_write_data( &g->HISCORE[ 0 ], 20, 5 );
+    card_write_data( &g->HIINIT[ 0 ][ 0 ], 25, 15 );
+}
+
+// ---------------------------------------------------------------------------
 //  Main
 // ---------------------------------------------------------------------------
 void init_state( G* g )
@@ -1945,6 +2245,8 @@ void init_state( G* g )
     // so every slot must be explicitly cleared here
     g->buddy_timer = 0;
     g->buddy_cooldown = 0;
+    g->buddy_lane = 0;
+    g->laser_timer = 0;
     g->powerup_timer = 500;
     g->jump_timer = 0;
     g->jump_cooldown = 0;
@@ -1952,12 +2254,20 @@ void init_state( G* g )
     g->sfx_channel = 2;
     g->music_volume = 0.8;
     g->sfx_volume = 0.8;
+    g->menu_row = 0;
+    g->select_level = 1;
+    g->hs_rank = -1;
+    g->entry_pos = 0;
+    g->entry_letters[ 0 ] = 'A';
+    g->entry_letters[ 1 ] = 'A';
+    g->entry_letters[ 2 ] = 'A';
     int i;
     for( i = 0; i < LANES; i++ ) g->CONN[ i ] = 1;   // closed until make_shape
     for( i = 0; i < 3; i++ ) g->SHOCKS[ i ].alive = 0;
     for( i = 0; i < 4; i++ ) g->POWERUPS[ i ].alive = 0;
     build_tables( g );
     init_starfield( g );
+    hs_load( g );
 }
 
 void main()
@@ -2073,16 +2383,37 @@ void main()
                 start_level( g );   // warp_phase reset inside
             }
         }
-        else if( g->state == 3 )      // game over -> title screen
+        else if( g->state == 3 )      // game over -> initials entry / title
         {
             g->state_timer--;
             if( g->state_timer <= 0 )
             {
-                // init_state resets difficulty to MEDIUM — keep the
-                // player's last choice across games
-                int dsave = g->difficulty;
-                init_state( g );
-                g->difficulty = dsave;
+                // did the run make the top-5 table? (score > 0 and it
+                // beats an existing entry; empty slots read as 0)
+                int k = -1;
+                if( g->score > 0 )
+                {
+                    int q;
+                    for( q = 0; q < 5; q++ )
+                        if( g->score > g->HISCORE[ q ] ) { k = q; break; }
+                }
+                if( k >= 0 )
+                {
+                    g->hs_rank = k;
+                    g->entry_pos = 0;
+                    g->entry_letters[ 0 ] = 'A';
+                    g->entry_letters[ 1 ] = 'A';
+                    g->entry_letters[ 2 ] = 'A';
+                    g->state = 6;   // prompt for initials
+                }
+                else
+                {
+                    // init_state resets difficulty to MEDIUM — keep the
+                    // player's last choice across games
+                    int dsave = g->difficulty;
+                    init_state( g );
+                    g->difficulty = dsave;
+                }
             }
         }
         else if( g->state == 4 )      // title screen
@@ -2092,16 +2423,133 @@ void main()
             if( g->menu_cooldown > 0 ) g->menu_cooldown--;
             if( g->menu_cooldown == 0 )
             {
-                if( gamepad_up() > 0 && g->difficulty > 0 )
-                { g->difficulty--; g->menu_cooldown = 12; sfx( g, BLIP ); }
-                else if( gamepad_down() > 0 && g->difficulty < 2 )
-                { g->difficulty++; g->menu_cooldown = 12; sfx( g, BLIP ); }
+                if( gamepad_up() > 0 )
+                { g->menu_row--; if( g->menu_row < 0 ) g->menu_row = 3;
+                  g->menu_cooldown = 10; sfx( g, BLIP ); }
+                else if( gamepad_down() > 0 )
+                { g->menu_row++; if( g->menu_row > 3 ) g->menu_row = 0;
+                  g->menu_cooldown = 10; sfx( g, BLIP ); }
+                else if( g->menu_row == 3 && gamepad_left() > 0 )
+                { g->difficulty--; if( g->difficulty < 0 ) g->difficulty = 2;
+                  g->menu_cooldown = 10; sfx( g, BLIP ); }
+                else if( g->menu_row == 3 && gamepad_right() > 0 )
+                { g->difficulty++; if( g->difficulty > 2 ) g->difficulty = 0;
+                  g->menu_cooldown = 10; sfx( g, BLIP ); }
             }
+            if( gamepad_button_a() == 1 || gamepad_button_start() == 1 )
+            {
+                if( g->menu_row == 0 )
+                {
+                    play_track( g, g->music_index );   // begin the track run
+                    start_level( g );
+                }
+                else if( g->menu_row == 1 ) g->state = 7;   // high scores
+                else if( g->menu_row == 2 )
+                {
+                    g->select_level = 1;
+                    g->level = 1;
+                    make_shape( g );      // preview data for the screen
+                    g->state = 8;         // level select
+                    sfx( g, BLIP );
+                }
+                // row 3 (difficulty): A does nothing — LEFT/RIGHT changes it
+            }
+        }
+        else if( g->state == 6 )      // new high score: initials entry
+        {
+            if( get_channel_state( 0 ) != CH_PLAYING ) play_title_music( g );
+            if( g->menu_cooldown > 0 ) g->menu_cooldown--;
+            if( g->menu_cooldown == 0 )
+            {
+                if( gamepad_up() > 0 )
+                {
+                    int l = g->entry_letters[ g->entry_pos ] + 1;
+                    if( l > 'Z' ) l = '0';
+                    if( l > '9' ) l = 'A';
+                    g->entry_letters[ g->entry_pos ] = l;
+                    g->menu_cooldown = 9; sfx( g, BLIP );
+                }
+                else if( gamepad_down() > 0 )
+                {
+                    int l = g->entry_letters[ g->entry_pos ] - 1;
+                    if( l < '0' ) l = 'Z';   // order matters: below '0'
+                    if( l < 'A' ) l = '9';  // then the A/9 boundary
+                    g->entry_letters[ g->entry_pos ] = l;
+                    g->menu_cooldown = 9; sfx( g, BLIP );
+                }
+                else if( gamepad_left() > 0 )
+                { g->entry_pos--; if( g->entry_pos < 0 ) g->entry_pos = 2;
+                  g->menu_cooldown = 9; sfx( g, BLIP ); }
+                else if( gamepad_right() > 0 )
+                { g->entry_pos++; if( g->entry_pos > 2 ) g->entry_pos = 0;
+                  g->menu_cooldown = 9; sfx( g, BLIP ); }
+            }
+            if( gamepad_button_a() == 1 || gamepad_button_start() == 1 )
+            {
+                // insert the score at its rank, shifting the rest down
+                int k = g->hs_rank;
+                int i;
+                for( i = 4; i > k; i-- )
+                {
+                    g->HISCORE[ i ] = g->HISCORE[ i - 1 ];
+                    g->HIINIT[ i ][ 0 ] = g->HIINIT[ i - 1 ][ 0 ];
+                    g->HIINIT[ i ][ 1 ] = g->HIINIT[ i - 1 ][ 1 ];
+                    g->HIINIT[ i ][ 2 ] = g->HIINIT[ i - 1 ][ 2 ];
+                }
+                g->HISCORE[ k ] = g->score;
+                g->HIINIT[ k ][ 0 ] = g->entry_letters[ 0 ];
+                g->HIINIT[ k ][ 1 ] = g->entry_letters[ 1 ];
+                g->HIINIT[ k ][ 2 ] = g->entry_letters[ 2 ];
+                hs_save( g );
+                g->state = 7;   // show the updated table
+                sfx( g, CLEAR );
+            }
+        }
+        else if( g->state == 7 )      // high scores table
+        {
+            if( get_channel_state( 0 ) != CH_PLAYING ) play_title_music( g );
             if( gamepad_button_a() == 1 || gamepad_button_b() == 1 ||
                 gamepad_button_start() == 1 )
             {
+                int dsave = g->difficulty;
+                init_state( g );
+                g->difficulty = dsave;
+            }
+        }
+        else if( g->state == 8 )      // level select
+        {
+            if( get_channel_state( 0 ) != CH_PLAYING ) play_title_music( g );
+            if( g->menu_cooldown > 0 ) g->menu_cooldown--;
+            if( g->menu_cooldown == 0 )
+            {
+                if( gamepad_right() > 0 )
+                {
+                    g->select_level++;
+                    if( g->select_level > 16 ) g->select_level = 1;
+                    g->level = g->select_level;
+                    make_shape( g );      // refresh the rotating preview
+                    g->menu_cooldown = 10; sfx( g, BLIP );
+                }
+                else if( gamepad_left() > 0 )
+                {
+                    g->select_level--;
+                    if( g->select_level < 1 ) g->select_level = 16;
+                    g->level = g->select_level;
+                    make_shape( g );
+                    g->menu_cooldown = 10; sfx( g, BLIP );
+                }
+            }
+            if( gamepad_button_a() == 1 || gamepad_button_start() == 1 )
+            {
+                g->level = g->select_level;
                 play_track( g, g->music_index );   // begin the track run
                 start_level( g );
+            }
+            else if( gamepad_button_b() == 1 )
+            {
+                g->level = 1;          // restore the normal PLAY path
+                make_shape( g );
+                g->state = 4;
             }
         }
         else if( g->state == 5 )      // PAUSE: music keeps playing
@@ -2164,8 +2612,10 @@ void main()
             update_shocks( g );
             update_stars( g );
         }
-        if( g->state != 3 && g->state != 4 )
-            update_music( g );   // track succession (incl. during pause)
+        if( g->state != 3 && g->state != 4 && g->state != 6 &&
+            g->state != 7 && g->state != 8 )
+            update_music( g );   // track succession (incl. during pause;
+                                // menus keep the looping title theme)
         g->frame++;
 
         // -- render ---------------------------------------------------------
@@ -2178,6 +2628,24 @@ void main()
         if( g->state == 4 )
         {
             render_title( g );
+            end_frame();
+            continue;
+        }
+        if( g->state == 6 )
+        {
+            render_entry( g );
+            end_frame();
+            continue;
+        }
+        if( g->state == 7 )
+        {
+            render_scores( g );
+            end_frame();
+            continue;
+        }
+        if( g->state == 8 )
+        {
+            render_levelselect( g );
             end_frame();
             continue;
         }
