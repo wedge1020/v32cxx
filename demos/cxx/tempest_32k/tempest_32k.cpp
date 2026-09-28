@@ -43,8 +43,10 @@
 //      spelled out in every array declaration.
 //
 //  v32c++ subset compliance:
-//    * No STL, no templates, no ternary, no array initializer lists — all
-//      arrays are filled at runtime.
+//    * No STL, no templates. Ternary and array initializer lists ARE
+//      supported by current v32c++ builds (lowered/translated by the
+//      transpiler), but this file still avoids them — arrays are
+//      filled at runtime; see the VIRCON32_QUIRKS.md / README notes.
 //    * `main` is void (transpiler emits `void main(void)`).
 // *****************************************************************************
 
@@ -877,10 +879,14 @@ void move_claw( G* g )
             if( g->player_lane < plo ) g->player_lane = plo;
             if( g->player_lane > phi ) g->player_lane = phi;
         }
-        else  // wrapped run [plo..15]+[0..phi]: only the gap zone is invalid
+        else  // wrapped run [plo..15]+[0..phi]: the gap is the open
+              // interval (phi,plo). Clamp back to whichever end the
+              // claw just left (nearest by run-midpoint), so it STOPS
+              // at the rim gap instead of teleporting across it.
         {
-            if( g->player_lane > phi && g->player_lane < plo )
-                g->player_lane = plo;
+            float mid = ( plo + phi ) * 0.5;
+            if( g->player_lane < mid ) g->player_lane = phi;
+            else                       g->player_lane = plo;
         }
     }
 
