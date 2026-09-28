@@ -187,7 +187,10 @@ struct G
     int   superzaps;
     int   spawn_timer;
     int   spawn_interval;
-    int   state;               // 0 play, 1 dying, 2 warp-out, 3 game over
+    int   state;               // 0 play, 1 dying, 2 warp-out, 3 game over, 4 title
+    int   warp_phase;          // transition: 0 = old web flying out, 1 = new web flying in
+    int   difficulty;          // 0 easy, 1 medium, 2 hard (set on title screen)
+    int   menu_cooldown;       // title screen: frames between L/R difficulty nudges
     int   state_timer;
     char  message[ 24 ];
     int   message_timer;
@@ -498,6 +501,21 @@ void draw_text( G* g, char* s, float x, float y, float size, int c )
 //  Web geometry
 // ---------------------------------------------------------------------------
 // (lane, z) -> screen point, via g->px / g->py / g->pscale
+// level transition geometry factor. Phase A (warp 0->1): the whole
+// web, rim included, streams outward past the stationary claw — a
+// UNIFORM scale about the tube axis, so geometry never reorders (a
+// z-proportional scale let the far end overtake the rim and the tube
+// turned inside-out). Phase B (warp 1->2): the NEXT web shrinks back
+// in from off-screen to settle under the claw. 1.0 during play.
+float fly_factor( G* g )
+{
+    if( g->warp <= 0 ) return 1.0;
+    if( g->warp < 1.0 ) return 1.0 + g->warp * g->warp * 12.0;
+    float t = g->warp - 1.0;
+    if( t > 1.0 ) t = 1.0;
+    return 13.0 - t * 12.0;
+}
+
 void project( G* g, float lane, float z )
 {
     float ang = -1.57079632 + ( lane / LANES ) * 6.28318531;
@@ -513,11 +531,9 @@ void project( G* g, float lane, float z )
     float shape = g->SHAPE[ li ] + ( g->SHAPE[ ln ] - g->SHAPE[ li ] ) * f;
     float rx = lerp( OUT_RX, IN_RX, z ) * shape;
     float ry = lerp( OUT_RY, IN_RY, z );
-    // level transition ("the web flies past you"): during warp-out the
-    // deeper geometry streams outward past the stationary claw. The
-    // rim (z=0) is anchored — the claw, rim outline and spikes tips'
-    // foot stay put; spokes stretch, rings/far cap rush off-screen.
-    float fly = 1.0 + g->warp * g->warp * 7.0 * z;
+    // level transition: uniform outward streaming (see fly_factor) —
+    // everything scales together, so the tube never inverts
+    float fly = fly_factor( g );
     rx *= fly;
     ry *= fly;
     // camera sway: the vanishing point (z=1) leans toward the player's
@@ -802,6 +818,9 @@ void spawn_powerup( G* g )
         // the 4-charge cap — a wasted pod. Convert to a buddy instead.
         if( g->POWERUPS[ i ].type == 0 && g->superzaps >= 4 )
             g->POWERUPS[ i ].type = 1;
+        // hard mode: no extra lives handed out — becomes a buddy
+        if( g->POWERUPS[ i ].type == 2 && g->difficulty == 2 )
+            g->POWERUPS[ i ].type = 1;
         return;
     }
 }
@@ -818,10 +837,15 @@ void update_powerups( G* g )
     g->powerup_timer--;
     if( g->powerup_timer <= 0 )
     {
-        g->powerup_timer = 700 + rng( g ) % 700;
+        if( g->difficulty == 0 )      g->powerup_timer = 420 + rng( g ) % 500;
+        else if( g->difficulty == 2 ) g->powerup_timer = 1300 + rng( g ) % 900;
+        else                          g->powerup_timer = 700 + rng( g ) % 700;
+        int cap = 2;
+        if( g->difficulty == 0 ) cap = 3;   // easy: pods stack up
+        if( g->difficulty == 2 ) cap = 1;   // hard: one at a time
         int n = 0;
         for( i = 0; i < 4; i++ ) if( g->POWERUPS[ i ].alive ) n++;
-        if( n < 2 ) spawn_powerup( g );
+        if( n < cap ) spawn_powerup( g );
     }
 }
 
@@ -869,6 +893,8 @@ void update_enemies( G* g )
         if( !g->ENEMIES[ i ].alive ) continue;
 
         float speed = 0.0035 + g->level * 0.0004;
+        if( g->difficulty == 0 ) speed *= 0.8;
+        if( g->difficulty == 2 ) speed *= 1.25;
 
         // spiker: patrols mid-tunnel laying spikes
         if( g->ENEMIES[ i ].type == 2 )
@@ -998,7 +1024,8 @@ void update_bullets( G* g )
 void level_clear( G* g )
 {
     g->state = 2;
-    g->state_timer = 160;
+    g->state_timer = 160;     // exactly 160 * 0.0125 = warp 2.0: fly-out + fly-in
+    g->warp_phase = 0;
     g->warp = 0;
     show_message( g, "EXCELLENT!" );
     g->score += 1000 + g->level * 250;
@@ -1047,8 +1074,10 @@ void init_starfield( G* g )
 void update_stars( G* g )
 {
     int i;
-    // warp-out: the ship surges forward, so the stars streak
-    float boost = 1.0 + g->warp * 6.0;
+    // stars streak only while the old web flies OUT (phase A); during
+    // the new web's fly-in they calm back down
+    float boost = 1.0;
+    if( g->warp > 0 && g->warp < 1.0 ) boost = 1.0 + g->warp * 5.0;
     for( i = 0; i < MAX_STARS; i++ )
     {
         float dx = g->STARFIELD[ i ].x - CX;
@@ -1082,6 +1111,97 @@ void render_starfield( G* g )
             set_multiply_color( make_color( 70, 80, 110 ) );
         draw_glyph( g, '.', g->STARFIELD[ i ].x, g->STARFIELD[ i ].y, 3, 3 );
     }
+}
+
+// ---------------------------------------------------------------------------
+//  Title screen — block-letter "TEMPEST 32K" built from BIOS regions
+//  17-20 (graded 10x20 blocks: 20 solid down to 17 lightest), undulating
+//  horizontally with the wave phase picking the shade, plus a slow hue
+//  cycle. Difficulty menu underneath; all options wave, the selected
+//  one rides a bigger wave and color-cycles.
+// ---------------------------------------------------------------------------
+char* title_bitmap( int c )
+{
+    // 5x7 pixel font, row-major, one 35-char string per glyph
+    if( c == 'T' ) return "11111001000010000100001000010000100";
+    if( c == 'E' ) return "11111100001000011110100001000011111";
+    if( c == 'M' ) return "10001110111010110101100011000110001";
+    if( c == 'P' ) return "11110100011000111110100001000010000";
+    if( c == 'S' ) return "01111100001000001110000010000111110";
+    if( c == '3' ) return "11110000010000101110000010000111110";
+    if( c == '2' ) return "11110000010000100110010001000011111";
+    if( c == 'K' ) return "10001100101010011000101001001010001";
+    return "00000000000000000000000000000000000";   // space
+}
+
+void render_title( G* g )
+{
+    char* word = "TEMPEST 32K";
+    float t = g->frame * 0.06;
+    int i = 0; int r; int c;
+
+    set_blending_mode( BLEND_SOLID );
+    set_drawing_scale( 0.8, 0.4 );     // one scale for all 8x8 block cells
+    int creg = -1;                     // region cache (raw draws, not glyphs)
+
+    while( word[ i ] != 0 )
+    {
+        char* bm = title_bitmap( word[ i ] );
+        // slow hue cycle, offset per letter so the rainbow drifts along
+        set_multiply_color( hue( g->frame + i * 22 ) );
+        for( r = 0; r < 7; r++ )
+        {
+            for( c = 0; c < 5; c++ )
+            {
+                if( bm[ r * 5 + c ] != '1' ) continue;
+                int colg = i * 5 + c;
+                float wv = sin32( g, colg * 0.5 + t );
+                int reg = 17;
+                if( wv > 0.55 )       reg = 20;   // crest: solid
+                else if( wv > 0.0 )   reg = 19;
+                else if( wv > -0.55 ) reg = 18;
+                if( reg != creg ) { select_region( reg ); creg = reg; }
+                float bx = 56 + i * 48 + c * 8 + wv * 5.0;
+                float by = 48 + r * 8 + sin32( g, colg * 0.28 + t * 0.7 ) * 3.5;
+                draw_region_zoomed_at( (int)( bx ), (int)( by ) );
+            }
+        }
+        i++;
+    }
+    // raw region draws invalidate the draw_glyph cache
+    g->last_region = -1;
+    g->last_scale_x = -9999.0;
+    g->last_scale_y = -9999.0;
+
+    // difficulty menu — stacked, centered; every option undulates, the
+    // selection gets the bigger wave + hue cycle
+    char* names[ 3 ];
+    names[ 0 ] = "EASY";
+    names[ 1 ] = "MEDIUM";
+    names[ 2 ] = "HARD";
+    int d; int ci;
+    for( d = 0; d < 3; d++ )
+    {
+        float sel = 0;
+        if( d == g->difficulty ) sel = 1;
+        float msz = 14 + sel * 4;
+        ci = 0;
+        while( names[ d ][ ci ] != 0 )
+        {
+            float wob = sin32( g, ci * 0.6 + g->frame * 0.04 + d ) * ( 2 + sel * 4 );
+            if( d == g->difficulty )
+                set_multiply_color( hue( g->frame + ci * 14 ) );
+            else
+                set_multiply_color( make_color( 90, 100, 125 ) );
+            draw_glyph( g, names[ d ][ ci ],
+                        320 + ( ci - string_len( names[ d ] ) / 2.0 ) * msz * 0.62,
+                        160 + d * 30 + wob, msz, msz );
+            ci++;
+        }
+    }
+
+    // controls hint
+    draw_text( g, "L/R: DIFFICULTY   A: PLAY", 232, 296, 10, make_color( 120, 130, 160 ) );
 }
 
 // ---------------------------------------------------------------------------
@@ -1195,10 +1315,13 @@ void render_player( G* g )
     if( g->state == 1 ) return;   // dying: particles only
 
     // transition rework: the claw NO LONGER dives into the tube on
-    // warp-out — it stays parked on the rim while the web streams
-    // past it (see the fly factor in project())
+    // warp-out — it parks on the rim while the web streams past it.
+    // project() has the fly factor baked in, so divide it back out.
     project( g, g->player_lane, 0 );
     float x = g->px; float y = g->py; float s = g->pscale;
+    float fly = fly_factor( g );
+    x = CX + ( x - CX ) / fly;
+    y = CY + ( y - CY ) / fly;
 
     // jump arc: airborne claw pops toward the camera — bigger and
     // pushed radially outward from the tube axis (T2K-style leap)
@@ -1361,8 +1484,10 @@ void render_buddy( G* g )
     if( g->buddy_timer < 120 && ( g->frame % 8 ) < 3 ) return;
     float off = 1.9;
     project( g, g->player_lane + off, 0.10 );
-    float x = g->px;
-    float y = g->py + sin32( g, g->frame * 0.15 ) * 4;
+    float fly = fly_factor( g );
+    float x = CX + ( g->px - CX ) / fly;
+    float y = CY + ( g->py - CY ) / fly;
+    y += sin32( g, g->frame * 0.15 ) * 4;
     set_blending_mode( BLEND_SOLID );
     set_multiply_color( make_color( 120, 255, 160 ) );
     draw_glyph( g, 'W', x, y, 10, 10 );
@@ -1445,11 +1570,19 @@ void start_level( G* g )
     int i;
     for( i = 0; i < MAX_ENEMIES; i++ ) g->ENEMIES[ i ].alive = 0;
     for( i = 0; i < MAX_BULLETS; i++ ) g->BULLETS[ i ].alive = 0;
-    g->superzaps = 2;
+    int zaps = 2;
+    if( g->difficulty == 0 ) zaps = 3;
+    if( g->difficulty == 2 ) zaps = 1;
+    g->superzaps = zaps;
     for( i = 0; i < LANES; i++ ) g->SPIKE[ i ] = 0;
     g->launched = 0;
     make_shape( g );
+    g->warp = 0;              // insurance: no transition residue in play
+    g->warp_phase = 0;
     g->spawn_interval = 70 - g->level * 2;
+    // difficulty pacing: easy breathes, hard floods
+    if( g->difficulty == 0 ) g->spawn_interval += 14;
+    if( g->difficulty == 2 ) g->spawn_interval -= 12;
     if( g->spawn_interval < 18 ) g->spawn_interval = 18;
     g->spawn_timer = 40;
     g->state = 0;
@@ -1466,8 +1599,11 @@ void update_spawning( G* g )
         int tanker = ( roll == 0 );
         int spiker = ( roll == 1 );
         spawn_enemy( g, spiker ? 2 : ( tanker ? 1 : 0 ) );
+        int quota = 18 + g->level;
+        if( g->difficulty == 0 ) quota = 14 + g->level;
+        if( g->difficulty == 2 ) quota = 23 + g->level;
         g->launched++;
-        if( g->launched >= 18 + g->level )
+        if( g->launched >= quota )
         {
             g->spawn_timer = 999999;   // stop spawning; level ends when clear
             g->launched = 0;
@@ -1493,8 +1629,14 @@ void init_state( G* g )
     g->score = 0;
     g->level = 1;
     g->warp = 0;
+    g->warp_phase = 0;
     g->frame = 0;
     g->rng_state = 12345;
+    g->difficulty = 1;
+    g->menu_cooldown = 0;
+    g->state = 4;          // boot straight to the title screen
+    g->message_timer = 0;
+    g->message[ 0 ] = 0;
     g->last_region = -1;
     g->last_scale_x = -9999.0;
     g->last_scale_y = -9999.0;
@@ -1521,14 +1663,7 @@ void main()
     // ALL mutable state lives on the heap: file-scope variables in
     // generated Vircon32 C are read-only (no `global` keyword emitted)
     G* g = new G;
-    init_state( g );
-    // start_level (not just init_state) is required at boot: it is
-    // what actually zeroes enemies/bullets/spikes, grants the 2
-    // superzaps and sets the spawn timers + state=0. Heap memory is
-    // not guaranteed zeroed, so relying on that was luck.
-    start_level( g );
-    make_shape( g );
-    show_message( g, "TEMPEST 32K" );
+    init_state( g );          // sets state 4 = title screen; heap-safe boot
 
     while( 1 )
     {
@@ -1553,22 +1688,49 @@ void main()
         }
         else if( g->state == 2 )      // warp-out: web flies past the claw
         {
-            // purely cosmetic now — the claw parks on the rim and the
-            // geometry streams outward (fly factor in project()), so
-            // the old mid-warp spike collision no longer applies
-            g->warp += 0.012;
+            // two phases: A — the old web streams outward off-screen;
+            // B — the next level's web shrinks back in to settle.
+            // At the halfway point the level number and silhouette
+            // switch, so what flies IN is the new level.
+            g->warp += 0.0125;
+            if( g->warp >= 1.0 && g->warp_phase == 0 )
+            {
+                g->level++;
+                make_shape( g );
+                g->warp_phase = 1;
+            }
             g->state_timer--;
-            if( g->state_timer <= 0 ) { g->level++; g->warp = 0; start_level( g ); }
+            if( g->state_timer <= 0 )
+            {
+                g->warp = 0;
+                start_level( g );   // warp_phase reset inside
+            }
         }
-        else if( g->state == 3 )      // game over
+        else if( g->state == 3 )      // game over -> title screen
         {
             g->state_timer--;
             if( g->state_timer <= 0 )
             {
+                // init_state resets difficulty to MEDIUM — keep the
+                // player's last choice across games
+                int dsave = g->difficulty;
                 init_state( g );
-                start_level( g );
-                g->state = 0;
+                g->difficulty = dsave;
             }
+        }
+        else if( g->state == 4 )      // title screen
+        {
+            if( g->menu_cooldown > 0 ) g->menu_cooldown--;
+            if( g->menu_cooldown == 0 )
+            {
+                if( gamepad_left() > 0 && g->difficulty > 0 )
+                { g->difficulty--; g->menu_cooldown = 12; }
+                else if( gamepad_right() > 0 && g->difficulty < 2 )
+                { g->difficulty++; g->menu_cooldown = 12; }
+            }
+            if( gamepad_button_a() == 1 || gamepad_button_b() == 1 ||
+                gamepad_button_start() == 1 )
+                start_level( g );
         }
         update_particles( g );
         update_shocks( g );
@@ -1582,6 +1744,12 @@ void main()
         set_multiply_color( make_color( 255, 255, 255 ) );
         clear_screen( make_color( 2, 2, 8 ) );
         render_starfield( g );
+        if( g->state == 4 )
+        {
+            render_title( g );
+            end_frame();
+            continue;
+        }
         render_web( g );
         render_spikes( g );
         render_bullets( g );
