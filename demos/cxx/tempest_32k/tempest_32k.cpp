@@ -37,7 +37,8 @@
 //    * set_multiply_color(int); set_blending_mode(int) — 0 = solid,
 //      v32::BlendAlpha = 0x20, v32::BlendAdd = 0x21.
 //    * BIOS font: texture -1 has ONE REGION PER CHARACTER — select_region
-//      with the character code, then draw_region_at. Base glyph is 10x20 px.
+//      with the character code, then draw_region_zoomed_at (the plain
+//      DrawRegion command ignores the scale ports). Base glyph is 10x20 px.
 //    * Array sizes must be INT LITERALS (grammar rule), so LANES = 16 is
 //      spelled out in every array declaration.
 //
@@ -50,6 +51,7 @@
 #include <v32/video.hpp>
 #include <v32/input.hpp>
 #include <v32/time.hpp>
+#include <v32/math.hpp>     // sqrt() for segment lengths (hardware pow)
 
 // 0 = solid (no blending); the v32 enum only names alpha/add/subtract
 #define BLEND_SOLID 0
@@ -124,6 +126,7 @@ struct G
 {
     // math tables
     float SIN_TABLE[ 256 ];
+    float COS_TABLE[ 256 ];
 
     // web geometry
     float SHAPE[ 16 ];
@@ -171,6 +174,8 @@ float lerp( float a, float b, float t )
     return a + ( b - a ) * t;
 }
 
+float cos_taylor( float x );   // fwd: used by build_tables below
+
 float sin_taylor( float x )
 {
     while( x > 3.14159265 ) x -= 6.28318531;
@@ -189,6 +194,7 @@ void build_tables( G* g )
     {
         float a = ( i * 3.14159265 * 2.0 ) / 256.0;
         g->SIN_TABLE[ i ] = sin_taylor( a );
+        g->COS_TABLE[ i ] = cos_taylor( a );
     }
 }
 
@@ -198,9 +204,15 @@ float sin32( G* g, float x )
     return g->SIN_TABLE[ i ];
 }
 
+float cos_taylor( float x )
+{
+    return sin_taylor( x + 1.57079632 );
+}
+
 float cos32( G* g, float x )
 {
-    return sin32( g, x + 1.57079632 );
+    int i = ( (int)( x * 40.7436611 ) ) & 255;
+    return g->COS_TABLE[ i ];
 }
 
 float fabs_sin( G* g, float x )
@@ -280,7 +292,10 @@ void draw_glyph( G* g, int c, float x, float y, float w, float h )
         g->last_scale_x = sx;
         g->last_scale_y = sy;
     }
-    draw_region_at( (int)( x - w / 2 ), (int)( y - h / 2 ) );
+    // ZOOMED command, not plain DrawRegion: the GPU command table
+    // shows plain DrawRegion ignores the scale ports — only the
+    // Zoomed/Rotozoomed variants apply them
+    draw_region_zoomed_at( (int)( x - w / 2 ), (int)( y - h / 2 ) );
 }
 
 // dotted line of tiny glyphs between two points (tunnel edges, rings).
@@ -311,6 +326,84 @@ int string_len( char* s )
     int n = 0;
     while( s[ n ] != 0 ) n++;
     return n;
+}
+
+// ---------------------------------------------------------------------------
+//  Vector-style web outlines
+// ---------------------------------------------------------------------------
+
+//  Best-match angle for direction (dx,dy), as a 256-step turn index:
+//  coarse 32-step scan of the direction tables, then a +-4 refine
+//  around the winner. Multiply by 2*PI/256 (0.024543692) for radians.
+//  Convention matches set_drawing_angle: in y-down screen coords the
+//  resulting angle grows clockwise, which is what the GPU expects.
+int dir_angle( G* g, float dx, float dy )
+{
+    int i;
+    int best = 0;
+    float bestdot = -1000000000.0;
+    for( i = 0; i < 256; i += 8 )          // coarse: 32 steps
+    {
+        float dot = g->COS_TABLE[ i ] * dx + g->SIN_TABLE[ i ] * dy;
+        if( dot > bestdot ) { bestdot = dot; best = i; }
+    }
+    int j0 = best - 4;
+    if( j0 < 0 ) j0 += 256;
+    for( i = 0; i < 8; i++ )               // refine around the winner
+    {
+        int j = ( j0 + i ) & 255;
+        float dot = g->COS_TABLE[ j ] * dx + g->SIN_TABLE[ j ] * dy;
+        if( dot > bestdot ) { bestdot = dot; best = j; }
+    }
+    return best;   // 256-step turn index; caller converts to radians
+}
+
+//  Solid bar from (x0,y0) to (x1,y1), thickness in pixels. BIOS font
+//  REGION 20 is a solid 10x20 block with its DEFAULT hotspot at the
+//  TOP-LEFT (print_at draws text top-left referenced, so all BIOS
+//  regions are defined that way). NEVER touch region 20's bounds or
+//  hotspot: redefining them (define_region / set_region_hotspot)
+//  replaces the BIOS's correct geometry with guessed coordinates and
+//  the draws sample the texture's magenta region-outline lines
+//  instead of the solid block (empirically confirmed).
+//
+//  Placement with a top-left hotspot: rotation pivots at the draw
+//  point, so we draw at (start + half-thickness perpendicular offset),
+//  which centers the bar on the line. Angle in RADIANS (video.h).
+//
+//  SOLID-alpha only — additive bars would re-trigger the emulator's
+//  BlendAdd saturation bug. Invalidates draw_glyph's region/scale
+//  cache, since this bypasses it and changes GPU state directly.
+void draw_segment( G* g, float x0, float y0, float x1, float y1, float thick )
+{
+    float dx = x1 - x0;
+    float dy = y1 - y0;
+    float len = sqrt( dx * dx + dy * dy );
+    if( len < 2.0 ) return;
+
+    float idx = dir_angle( g, dx, dy );   // integer turn index
+    // SUB-INDEX REFINEMENT: the perpendicular component of (dx,dy)
+    // relative to the table direction equals sin(angle error), which
+    // for our small residual (<0.7 deg) is the error in radians.
+    // Adding it gives a near-exact angle, killing vertex drift.
+    float c0 = g->COS_TABLE[ (int)idx ];
+    float s0 = g->SIN_TABLE[ (int)idx ];
+    float a = idx * 0.024543692 + ( -s0 * dx + c0 * dy ) / len;
+    float c = cos32( g, a );
+    float s = sin32( g, a );
+
+    select_region( 20 );   // solid block, DEFAULT hotspot (top-left)
+    set_drawing_scale( len / 10.0 + 0.3, thick / 20.0 );
+    set_drawing_angle( a );
+    // bar extends from the draw point along (c,s) for `len` and
+    // perpendicular for `thick`; offsetting the draw point by half the
+    // thickness along the perpendicular centers the bar on the line
+    draw_region_rotozoomed_at( (int)( x0 + s * thick * 0.5 ),
+                               (int)( y0 - c * thick * 0.5 ) );
+    set_drawing_angle( 0 );
+    g->last_region = -1;   // draw_glyph cache is stale now
+    g->last_scale_x = -9999.0;
+    g->last_scale_y = -9999.0;
 }
 
 void draw_party_text( G* g, char* s, float x, float y, float size, int huebase )
@@ -648,17 +741,34 @@ void render_web( G* g )
 {
     int i; int r;
 
-    set_blending_mode( BLEND_SOLID );
-    set_multiply_color( make_color( 30, 90, 120 ) );
+    // WEB BARS DRAW UNDER ALPHA, not mode 0: the one draw_segment
+    // path proven to render on the real emulator is the spikes'
+    // (set_glow -> BlendAlpha). Mode-0 draws of region 20 with a
+    // custom hotspot have never appeared. Opaque colors + alpha
+    // blending = same visual result as solid for our purposes.
+    set_blending_mode( v32::BlendAlpha );
+
+    // lane edges: thin solid bars from rim to far end (static per level)
+    set_multiply_color( make_color( 25, 70, 110 ) );
     for( i = 0; i < LANES; i++ )
     {
         project( g, i, 0 );  float x0 = g->px; float y0 = g->py;
-        project( g, i, 1 );  draw_dot_line( g, x0, y0, g->px, g->py, 22 );
+        project( g, i, 1 );
+        draw_segment( g, x0, y0, g->px, g->py, 2.0 );
     }
 
-    // depth rings; during warp-out they RUSH past (warp^2 scroll boost).
-    // Budget: ONE dot per lane per ring (7 x 16 = 112 glyphs), NOT a
-    // dot-line per segment — the frame budget can't afford that.
+    // far end cap: full outline, every lane joined (16 bars) — 2-lane
+    // chords cut corners and left gaps that read as detached segments
+    set_multiply_color( make_color( 40, 90, 130 ) );
+    for( i = 0; i < LANES; i++ )
+    {
+        project( g, i, 1 );     float x0 = g->px; float y0 = g->py;
+        project( g, i + 1, 1 ); draw_segment( g, x0, y0, g->px, g->py, 2.0 );
+    }
+
+    // depth rings: cheap zoomed DOTS (the rotozoomed command is the
+    // emulator's slow path — rings move every frame, so they get the
+    // budget treatment). One dot per lane per ring.
     float scroll = 0.002 + g->warp * g->warp * 0.12;
     for( r = 0; r < RINGS; r++ )
     {
@@ -672,19 +782,43 @@ void render_web( G* g )
             draw_glyph( g, '.', g->px, g->py, s, s );
         }
     }
+
+    // the rim: bright neon outline, every lane joined (16 bars), pulsing
+    int pulse = 200 + (int)( sin32( g, g->frame * 0.1 ) * 55 );
+    set_multiply_color( make_color( 60, 180, pulse ) );
+    for( i = 0; i < LANES; i++ )
+    {
+        project( g, i, 0 );     float x0 = g->px; float y0 = g->py;
+        project( g, i + 1, 0 ); draw_segment( g, x0, y0, g->px, g->py, 3.5 );
+    }
+
+    // vertex caps: a small block at each rim vertex, exactly like the
+    // point markers on Tempest's web. Hides the seam gap at the top
+    // wrap (lane 15 -> 16) and caps any chord ends that stick out
+    // past a joint. 16 cheap zoomed draws.
+    for( i = 0; i < LANES; i++ )
+    {
+        project( g, i, 0 );
+        select_region( 20 );
+        set_drawing_scale( 0.55, 0.3 );     // ~5.5 x 6 px block
+        draw_region_zoomed_at( (int)( g->px - 3 ), (int)( g->py - 3 ) );
+        g->last_region = -1;
+    }
 }
 
+// spikes: solid red bars from the far end down toward the rim
 void render_spikes( G* g )
 {
     int i;
     set_glow( 2 );
+    set_multiply_color( make_color( 255, 60, 30 ) );
     for( i = 0; i < LANES; i++ )
     {
         if( g->SPIKE[ i ] <= 0 ) continue;
         project( g, i, 1.0 - g->SPIKE[ i ] );  float x0 = g->px; float y0 = g->py;
-        project( g, i, 1.0 );                  float x1 = g->px; float y1 = g->py;
-        set_multiply_color( make_color( 255, 60, 30 ) );
-        draw_dot_line( g, x0, y0, x1, y1, 9 );
+        project( g, i, 1.0 );
+        draw_segment( g, x0, y0, g->px, g->py, 3.0 );
+        // hot tip
         project( g, i, 1.0 - g->SPIKE[ i ] );
         draw_glyph( g, '+', g->px, g->py, 8, 8 );
     }
