@@ -79,6 +79,14 @@
 #define IN_RX 34
 #define IN_RY 18
 
+// CAMERA SWAY (Tempest 2000 flavour): the tube's vanishing point leans
+// toward the player's lane, eased over ~20 frames. 0 disables. The
+// rim (z=0) stays FIXED — only mid-tunnel and far geometry shifts, so
+// gameplay readability and the hard-won bar alignment are untouched.
+// 0.18 * the claw's offset-from-axis = up to ~54px of lean.
+#define CAM_SWAY 0.18
+#define CAM_EASE 0.05
+
 // A/B KILL-SWITCHES for the additive-glow white-out bug, per layer.
 // BISECTION RESULT: BlendAdd (0x21) white-screens the real emulator
 // in this game no matter which layer uses it; BlendAlpha (0x20) works
@@ -122,6 +130,21 @@ struct Particle
     int glyph;
 };
 
+struct Shock
+{
+    int alive;
+    float x; float y;
+    int life;
+};
+
+struct PowerUp
+{
+    int alive;
+    int type;        // 0 = superzap refill, 1 = AI buddy, 2 = extra life
+    float lane;
+    float z;
+};
+
 struct G
 {
     // math tables
@@ -137,15 +160,17 @@ struct G
     Bullet   BULLETS[ 32 ];
     Enemy    ENEMIES[ 24 ];
     Particle PARTICLES[ 220 ];
+    Shock    SHOCKS[ 3 ];
+    PowerUp  POWERUPS[ 4 ];
     float SPIKE[ 16 ];
 
     // game state
     float player_lane;
+    float cam_x; float cam_y;   // camera sway: vanishing-point offset
     int   lives;
     int   score;
     int   level;
     int   superzaps;
-    int   enemies_alive;
     int   spawn_timer;
     int   spawn_interval;
     int   state;               // 0 play, 1 dying, 2 warp-out, 3 game over
@@ -155,6 +180,9 @@ struct G
     float warp;
     int   launched;
     int   fire_cooldown;
+    int   buddy_timer;      // AI buddy drone: frames remaining
+    int   buddy_cooldown;   // AI buddy: frames until next auto-shot
+    int   powerup_timer;    // frames until the next power-up spawns
     int   frame;
     int   rng_state;
 
@@ -469,8 +497,14 @@ void project( G* g, float lane, float z )
     float shape = g->SHAPE[ li ] + ( g->SHAPE[ ln ] - g->SHAPE[ li ] ) * f;
     float rx = lerp( OUT_RX, IN_RX, z ) * shape;
     float ry = lerp( OUT_RY, IN_RY, z );
-    g->px = CX + cos32( g, ang ) * rx;
-    g->py = CY + sin32( g, ang ) * ry;
+    // camera sway: the vanishing point (z=1) leans toward the player's
+    // lane; the rim (z=0) is unaffected. Everything drawn — web bars,
+    // spikes, enemies, pods, bullets — flows through here, so the whole
+    // scene stays internally consistent.
+    float cx = CX + g->cam_x * z;
+    float cy = CY + g->cam_y * z;
+    g->px = cx + cos32( g, ang ) * rx;
+    g->py = cy + sin32( g, ang ) * ry;
     g->pscale = lerp( 1.0, 0.10, z );
 }
 
@@ -538,6 +572,18 @@ void spawn_near( G* g, float lane, float z )
     }
 }
 
+// live enemy count: the old enemies_alive counter drifted (tanker
+// splits spawned an enemy without counting it, so the counter went
+// negative and the level NEVER registered as clear — spawning locked
+// up and the player hit an enemy drought). Counting the real array
+// can't drift.
+int count_enemies( G* g )
+{
+    int i; int n = 0;
+    for( i = 0; i < MAX_ENEMIES; i++ ) if( g->ENEMIES[ i ].alive ) n++;
+    return n;
+}
+
 void burst( G* g, float x, float y, int count, int strength )
 {
     int n = 0;
@@ -560,10 +606,36 @@ void burst( G* g, float x, float y, int count, int strength )
     }
 }
 
+// expanding shockwave ring: 3 slots, each renders as a growing 12-sided
+// polygon of vector bars that fades over ~22 frames
+void shockwave( G* g, float x, float y )
+{
+    int s;
+    for( s = 0; s < 3; s++ )
+    {
+        if( !g->SHOCKS[ s ].alive )
+        {
+            g->SHOCKS[ s ].alive = 1;
+            g->SHOCKS[ s ].x = x;
+            g->SHOCKS[ s ].y = y;
+            g->SHOCKS[ s ].life = 22;
+            return;
+        }
+    }
+}
+
+// big juicy death: particle burst + expanding shockwave ring
+void explode( G* g, float x, float y, int count, int strength )
+{
+    burst( g, x, y, count, strength );
+    shockwave( g, x, y );
+}
+
 // ---------------------------------------------------------------------------
 //  Input / update
 // ---------------------------------------------------------------------------
 void kill_player( G* g );
+void level_clear( G* g );
 
 void fire( G* g )
 {
@@ -593,12 +665,13 @@ void superzap( G* g )
         if( g->ENEMIES[ i ].alive )
         {
             project( g, g->ENEMIES[ i ].lane, g->ENEMIES[ i ].z );
-            burst( g, g->px, g->py, 14, 3 );
+            explode( g, g->px, g->py, 18, 3 );
             g->ENEMIES[ i ].alive = 0;
-            g->enemies_alive--;
             g->score += 150;
         }
     }
+    // the zap can wipe out the last enemies — check for level clear
+    if( g->spawn_timer > 999 && count_enemies( g ) == 0 ) level_clear( g );
 }
 
 void update_player( G* g )
@@ -607,6 +680,15 @@ void update_player( G* g )
     if( gamepad_right() > 0 ) g->player_lane += 0.09;
     if( g->player_lane < 0 ) g->player_lane += LANES;
     if( g->player_lane >= LANES ) g->player_lane -= LANES;
+
+    // camera sway: ease the vanishing point toward a fraction of the
+    // claw's offset from the tube axis — the tube appears to lean and
+    // follow you around the web (Tempest 2000 flavour)
+    project( g, g->player_lane, 0 );
+    float camtx = ( g->px - CX ) * CAM_SWAY;
+    float camty = ( g->py - CY ) * CAM_SWAY;
+    g->cam_x += ( camtx - g->cam_x ) * CAM_EASE;
+    g->cam_y += ( camty - g->cam_y ) * CAM_EASE;
 
     if( gamepad_button_a() > 0 ) fire( g );
     if( gamepad_button_b() == 1 ) superzap( g );   // == 1: just-pressed edge
@@ -619,11 +701,130 @@ void kill_player( G* g )
     g->state_timer = 110;
     g->lives--;
     project( g, g->player_lane, 0 );
-    burst( g, g->px, g->py, 60, 5 );
+    explode( g, g->px, g->py, 70, 5 );
+    shockwave( g, g->px, g->py );   // double ring: both slots
     show_message( g, "OW!" );
 }
 
 void level_clear( G* g );
+
+// ---------------------------------------------------------------------------
+//  Power-ups: shoot the pods to collect them.
+//    type 0 = SUPERZAP refill, type 1 = AI buddy, type 2 = extra life
+// ---------------------------------------------------------------------------
+void collect_powerup( G* g, int i )
+{
+    if( g->POWERUPS[ i ].type == 0 )
+    {
+        if( g->superzaps < 4 )
+        {
+            g->superzaps++;
+            show_message( g, "SUPERZAP RECHARGED!" );
+        }
+        else
+        {
+            g->score += 250;
+            show_message( g, "BONUS 250!" );
+        }
+    }
+    else if( g->POWERUPS[ i ].type == 1 )
+    {
+        g->buddy_timer = 12 * 60;
+        show_message( g, "AI BUDDY ONLINE!" );
+    }
+    else
+    {
+        if( g->lives < 4 )
+        {
+            g->lives++;
+            show_message( g, "EXTRA LIFE!" );
+        }
+        else
+        {
+            g->score += 250;
+            show_message( g, "BONUS 250!" );
+        }
+    }
+    project( g, g->POWERUPS[ i ].lane, g->POWERUPS[ i ].z );
+    explode( g, g->px, g->py, 20, 2.5 );
+    g->POWERUPS[ i ].alive = 0;
+}
+
+void spawn_powerup( G* g )
+{
+    int i;
+    for( i = 0; i < 4; i++ )
+    {
+        if( g->POWERUPS[ i ].alive ) continue;
+        g->POWERUPS[ i ].alive = 1;
+        g->POWERUPS[ i ].lane = rng( g ) % LANES;
+        g->POWERUPS[ i ].z = 1.0;
+        int r = rng( g ) % 20;
+        if( r < 9 )       g->POWERUPS[ i ].type = 0;
+        else if( r < 18 )  g->POWERUPS[ i ].type = 1;
+        else               g->POWERUPS[ i ].type = 2;
+        // don't offer superzap refills when the player is already at
+        // the 4-charge cap — a wasted pod. Convert to a buddy instead.
+        if( g->POWERUPS[ i ].type == 0 && g->superzaps >= 4 )
+            g->POWERUPS[ i ].type = 1;
+        return;
+    }
+}
+
+void update_powerups( G* g )
+{
+    int i;
+    for( i = 0; i < 4; i++ )
+    {
+        if( !g->POWERUPS[ i ].alive ) continue;
+        g->POWERUPS[ i ].z -= 0.0016;          // drift toward the rim
+        if( g->POWERUPS[ i ].z < 0.06 ) g->POWERUPS[ i ].alive = 0;
+    }
+    g->powerup_timer--;
+    if( g->powerup_timer <= 0 )
+    {
+        g->powerup_timer = 700 + rng( g ) % 700;
+        int n = 0;
+        for( i = 0; i < 4; i++ ) if( g->POWERUPS[ i ].alive ) n++;
+        if( n < 2 ) spawn_powerup( g );
+    }
+}
+
+// AI buddy: hovers by the claw, auto-fires at the enemy closest to the
+// player's lane every 30 frames while its timer lasts
+void update_buddy( G* g )
+{
+    if( g->buddy_timer <= 0 ) return;
+    g->buddy_timer--;
+    if( g->buddy_cooldown > 0 ) { g->buddy_cooldown--; return; }
+
+    int best = -1;
+    float bestdiff = 999.0;
+    int i;
+    for( i = 0; i < MAX_ENEMIES; i++ )
+    {
+        if( !g->ENEMIES[ i ].alive ) continue;
+        float diff = g->ENEMIES[ i ].lane - g->player_lane;
+        if( diff < 0 ) diff = -diff;
+        if( diff > LANES / 2 ) diff = LANES - diff;
+        if( diff < bestdiff ) { bestdiff = diff; best = i; }
+    }
+    if( best >= 0 )
+    {
+        int j;
+        for( j = 0; j < MAX_BULLETS; j++ )
+        {
+            if( !g->BULLETS[ j ].alive )
+            {
+                g->BULLETS[ j ].alive = 1;
+                g->BULLETS[ j ].lane = g->ENEMIES[ best ].lane;
+                g->BULLETS[ j ].z = 0.10;
+                g->buddy_cooldown = 30;
+                break;
+            }
+        }
+    }
+}
 
 void update_enemies( G* g )
 {
@@ -702,6 +903,27 @@ void update_bullets( G* g )
             continue;
         }
 
+        // collect power-up pods by shooting them
+        int collected = 0;
+        int p;
+        for( p = 0; p < 4; p++ )
+        {
+            if( !g->POWERUPS[ p ].alive ) continue;
+            float dzp = g->BULLETS[ i ].z - g->POWERUPS[ p ].z;
+            if( dzp < 0 ) dzp = -dzp;
+            float dlp = g->BULLETS[ i ].lane - g->POWERUPS[ p ].lane;
+            if( dlp < 0 ) dlp = -dlp;
+            if( dlp > LANES / 2 ) dlp = LANES - dlp;
+            if( dzp < 0.04 && dlp < 0.6 )
+            {
+                g->BULLETS[ i ].alive = 0;
+                collect_powerup( g, p );
+                collected = 1;
+                break;
+            }
+        }
+        if( collected ) continue;
+
         // collision vs enemies
         for( j = 0; j < MAX_ENEMIES; j++ )
         {
@@ -715,7 +937,7 @@ void update_bullets( G* g )
             {
                 g->BULLETS[ i ].alive = 0;
                 project( g, g->ENEMIES[ j ].lane, g->ENEMIES[ j ].z );
-                burst( g, g->px, g->py, 18, 2.4 );
+                explode( g, g->px, g->py, 26, 3.0 );
 
                 if( g->ENEMIES[ j ].type == 1 )
                 {
@@ -727,9 +949,8 @@ void update_bullets( G* g )
                 else
                 {
                     g->ENEMIES[ j ].alive = 0;
-                    g->enemies_alive--;
                     g->score += 100;
-                    if( g->enemies_alive == 0 && g->spawn_timer > 999 )
+                    if( g->spawn_timer > 999 && count_enemies( g ) == 0 )
                         level_clear( g );
                 }
                 break;
@@ -745,6 +966,17 @@ void level_clear( G* g )
     g->warp = 0;
     show_message( g, "EXCELLENT!" );
     g->score += 1000 + g->level * 250;
+}
+
+void update_shocks( G* g )
+{
+    int i;
+    for( i = 0; i < 3; i++ )
+    {
+        if( !g->SHOCKS[ i ].alive ) continue;
+        g->SHOCKS[ i ].life--;
+        if( g->SHOCKS[ i ].life <= 0 ) g->SHOCKS[ i ].alive = 0;
+    }
 }
 
 void update_particles( G* g )
@@ -776,26 +1008,15 @@ void render_web( G* g )
     // blending = same visual result as solid for our purposes.
     set_blending_mode( v32::BlendAlpha );
 
-    // lane edges (SPOKES) — DIAGNOSTIC BUILD: bright green so they
-    // can't be confused with red spikes or the cyan rim, and a white
-    // 3x3 marker drawn ON TOP at each spoke's computed far endpoint
-    // (the cap vertex). Read: marker on vertex + bar hits marker =
-    // spoke fine (the mystery lines are something else); marker on
-    // vertex + bar misses marker = bar geometry wrong for that
-    // direction; marker off vertex = endpoint computation wrong.
-    set_multiply_color( make_color( 0, 255, 0 ) );
+    // lane edges (SPOKES): production build — dim teal-blue, thickness 2.
+    // (The bright-green + white-marker variant was a diagnostic build
+    // for the sin_taylor misalignment; that fix is confirmed good.)
+    set_multiply_color( make_color( 25, 70, 110 ) );
     for( i = 0; i < LANES; i++ )
     {
         project( g, i, 0 );  float x0 = g->px; float y0 = g->py;
         project( g, i, 1 );  float x1 = g->px; float y1 = g->py;
         draw_segment( g, x0, y0, x1, y1, 2.0 );
-
-        set_multiply_color( 0xFFFFFFFF );
-        select_region( 20 );
-        set_drawing_scale( 0.3, 0.15 );     // 3 x 3 px
-        draw_region_zoomed_at( (int)( x1 - 1 ), (int)( y1 - 1 ) );
-        g->last_region = -1;
-        set_multiply_color( make_color( 0, 255, 0 ) );
     }
 
     // far end cap: full outline, every lane joined (16 bars) — 2-lane
@@ -970,11 +1191,91 @@ void render_particles( G* g )
         float t = 1.0 - ( g->PARTICLES[ i ].life / 50.0 );
         if( t < 0 ) t = 0;
         int f = (int)( t * 220 );
-        set_multiply_color( make_color( 255, 220 - f, 120 - f / 2 ) );
-        float s = 4 + g->PARTICLES[ i ].glyph * 1.5;
-        draw_glyph( g, g->GLYPHS[ g->PARTICLES[ i ].glyph ],
+        // color varies by glyph: 'o'/'O' particles burn white-hot,
+        // the rest go orange-to-red as they age. Sizes twinkle so
+        // bursts sparkle instead of just fading.
+        int gl = g->PARTICLES[ i ].glyph;
+        if( gl >= 4 )
+            set_multiply_color( make_color( 255, 250 - f / 3, 200 - f ) );
+        else
+            set_multiply_color( make_color( 255, 220 - f, 120 - f / 2 ) );
+        float s = 4 + gl * 1.5;
+        if( ( i + g->frame ) % 3 == 0 ) s *= 1.4;   // twinkle
+        draw_glyph( g, g->GLYPHS[ gl ],
                     g->PARTICLES[ i ].x, g->PARTICLES[ i ].y, s, s );
     }
+    set_blending_mode( BLEND_SOLID );
+}
+
+// shockwave rings: a growing 12-sided polygon of vector bars that
+// expands from 6px to ~46px radius while fading from white to deep red
+void render_shocks( G* g )
+{
+    int i; int k;
+    set_blending_mode( v32::BlendAlpha );
+    for( i = 0; i < 3; i++ )
+    {
+        if( !g->SHOCKS[ i ].alive ) continue;
+        float t = g->SHOCKS[ i ].life / 22.0;      // 1 -> 0
+        float r = 6 + ( 1.0 - t ) * 40;
+        int fade = (int)( t * 160 );
+        set_multiply_color( make_color( 255, 100 + fade, 60 + fade / 2 ) );
+        float px0 = 0; float py0 = 0;
+        for( k = 0; k <= 12; k++ )
+        {
+            float a = k * 0.523598776;            // 2*PI/12
+            float x = g->SHOCKS[ i ].x + cos32( g, a ) * r;
+            float y = g->SHOCKS[ i ].y + sin32( g, a ) * r;
+            if( k > 0 ) draw_segment( g, px0, py0, x, y, 1.0 + t * 2.0 );
+            px0 = x; py0 = y;
+        }
+    }
+    set_blending_mode( BLEND_SOLID );
+}
+
+// power-up pods: pulsing 'O' with a glowing '*' core, color-coded by
+// type — magenta = superzap, green = AI buddy, gold = extra life
+void render_powerups( G* g )
+{
+    int i;
+    for( i = 0; i < 4; i++ )
+    {
+        if( !g->POWERUPS[ i ].alive ) continue;
+        project( g, g->POWERUPS[ i ].lane, g->POWERUPS[ i ].z );
+        float pulse = 0.8 + 0.25 * sin32( g, g->frame * 0.25 );
+        float s = ( 12 * g->pscale + 3 ) * pulse;
+        int col;
+        if( g->POWERUPS[ i ].type == 0 )      col = make_color( 255, 0, 255 );
+        else if( g->POWERUPS[ i ].type == 1 ) col = make_color( 60, 255, 60 );
+        else                                  col = make_color( 255, 220, 60 );
+        set_blending_mode( BLEND_SOLID );
+        set_multiply_color( col );
+        draw_glyph( g, 'O', g->px, g->py, s, s * 0.8 );
+        set_glow( 4 );
+        draw_glyph( g, '*', g->px, g->py, s * 0.6, s * 0.6 );
+        set_blending_mode( BLEND_SOLID );
+    }
+}
+
+// AI buddy drone: hovers beside the claw, bobbing; blinks out during
+// its final two seconds
+void render_buddy( G* g )
+{
+    if( g->buddy_timer <= 0 ) return;
+    if( g->buddy_timer < 120 && ( g->frame % 8 ) < 3 ) return;
+    float off = 1.9;
+    project( g, g->player_lane + off, 0.10 );
+    float x = g->px;
+    float y = g->py + sin32( g, g->frame * 0.15 ) * 4;
+    float dive = g->warp;
+    if( dive > 1 ) dive = 1;
+    x = lerp( x, CX, dive );
+    y = lerp( y, CY, dive );
+    set_blending_mode( BLEND_SOLID );
+    set_multiply_color( make_color( 120, 255, 160 ) );
+    draw_glyph( g, 'W', x, y, 10, 10 );
+    set_glow( 4 );
+    draw_glyph( g, '*', x, y, 6, 6 );
     set_blending_mode( BLEND_SOLID );
 }
 
@@ -1021,6 +1322,18 @@ void render_hud( G* g )
     set_multiply_color( make_color( 255, 255, 255 ) );
     for( l = 0; l < g->superzaps; l++ )
         draw_glyph( g, 'Z', 288 + l * 18, 344, 12, 12 );
+
+    // AI buddy countdown (seconds remaining) while it is online
+    if( g->buddy_timer > 0 )
+    {
+        char bud[ 6 ];
+        int secs = g->buddy_timer / 60;
+        bud[ 0 ] = 'A'; bud[ 1 ] = 'I'; bud[ 2 ] = ' ';
+        bud[ 3 ] = '0' + ( secs / 10 ) % 10;
+        bud[ 4 ] = '0' + secs % 10;
+        bud[ 5 ] = 0;
+        draw_text( g, bud, 372, 344, 12, make_color( 120, 255, 160 ) );
+    }
 }
 
 void render_message( G* g )
@@ -1038,7 +1351,6 @@ void start_level( G* g )
     int i;
     for( i = 0; i < MAX_ENEMIES; i++ ) g->ENEMIES[ i ].alive = 0;
     for( i = 0; i < MAX_BULLETS; i++ ) g->BULLETS[ i ].alive = 0;
-    g->enemies_alive = 0;
     g->superzaps = 2;
     for( i = 0; i < LANES; i++ ) g->SPIKE[ i ] = 0;
     g->launched = 0;
@@ -1060,7 +1372,6 @@ void update_spawning( G* g )
         int tanker = ( roll == 0 );
         int spiker = ( roll == 1 );
         spawn_enemy( g, spiker ? 2 : ( tanker ? 1 : 0 ) );
-        g->enemies_alive++;
         g->launched++;
         if( g->launched >= 18 + g->level )
         {
@@ -1082,6 +1393,8 @@ void init_state( G* g )
     g->GLYPHS[ 4 ] = 'O';
     g->GLYPHS[ 5 ] = '#';
     g->player_lane = 0;
+    g->cam_x = 0;
+    g->cam_y = 0;
     g->lives = 3;
     g->score = 0;
     g->level = 1;
@@ -1091,6 +1404,15 @@ void init_state( G* g )
     g->last_region = -1;
     g->last_scale_x = -9999.0;
     g->last_scale_y = -9999.0;
+
+    // effects + power-up state: heap memory from `new` is NOT zeroed,
+    // so every slot must be explicitly cleared here
+    g->buddy_timer = 0;
+    g->buddy_cooldown = 0;
+    g->powerup_timer = 500;
+    int i;
+    for( i = 0; i < 3; i++ ) g->SHOCKS[ i ].alive = 0;
+    for( i = 0; i < 4; i++ ) g->POWERUPS[ i ].alive = 0;
     build_tables( g );
 }
 
@@ -1103,6 +1425,11 @@ void main()
     // generated Vircon32 C are read-only (no `global` keyword emitted)
     G* g = new G;
     init_state( g );
+    // start_level (not just init_state) is required at boot: it is
+    // what actually zeroes enemies/bullets/spikes, grants the 2
+    // superzaps and sets the spawn timers + state=0. Heap memory is
+    // not guaranteed zeroed, so relying on that was luck.
+    start_level( g );
     make_shape( g );
     show_message( g, "TEMPEST 32K" );
 
@@ -1115,6 +1442,8 @@ void main()
             update_spawning( g );
             update_enemies( g );
             update_bullets( g );
+            update_powerups( g );
+            update_buddy( g );
         }
         else if( g->state == 1 )      // dying
         {
@@ -1152,6 +1481,7 @@ void main()
             }
         }
         update_particles( g );
+        update_shocks( g );
         g->frame++;
 
         // -- render ---------------------------------------------------------
@@ -1164,8 +1494,11 @@ void main()
         render_spikes( g );
         render_bullets( g );
         render_enemies( g );
+        render_powerups( g );
+        render_buddy( g );
         render_player( g );
         render_particles( g );
+        render_shocks( g );
         render_hud( g );
         render_message( g );
 
