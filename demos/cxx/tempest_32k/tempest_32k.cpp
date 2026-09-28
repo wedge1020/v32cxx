@@ -198,9 +198,16 @@ void build_tables( G* g )
     }
 }
 
+// Table index: ROUND to nearest entry, not truncate. (int) truncates
+// toward zero, so negative angles landed 1 entry off (lane 0 vs lane
+// 16 differed by 1.4 deg -> the top seam gap), and products landing
+// near an integer boundary (lanes 5, 8) jittered by +-1 entry. The
+// +1024 (four full turns) keeps the sum positive for every angle the
+// game uses (|x| < 25 rad), so truncation direction never matters,
+// and +0.5 rounds to nearest. 15.9999 and 16.0001 both give 16.
 float sin32( G* g, float x )
 {
-    int i = ( (int)( x * 40.7436611 ) ) & 255;   // 256/(2PI)
+    int i = ( (int)( x * 40.7436611 + 1024.5 ) ) & 255;
     return g->SIN_TABLE[ i ];
 }
 
@@ -211,7 +218,7 @@ float cos_taylor( float x )
 
 float cos32( G* g, float x )
 {
-    int i = ( (int)( x * 40.7436611 ) ) & 255;
+    int i = ( (int)( x * 40.7436611 + 1024.5 ) ) & 255;
     return g->COS_TABLE[ i ];
 }
 
