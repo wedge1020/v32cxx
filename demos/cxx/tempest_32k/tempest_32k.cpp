@@ -71,6 +71,7 @@
 #define MAX_BULLETS 32
 #define MAX_ENEMIES 24
 #define MAX_PARTICLES 220
+#define MAX_STARS 40
 
 #define CX 320
 #define CY 168
@@ -137,6 +138,15 @@ struct Shock
     int life;
 };
 
+// background starfield: screen-space stars drifting outward from the
+// vanishing point (matches the fly-into-the-tunnel camera), streaking
+// during warp-out. Deliberately mild — dim dots, low speed.
+struct Star
+{
+    float x; float y;
+    float spd;               // radial px/frame
+};
+
 struct PowerUp
 {
     int alive;
@@ -162,6 +172,10 @@ struct G
     Particle PARTICLES[ 220 ];
     Shock    SHOCKS[ 3 ];
     PowerUp  POWERUPS[ 4 ];
+    // array size MUST be an int literal (v32c++ grammar rule — macros
+    // like MAX_STARS are fine in expressions but NOT in declarations;
+    // same reason LANES is spelled 16 everywhere below)
+    Star     STARFIELD[ 40 ];
     float SPIKE[ 16 ];
 
     // game state
@@ -180,6 +194,8 @@ struct G
     float warp;
     int   launched;
     int   fire_cooldown;
+    int   jump_timer;       // claw leap: frames airborne (34 total)
+    int   jump_cooldown;    // frames until the next leap is allowed
     int   buddy_timer;      // AI buddy drone: frames remaining
     int   buddy_cooldown;   // AI buddy: frames until next auto-shot
     int   powerup_timer;    // frames until the next power-up spawns
@@ -497,6 +513,13 @@ void project( G* g, float lane, float z )
     float shape = g->SHAPE[ li ] + ( g->SHAPE[ ln ] - g->SHAPE[ li ] ) * f;
     float rx = lerp( OUT_RX, IN_RX, z ) * shape;
     float ry = lerp( OUT_RY, IN_RY, z );
+    // level transition ("the web flies past you"): during warp-out the
+    // deeper geometry streams outward past the stationary claw. The
+    // rim (z=0) is anchored — the claw, rim outline and spikes tips'
+    // foot stay put; spokes stretch, rings/far cap rush off-screen.
+    float fly = 1.0 + g->warp * g->warp * 7.0 * z;
+    rx *= fly;
+    ry *= fly;
     // camera sway: the vanishing point (z=1) leans toward the player's
     // lane; the rim (z=0) is unaffected. Everything drawn — web bars,
     // spikes, enemies, pods, bullets — flows through here, so the whole
@@ -693,6 +716,18 @@ void update_player( G* g )
     if( gamepad_button_a() > 0 ) fire( g );
     if( gamepad_button_b() == 1 ) superzap( g );   // == 1: just-pressed edge
     if( g->fire_cooldown > 0 ) g->fire_cooldown--;
+
+    // JUMP (button Y): the claw leaps off the web toward the camera —
+    // airborne frames are invulnerable at the rim, so you can hop
+    // over a camper instead of only sliding away from it
+    if( g->jump_cooldown > 0 ) g->jump_cooldown--;
+    if( g->jump_timer > 0 ) g->jump_timer--;
+    else if( gamepad_button_y() == 1 && g->jump_cooldown == 0 )
+    {
+        g->jump_timer = 34;
+        g->jump_cooldown = 60;   // lands at 34, 26 frames of recovery
+        burst( g, g->px, g->py, 8, 1.5 );   // takeoff puff
+    }
 }
 
 void kill_player( G* g )
@@ -869,14 +904,15 @@ void update_enemies( G* g )
             }
         }
 
-        // rim behaviour: lethal if it shares your lane
+        // rim behaviour: lethal if it shares your lane — unless the
+        // claw is mid-jump (hop over the camper)
         if( g->ENEMIES[ i ].z < 0 )
         {
             g->ENEMIES[ i ].z = 0;
             float diff = g->player_lane - g->ENEMIES[ i ].lane;
             if( diff < 0 ) diff = -diff;
             if( diff > LANES / 2 ) diff = LANES - diff;
-            if( diff < 0.7 ) { kill_player( g ); }
+            if( diff < 0.7 && g->jump_timer <= 0 ) { kill_player( g ); }
         }
     }
 }
@@ -995,6 +1031,60 @@ void update_particles( G* g )
 }
 
 // ---------------------------------------------------------------------------
+//  Background starfield — mild, cheap, always on
+// ---------------------------------------------------------------------------
+void init_starfield( G* g )
+{
+    int i;
+    for( i = 0; i < MAX_STARS; i++ )
+    {
+        g->STARFIELD[ i ].x = frand( g ) * 640;
+        g->STARFIELD[ i ].y = frand( g ) * 336;
+        g->STARFIELD[ i ].spd = 0.25 + frand( g ) * 0.5;
+    }
+}
+
+void update_stars( G* g )
+{
+    int i;
+    // warp-out: the ship surges forward, so the stars streak
+    float boost = 1.0 + g->warp * 6.0;
+    for( i = 0; i < MAX_STARS; i++ )
+    {
+        float dx = g->STARFIELD[ i ].x - CX;
+        float dy = g->STARFIELD[ i ].y - CY;
+        float d = sqrt( dx * dx + dy * dy );
+        if( d < 1 ) d = 1;
+        g->STARFIELD[ i ].x += dx / d * g->STARFIELD[ i ].spd * boost;
+        g->STARFIELD[ i ].y += dy / d * g->STARFIELD[ i ].spd * boost;
+        if( g->STARFIELD[ i ].x < -4 || g->STARFIELD[ i ].x > 644 ||
+            g->STARFIELD[ i ].y < -4 || g->STARFIELD[ i ].y > 340 )
+        {
+            // respawn near the vanishing point so the stream is endless
+            float a = frand( g ) * 6.28318;
+            float r = 4 + frand( g ) * 30;
+            g->STARFIELD[ i ].x = CX + cos32( g, a ) * r;
+            g->STARFIELD[ i ].y = CY + sin32( g, a ) * r;
+            g->STARFIELD[ i ].spd = 0.25 + frand( g ) * 0.5;
+        }
+    }
+}
+
+void render_starfield( G* g )
+{
+    int i;
+    set_blending_mode( BLEND_SOLID );
+    for( i = 0; i < MAX_STARS; i++ )
+    {
+        if( g->STARFIELD[ i ].spd > 0.45 )
+            set_multiply_color( make_color( 140, 150, 180 ) );
+        else
+            set_multiply_color( make_color( 70, 80, 110 ) );
+        draw_glyph( g, '.', g->STARFIELD[ i ].x, g->STARFIELD[ i ].y, 3, 3 );
+    }
+}
+
+// ---------------------------------------------------------------------------
 //  Rendering
 // ---------------------------------------------------------------------------
 void render_web( G* g )
@@ -1104,15 +1194,21 @@ void render_player( G* g )
 {
     if( g->state == 1 ) return;   // dying: particles only
 
+    // transition rework: the claw NO LONGER dives into the tube on
+    // warp-out — it stays parked on the rim while the web streams
+    // past it (see the fly factor in project())
     project( g, g->player_lane, 0 );
     float x = g->px; float y = g->py; float s = g->pscale;
 
-    // during warp-out the claw dives toward the vanishing point
-    float dive = g->warp;
-    if( dive > 1 ) dive = 1;
-    x = lerp( x, CX, dive );
-    y = lerp( y, CY, dive );
-    s *= ( 1.0 - dive * 0.9 );
+    // jump arc: airborne claw pops toward the camera — bigger and
+    // pushed radially outward from the tube axis (T2K-style leap)
+    if( g->jump_timer > 0 )
+    {
+        float jarc = sin32( g, 3.14159 * ( 34 - g->jump_timer ) / 34.0 );
+        x += ( x - CX ) * jarc * 0.18;
+        y += ( y - CY ) * jarc * 0.18;
+        s *= ( 1.0 + jarc * 1.2 );
+    }
 
     set_blending_mode( BLEND_SOLID );
     set_multiply_color( make_color( 255, 220, 60 ) );
@@ -1267,10 +1363,6 @@ void render_buddy( G* g )
     project( g, g->player_lane + off, 0.10 );
     float x = g->px;
     float y = g->py + sin32( g, g->frame * 0.15 ) * 4;
-    float dive = g->warp;
-    if( dive > 1 ) dive = 1;
-    x = lerp( x, CX, dive );
-    y = lerp( y, CY, dive );
     set_blending_mode( BLEND_SOLID );
     set_multiply_color( make_color( 120, 255, 160 ) );
     draw_glyph( g, 'W', x, y, 10, 10 );
@@ -1301,7 +1393,9 @@ void render_hud( G* g )
         for( i = 0; i < len; i++ ) tmp[ i ] = buf[ i ];
         tmp[ len ] = 0;
     }
-    draw_party_text( g, tmp, 320, 18, 16, 0 );
+    // score top-right, right-aligned: top-center collided with the web
+    // rim and incoming enemies
+    draw_party_text( g, tmp, 628 - len * 16 * 0.31, 18, 16, 0 );
 
     // lives as claw icons
     int l;
@@ -1410,10 +1504,13 @@ void init_state( G* g )
     g->buddy_timer = 0;
     g->buddy_cooldown = 0;
     g->powerup_timer = 500;
+    g->jump_timer = 0;
+    g->jump_cooldown = 0;
     int i;
     for( i = 0; i < 3; i++ ) g->SHOCKS[ i ].alive = 0;
     for( i = 0; i < 4; i++ ) g->POWERUPS[ i ].alive = 0;
     build_tables( g );
+    init_starfield( g );
 }
 
 void main()
@@ -1454,21 +1551,14 @@ void main()
                 else start_level( g );
             }
         }
-        else if( g->state == 2 )      // warp-out: fly into the tube
+        else if( g->state == 2 )      // warp-out: web flies past the claw
         {
+            // purely cosmetic now — the claw parks on the rim and the
+            // geometry streams outward (fly factor in project()), so
+            // the old mid-warp spike collision no longer applies
             g->warp += 0.012;
-            int li = ( (int)g->player_lane ) % LANES;
-            if( g->warp < 0.8 && g->SPIKE[ li ] > 0.3 )
-            {
-                burst( g, 320, 168, 30, 4 );
-                kill_player( g );
-                g->warp = 0;
-            }
-            else
-            {
-                g->state_timer--;
-                if( g->state_timer <= 0 ) { g->level++; g->warp = 0; start_level( g ); }
-            }
+            g->state_timer--;
+            if( g->state_timer <= 0 ) { g->level++; g->warp = 0; start_level( g ); }
         }
         else if( g->state == 3 )      // game over
         {
@@ -1482,6 +1572,7 @@ void main()
         }
         update_particles( g );
         update_shocks( g );
+        update_stars( g );
         g->frame++;
 
         // -- render ---------------------------------------------------------
@@ -1490,6 +1581,7 @@ void main()
         set_blending_mode( BLEND_SOLID );
         set_multiply_color( make_color( 255, 255, 255 ) );
         clear_screen( make_color( 2, 2, 8 ) );
+        render_starfield( g );
         render_web( g );
         render_spikes( g );
         render_bullets( g );
