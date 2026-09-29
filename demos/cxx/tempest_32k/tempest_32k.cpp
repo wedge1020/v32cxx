@@ -222,6 +222,7 @@ struct G
     // game state
     float player_lane;
     float cam_x; float cam_y;   // camera sway: vanishing-point offset
+    int   partcount;            // particles alive — cached once per frame
     int   lives;
     int   score;
     int   level;
@@ -570,7 +571,14 @@ void draw_text( G* g, char* s, float x, float y, float size, int c )
     while( s[ i ] != 0 )
     {
         set_multiply_color( c );
-        draw_glyph( g, s[ i ], x + i * size * 0.62, y, size, size );
+        // VERTICAL OVERSAMPLE: the BIOS font cell is 20 rows tall and
+        // the letter art spans nearly all of them. Drawing a cell at
+        // fewer output rows than the art makes the GPU sampler DROP
+        // source rows — the top and/or bottom of every letter gets
+        // shaved (the "text clips everywhere" bug). Drawing the cell
+        // 1.2x taller than the nominal size keeps every art row, same
+        // trick draw_party_text already used.
+        draw_glyph( g, s[ i ], x + i * size * 0.62, y, size, size * 1.2 );
         i++;
     }
 }
@@ -1357,9 +1365,18 @@ void update_enemies( G* g )
     {
         if( !g->ENEMIES[ i ].alive ) continue;
 
-        float speed = 0.0035 + g->level * 0.0004;
-        if( g->difficulty == 0 ) speed *= 0.8;
-        if( g->difficulty == 2 ) speed *= 1.25;
+        // SPEED RAMP, RETUNED: the old flat 0.0004/level climb turned
+        // levels 17+ frantic — even on easy a flipper crossed the
+        // whole tube in ~1.3s at level 32. The ramp now halves past
+        // level 16 (the true-geometry webs are harder to read, so
+        // raw speed should NOT keep climbing at full rate), and the
+        // difficulty spread widens so EASY stays ahead-able anywhere.
+        float lv = g->level;
+        if( lv > 16 ) lv = 16 + ( lv - 16 ) * 0.5;
+        float speed = 0.0035 + lv * 0.0004;
+        if( g->difficulty == 0 ) speed *= 0.65;
+        if( g->difficulty == 1 ) speed *= 0.95;
+        if( g->difficulty == 2 ) speed *= 1.2;
 
         // spiker: patrols mid-tunnel laying spikes
         if( g->ENEMIES[ i ].type == 2 )
@@ -1659,13 +1676,16 @@ void render_starfield( G* g )
 {
     int i;
     set_blending_mode( BLEND_SOLID );
-    // BUSY-FRAME BUDGET: when explosions fill the sky, halve the star
-    // draws — background garnish is the cheapest thing to shed, and
-    // the streaking motion hides the thinning
+    // EVERY-OTHER-STAR PARITY: each frame draws half the stars, the
+    // complementary half next frame — the FIELD reads full density
+    // while the per-frame draw count halves, and each dot's 30Hz
+    // on/off reads as twinkle. On busy frames (explosion salvos)
+    // thin to a quarter.
     int starstep = 1;
-    if( count_particles( g ) > 120 ) starstep = 2;
+    if( g->partcount > 120 ) starstep = 2;
     for( i = 0; i < MAX_STARS; i += starstep )
     {
+        if( ( ( i + g->frame ) / starstep ) % 2 == 1 ) continue;
         // fast/near stars: big and white; slow/far: smaller, cool blue
         if( g->STARFIELD[ i ].spd > 1.6 )
         {
@@ -1770,18 +1790,19 @@ void render_title( G* g )
                 set_multiply_color( make_color( 90, 100, 125 ) );
             draw_glyph( g, rows[ d ][ ci ],
                         320 + ( ci - ( string_len( rows[ d ] ) - 1 ) / 2.0 ) * adv,
-                        150 + d * 28 + wob, msz, msz );
+                        150 + d * 32 + wob, msz, msz * 1.2 );
             ci++;
         }
     }
 
-    // gameplay controls legend (12px: 10px text clipped its glyph rows)
+    // gameplay controls legend — size 13 + the vertical oversample:
+    // the old 10px/12px rows shaved their glyph tops and bottoms
     draw_text( g, "A: FIRE  B: SUPERZAP  Y: JUMP",
-               212, 268, 12, make_color( 120, 130, 160 ) );
+               207, 282, 13, make_color( 120, 130, 160 ) );
 
     // controls hint
     draw_text( g, "UP/DOWN: SELECT  LEFT/RIGHT: DIFFICULTY  A: GO",
-               149, 296, 12, make_color( 120, 130, 160 ) );
+               138, 314, 13, make_color( 120, 130, 160 ) );
 }
 
 // ---------------------------------------------------------------------------
@@ -1834,12 +1855,13 @@ void render_web( G* g )
 
     // depth rings: cheap zoomed DOTS (the rotozoomed command is the
     // emulator's slow path — rings move every frame, so they get the
-    // budget treatment). One dot per lane per ring. BUSY-FRAME CULL:
-    // 7 rings x 16 lanes = 112 draws/frame, second only to particles.
-    // During heavy explosion salvos halve the dots (every other lane);
-    // the rings read fine sparse and the budget goes to the fireworks.
+    // budget treatment). EVERY-OTHER-DOT PARITY: each frame draws
+    // half the dots, the complementary half next frame — the ring
+    // reads as a steady shimmering circle at HALF the draw cost
+    // (56/frame instead of 112, the second-biggest consumer after
+    // particles). Heavy salvos thin it further via ringstep.
     int ringstep = 1;
-    if( count_particles( g ) > 120 ) ringstep = 2;
+    if( g->partcount > 120 ) ringstep = 2;
     float scroll = 0.002 + g->warp * g->warp * 0.12;
     for( r = 0; r < RINGS; r++ )
     {
@@ -1848,6 +1870,7 @@ void render_web( G* g )
         set_multiply_color( make_color( 20, 60 + r * 6, 90 ) );
         for( i = 0; i < LANES; i += ringstep )
         {
+            if( ( i + g->frame ) % 2 == 1 ) continue;   // parity split
             project( g, i + 0.5, z );
             float s = 3.0 + z * 3.0;
             draw_glyph( g, '.', g->px, g->py, s, s );
@@ -1944,7 +1967,7 @@ void render_enemies( G* g )
     // enemy. During heavy explosion salvos skip them — the body glyph
     // still reads, and each iteration resets blending to solid at the
     // top so a skipped core never leaks state into the next enemy.
-    int busyp = count_particles( g );
+    int busyp = g->partcount;
     int i;
     for( i = 0; i < MAX_ENEMIES; i++ )
     {
@@ -2029,9 +2052,17 @@ void render_particles( G* g )
 {
     int i;
     set_glow( 1 );
+    // EVERY-OTHER-PARTICLE PARITY on heavy frames: particles are the
+    // #1 draw consumer and the stall culprit. Past 120 alive, each
+    // frame draws the complementary half of the swarm — the field
+    // reads full density, each spark flickers at 30Hz (an explosion
+    // should sparkle anyway) and the worst frame halves its draws.
+    int par = 1;
+    if( g->partcount > 120 ) par = 2;
     for( i = 0; i < MAX_PARTICLES; i++ )
     {
         if( !g->PARTICLES[ i ].alive ) continue;
+        if( par == 2 && ( ( i + g->frame ) % 2 ) == 1 ) continue;
         float t = 1.0 - ( g->PARTICLES[ i ].life / 50.0 );
         if( t < 0 ) t = 0;
         int f = (int)( t * 220 );
@@ -2176,7 +2207,7 @@ void render_hud( G* g )
     for( l = 0; l < g->lives; l++ )
     {
         float ix = 560 + l * 22;
-        float iy = 344;
+        float iy = 326;
         int aimidx = dir_angle( g, CX - ix, CY - iy );
         draw_rot_glyph( g, 123, ix, iy, 12, 16, aimidx * 0.024543692 );
     }
@@ -2187,13 +2218,14 @@ void render_hud( G* g )
     lvl[ 4 ] = '0' + ( g->level / 10 ) % 10;
     lvl[ 5 ] = '0' + g->level % 10;
     lvl[ 6 ] = 0;
-    draw_text( g, lvl, 20, 344, 14, make_color( 120, 200, 255 ) );
+    draw_text( g, lvl, 20, 326, 14, make_color( 120, 200, 255 ) );
 
     // superzapper charges — bottom row spread out so the pod timers
-    // (AI / RAPID / LASER) never crowd them or each other
+    // (AI / RAPID / LASER) never crowd them or each other. Row sits
+    // at y=326: the old y=344 ran off the bottom of the screen.
     set_multiply_color( make_color( 255, 255, 255 ) );
     for( l = 0; l < g->superzaps; l++ )
-        draw_glyph( g, 'Z', 240 + l * 20, 344, 14, 14 );
+        draw_glyph( g, 'Z', 240 + l * 20, 326, 14, 14 );
 
     // AI buddy countdown (seconds remaining) while it is online
     if( g->buddy_timer > 0 )
@@ -2204,7 +2236,7 @@ void render_hud( G* g )
         bud[ 3 ] = '0' + ( secs / 10 ) % 10;
         bud[ 4 ] = '0' + secs % 10;
         bud[ 5 ] = 0;
-        draw_text( g, bud, 316, 344, 14, make_color( 120, 255, 160 ) );
+        draw_text( g, bud, 316, 326, 14, make_color( 120, 255, 160 ) );
     }
 
     // rapid blaster countdown while active (blinks in the final
@@ -2226,7 +2258,7 @@ void render_hud( G* g )
                 rp = 8;
             }
             rap[ rp ] = 0;
-            draw_text( g, rap, 386, 344, 14, make_color( 255, 160, 60 ) );
+            draw_text( g, rap, 386, 326, 14, make_color( 255, 160, 60 ) );
         }
     }
 
@@ -2242,7 +2274,7 @@ void render_hud( G* g )
             las[ 6 ] = '0' + ( secs / 10 ) % 10;
             las[ 7 ] = '0' + secs % 10;
             las[ 8 ] = 0;
-            draw_text( g, las, 470, 344, 14, make_color( 80, 220, 255 ) );
+            draw_text( g, las, 470, 326, 14, make_color( 80, 220, 255 ) );
         }
     }
 }
@@ -2281,7 +2313,7 @@ void render_pause( G* g )
 {
     set_blending_mode( v32::BlendAlpha );
     select_region( 20 );
-    set_drawing_scale( 64.0, 16.8 );          // 640 x 336 fullscreen veil
+    set_drawing_scale( 64.0, 18.0 );          // 640 x 360 fullscreen veil
     set_multiply_color( make_color( 8, 8, 26 ) );
     draw_region_zoomed_at( 0, 0 );
     g->last_region = -1;
@@ -2291,14 +2323,16 @@ void render_pause( G* g )
 
     draw_party_text( g, "PAUSED", 320, 44, 22, 90 );
 
-    // separate meters: MUSIC (channel 0) and SFX (channels 2..13)
-    draw_text( g, "MUSIC", 240, 88, 14, make_color( 150, 160, 190 ) );
-    draw_meter( g, 220, 112, g->music_volume );
-    draw_text( g, "SFX", 240, 144, 14, make_color( 150, 160, 190 ) );
-    draw_meter( g, 220, 168, g->sfx_volume );
+    // separate meters: MUSIC (channel 0) and SFX (channels 2..13).
+    // Rows are spaced for the 1.2x-tall oversampled glyphs — the old
+    // 12px/18px-pitch layout read as clipped, crowded lines.
+    draw_text( g, "MUSIC", 240, 84, 14, make_color( 150, 160, 190 ) );
+    draw_meter( g, 220, 106, g->music_volume );
+    draw_text( g, "SFX", 240, 140, 14, make_color( 150, 160, 190 ) );
+    draw_meter( g, 220, 162, g->sfx_volume );
 
     // track list
-    draw_text( g, "TRACK", 240, 200, 14, make_color( 150, 160, 190 ) );
+    draw_text( g, "TRACK", 240, 196, 14, make_color( 150, 160, 190 ) );
     char* tracks[ 4 ];
     tracks[ 0 ] = "1 WEB CRAWLER";
     tracks[ 1 ] = "2 SPIKE SURFER";
@@ -2310,11 +2344,11 @@ void render_pause( G* g )
         int colr;
         if( t == g->music_index ) colr = hue( g->frame + t * 20 );
         else                      colr = make_color( 90, 100, 125 );
-        draw_text( g, tracks[ t ], 250, 224 + t * 20, 14, colr );
+        draw_text( g, tracks[ t ], 250, 220 + t * 22, 14, colr );
     }
 
     draw_text( g, "START: RESUME  LEFT/RIGHT: MUSIC  L/R: SFX  UP/DOWN: TRACK",
-               68, 310, 14, make_color( 120, 130, 160 ) );
+               68, 318, 14, make_color( 120, 130, 160 ) );
 }
 
 // ---------------------------------------------------------------------------
@@ -2340,7 +2374,7 @@ void render_entry( G* g )
         if( i == g->entry_pos ) colr = hue( g->frame );
         draw_text( g, &ch[ 0 ], 320 + ( i - 1 ) * 56 - 10, 180, 30, colr );
     }
-    draw_text( g, "ENTER YOUR INITIALS", 249, 160, 12, make_color( 120, 130, 160 ) );
+    draw_text( g, "ENTER YOUR INITIALS", 249, 148, 12, make_color( 120, 130, 160 ) );
     draw_text( g, "UP/DOWN: LETTER  LEFT/RIGHT: MOVE  A: OK",
                171, 280, 12, make_color( 120, 130, 160 ) );
 }
@@ -2375,7 +2409,7 @@ void render_scores( G* g )
         score_str( g->HISCORE[ i ], &sbuf[ 0 ] );
         draw_text( g, &sbuf[ 0 ], 348, y, 14, colr );
     }
-    draw_text( g, "A: BACK", 294, 330, 12, make_color( 120, 130, 160 ) );
+    draw_text( g, "A: BACK", 294, 326, 12, make_color( 120, 130, 160 ) );
 }
 
 // state 8: level select — a slowly ROTATING wireframe of the chosen
@@ -2436,7 +2470,7 @@ void render_levelselect( G* g )
     g->last_scale_y = -9999.0;
 
     draw_text( g, "LEFT/RIGHT: LEVEL  A: START  B: BACK",
-               190, 330, 12, make_color( 120, 130, 160 ) );
+               190, 326, 12, make_color( 120, 130, 160 ) );
 }
 
 // ---------------------------------------------------------------------------
@@ -2978,6 +3012,9 @@ void main()
         set_blending_mode( BLEND_SOLID );
         set_multiply_color( make_color( 255, 255, 255 ) );
         clear_screen( make_color( 2, 2, 8 ) );
+        // particle count is queried by several render-phase throttles —
+        // count once here instead of walking the array per call site
+        g->partcount = count_particles( g );
         render_starfield( g );
         if( g->state == 4 )
         {
