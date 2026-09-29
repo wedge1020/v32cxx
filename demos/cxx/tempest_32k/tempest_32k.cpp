@@ -578,7 +578,14 @@ void draw_text( G* g, char* s, float x, float y, float size, int c )
         // shaved (the "text clips everywhere" bug). Drawing the cell
         // 1.2x taller than the nominal size keeps every art row, same
         // trick draw_party_text already used.
-        draw_glyph( g, s[ i ], x + i * size * 0.62, y, size, size * 1.2 );
+        //
+        // HORIZONTAL: advance widened 0.62 -> 0.78. The letter art
+        // fills about 7/10 of the 10-wide cell, so at 0.62*size the
+        // next glyph started before the previous letter's art ended —
+        // everything read as squeezed. 0.78 leaves a clear gap
+        // between letters. All centered call sites are positioned for
+        // this width.
+        draw_glyph( g, s[ i ], x + i * size * 0.78, y, size, size * 1.2 );
         i++;
     }
 }
@@ -1365,16 +1372,16 @@ void update_enemies( G* g )
     {
         if( !g->ENEMIES[ i ].alive ) continue;
 
-        // SPEED RAMP, RETUNED: the old flat 0.0004/level climb turned
-        // levels 17+ frantic — even on easy a flipper crossed the
-        // whole tube in ~1.3s at level 32. The ramp now halves past
-        // level 16 (the true-geometry webs are harder to read, so
-        // raw speed should NOT keep climbing at full rate), and the
-        // difficulty spread widens so EASY stays ahead-able anywhere.
+        // SPEED RAMP, RETUNED AGAIN: player feedback — past level 16
+        // the level still flipped from playable to overwhelming.
+        // The ramp now slows to 35% of its low-level rate past 16
+        // (the true-geometry webs are harder to read, so raw speed
+        // must NOT keep climbing at full rate), and EASY gets a much
+        // deeper discount so it stays ahead-able at every level.
         float lv = g->level;
-        if( lv > 16 ) lv = 16 + ( lv - 16 ) * 0.5;
+        if( lv > 16 ) lv = 16 + ( lv - 16 ) * 0.35;
         float speed = 0.0035 + lv * 0.0004;
-        if( g->difficulty == 0 ) speed *= 0.65;
+        if( g->difficulty == 0 ) speed *= 0.55;
         if( g->difficulty == 1 ) speed *= 0.95;
         if( g->difficulty == 2 ) speed *= 1.2;
 
@@ -1777,9 +1784,10 @@ void render_title( G* g )
         float sel = 0;
         if( d == g->menu_row ) sel = 1;
         float msz = 14 + sel * 4;
-        // selected option gets wider letter spacing (0.78 vs 0.62)
-        float adv = msz * 0.62;
-        if( sel > 0 ) adv = msz * 0.78;
+        // letter spacing widened: unselected 0.78 (the old 0.62 read
+        // as squeezed), selected gets an extra-wide 0.90 for pop
+        float adv = msz * 0.78;
+        if( sel > 0 ) adv = msz * 0.9;
         ci = 0;
         while( rows[ d ][ ci ] != 0 )
         {
@@ -1795,14 +1803,15 @@ void render_title( G* g )
         }
     }
 
-    // gameplay controls legend — size 13 + the vertical oversample:
-    // the old 10px/12px rows shaved their glyph tops and bottoms
+    // gameplay controls legend — back to 12px: the vertical oversample
+    // makes small text render fully, so the earlier size bump isn't
+    // needed. X re-centered for the 0.78 advance.
     draw_text( g, "A: FIRE  B: SUPERZAP  Y: JUMP",
-               207, 282, 13, make_color( 120, 130, 160 ) );
+               184, 282, 12, make_color( 120, 130, 160 ) );
 
     // controls hint
     draw_text( g, "UP/DOWN: SELECT  LEFT/RIGHT: DIFFICULTY  A: GO",
-               138, 314, 13, make_color( 120, 130, 160 ) );
+               109, 314, 12, make_color( 120, 130, 160 ) );
 }
 
 // ---------------------------------------------------------------------------
@@ -2218,14 +2227,14 @@ void render_hud( G* g )
     lvl[ 4 ] = '0' + ( g->level / 10 ) % 10;
     lvl[ 5 ] = '0' + g->level % 10;
     lvl[ 6 ] = 0;
-    draw_text( g, lvl, 20, 326, 14, make_color( 120, 200, 255 ) );
+    draw_text( g, lvl, 20, 326, 12, make_color( 120, 200, 255 ) );
 
     // superzapper charges — bottom row spread out so the pod timers
     // (AI / RAPID / LASER) never crowd them or each other. Row sits
     // at y=326: the old y=344 ran off the bottom of the screen.
     set_multiply_color( make_color( 255, 255, 255 ) );
     for( l = 0; l < g->superzaps; l++ )
-        draw_glyph( g, 'Z', 240 + l * 20, 326, 14, 14 );
+        draw_glyph( g, 'Z', 240 + l * 20, 326, 12, 14.4 );
 
     // AI buddy countdown (seconds remaining) while it is online
     if( g->buddy_timer > 0 )
@@ -2236,7 +2245,7 @@ void render_hud( G* g )
         bud[ 3 ] = '0' + ( secs / 10 ) % 10;
         bud[ 4 ] = '0' + secs % 10;
         bud[ 5 ] = 0;
-        draw_text( g, bud, 316, 326, 14, make_color( 120, 255, 160 ) );
+        draw_text( g, bud, 316, 326, 12, make_color( 120, 255, 160 ) );
     }
 
     // rapid blaster countdown while active (blinks in the final
@@ -2258,7 +2267,7 @@ void render_hud( G* g )
                 rp = 8;
             }
             rap[ rp ] = 0;
-            draw_text( g, rap, 386, 326, 14, make_color( 255, 160, 60 ) );
+            draw_text( g, rap, 386, 326, 12, make_color( 255, 160, 60 ) );
         }
     }
 
@@ -2274,7 +2283,7 @@ void render_hud( G* g )
             las[ 6 ] = '0' + ( secs / 10 ) % 10;
             las[ 7 ] = '0' + secs % 10;
             las[ 8 ] = 0;
-            draw_text( g, las, 470, 326, 14, make_color( 80, 220, 255 ) );
+            draw_text( g, las, 470, 326, 12, make_color( 80, 220, 255 ) );
         }
     }
 }
@@ -2348,7 +2357,7 @@ void render_pause( G* g )
     }
 
     draw_text( g, "START: RESUME  LEFT/RIGHT: MUSIC  L/R: SFX  UP/DOWN: TRACK",
-               68, 318, 14, make_color( 120, 130, 160 ) );
+               49, 318, 12, make_color( 120, 130, 160 ) );
 }
 
 // ---------------------------------------------------------------------------
@@ -2374,9 +2383,9 @@ void render_entry( G* g )
         if( i == g->entry_pos ) colr = hue( g->frame );
         draw_text( g, &ch[ 0 ], 320 + ( i - 1 ) * 56 - 10, 180, 30, colr );
     }
-    draw_text( g, "ENTER YOUR INITIALS", 249, 148, 12, make_color( 120, 130, 160 ) );
+    draw_text( g, "ENTER YOUR INITIALS", 231, 148, 12, make_color( 120, 130, 160 ) );
     draw_text( g, "UP/DOWN: LETTER  LEFT/RIGHT: MOVE  A: OK",
-               171, 280, 12, make_color( 120, 130, 160 ) );
+               133, 280, 12, make_color( 120, 130, 160 ) );
 }
 
 // state 7: the stored table, top 5
@@ -2395,8 +2404,8 @@ void render_scores( G* g )
         rk[ 2 ] = 0;
         draw_text( g, &rk[ 0 ], 246, y, 14, colr );
         // initials: drawn one letter at a time with a WIDER advance —
-        // the plain row advance (size * 0.62) crams 14px glyphs into
-        // 8.7px slots and the letters read as a scrunched block
+        // even the widened row advance (size * 0.78) sits 14px glyphs
+        // in 10.9px slots; the 15px pitch here keeps them airy
         int j;
         for( j = 0; j < 3; j++ )
         {
@@ -2409,7 +2418,7 @@ void render_scores( G* g )
         score_str( g->HISCORE[ i ], &sbuf[ 0 ] );
         draw_text( g, &sbuf[ 0 ], 348, y, 14, colr );
     }
-    draw_text( g, "A: BACK", 294, 326, 12, make_color( 120, 130, 160 ) );
+    draw_text( g, "A: BACK", 287, 326, 12, make_color( 120, 130, 160 ) );
 }
 
 // state 8: level select — a slowly ROTATING wireframe of the chosen
@@ -2470,7 +2479,7 @@ void render_levelselect( G* g )
     g->last_scale_y = -9999.0;
 
     draw_text( g, "LEFT/RIGHT: LEVEL  A: START  B: BACK",
-               190, 326, 12, make_color( 120, 130, 160 ) );
+               147, 326, 12, make_color( 120, 130, 160 ) );
 }
 
 // ---------------------------------------------------------------------------
@@ -2497,7 +2506,7 @@ void start_level( G* g )
     g->warp_bounce = 0;
     g->spawn_interval = 70 - g->level * 2;
     // difficulty pacing: easy breathes, hard floods
-    if( g->difficulty == 0 ) g->spawn_interval += 14;
+    if( g->difficulty == 0 ) g->spawn_interval += 24;
     if( g->difficulty == 2 ) g->spawn_interval -= 12;
     if( g->spawn_interval < 18 ) g->spawn_interval = 18;
     g->spawn_timer = 40;
@@ -2510,6 +2519,23 @@ void update_spawning( G* g )
     g->spawn_timer--;
     if( g->spawn_timer <= 0 )
     {
+        // CONCURRENCY CAP: however fast the spawn clock runs, only
+        // so many enemies may be ALIVE at once. This is the real
+        // "easy stays playable at level 32" guarantee — on the high
+        // levels the spawn rate alone let swarms stack up far faster
+        // than they could be shot, and the field flipped from calm
+        // to hopeless in a few seconds. A blocked spawn retries
+        // shortly and does NOT consume the level's quota. Tanker
+        // splits bypass this (spawn_near) — a split is one launched
+        // enemy becoming two.
+        int cap = 10;
+        if( g->difficulty == 0 ) cap = 6;
+        if( g->difficulty == 2 ) cap = 14;
+        if( count_enemies( g ) >= cap )
+        {
+            g->spawn_timer = 12;
+            return;
+        }
         g->spawn_timer = g->spawn_interval;
         int roll = rng( g ) % 7;
         int tanker = ( roll == 0 );
