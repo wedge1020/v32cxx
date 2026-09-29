@@ -194,6 +194,10 @@ struct G
 
     // web geometry
     float SHAPE[ 16 ];
+    float SHAPE_Y[ 16 ];   // vertical radius factor: 1.0 on the CLASSIC
+                           // pass (levels 1-16) so the shape modulates
+                           // only x; equal to SHAPE on the TRUE pass
+                           // (17-32) so webs trace their real polygon
     int   CONN[ 16 ];          // CONN[i]: 1 = rim edge between lanes i,i+1 exists
     float px; float py; float pscale;   // project() outputs
 
@@ -593,8 +597,15 @@ void project( G* g, float lane, float z )
     int ln = ( li + 1 ) % LANES;
     float f = lane - (int)lane;
     float shape = g->SHAPE[ li ] + ( g->SHAPE[ ln ] - g->SHAPE[ li ] ) * f;
+    float shapey = g->SHAPE_Y[ li ] + ( g->SHAPE_Y[ ln ] - g->SHAPE_Y[ li ] ) * f;
+    // SHAPE scales the HORIZONTAL radius, SHAPE_Y the vertical one.
+    // On the classic pass SHAPE_Y is all 1.0 — the shape reads as a
+    // horizontally-modulated ellipse (the tuned look of levels 1-16,
+    // and the reason the "square"/"triangle" webs never looked truly
+    // square/triangular). On the true-geometry pass SHAPE_Y == SHAPE,
+    // so the rim traces the actual polygon in both axes.
     float rx = lerp( OUT_RX, IN_RX, z ) * shape;
-    float ry = lerp( OUT_RY, IN_RY, z );
+    float ry = lerp( OUT_RY, IN_RY, z ) * shapey;
     // level transition: uniform outward streaming (see fly_factor) —
     // everything scales together, so the tube never inverts
     float fly = fly_factor( g );
@@ -611,16 +622,19 @@ void project( G* g, float lane, float z )
     g->pscale = lerp( 1.0, 0.10, z );
 }
 
-// SIXTEEN distinct webs now, cycling by level — with 32 levels each
-// web is visited exactly twice (the second pass plays harder). New in
-// the roster: a crisp square, a tilted square, a triangle, a hinge
-// (open: two unequal arms), a mild curly-cue, a split curly-cue
-// (open), an egg, a 6-spike saw star, and a shattered ring (open:
-// three arcs). Five kinds are OPEN webs: the rim outline has gaps
-// (CONN[i] = 0), so the web cannot be circumnavigated — the claw
-// clamps at gap vertices (run_bounds), flippers can't flip across
-// gaps, spikers bounce, and the rim/far-cap bars simply aren't drawn
-// over the missing edges.
+// SIXTEEN distinct webs, cycling by level — and TWO passes across the
+// 32 levels. The CLASSIC pass (levels 1-16, then every other 16-level
+// block) keeps the long-tuned look: the shape factor modulates only
+// the horizontal radius, so every web reads as a stylised wide ellipse
+// with wavy edges — good, playable, but never really "square". The
+// TRUE-GEOMETRY pass (levels 17-32, alternating forever after) runs
+// the same sixteen webs with the radius applied to BOTH axes: the
+// square is finally a square, the triangle a triangle, the star a real
+// 4-point star, the peanut a real peanut, the hinge two real lobes.
+// Five kinds are OPEN webs: the rim outline has gaps (CONN[i] = 0), so
+// the web cannot be circumnavigated — the claw clamps at gap vertices
+// (run_bounds), flippers can't flip across gaps, spikers bounce, and
+// the rim/far-cap bars simply aren't drawn over the missing edges.
 // Polygon radius trick (square/triangle) — the EXACT regular-n-gon
 // outline, because mild cos-shaped approximations read as wobbly
 // circles at 16 lanes: square r = 1/(|cos t| + |sin t|) has genuinely
@@ -632,6 +646,9 @@ void make_shape( G* g )
 {
     int i;
     int kind = ( g->level - 1 ) % 16;
+    // TRUE-GEOMETRY pass on levels 17-32 (and every other 16-level
+    // block forever): SHAPE_Y == SHAPE, so both axes carry the shape
+    int true2d = ( ( ( g->level - 1 ) / 16 ) % 2 );
     for( i = 0; i < LANES; i++ ) g->CONN[ i ] = 1;
     if( kind == 4 ) { g->CONN[ 0 ] = 0; g->CONN[ 8 ] = 0; }   // OPEN: split arcs
     if( kind == 7 ) g->CONN[ 4 ] = 0;                         // OPEN: square doorway
@@ -677,6 +694,8 @@ void make_shape( G* g )
         if( kind == 14 ) w = 0.68 + 0.32 * fabs_sin( g, t * 3 + 0.3926991 ); // saw star
         if( kind == 15 ) w = 1.0;                                    // open: 3 arcs (ring)
         g->SHAPE[ i ] = w;
+        if( true2d ) g->SHAPE_Y[ i ] = w;
+        else         g->SHAPE_Y[ i ] = 1.0;
     }
 }
 
@@ -1772,6 +1791,11 @@ void render_enemies( G* g )
         if( !g->ENEMIES[ i ].alive ) continue;
         project( g, g->ENEMIES[ i ].lane, g->ENEMIES[ i ].z );
         float x = g->px; float y = g->py; float s = g->pscale;
+        // VISIBILITY: pscale bottoms out at 0.10 at the far cap, which
+        // made climbers 2-3 px specks — invisible until dangerously
+        // close. Lift the far end hard (x4) and the near end slightly
+        // (x1.15) so depth is still sold but every enemy stays readable
+        float sv = ( s + ( 1.0 - s ) * 0.40 ) * 1.15;
 
         float wob = 0;
         if( g->ENEMIES[ i ].z <= 0 )
@@ -1781,23 +1805,23 @@ void render_enemies( G* g )
         if( g->ENEMIES[ i ].type == 0 )
         {
             set_multiply_color( hue( 160 + ( ( i * 40 + g->frame ) >> 2 ) ) );
-            draw_glyph( g, 'W', x, y + wob, 26 * s, 20 * s );
+            draw_glyph( g, 'W', x, y + wob, 26 * sv, 20 * sv );
             set_glow( 4 );
-            draw_glyph( g, '*', x, y + wob, 14 * s, 14 * s );
+            draw_glyph( g, '*', x, y + wob, 14 * sv, 14 * sv );
         }
         else if( g->ENEMIES[ i ].type == 1 )
         {
             set_multiply_color( make_color( 255, 80, 160 ) );
-            draw_glyph( g, 'H', x, y, 26 * s, 24 * s );
+            draw_glyph( g, 'H', x, y, 26 * sv, 24 * sv );
             set_glow( 4 );
-            draw_glyph( g, '#', x, y, 14 * s, 14 * s );
+            draw_glyph( g, '#', x, y, 14 * sv, 14 * sv );
         }
         else
         {
             set_multiply_color( make_color( 255, 150, 40 ) );
-            draw_glyph( g, 'M', x, y, 22 * s, 18 * s );
+            draw_glyph( g, 'M', x, y, 22 * sv, 18 * sv );
             set_glow( 4 );
-            draw_glyph( g, 'v', x, y + 10 * s, 12 * s, 10 * s );
+            draw_glyph( g, 'v', x, y + 10 * sv, 12 * sv, 10 * sv );
         }
         set_blending_mode( BLEND_SOLID );
     }
@@ -1908,10 +1932,29 @@ void render_buddy( G* g )
     float y = CY + ( g->py - CY ) / fly;
     y += sin32( g, g->frame * 0.15 ) * 4;
     set_blending_mode( BLEND_SOLID );
+
+    // the buddy is BIOS region 14 — the 10x20 dashed frame — drawn at
+    // 22x44 with a ROTATED "ai" inside: the letters are BIOS font
+    // regions 'a' and 'i' turned 90 deg clockwise via the ROTOZOOMED
+    // command, so the word reads top-to-bottom inside the tall frame
     set_multiply_color( make_color( 120, 255, 160 ) );
-    draw_glyph( g, 'W', x, y, 10, 10 );
-    set_glow( 4 );
-    draw_glyph( g, '*', x, y, 6, 6 );
+    draw_glyph( g, 14, x, y, 22, 44 );
+
+    // letter placement: a rotated draw pivots on the region HOTSPOT
+    // (the BIOS font's top-left corner). Scaled (0.8, 0.8), a 10x20
+    // glyph covers 8x16; rotated +90 deg (clockwise, y-down screen)
+    // that local box lands 16 px LEFT of and 8 px BELOW the anchor —
+    // so to center a letter at (x, cy) the anchor goes (x+8, cy-4)
+    select_region( 'a' );
+    set_drawing_scale( 0.8, 0.8 );
+    set_drawing_angle( 1.5707963 );
+    draw_region_rotozoomed_at( (int)( x + 8 ), (int)( y - 13 ) );
+    select_region( 'i' );
+    draw_region_rotozoomed_at( (int)( x + 8 ), (int)( y + 5 ) );
+    set_drawing_angle( 0 );
+    g->last_region = -1;
+    g->last_scale_x = -9999.0;
+    g->last_scale_y = -9999.0;
     set_blending_mode( BLEND_SOLID );
 }
 
@@ -2156,9 +2199,9 @@ void render_levelselect( G* g )
         set_multiply_color( hue( g->frame + i * 16 ) );
         draw_segment( g,
                       cx + cos32( g, a0 ) * rx * g->SHAPE[ i ],
-                      cy + sin32( g, a0 ) * ry,
+                      cy + sin32( g, a0 ) * ry * g->SHAPE_Y[ i ],
                       cx + cos32( g, a1 ) * rx * g->SHAPE[ j ],
-                      cy + sin32( g, a1 ) * ry,
+                      cy + sin32( g, a1 ) * ry * g->SHAPE_Y[ j ],
                       5 );
     }
     g->last_region = -1;
@@ -2173,7 +2216,7 @@ void render_levelselect( G* g )
         float a = spin + i * 0.392699081 + 0.196;   // half-step between bars
         draw_glyph( g, '.',
                     cx + cos32( g, a ) * rx * g->SHAPE[ i ] * 0.45,
-                    cy + sin32( g, a ) * ry * 0.45, 3, 3 );
+                    cy + sin32( g, a ) * ry * g->SHAPE_Y[ i ] * 0.45, 3, 3 );
     }
     g->last_region = -1;
     g->last_scale_x = -9999.0;
