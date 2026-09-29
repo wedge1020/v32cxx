@@ -43,10 +43,12 @@
 //      spelled out in every array declaration.
 //
 //  v32c++ subset compliance:
-//    * No STL, no templates. Ternary and array initializer lists ARE
-//      supported by current v32c++ builds (lowered/translated by the
-//      transpiler), but this file still avoids them — arrays are
-//      filled at runtime; see the VIRCON32_QUIRKS.md / README notes.
+//    * No STL, no templates. Ternary: DO NOT USE — the rewrite leaked a
+//      raw '?' into the generated C once (Vircon32 C lexer: "character
+//      '?' is not a valid identifier start"). if/else always; see the
+//      limitations doc. Array initializer lists are supported by
+//      current v32c++ builds, but this file still avoids them — arrays
+//      are filled at runtime; see VIRCON32_QUIRKS.md / README notes.
 //    * `main` is void (transpiler emits `void main(void)`).
 // *****************************************************************************
 
@@ -144,12 +146,13 @@ struct Bullet
 struct Enemy
 {
     int alive;
-    int type;          // 0 = flipper, 1 = tanker, 2 = spiker
+    int type;          // 0 = flipper, 1 = tanker, 2 = spiker, 3 = rim walker ('X')
     float lane;
     float z;
     int cooldown;
     int wig;
-    int dir;           // spiker patrol direction (+1/-1); bounces at rim gaps
+    int dir;           // patrol direction (+1/-1): spikers mid-tunnel,
+                       // rim walkers along the edge; both reverse at gaps
 };
 
 struct Particle
@@ -181,7 +184,8 @@ struct Star
 struct PowerUp
 {
     int alive;
-    int type;        // 0 = superzap, 1 = AI buddy, 2 = extra life, 3 = super laser
+    int type;        // 0 = superzap, 1 = AI buddy, 2 = extra life,
+                     // 3 = super laser, 4 = rapid blaster
     float lane;
     float z;
 };
@@ -247,6 +251,8 @@ struct G
     int   buddy_cooldown;   // AI buddy: frames until next auto-shot
     float buddy_lane;       // AI buddy: its OWN lane (eases to targets)
     int   laser_timer;      // super laser power-up: frames remaining
+    int   rapid_timer;      // rapid blaster power-up: frames remaining
+                             // (easy uses 999999 = effectively unlimited)
     int   powerup_timer;    // frames until the next power-up spawns
     int   music_index;      // gameplay track currently queued (0..3)
     int   sfx_channel;      // round-robin SFX channel allocator (2..13)
@@ -517,6 +523,27 @@ void draw_segment( G* g, float x0, float y0, float x1, float y1, float thick )
                                (int)( y0 - c * thick * 0.5 ) );
     set_drawing_angle( 0 );
     g->last_region = -1;   // draw_glyph cache is stale now
+    g->last_scale_x = -9999.0;
+    g->last_scale_y = -9999.0;
+}
+
+// draw BIOS region c (a 10x20 cell) CENTRED at (x,y) and rotated a
+// radians clockwise (y-down screen) — via the ROTOZOOMED command, the
+// same proven path draw_segment uses. The draw pivots on the region
+// HOTSPOT (top-left), so the local centre (w/2, h/2) is rotated and
+// subtracted to land the glyph centred on (x,y).
+void draw_rot_glyph( G* g, int c, float x, float y, float w, float h, float a )
+{
+    select_region( c );
+    set_drawing_scale( w / 10.0, h / 20.0 );
+    set_drawing_angle( a );
+    float ca = cos32( g, a );
+    float sa = sin32( g, a );
+    float ox = ( w / 2 ) * ca - ( h / 2 ) * sa;
+    float oy = ( w / 2 ) * sa + ( h / 2 ) * ca;
+    draw_region_rotozoomed_at( (int)( x - ox ), (int)( y - oy ) );
+    set_drawing_angle( 0 );
+    g->last_region = -1;
     g->last_scale_x = -9999.0;
     g->last_scale_y = -9999.0;
 }
@@ -828,6 +855,16 @@ void spawn_enemy( G* g, int type )
             g->ENEMIES[ i ].cooldown = 30 + rng( g ) % 40;
             g->ENEMIES[ i ].wig = rng( g ) % 256;
             g->ENEMIES[ i ].dir = ( rng( g ) % 2 ) * 2 - 1;
+            // walkers start their rim patrol aimed at the player
+            if( type == 3 )
+            {
+                float d = g->player_lane - g->ENEMIES[ i ].lane;
+                if( d > LANES / 2 ) d -= LANES;
+                if( d < -LANES / 2 ) d += LANES;
+                g->ENEMIES[ i ].dir = 1;
+                if( d < 0 ) g->ENEMIES[ i ].dir = -1;
+                g->ENEMIES[ i ].wig = 0;
+            }
             return;
         }
     }
@@ -865,8 +902,33 @@ int count_enemies( G* g )
     return n;
 }
 
+int count_walkers( G* g )
+{
+    int i; int n = 0;
+    for( i = 0; i < MAX_ENEMIES; i++ )
+        if( g->ENEMIES[ i ].alive && g->ENEMIES[ i ].type == 3 ) n++;
+    return n;
+}
+
+// used by the busy-frame throttles (burst, starfield): particle count
+int count_particles( G* g )
+{
+    int i; int n = 0;
+    for( i = 0; i < MAX_PARTICLES; i++ ) if( g->PARTICLES[ i ].alive ) n++;
+    return n;
+}
+
 void burst( G* g, float x, float y, int count, int strength )
 {
+    // BUSY-FRAME THROTTLE: the emulator's 100%-CPU stalls come from
+    // exceeding the GPU draw-call budget, and every particle is one
+    // draw. When lots are already flying (multi-kills, superzap
+    // chains, death salvo) shrink NEW bursts instead of piling on —
+    // the explosion still reads, calm frames get the full show.
+    int alivep = count_particles( g );
+    if( alivep > 160 ) count = count / 4;
+    else if( alivep > 100 ) count = count / 2;
+    else if( alivep > 60 ) count = count * 3 / 4;
     int n = 0;
     int i;
     for( i = 0; i < MAX_PARTICLES && n < count; i++ )
@@ -948,7 +1010,17 @@ void fire( G* g )
         }
         return;
     }
+    // RAPID BLASTER: 25% faster cycle — alternating 5/4-frame
+    // cooldowns average 4.5 (the cooldown is an int, the rate isn't).
+    // Spelled as if/else: a ternary here once leaked unrewritten into
+    // the generated C ("character '?' is not a valid identifier
+    // start") — the limitations doc tracks the transpiler gap.
     g->fire_cooldown = 6;
+    if( g->rapid_timer > 0 )
+    {
+        g->fire_cooldown = 4;
+        if( ( g->frame & 1 ) != 0 ) g->fire_cooldown = 5;
+    }
     int i;
     for( i = 0; i < MAX_BULLETS; i++ )
     {
@@ -1061,6 +1133,7 @@ void update_player( G* g )
     move_claw( g );
     claw_jump( g );
     if( g->laser_timer > 0 ) g->laser_timer--;
+    if( g->rapid_timer > 0 ) g->rapid_timer--;
     if( gamepad_button_a() > 0 ) fire( g );
     if( gamepad_button_b() == 1 ) superzap( g );   // == 1: just-pressed edge
     if( g->fire_cooldown > 0 ) g->fire_cooldown--;
@@ -1083,7 +1156,8 @@ void level_clear( G* g );
 // ---------------------------------------------------------------------------
 //  Power-ups: shoot the pods to collect them.
 //    type 0 = SUPERZAP refill, type 1 = AI buddy, type 2 = extra life,
-//    type 3 = SUPER LASER (triple-shot for a timed stretch)
+//    type 3 = SUPER LASER (triple-shot for a timed stretch),
+//    type 4 = RAPID BLASTER (25% faster single shots; easy = unlimited)
 // ---------------------------------------------------------------------------
 void collect_powerup( G* g, int i )
 {
@@ -1117,6 +1191,15 @@ void collect_powerup( G* g, int i )
         if( g->difficulty == 1 ) secs = 15;
         g->laser_timer = secs * 60;
         show_message( g, "SUPER LASER!" );
+    }
+    else if( g->POWERUPS[ i ].type == 4 )
+    {
+        // intermediate blaster: 25% faster single shots; easy never
+        // runs out (999999 frames is ~4.6 hours of play)
+        if( g->difficulty == 0 )      g->rapid_timer = 999999;
+        else if( g->difficulty == 1 ) g->rapid_timer = 60 * 60;
+        else                          g->rapid_timer = 30 * 60;
+        show_message( g, "RAPID BLASTER!" );
     }
     else
     {
@@ -1164,13 +1247,15 @@ void spawn_powerup( G* g )
         g->POWERUPS[ i ].z = 1.0;
         int r = rng( g ) % 20;
         if( r < 8 )       g->POWERUPS[ i ].type = 0;   // superzap
-        else if( r < 15 ) g->POWERUPS[ i ].type = 1;   // AI buddy
+        else if( r < 13 ) g->POWERUPS[ i ].type = 1;   // AI buddy
+        else if( r < 16 ) g->POWERUPS[ i ].type = 4;   // rapid blaster
         else if( r < 18 ) g->POWERUPS[ i ].type = 3;   // super laser
         else              g->POWERUPS[ i ].type = 2;   // extra life
         // don't offer superzap refills when the player is already at
-        // the 4-charge cap — a wasted pod. Convert to a laser instead.
+        // the 4-charge cap — a wasted pod. Convert to the intermediate
+        // rapid blaster instead (super laser stays rare).
         if( g->POWERUPS[ i ].type == 0 && g->superzaps >= 4 )
-            g->POWERUPS[ i ].type = 3;
+            g->POWERUPS[ i ].type = 4;
         // hard mode: no extra lives handed out — becomes a buddy
         if( g->POWERUPS[ i ].type == 2 && g->difficulty == 2 )
             g->POWERUPS[ i ].type = 1;
@@ -1304,6 +1389,56 @@ void update_enemies( G* g )
             }
             int li = ( (int)g->ENEMIES[ i ].lane ) % LANES;
             if( g->SPIKE[ li ] < 0.55 ) g->SPIKE[ li ] += 0.006;
+            continue;
+        }
+
+        // WALKER ('X'): climbs the tube like a flipper; once at the rim
+        // it WALKS the outer edge lane by lane, flipping end-over-end
+        // (180 deg per step) and reversing at rim gaps. Lethal on lane
+        // contact like any rim camper — hop it or shoot it.
+        if( g->ENEMIES[ i ].type == 3 )
+        {
+            if( g->ENEMIES[ i ].z > 0 )
+            {
+                g->ENEMIES[ i ].z -= speed;
+                if( g->ENEMIES[ i ].z < 0 ) g->ENEMIES[ i ].z = 0;
+            }
+            else
+            {
+                float diffw = g->player_lane - g->ENEMIES[ i ].lane;
+                if( diffw < 0 ) diffw = -diffw;
+                if( diffw > LANES / 2 ) diffw = LANES - diffw;
+                if( diffw < 0.7 && g->jump_timer <= 0 ) { kill_player( g ); }
+
+                if( g->ENEMIES[ i ].cooldown > 0 ) g->ENEMIES[ i ].cooldown--;
+                else
+                {
+                    int wli = (int)g->ENEMIES[ i ].lane;
+                    if( wli >= LANES ) wli -= LANES;
+                    int ahead = wli;                    // edge wli -> wli+1
+                    int back = wli - 1; if( back < 0 ) back += LANES;
+                    if( g->ENEMIES[ i ].dir > 0 && !g->CONN[ ahead ] )
+                        g->ENEMIES[ i ].dir = -1;
+                    if( g->ENEMIES[ i ].dir < 0 && !g->CONN[ back ] )
+                        g->ENEMIES[ i ].dir = 1;
+                    int canmove = 1;
+                    if( g->ENEMIES[ i ].dir > 0 && !g->CONN[ ahead ] ) canmove = 0;
+                    if( g->ENEMIES[ i ].dir < 0 && !g->CONN[ back ] ) canmove = 0;
+                    if( canmove )
+                    {
+                        g->ENEMIES[ i ].lane += g->ENEMIES[ i ].dir;
+                        if( g->ENEMIES[ i ].lane < 0 ) g->ENEMIES[ i ].lane += LANES;
+                        if( g->ENEMIES[ i ].lane >= LANES ) g->ENEMIES[ i ].lane -= LANES;
+                        g->ENEMIES[ i ].wig += 128;   // tumble 180 deg per step
+                    }
+                    // patrol pace quickens with level & difficulty
+                    int stepf = 22 - g->level / 4;
+                    if( g->difficulty == 0 ) stepf += 6;
+                    if( g->difficulty == 2 ) stepf -= 4;
+                    if( stepf < 8 ) stepf = 8;
+                    g->ENEMIES[ i ].cooldown = stepf;
+                }
+            }
             continue;
         }
 
@@ -1520,7 +1655,12 @@ void render_starfield( G* g )
 {
     int i;
     set_blending_mode( BLEND_SOLID );
-    for( i = 0; i < MAX_STARS; i++ )
+    // BUSY-FRAME BUDGET: when explosions fill the sky, halve the star
+    // draws — background garnish is the cheapest thing to shed, and
+    // the streaking motion hides the thinning
+    int starstep = 1;
+    if( count_particles( g ) > 120 ) starstep = 2;
+    for( i = 0; i < MAX_STARS; i += starstep )
     {
         // fast/near stars: big and white; slow/far: smaller, cool blue
         if( g->STARFIELD[ i ].spd > 1.6 )
@@ -1631,13 +1771,13 @@ void render_title( G* g )
         }
     }
 
-    // gameplay controls legend
+    // gameplay controls legend (12px: 10px text clipped its glyph rows)
     draw_text( g, "A: FIRE  B: SUPERZAP  Y: JUMP",
-               230, 268, 10, make_color( 120, 130, 160 ) );
+               212, 268, 12, make_color( 120, 130, 160 ) );
 
     // controls hint
     draw_text( g, "UP/DOWN: SELECT  LEFT/RIGHT: DIFFICULTY  A: GO",
-               172, 296, 10, make_color( 120, 130, 160 ) );
+               149, 296, 12, make_color( 120, 130, 160 ) );
 }
 
 // ---------------------------------------------------------------------------
@@ -1771,15 +1911,21 @@ void render_player( G* g )
         s *= ( 1.0 + jarc * 1.2 );
     }
 
+    // THE CLAW IS BIOS REGION 123 — the left-curly-brace glyph: its aims
+    // down the lane spoke — the exact direction the shots travel — so
+    // the ship visibly points where it fires. aim = rim -> far-cap.
+    project( g, g->player_lane, 1 );
+    float capx = CX + ( g->px - CX ) / fly;
+    float capy = CY + ( g->py - CY ) / fly;
+    float aim = dir_angle( g, capx - x, capy - y ) * 0.024543692;
+
     set_blending_mode( BLEND_SOLID );
     set_multiply_color( make_color( 255, 220, 60 ) );
-    draw_glyph( g, 'X', x, y, 20 * s, 24 * s );
-
+    draw_rot_glyph( g, 123, x, y, 24 * s, 30 * s, aim );
+    // hot core, glowing, riding the same rotation
     set_glow( 3 );
     set_multiply_color( make_color( 255, 120, 40 ) );
-    draw_glyph( g, 'O', x, y - 8 * s, 12 * s, 12 * s );
-    draw_glyph( g, '<', x - 16 * s, y - 2 * s, 12 * s, 14 * s );
-    draw_glyph( g, '>', x + 16 * s, y - 2 * s, 12 * s, 14 * s );
+    draw_rot_glyph( g, 123, x, y, 12 * s, 18 * s, aim );
     set_blending_mode( BLEND_SOLID );
 }
 
@@ -1816,6 +1962,14 @@ void render_enemies( G* g )
             set_glow( 4 );
             draw_glyph( g, '#', x, y, 14 * sv, 14 * sv );
         }
+        else if( g->ENEMIES[ i ].type == 3 )
+        {
+            // the WALKER: a red 'X' flipping end-over-end as it
+            // patrols the rim (wig is its 0..255 turn-table angle)
+            set_multiply_color( make_color( 255, 70, 70 ) );
+            float rot = ( g->ENEMIES[ i ].wig & 255 ) * 0.024543692;
+            draw_rot_glyph( g, 'X', x, y, 22 * sv, 28 * sv, rot );
+        }
         else
         {
             set_multiply_color( make_color( 255, 150, 40 ) );
@@ -1838,7 +1992,11 @@ void render_bullets( G* g )
         float s = g->pscale;
         set_multiply_color( make_color( 255, 200 - (int)( g->BULLETS[ i ].z * 180 ),
                                        120 - (int)( g->BULLETS[ i ].z * 100 ) ) );
-        draw_glyph( g, '*', g->px, g->py, 10 * s + 3, 10 * s + 3 );
+        // normal shots are '.', rapid-blaster shots a fatter '*'
+        int bg = '.';
+        float bs = 7 * s + 3;
+        if( g->rapid_timer > 0 ) { bg = '*'; bs = 12 * s + 4; }
+        draw_glyph( g, bg, g->px, g->py, bs, bs );
     }
     set_blending_mode( BLEND_SOLID );
 }
@@ -1910,6 +2068,7 @@ void render_powerups( G* g )
         if( g->POWERUPS[ i ].type == 0 )      col = make_color( 255, 0, 255 );
         else if( g->POWERUPS[ i ].type == 1 ) col = make_color( 60, 255, 60 );
         else if( g->POWERUPS[ i ].type == 3 ) col = make_color( 80, 220, 255 );
+        else if( g->POWERUPS[ i ].type == 4 ) col = make_color( 255, 160, 60 );
         else                                  col = make_color( 255, 220, 60 );
         set_blending_mode( BLEND_SOLID );
         set_multiply_color( col );
@@ -1984,12 +2143,19 @@ void render_hud( G* g )
     // rim and incoming enemies
     draw_party_text( g, tmp, 628 - len * 16 * 0.31, 18, 16, 0 );
 
-    // lives as claw icons
+    // lives as spare claws: the brace ship (region 123), aimed at the
+    // web's centre so the icons echo the player sprite ('X' now
+    // belongs to the walker)
     int l;
     set_blending_mode( BLEND_SOLID );
     set_multiply_color( make_color( 255, 220, 60 ) );
     for( l = 0; l < g->lives; l++ )
-        draw_glyph( g, 'X', 560 + l * 22, 344, 14, 14 );
+    {
+        float ix = 560 + l * 22;
+        float iy = 344;
+        int aimidx = dir_angle( g, CX - ix, CY - iy );
+        draw_rot_glyph( g, 123, ix, iy, 12, 16, aimidx * 0.024543692 );
+    }
 
     // level
     char lvl[ 7 ];
@@ -1997,13 +2163,13 @@ void render_hud( G* g )
     lvl[ 4 ] = '0' + ( g->level / 10 ) % 10;
     lvl[ 5 ] = '0' + g->level % 10;
     lvl[ 6 ] = 0;
-    draw_text( g, lvl, 20, 344, 12, make_color( 120, 200, 255 ) );
+    draw_text( g, lvl, 20, 344, 14, make_color( 120, 200, 255 ) );
 
     // superzapper charges — bottom row spread out so the pod timers
-    // (AI / LASER) never crowd them or each other
+    // (AI / RAPID / LASER) never crowd them or each other
     set_multiply_color( make_color( 255, 255, 255 ) );
     for( l = 0; l < g->superzaps; l++ )
-        draw_glyph( g, 'Z', 256 + l * 20, 344, 12, 12 );
+        draw_glyph( g, 'Z', 240 + l * 20, 344, 14, 14 );
 
     // AI buddy countdown (seconds remaining) while it is online
     if( g->buddy_timer > 0 )
@@ -2014,7 +2180,30 @@ void render_hud( G* g )
         bud[ 3 ] = '0' + ( secs / 10 ) % 10;
         bud[ 4 ] = '0' + secs % 10;
         bud[ 5 ] = 0;
-        draw_text( g, bud, 336, 344, 12, make_color( 120, 255, 160 ) );
+        draw_text( g, bud, 316, 344, 14, make_color( 120, 255, 160 ) );
+    }
+
+    // rapid blaster countdown while active (blinks in the final
+    // seconds). Easy's unlimited pod shows no number.
+    if( g->rapid_timer > 0 )
+    {
+        if( g->rapid_timer > 180 || ( g->frame % 8 ) < 4 )
+        {
+            char rap[ 10 ];
+            rap[ 0 ] = 'R'; rap[ 1 ] = 'A'; rap[ 2 ] = 'P';
+            rap[ 3 ] = 'I'; rap[ 4 ] = 'D';
+            int rp = 5;
+            int rsecs = g->rapid_timer / 60;
+            if( rsecs < 100 )
+            {
+                rap[ 5 ] = ' ';
+                rap[ 6 ] = '0' + ( rsecs / 10 ) % 10;
+                rap[ 7 ] = '0' + rsecs % 10;
+                rp = 8;
+            }
+            rap[ rp ] = 0;
+            draw_text( g, rap, 386, 344, 14, make_color( 255, 160, 60 ) );
+        }
     }
 
     // super laser countdown while active (blinks in the final seconds)
@@ -2029,7 +2218,7 @@ void render_hud( G* g )
             las[ 6 ] = '0' + ( secs / 10 ) % 10;
             las[ 7 ] = '0' + secs % 10;
             las[ 8 ] = 0;
-            draw_text( g, las, 452, 344, 12, make_color( 80, 220, 255 ) );
+            draw_text( g, las, 470, 344, 14, make_color( 80, 220, 255 ) );
         }
     }
 }
@@ -2101,7 +2290,7 @@ void render_pause( G* g )
     }
 
     draw_text( g, "START: RESUME  LEFT/RIGHT: MUSIC  L/R: SFX  UP/DOWN: TRACK",
-               100, 300, 10, make_color( 120, 130, 160 ) );
+               104, 300, 12, make_color( 120, 130, 160 ) );
 }
 
 // ---------------------------------------------------------------------------
@@ -2127,9 +2316,9 @@ void render_entry( G* g )
         if( i == g->entry_pos ) colr = hue( g->frame );
         draw_text( g, &ch[ 0 ], 320 + ( i - 1 ) * 56 - 10, 180, 30, colr );
     }
-    draw_text( g, "ENTER YOUR INITIALS", 244, 160, 10, make_color( 120, 130, 160 ) );
+    draw_text( g, "ENTER YOUR INITIALS", 249, 160, 12, make_color( 120, 130, 160 ) );
     draw_text( g, "UP/DOWN: LETTER  LEFT/RIGHT: MOVE  A: OK",
-               172, 280, 10, make_color( 120, 130, 160 ) );
+               171, 280, 12, make_color( 120, 130, 160 ) );
 }
 
 // state 7: the stored table, top 5
@@ -2162,7 +2351,7 @@ void render_scores( G* g )
         score_str( g->HISCORE[ i ], &sbuf[ 0 ] );
         draw_text( g, &sbuf[ 0 ], 348, y, 14, colr );
     }
-    draw_text( g, "A: BACK", 296, 330, 10, make_color( 120, 130, 160 ) );
+    draw_text( g, "A: BACK", 294, 330, 12, make_color( 120, 130, 160 ) );
 }
 
 // state 8: level select — a slowly ROTATING wireframe of the chosen
@@ -2223,7 +2412,7 @@ void render_levelselect( G* g )
     g->last_scale_y = -9999.0;
 
     draw_text( g, "LEFT/RIGHT: LEVEL  A: START  B: BACK",
-               208, 330, 10, make_color( 120, 130, 160 ) );
+               190, 330, 12, make_color( 120, 130, 160 ) );
 }
 
 // ---------------------------------------------------------------------------
@@ -2267,7 +2456,16 @@ void update_spawning( G* g )
         int roll = rng( g ) % 7;
         int tanker = ( roll == 0 );
         int spiker = ( roll == 1 );
-        spawn_enemy( g, spiker ? 2 : ( tanker ? 1 : 0 ) );
+        // WALKERS ('X'): a rim patrol that tumbles end-over-end —
+        // max two at once; they are persistent lane hazards
+        int walker = ( roll == 2 && count_walkers( g ) < 2 );
+        // if/else, not a nested ternary: the ternary rewrite leaked a
+        // raw '?' into the generated C (transpiler gap, see doc)
+        int etype = 0;
+        if( spiker ) etype = 2;
+        else if( walker ) etype = 3;
+        else if( tanker ) etype = 1;
+        spawn_enemy( g, etype );
         int quota = 18 + g->level;
         if( g->difficulty == 0 ) quota = 14 + g->level;
         if( g->difficulty == 2 ) quota = 23 + g->level;
@@ -2370,6 +2568,7 @@ void init_state( G* g )
     g->buddy_cooldown = 0;
     g->buddy_lane = 0;
     g->laser_timer = 0;
+    g->rapid_timer = 0;
     g->powerup_timer = 500;
     g->jump_timer = 0;
     g->jump_cooldown = 0;
