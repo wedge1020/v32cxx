@@ -2,6 +2,7 @@
 //  TEMPEST 32K  —  a Tempest 2000-style tunnel shooter for Vircon32,
 //  written in the v32c++ subset, rendered entirely with ASCII glyphs from
 //  the BIOS font texture (-1). No custom textures, no 3D hardware.
+//  Revision: walker tumble + pause text size 14 + busy-frame draw culls.
 //
 //  Build:  v32c++ -I . tempest32k.cpp -o tempest32k.c
 //
@@ -1393,18 +1394,22 @@ void update_enemies( G* g )
         }
 
         // WALKER ('X'): climbs the tube like a flipper; once at the rim
-        // it WALKS the outer edge lane by lane, flipping end-over-end
-        // (180 deg per step) and reversing at rim gaps. Lethal on lane
-        // contact like any rim camper — hop it or shoot it.
+        // it WALKS the outer edge lane by lane while tumbling
+        // CONTINUOUSLY end-over-end (a stepped 180-deg flip only at
+        // each lane change read as snapping spoke-to-spoke), reversing
+        // at rim gaps. Lethal on lane contact like any rim camper —
+        // hop it or shoot it.
         if( g->ENEMIES[ i ].type == 3 )
         {
             if( g->ENEMIES[ i ].z > 0 )
             {
                 g->ENEMIES[ i ].z -= speed;
                 if( g->ENEMIES[ i ].z < 0 ) g->ENEMIES[ i ].z = 0;
+                g->ENEMIES[ i ].wig += 2;      // lazy spin on the climb
             }
             else
             {
+                g->ENEMIES[ i ].wig += 5;      // fast end-over-end tumble
                 float diffw = g->player_lane - g->ENEMIES[ i ].lane;
                 if( diffw < 0 ) diffw = -diffw;
                 if( diffw > LANES / 2 ) diffw = LANES - diffw;
@@ -1429,7 +1434,6 @@ void update_enemies( G* g )
                         g->ENEMIES[ i ].lane += g->ENEMIES[ i ].dir;
                         if( g->ENEMIES[ i ].lane < 0 ) g->ENEMIES[ i ].lane += LANES;
                         if( g->ENEMIES[ i ].lane >= LANES ) g->ENEMIES[ i ].lane -= LANES;
-                        g->ENEMIES[ i ].wig += 128;   // tumble 180 deg per step
                     }
                     // patrol pace quickens with level & difficulty
                     int stepf = 22 - g->level / 4;
@@ -1830,14 +1834,19 @@ void render_web( G* g )
 
     // depth rings: cheap zoomed DOTS (the rotozoomed command is the
     // emulator's slow path — rings move every frame, so they get the
-    // budget treatment). One dot per lane per ring.
+    // budget treatment). One dot per lane per ring. BUSY-FRAME CULL:
+    // 7 rings x 16 lanes = 112 draws/frame, second only to particles.
+    // During heavy explosion salvos halve the dots (every other lane);
+    // the rings read fine sparse and the budget goes to the fireworks.
+    int ringstep = 1;
+    if( count_particles( g ) > 120 ) ringstep = 2;
     float scroll = 0.002 + g->warp * g->warp * 0.12;
     for( r = 0; r < RINGS; r++ )
     {
         float z = ( ( g->frame * scroll ) + r / ( RINGS * 1.0 ) );
         while( z > 1 ) z -= 1;
         set_multiply_color( make_color( 20, 60 + r * 6, 90 ) );
-        for( i = 0; i < LANES; i++ )
+        for( i = 0; i < LANES; i += ringstep )
         {
             project( g, i + 0.5, z );
             float s = 3.0 + z * 3.0;
@@ -1931,6 +1940,11 @@ void render_player( G* g )
 
 void render_enemies( G* g )
 {
+    // BUSY-FRAME CULL: each enemy's glow core is a second draw per
+    // enemy. During heavy explosion salvos skip them — the body glyph
+    // still reads, and each iteration resets blending to solid at the
+    // top so a skipped core never leaks state into the next enemy.
+    int busyp = count_particles( g );
     int i;
     for( i = 0; i < MAX_ENEMIES; i++ )
     {
@@ -1952,20 +1966,27 @@ void render_enemies( G* g )
         {
             set_multiply_color( hue( 160 + ( ( i * 40 + g->frame ) >> 2 ) ) );
             draw_glyph( g, 'W', x, y + wob, 26 * sv, 20 * sv );
-            set_glow( 4 );
-            draw_glyph( g, '*', x, y + wob, 14 * sv, 14 * sv );
+            if( busyp <= 160 )
+            {
+                set_glow( 4 );
+                draw_glyph( g, '*', x, y + wob, 14 * sv, 14 * sv );
+            }
         }
         else if( g->ENEMIES[ i ].type == 1 )
         {
             set_multiply_color( make_color( 255, 80, 160 ) );
             draw_glyph( g, 'H', x, y, 26 * sv, 24 * sv );
-            set_glow( 4 );
-            draw_glyph( g, '#', x, y, 14 * sv, 14 * sv );
+            if( busyp <= 160 )
+            {
+                set_glow( 4 );
+                draw_glyph( g, '#', x, y, 14 * sv, 14 * sv );
+            }
         }
         else if( g->ENEMIES[ i ].type == 3 )
         {
-            // the WALKER: a red 'X' flipping end-over-end as it
-            // patrols the rim (wig is its 0..255 turn-table angle)
+            // the WALKER: a red 'X' cartwheeling end-over-end as it
+            // patrols the rim (wig advances every frame — its angle on
+            // the 0..255 turn table)
             set_multiply_color( make_color( 255, 70, 70 ) );
             float rot = ( g->ENEMIES[ i ].wig & 255 ) * 0.024543692;
             draw_rot_glyph( g, 'X', x, y, 22 * sv, 28 * sv, rot );
@@ -1974,8 +1995,11 @@ void render_enemies( G* g )
         {
             set_multiply_color( make_color( 255, 150, 40 ) );
             draw_glyph( g, 'M', x, y, 22 * sv, 18 * sv );
-            set_glow( 4 );
-            draw_glyph( g, 'v', x, y + 10 * sv, 12 * sv, 10 * sv );
+            if( busyp <= 160 )
+            {
+                set_glow( 4 );
+                draw_glyph( g, 'v', x, y + 10 * sv, 12 * sv, 10 * sv );
+            }
         }
         set_blending_mode( BLEND_SOLID );
     }
@@ -2265,16 +2289,16 @@ void render_pause( G* g )
     g->last_scale_y = -9999.0;
     set_blending_mode( BLEND_SOLID );
 
-    draw_party_text( g, "PAUSED", 320, 48, 22, 90 );
+    draw_party_text( g, "PAUSED", 320, 44, 22, 90 );
 
     // separate meters: MUSIC (channel 0) and SFX (channels 2..13)
-    draw_text( g, "MUSIC", 240, 96, 12, make_color( 150, 160, 190 ) );
-    draw_meter( g, 220, 118, g->music_volume );
-    draw_text( g, "SFX", 240, 148, 12, make_color( 150, 160, 190 ) );
-    draw_meter( g, 220, 170, g->sfx_volume );
+    draw_text( g, "MUSIC", 240, 88, 14, make_color( 150, 160, 190 ) );
+    draw_meter( g, 220, 112, g->music_volume );
+    draw_text( g, "SFX", 240, 144, 14, make_color( 150, 160, 190 ) );
+    draw_meter( g, 220, 168, g->sfx_volume );
 
     // track list
-    draw_text( g, "TRACK", 240, 200, 12, make_color( 150, 160, 190 ) );
+    draw_text( g, "TRACK", 240, 200, 14, make_color( 150, 160, 190 ) );
     char* tracks[ 4 ];
     tracks[ 0 ] = "1 WEB CRAWLER";
     tracks[ 1 ] = "2 SPIKE SURFER";
@@ -2286,11 +2310,11 @@ void render_pause( G* g )
         int colr;
         if( t == g->music_index ) colr = hue( g->frame + t * 20 );
         else                      colr = make_color( 90, 100, 125 );
-        draw_text( g, tracks[ t ], 250, 218 + t * 18, 12, colr );
+        draw_text( g, tracks[ t ], 250, 224 + t * 20, 14, colr );
     }
 
     draw_text( g, "START: RESUME  LEFT/RIGHT: MUSIC  L/R: SFX  UP/DOWN: TRACK",
-               104, 300, 12, make_color( 120, 130, 160 ) );
+               68, 310, 14, make_color( 120, 130, 160 ) );
 }
 
 // ---------------------------------------------------------------------------
