@@ -652,6 +652,18 @@ void project( G* g, float lane, float z )
     // level transition: uniform outward streaming (see fly_factor) —
     // everything scales together, so the tube never inverts
     float fly = fly_factor( g );
+    // JUMP PULL-BACK: while the claw is airborne the camera pulls
+    // away a touch — the whole web (bars, rings, spikes, enemies,
+    // pods — everything flows through project) pushes outward, and
+    // the effect bleeds off smoothly on landing. jump_timer runs
+    // 34 -> 0, so the push peaks at takeoff. Deliberately NOT in
+    // fly_factor itself: the spike-sweep crossing test reads
+    // fly_factor directly and its timing must not shift mid-jump.
+    if( g->jump_timer > 0 )
+    {
+        float jt = g->jump_timer / 34.0;
+        fly *= 1.0 + jt * 0.06;
+    }
     rx *= fly;
     ry *= fly;
     // camera sway: the vanishing point (z=1) leans toward the player's
@@ -1820,6 +1832,14 @@ void render_title( G* g )
 void render_web( G* g )
 {
     int i; int r;
+    // WARP ECONOMY: level transitions are the frame budget's worst
+    // moment — the whole web streams outward, the starfield streaks
+    // and the parity-split rings RACE (scroll grows with warp^2) and
+    // strobe visibly. During the transition the garnish sits out:
+    // no ring dots, no seam-hiding vertex caps. The spokes, cap and
+    // rim bars plus the streaking stars fully sell the motion.
+    int warping = 0;
+    if( g->warp > 0 ) warping = 1;
 
     // WEB BARS DRAW UNDER ALPHA, not mode 0: the one draw_segment
     // path proven to render on the real emulator is the spikes'
@@ -1853,6 +1873,7 @@ void render_web( G* g )
     // miss at a spoke joint reads as a clear disconnect (most visible
     // on the right side). Small blocks at each cap vertex cover the
     // joints, matching the rim's point markers. 16 cheap zoomed draws.
+    if( !warping )
     for( i = 0; i < LANES; i++ )
     {
         project( g, i, 1 );
@@ -1869,20 +1890,24 @@ void render_web( G* g )
     // reads as a steady shimmering circle at HALF the draw cost
     // (56/frame instead of 112, the second-biggest consumer after
     // particles). Heavy salvos thin it further via ringstep.
-    int ringstep = 1;
-    if( g->partcount > 120 ) ringstep = 2;
-    float scroll = 0.002 + g->warp * g->warp * 0.12;
-    for( r = 0; r < RINGS; r++ )
+    // Skipped during warp: racing dots strobe under the parity split.
+    if( !warping )
     {
-        float z = ( ( g->frame * scroll ) + r / ( RINGS * 1.0 ) );
-        while( z > 1 ) z -= 1;
-        set_multiply_color( make_color( 20, 60 + r * 6, 90 ) );
-        for( i = 0; i < LANES; i += ringstep )
+        int ringstep = 1;
+        if( g->partcount > 120 ) ringstep = 2;
+        float scroll = 0.002 + g->warp * g->warp * 0.12;
+        for( r = 0; r < RINGS; r++ )
         {
-            if( ( i + g->frame ) % 2 == 1 ) continue;   // parity split
-            project( g, i + 0.5, z );
-            float s = 3.0 + z * 3.0;
-            draw_glyph( g, '.', g->px, g->py, s, s );
+            float z = ( ( g->frame * scroll ) + r / ( RINGS * 1.0 ) );
+            while( z > 1 ) z -= 1;
+            set_multiply_color( make_color( 20, 60 + r * 6, 90 ) );
+            for( i = 0; i < LANES; i += ringstep )
+            {
+                if( ( i + g->frame ) % 2 == 1 ) continue;   // parity split
+                project( g, i + 0.5, z );
+                float s = 3.0 + z * 3.0;
+                draw_glyph( g, '.', g->px, g->py, s, s );
+            }
         }
     }
 
@@ -1899,7 +1924,8 @@ void render_web( G* g )
     // vertex caps: a small block at each rim vertex, exactly like the
     // point markers on Tempest's web. Hides the seam gap at the top
     // wrap (lane 15 -> 16) and caps any chord ends that stick out
-    // past a joint. 16 cheap zoomed draws.
+    // past a joint. 16 cheap zoomed draws. Skipped mid-warp.
+    if( !warping )
     for( i = 0; i < LANES; i++ )
     {
         project( g, i, 0 );
@@ -1976,7 +2002,10 @@ void render_enemies( G* g )
     // enemy. During heavy explosion salvos skip them — the body glyph
     // still reads, and each iteration resets blending to solid at the
     // top so a skipped core never leaks state into the next enemy.
+    // The warp transition forces the skip too: level changes are the
+    // frame budget's tightest moment.
     int busyp = g->partcount;
+    if( g->warp > 0 ) busyp = 999;
     int i;
     for( i = 0; i < MAX_ENEMIES; i++ )
     {
@@ -2216,7 +2245,7 @@ void render_hud( G* g )
     for( l = 0; l < g->lives; l++ )
     {
         float ix = 560 + l * 22;
-        float iy = 326;
+        float iy = 346;
         int aimidx = dir_angle( g, CX - ix, CY - iy );
         draw_rot_glyph( g, 123, ix, iy, 12, 16, aimidx * 0.024543692 );
     }
@@ -2227,14 +2256,15 @@ void render_hud( G* g )
     lvl[ 4 ] = '0' + ( g->level / 10 ) % 10;
     lvl[ 5 ] = '0' + g->level % 10;
     lvl[ 6 ] = 0;
-    draw_text( g, lvl, 20, 326, 12, make_color( 120, 200, 255 ) );
+    draw_text( g, lvl, 20, 346, 12, make_color( 120, 200, 255 ) );
 
     // superzapper charges — bottom row spread out so the pod timers
     // (AI / RAPID / LASER) never crowd them or each other. Row sits
-    // at y=326: the old y=344 ran off the bottom of the screen.
+    // at y=346: the screen is 640x360, and the 336-360 band is free
+    // space (stars streak through it).
     set_multiply_color( make_color( 255, 255, 255 ) );
     for( l = 0; l < g->superzaps; l++ )
-        draw_glyph( g, 'Z', 240 + l * 20, 326, 12, 14.4 );
+        draw_glyph( g, 'Z', 240 + l * 20, 346, 12, 14.4 );
 
     // AI buddy countdown (seconds remaining) while it is online
     if( g->buddy_timer > 0 )
@@ -2245,7 +2275,7 @@ void render_hud( G* g )
         bud[ 3 ] = '0' + ( secs / 10 ) % 10;
         bud[ 4 ] = '0' + secs % 10;
         bud[ 5 ] = 0;
-        draw_text( g, bud, 316, 326, 12, make_color( 120, 255, 160 ) );
+        draw_text( g, bud, 316, 346, 12, make_color( 120, 255, 160 ) );
     }
 
     // rapid blaster countdown while active (blinks in the final
@@ -2267,7 +2297,7 @@ void render_hud( G* g )
                 rp = 8;
             }
             rap[ rp ] = 0;
-            draw_text( g, rap, 386, 326, 12, make_color( 255, 160, 60 ) );
+            draw_text( g, rap, 386, 346, 12, make_color( 255, 160, 60 ) );
         }
     }
 
@@ -2283,7 +2313,7 @@ void render_hud( G* g )
             las[ 6 ] = '0' + ( secs / 10 ) % 10;
             las[ 7 ] = '0' + secs % 10;
             las[ 8 ] = 0;
-            draw_text( g, las, 470, 326, 12, make_color( 80, 220, 255 ) );
+            draw_text( g, las, 470, 346, 12, make_color( 80, 220, 255 ) );
         }
     }
 }
@@ -2529,7 +2559,7 @@ void update_spawning( G* g )
         // splits bypass this (spawn_near) — a split is one launched
         // enemy becoming two.
         int cap = 10;
-        if( g->difficulty == 0 ) cap = 6;
+        if( g->difficulty == 0 ) cap = 5;
         if( g->difficulty == 2 ) cap = 14;
         if( count_enemies( g ) >= cap )
         {
