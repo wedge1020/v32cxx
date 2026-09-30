@@ -631,7 +631,7 @@ void project( G* g, float lane, float z )
 {
     float ang = -1.57079632 + ( lane / LANES ) * 6.28318531;
     // interpolate SHAPE across fractional lanes: the player glides
-    // (0.09/frame) and rings use i+0.5; a truncated index made the
+    // (0.12/frame) and rings use i+0.5; a truncated index made the
     // radius step discretely while the angle glided, so the claw
     // visibly jumped off the outline on non-circle levels. Integer
     // lanes hit exact values — the web bars are unaffected.
@@ -653,16 +653,26 @@ void project( G* g, float lane, float z )
     // everything scales together, so the tube never inverts
     float fly = fly_factor( g );
     // JUMP PULL-BACK: while the claw is airborne the camera pulls
-    // away a touch — the whole web (bars, rings, spikes, enemies,
-    // pods — everything flows through project) pushes outward, and
-    // the effect bleeds off smoothly on landing. jump_timer runs
-    // 34 -> 0, so the push peaks at takeoff. Deliberately NOT in
-    // fly_factor itself: the spike-sweep crossing test reads
-    // fly_factor directly and its timing must not shift mid-jump.
+    // away — the whole web (bars, rings, spikes, enemies, pods —
+    // everything flows through project) pushes outward. The profile
+    // is a HALF-SINE over the jump's progress: 0 at takeoff, peaking
+    // mid-jump, 0 at landing — one continuous camera move. (The
+    // first version applied the full push on frame one and decayed
+    // it from there: the web visibly SNAPPED out at takeoff instead
+    // of pulling away.) Deliberately NOT in fly_factor itself: the
+    // spike-sweep crossing test reads fly_factor directly and its
+    // timing must not shift mid-jump.
     if( g->jump_timer > 0 )
     {
-        float jt = g->jump_timer / 34.0;
-        fly *= 1.0 + jt * 0.06;
+        // pure-arithmetic pull profile: 4*ph*(1-ph) is 0 at takeoff
+        // and landing and peaks at 1 mid-jump — the same shape as a
+        // half-sine with no table lookup. (The sin32-based version
+        // produced no visible motion on the emulator — going
+        // through the lookup table here was the one suspect unique
+        // to the broken build. Plain arithmetic is proven: the
+        // original linear version visibly moved.)
+        float ph = 1.0 - g->jump_timer / 34.0;
+        fly *= 1.0 + 4 * ph * ( 1.0 - ph ) * 0.08;
     }
     rx *= fly;
     ry *= fly;
@@ -1087,8 +1097,8 @@ void superzap( G* g )
 // during the warp-out transition (dodge the spikes streaming past!)
 void move_claw( G* g )
 {
-    if( gamepad_left() > 0 )  g->player_lane -= 0.09;
-    if( gamepad_right() > 0 ) g->player_lane += 0.09;
+    if( gamepad_left() > 0 )  g->player_lane -= 0.12;
+    if( gamepad_right() > 0 ) g->player_lane += 0.12;
     if( g->player_lane < 0 ) g->player_lane += LANES;
     if( g->player_lane >= LANES ) g->player_lane -= LANES;
 
@@ -1342,13 +1352,17 @@ void update_buddy( G* g )
     }
 
     // ease toward the target's lane (wrap-aware shortest arc); with no
-    // enemies alive, fall back to hovering beside the claw
+    // enemies alive, fall back to hovering beside the claw. Ease
+    // factor lowered 0.2 -> 0.08: at 0.2 the drone SNAPPED onto a
+    // target lane (up to 1.6 lanes/frame — 13x the claw!) and beat
+    // the player to everything they aimed at. It now glides visibly
+    // and can be outrun.
     float want = g->player_lane + 1.9;
     if( best >= 0 ) want = g->ENEMIES[ best ].lane;
     float d = want - g->buddy_lane;
     while( d > LANES / 2 ) d -= LANES;
     while( d < -LANES / 2 ) d += LANES;
-    g->buddy_lane += d * 0.2;
+    g->buddy_lane += d * 0.08;
     if( g->buddy_lane < 0 ) g->buddy_lane += LANES;
     if( g->buddy_lane >= LANES ) g->buddy_lane -= LANES;
 
@@ -1369,7 +1383,12 @@ void update_buddy( G* g )
                     g->BULLETS[ j ].alive = 1;
                     g->BULLETS[ j ].lane = g->buddy_lane;
                     g->BULLETS[ j ].z = 0.10;
-                    g->buddy_cooldown = 30;
+                    // cooldown lengthened so the drone SUPPORTS the
+                    // player instead of playing for them; on easy it
+                    // is a background helper, not a second gun
+                    int bcd = 45;
+                    if( g->difficulty == 0 ) bcd = 80;
+                    g->buddy_cooldown = bcd;
                     break;
                 }
             }
@@ -1384,18 +1403,21 @@ void update_enemies( G* g )
     {
         if( !g->ENEMIES[ i ].alive ) continue;
 
-        // SPEED RAMP, RETUNED AGAIN: player feedback — past level 16
-        // the level still flipped from playable to overwhelming.
-        // The ramp now slows to 35% of its low-level rate past 16
-        // (the true-geometry webs are harder to read, so raw speed
-        // must NOT keep climbing at full rate), and EASY gets a much
-        // deeper discount so it stays ahead-able at every level.
+        // SPEED RAMP, RESCALED ACROSS THE BOARD: player feedback —
+        // even medium was unmanageable past the mid levels, not from
+        // enemy COUNT but from ADVANCE SPEED: enemies hit the rim
+        // faster than the claw could circle the web, and (with the
+        // bullet-order bug) rim campers could not be shot at all.
+        // Base curve lowered ~20%, past-16 ramp kept at 35%, and the
+        // difficulty spread flattened so every level buys the player
+        // a real beat to reposition. Cross times at MEDIUM, rim to
+        // far cap: ~2.6s at level 17, ~2.3s at level 32.
         float lv = g->level;
         if( lv > 16 ) lv = 16 + ( lv - 16 ) * 0.35;
-        float speed = 0.0035 + lv * 0.0004;
+        float speed = 0.0028 + lv * 0.0003;
         if( g->difficulty == 0 ) speed *= 0.55;
-        if( g->difficulty == 1 ) speed *= 0.95;
-        if( g->difficulty == 2 ) speed *= 1.2;
+        if( g->difficulty == 1 ) speed *= 0.80;
+        if( g->difficulty == 2 ) speed *= 1.05;
 
         // spiker: patrols mid-tunnel laying spikes
         if( g->ENEMIES[ i ].type == 2 )
@@ -1532,8 +1554,15 @@ void update_bullets( G* g )
     for( i = 0; i < MAX_BULLETS; i++ )
     {
         if( !g->BULLETS[ i ].alive ) continue;
-        g->BULLETS[ i ].z += 0.035;
-        if( g->BULLETS[ i ].z > 1.0 ) { g->BULLETS[ i ].alive = 0; continue; }
+
+        // COLLIDE FIRST, ADVANCE LAST. The old order advanced z
+        // BEFORE testing, so a bullet spawned at z=0.02 was first
+        // tested at z=0.055 — already past the 0.03 hit window of
+        // anything camped at the rim (z=0). Enemies that reached
+        // the top of the web were literally untouchable: shots
+        // only ever connected with enemies still climbing. Testing
+        // at the bullet's CURRENT position makes a rim camper
+        // killable in its lane the moment you fire.
 
         // spikes eat bullets: trim the spike, kill the shot
         int li = ( (int)g->BULLETS[ i ].lane ) % LANES;
@@ -1602,6 +1631,12 @@ void update_bullets( G* g )
                 break;
             }
         }
+
+        // advance LAST: collisions were tested at the bullet's
+        // current position; move it now for next frame and retire
+        // it at the far end
+        g->BULLETS[ i ].z += 0.035;
+        if( g->BULLETS[ i ].z > 1.0 ) g->BULLETS[ i ].alive = 0;
     }
 }
 
