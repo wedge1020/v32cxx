@@ -1587,8 +1587,12 @@ void coop_game_over( G* g )
 // who got hit: 0 = P1, 1 = P2. SOLO is unchanged — kill_player's full
 // death cinematic and the restart-via-state-1 flow stay exactly as
 // they were. In CO-OP a hit costs the struck player one life: they
-// blink invulnerable for 2 seconds while respawning in place, and
-// only when BOTH players are out does the run end.
+// blink invulnerable for 2 seconds while respawning in place. The
+// run ends as soon as no HUMAN players remain — a lone CPU survivor
+// never carries the game on alone: it cannot post a high score, so
+// letting it play on (as an early build did) just stalls the
+// GAME OVER screen behind minutes of CPU play the user cannot
+// influence. Two humans still get the full both-out rule.
 void hit_player( G* g, int who )
 {
     if( !g->twoplayer )
@@ -1607,7 +1611,8 @@ void hit_player( G* g, int who )
         {
             g->p1_out = 1;
             show_message( g, "P1 OUT!" );
-            if( g->p2_out ) coop_game_over( g );
+            // no human left the moment P2 is out OR CPU-driven
+            if( g->p2_out || g->p2_cpu ) coop_game_over( g );
         }
         else
         {
@@ -1626,7 +1631,8 @@ void hit_player( G* g, int who )
         {
             g->p2_out = 1;
             show_message( g, "P2 OUT!" );
-            if( g->p1_out ) coop_game_over( g );
+            // no human left the moment P1 is out OR CPU-driven
+            if( g->p1_out || g->p1_cpu ) coop_game_over( g );
         }
         else
         {
