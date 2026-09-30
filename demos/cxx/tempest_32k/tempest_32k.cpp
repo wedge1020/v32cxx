@@ -265,6 +265,11 @@ struct G
     int   p2_respawn;
     int   p1_out;           // 1 = that player is out of lives
     int   p2_out;
+    int   players;          // menu selection: 1 or 2 players
+    int   p1_cpu;          // 1 = no gamepad on that player's port —
+    int   p2_cpu;          // the CPU drives the claw (watered-down
+                           // AI: slower to move AND fire than the
+                           // AI buddy drone, scaled by difficulty)
     int   buddy_timer;      // AI buddy drone: frames remaining
     int   buddy_cooldown;   // AI buddy: frames until next auto-shot
     float buddy_lane;       // AI buddy: its OWN lane (eases to targets)
@@ -668,21 +673,25 @@ void project( G* g, float lane, float z )
     // level transition: uniform outward streaming (see fly_factor) —
     // everything scales together, so the tube never inverts
     float fly = fly_factor( g );
-    // JUMP PULL-BACK: while the claw is airborne the camera pulls
-    // away — the whole web (bars, rings, spikes, enemies, pods —
-    // everything flows through project) pushes outward. The profile
-    // is a HALF-SINE over the jump's progress: 0 at takeoff, peaking
-    // mid-jump, 0 at landing — one continuous camera move. (The
-    // first version applied the full push on frame one and decayed
-    // it from there: the web visibly SNAPPED out at takeoff instead
-    // of pulling away.) Deliberately NOT in fly_factor itself: the
-    // spike-sweep crossing test reads fly_factor directly and its
-    // timing must not shift mid-jump.
-    if( g->jump_timer > 0 )
+    // JUMP CAMERA: while a claw is airborne the camera FOLLOWS it —
+    // the whole web (bars, rings, spikes, enemies, pods — everything
+    // flows through project) RECEDES toward the vanishing point and
+    // settles back as the claw lands. The profile is a HALF-SINE over
+    // the jump's progress: 0 at takeoff, peaking mid-jump, 0 at
+    // landing — one continuous camera move. THE SIGN IS THE WHOLE
+    // TRICK: fly BELOW 1.0 pulls the web inward (the camera rises
+    // with the jumper); the first build multiplied by (1.0 + jarc)
+    // and the web SWELLED outward — the web appeared to chase the
+    // claw toward the camera, exactly backwards. In co-op whichever
+    // claw is higher drives the pull (max of the two arcs).
+    // Deliberately NOT in fly_factor itself: the spike-sweep crossing
+    // test reads fly_factor directly and its timing must not shift
+    // mid-jump.
+    if( g->jump_timer > 0 || ( g->twoplayer && g->p2_jump_timer > 0 ) )
     {
         // PROVEN-EXPRESSION RULE: this must be spelled EXACTLY like
-        // the claw's own jump arc in render_player —
-        //   sin32( g, 3.14159 * ( 34 - g->jump_timer ) / 34.0 )
+        // the claw's own jump arc in render_claw —
+        //   sin32( g, 3.14159 * ( 34 - timer ) / 34.0 )
         // Two earlier "equivalent" spellings silently no-opped on the
         // emulator: `g->jump_timer / 34.0` as a lone division, and
         // `1.0 - g->jump_timer / 34.0` (see the limitations doc —
@@ -690,8 +699,15 @@ void project( G* g, float lane, float z )
         // are both suspect in the transpiler's codegen). The claw
         // arc's shape — float multiply first, divide last — is the
         // one form observed to evaluate correctly.
-        float jarc = sin32( g, 3.14159 * ( 34 - g->jump_timer ) / 34.0 );
-        fly *= 1.0 + jarc * 0.08;
+        float jarc = 0;
+        if( g->jump_timer > 0 )
+            jarc = sin32( g, 3.14159 * ( 34 - g->jump_timer ) / 34.0 );
+        if( g->twoplayer && g->p2_jump_timer > 0 )
+        {
+            float jarc2 = sin32( g, 3.14159 * ( 34 - g->p2_jump_timer ) / 34.0 );
+            if( jarc2 > jarc ) jarc = jarc2;
+        }
+        fly *= 1.0 - jarc * 0.08;
     }
     rx *= fly;
     ry *= fly;
@@ -1234,6 +1250,73 @@ void claw_jump2( G* g )
     claw_jump_lane( g, &g->p2_lane, &g->p2_jump_timer, &g->p2_jump_cooldown );
 }
 
+// is there a physical gamepad on port n? gamepad_is_connected()
+// reads the CURRENTLY SELECTED pad — so select, read, and restore
+// pad 0 (the pad every menu reads).
+int pad_connected( int n )
+{
+    select_gamepad( n );
+    int c = 0;
+    if( gamepad_is_connected() ) c = 1;
+    select_gamepad( 0 );
+    return c;
+}
+
+// a player claw with NO gamepad on its port is CPU-driven: a
+// watered-down AI buddy. It hunts the enemy nearest the rim, but
+// moves AND fires slower than the drone power-up, and scales
+// INVERSELY with difficulty — fastest on easy, slowest on hard.
+// It never jumps, never superzaps, and it parks OUTSIDE the rim
+// contact kill zone (0.7 lanes) so it shoots campers instead of
+// walking into them.
+void ai_claw( G* g, int who )
+{
+    float* lane = &g->player_lane;
+    int* fcd = &g->fire_cooldown;
+    if( who == 1 ) { lane = &g->p2_lane; fcd = &g->p2_fire_cooldown; }
+
+    // target: the alive enemy closest to the rim (the imminent
+    // threat). No enemies = hold position.
+    int best = -1;
+    float bestz = 1.1;
+    int i;
+    for( i = 0; i < MAX_ENEMIES; i++ )
+    {
+        if( !g->ENEMIES[ i ].alive ) continue;
+        if( g->ENEMIES[ i ].z < bestz ) { bestz = g->ENEMIES[ i ].z; best = i; }
+    }
+    if( best >= 0 )
+    {
+        float d = g->ENEMIES[ best ].lane - *lane;
+        while( d > LANES / 2 ) d -= LANES;
+        while( d < -LANES / 2 ) d += LANES;
+        float ad = d;
+        if( ad < 0 ) ad = -ad;
+        // approach only while outside the kill zone — park about a
+        // lane off and let the gun finish it. Slower than the buddy
+        // drone's 0.08 ease on every difficulty.
+        if( ad > 1.0 )
+        {
+            float ease = 0.045;
+            if( g->difficulty == 0 ) ease = 0.06;
+            if( g->difficulty == 2 ) ease = 0.03;
+            *lane += d * ease;
+        }
+        // fire when roughly aligned — long cooldowns (the drone runs
+        // 45, or 80 on easy), again inverse with difficulty
+        if( ad < 0.55 && *fcd <= 0 )
+        {
+            fire_owner( g, who, *lane );
+            int acd = 95;
+            if( g->difficulty == 0 ) acd = 70;
+            if( g->difficulty == 2 ) acd = 120;
+            *fcd = acd;
+        }
+    }
+    if( *lane < 0 ) *lane += LANES;
+    if( *lane >= LANES ) *lane -= LANES;
+}
+
 void update_player( G* g )
 {
     // the SHARED pod timers tick even when P1 is out of the game,
@@ -1241,27 +1324,40 @@ void update_player( G* g )
     if( g->laser_timer > 0 ) g->laser_timer--;
     if( g->rapid_timer > 0 ) g->rapid_timer--;
     if( g->p1_out ) return;
-    move_claw( g );
-    claw_jump( g );
     if( g->p1_respawn > 0 ) g->p1_respawn--;
-    if( gamepad_button_a() > 0 ) fire( g );
-    if( gamepad_button_b() == 1 ) superzap( g, 0 );   // == 1: just-pressed edge
+    // no pad on port 0 = CPU-driven P1 (p1_cpu is sampled once per
+    // frame in main)
+    if( g->p1_cpu ) ai_claw( g, 0 );
+    else
+    {
+        move_claw( g );
+        claw_jump( g );
+        if( gamepad_button_a() > 0 ) fire( g );
+        if( gamepad_button_b() == 1 ) superzap( g, 0 );   // == 1: just-pressed edge
+    }
     if( g->fire_cooldown > 0 ) g->fire_cooldown--;
 }
 
-// PLAYER 2 (co-op): main() selects pad 1 around this call. The shared
+// PLAYER 2 (co-op): manages its OWN pad selection. The shared
 // laser/rapid timers are NOT touched here (update_player already
-// ticks them exactly once per frame). P2 can also pause the game.
+// ticks them exactly once per frame). Human P2 can pause the game;
+// CPU P2 (no pad on port 1) cannot.
 void update_player2( G* g )
 {
     if( g->p2_out ) return;
-    move_claw2( g );
-    claw_jump2( g );
     if( g->p2_respawn > 0 ) g->p2_respawn--;
-    if( gamepad_button_a() > 0 ) fire2( g );
-    if( gamepad_button_b() == 1 ) superzap( g, 1 );
+    if( g->p2_cpu ) ai_claw( g, 1 );
+    else
+    {
+        select_gamepad( 1 );
+        move_claw2( g );
+        claw_jump2( g );
+        if( gamepad_button_a() > 0 ) fire2( g );
+        if( gamepad_button_b() == 1 ) superzap( g, 1 );
+        if( gamepad_button_start() == 1 ) g->state = 5;
+        select_gamepad( 0 );
+    }
     if( g->p2_fire_cooldown > 0 ) g->p2_fire_cooldown--;
-    if( gamepad_button_start() == 1 ) g->state = 5;
 }
 
 void kill_player( G* g )
@@ -1276,11 +1372,23 @@ void kill_player( G* g )
     sfx( g, DEATH );
 }
 
-// both players out of lives: end the run with the BETTER of the two
-// scores (it goes on the high-score table as one team result)
+// both players out of lives: end the run. Only HUMAN players' scores
+// may reach the high-score table — a CPU-driven claw (no gamepad on
+// its port) cannot post an entry — so the submitted team result is
+// the best score among CONNECTED players only. All-human runs submit
+// the higher tally; a CPU-assisted run submits the human's score; no
+// humans at all submits nothing.
 void coop_game_over( G* g )
 {
-    if( g->p2_score > g->score ) g->score = g->p2_score;
+    int best = -1;
+    if( !g->p1_cpu ) best = g->score;
+    if( !g->p2_cpu )
+    {
+        if( best < 0 ) best = g->p2_score;
+        else if( g->p2_score > best ) best = g->p2_score;
+    }
+    if( best < 0 ) g->score = 0;
+    else           g->score = best;
     g->state = 3;
     show_message( g, "GAME OVER" );
     g->state_timer = 300;
@@ -1994,11 +2102,13 @@ void render_title( G* g )
     g->last_scale_y = -9999.0;
 
     // menu — stacked, centered; every option undulates, the selection
-    // gets the bigger wave + hue cycle. Row 4 shows the difficulty;
-    // LEFT/RIGHT changes it while that row is selected.
+    // gets the bigger wave + hue cycle. Rows 1 and 4 are selectors
+    // (PLAYERS / DIFFICULTY): LEFT/RIGHT changes the value while the
+    // row is selected; A on PLAY starts the game with that setup.
     char* rows[ 5 ];
     rows[ 0 ] = "PLAY";
-    rows[ 1 ] = "2 PLAYERS";
+    if( g->players == 2 ) rows[ 1 ] = "PLAYERS: 2";
+    else                   rows[ 1 ] = "PLAYERS: 1";
     rows[ 2 ] = "HIGH SCORES";
     rows[ 3 ] = "LEVEL SELECT";
     if( g->difficulty == 0 )      rows[ 4 ] = "DIFFICULTY: EASY";
@@ -2036,7 +2146,7 @@ void render_title( G* g )
                184, 290, 12, make_color( 120, 130, 160 ) );
 
     // controls hint
-    draw_text( g, "UP/DOWN: SELECT  LEFT/RIGHT: DIFFICULTY  A: GO",
+    draw_text( g, "UP/DOWN: SELECT  LEFT/RIGHT: CHANGE  A: GO",
                109, 320, 12, make_color( 120, 130, 160 ) );
 }
 
@@ -3007,6 +3117,9 @@ void init_state( G* g )
     g->p2_respawn = 0;
     g->p1_out = 0;
     g->p2_out = 0;
+    g->players = 1;         // menu default; preserved across games
+    g->p1_cpu = 0;          // sampled from pad connectivity each frame
+    g->p2_cpu = 0;
     g->music_index = 0;
     g->sfx_channel = 2;
     g->music_volume = 0.8;
@@ -3039,6 +3152,16 @@ void main()
 
     while( 1 )
     {
+        // PAD CONNECTIVITY, sampled once per frame: a player whose
+        // port has no gamepad is CPU-driven this frame (the watered-
+        // down ai_claw). Hot-plugging works — the claw switches
+        // hands the frame after the pad state changes. pad_connected
+        // restores pad 0 as the selected pad on every path.
+        g->p1_cpu = 0;
+        if( !pad_connected( 0 ) ) g->p1_cpu = 1;
+        g->p2_cpu = 0;
+        if( !pad_connected( 1 ) ) g->p2_cpu = 1;
+
         // -- update ---------------------------------------------------------
         if( g->state == 0 )
         {
@@ -3046,15 +3169,9 @@ void main()
             else
             {
                 update_player( g );
-                // co-op: P2 reads pad 1 for one update, then pad 0 is
-                // re-selected — every other input site in the game
-                // (menus, pause) reads pad 0
-                if( g->twoplayer )
-                {
-                    select_gamepad( 1 );
-                    update_player2( g );
-                    select_gamepad( 0 );
-                }
+                // co-op: P2 manages its own pad selection (human
+                // pad 1, or the CPU claw when port 1 is empty)
+                if( g->twoplayer ) update_player2( g );
                 update_spawning( g );
                 update_enemies( g );
                 update_bullets( g );
@@ -3069,6 +3186,10 @@ void main()
             {
                 if( g->lives <= 0 )
                 {
+                    // a CPU-driven P1 (no pad on port 0) cannot post
+                    // a high score — zero the tally so state 3 sends
+                    // the run straight back to the title screen
+                    if( g->p1_cpu ) g->score = 0;
                     g->state = 3;
                     show_message( g, "GAME OVER" );
                     g->state_timer = 300;
@@ -3087,15 +3208,25 @@ void main()
             // the claw stays live during the fly-out: you can slide
             // between lanes and JUMP — the old web's spikes stream
             // outward with it and sweep past the claw plane
-            move_claw( g );
-            claw_jump( g );
+            if( g->p1_cpu ) ai_claw( g, 0 );
+            else
+            {
+                move_claw( g );
+                claw_jump( g );
+            }
             // co-op: P2's claw rides the transition on pad 1 too
+            // (level-end webs have no enemies, so a CPU P2 just
+            // holds its lane here)
             if( g->twoplayer && !g->p2_out )
             {
-                select_gamepad( 1 );
-                move_claw2( g );
-                claw_jump2( g );
-                select_gamepad( 0 );
+                if( g->p2_cpu ) ai_claw( g, 1 );
+                else
+                {
+                    select_gamepad( 1 );
+                    move_claw2( g );
+                    claw_jump2( g );
+                    select_gamepad( 0 );
+                }
             }
             // SPIKE SWEEP (phase A): as the old web streams outward, the
             // tip of any spike sweeps past the claw plane. The crossing
@@ -3226,11 +3357,14 @@ void main()
                 }
                 else
                 {
-                    // init_state resets difficulty to MEDIUM — keep the
-                    // player's last choice across games
+                    // init_state resets difficulty to MEDIUM and
+                    // players to 1 — keep the player's last choices
+                    // across games
                     int dsave = g->difficulty;
+                    int psave = g->players;
                     init_state( g );
                     g->difficulty = dsave;
+                    g->players = psave;
                 }
             }
         }
@@ -3247,6 +3381,10 @@ void main()
                 else if( gamepad_down() > 0 )
                 { g->menu_row++; if( g->menu_row > 4 ) g->menu_row = 0;
                   g->menu_cooldown = 10; sfx( g, BLIP ); }
+                else if( g->menu_row == 1 && gamepad_left() > 0 )
+                { g->players = 1; g->menu_cooldown = 10; sfx( g, BLIP ); }
+                else if( g->menu_row == 1 && gamepad_right() > 0 )
+                { g->players = 2; g->menu_cooldown = 10; sfx( g, BLIP ); }
                 else if( g->menu_row == 4 && gamepad_left() > 0 )
                 { g->difficulty--; if( g->difficulty < 0 ) g->difficulty = 2;
                   g->menu_cooldown = 10; sfx( g, BLIP ); }
@@ -3258,14 +3396,11 @@ void main()
             {
                 if( g->menu_row == 0 )
                 {
+                    // PLAY: 2-player setup arms the co-op web — a
+                    // missing pad on either port hands that claw to
+                    // the CPU (see update_player/update_player2)
+                    if( g->players == 2 ) start_coop( g );
                     play_track( g, level_track( g ) );   // begin the track run
-                    start_level( g );
-                }
-                else if( g->menu_row == 1 )
-                {
-                    // 2 PLAYERS: co-op on the shared web — pads 0 + 1
-                    start_coop( g );
-                    play_track( g, level_track( g ) );
                     start_level( g );
                 }
                 else if( g->menu_row == 2 ) g->state = 7;   // high scores
@@ -3277,7 +3412,8 @@ void main()
                     g->state = 8;         // level select
                     sfx( g, BLIP );
                 }
-                // row 4 (difficulty): A does nothing — LEFT/RIGHT changes it
+                // rows 1 (players) and 4 (difficulty): A does
+                // nothing — LEFT/RIGHT changes them
             }
         }
         else if( g->state == 6 )      // new high score: initials entry
@@ -3345,8 +3481,10 @@ void main()
                 gamepad_button_start() == 1 )
             {
                 int dsave = g->difficulty;
+                int psave = g->players;
                 init_state( g );
                 g->difficulty = dsave;
+                g->players = psave;
             }
         }
         else if( g->state == 8 )      // level select
@@ -3375,6 +3513,10 @@ void main()
             if( gamepad_button_a() == 1 || gamepad_button_start() == 1 )
             {
                 g->level = g->select_level;
+                // honor the PLAYERS selector here too — testing a
+                // specific level with a CPU partner works the same
+                // as the PLAY path
+                if( g->players == 2 ) start_coop( g );
                 play_track( g, level_track( g ) );   // begin the track run
                 start_level( g );
             }
