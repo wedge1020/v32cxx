@@ -100,7 +100,7 @@
 // ---------------------------------------------------------------------------
 #define LANES 16          // web lanes (array sizes below spell this as 16!)
 #define RINGS 7
-#define MAX_BULLETS 32
+#define MAX_BULLETS 48
 #define MAX_ENEMIES 24
 #define MAX_PARTICLES 220
 #define MAX_STARS 80
@@ -142,6 +142,7 @@ struct Bullet
     int alive;
     float lane;
     float z;
+    int owner;              // 0 = P1, 1 = P2 (score attribution + tint)
 };
 
 struct Enemy
@@ -208,7 +209,7 @@ struct G
 
     // entities
     char  GLYPHS[ 6 ];
-    Bullet   BULLETS[ 32 ];
+    Bullet   BULLETS[ 48 ];
     Enemy    ENEMIES[ 24 ];
     Particle PARTICLES[ 220 ];
     Shock    SHOCKS[ 3 ];
@@ -249,6 +250,21 @@ struct G
     int   fire_cooldown;
     int   jump_timer;       // claw leap: frames airborne (34 total)
     int   jump_cooldown;    // frames until the next leap is allowed
+
+    // TWO-PLAYER CO-OP: player 2's own claw, driven by gamepad 1.
+    // The web, enemies and level are shared; lives and scores are
+    // kept separately (P2's score rides under P1's on the HUD).
+    int   twoplayer;        // 1 = co-op run in progress
+    float p2_lane;
+    int   p2_jump_timer;
+    int   p2_jump_cooldown;
+    int   p2_fire_cooldown;
+    int   p2_lives;
+    int   p2_score;
+    int   p1_respawn;       // invulnerable blink frames after a hit
+    int   p2_respawn;
+    int   p1_out;           // 1 = that player is out of lives
+    int   p2_out;
     int   buddy_timer;      // AI buddy drone: frames remaining
     int   buddy_cooldown;   // AI buddy: frames until next auto-shot
     float buddy_lane;       // AI buddy: its OWN lane (eases to targets)
@@ -558,7 +574,7 @@ void draw_party_text( G* g, char* s, float x, float y, float size, int huebase )
         float wob = sin32( g, i * 0.35 + g->frame * 0.05 ) * size * 0.28;
         set_multiply_color( hue( huebase + i * 9 + ( g->frame >> 1 ) ) );
         draw_glyph( g, s[ i ],
-                    x + ( i - string_len( s ) / 2.0 ) * size * 0.62,
+                    x + ( i - string_len( s ) * 0.5 ) * size * 0.62,
                     y + wob,
                     size, size * 1.15 );
         i++;
@@ -664,15 +680,18 @@ void project( G* g, float lane, float z )
     // timing must not shift mid-jump.
     if( g->jump_timer > 0 )
     {
-        // pure-arithmetic pull profile: 4*ph*(1-ph) is 0 at takeoff
-        // and landing and peaks at 1 mid-jump — the same shape as a
-        // half-sine with no table lookup. (The sin32-based version
-        // produced no visible motion on the emulator — going
-        // through the lookup table here was the one suspect unique
-        // to the broken build. Plain arithmetic is proven: the
-        // original linear version visibly moved.)
-        float ph = 1.0 - g->jump_timer / 34.0;
-        fly *= 1.0 + 4 * ph * ( 1.0 - ph ) * 0.08;
+        // PROVEN-EXPRESSION RULE: this must be spelled EXACTLY like
+        // the claw's own jump arc in render_player —
+        //   sin32( g, 3.14159 * ( 34 - g->jump_timer ) / 34.0 )
+        // Two earlier "equivalent" spellings silently no-opped on the
+        // emulator: `g->jump_timer / 34.0` as a lone division, and
+        // `1.0 - g->jump_timer / 34.0` (see the limitations doc —
+        // int-typed / float-literal division and the a - b/c shape
+        // are both suspect in the transpiler's codegen). The claw
+        // arc's shape — float multiply first, divide last — is the
+        // one form observed to evaluate correctly.
+        float jarc = sin32( g, 3.14159 * ( 34 - g->jump_timer ) / 34.0 );
+        fly *= 1.0 + jarc * 0.08;
     }
     rx *= fly;
     ry *= fly;
@@ -1018,20 +1037,26 @@ void explode( G* g, float x, float y, int count, int strength )
 void kill_player( G* g );
 void level_clear( G* g );
 
-void fire( G* g )
+// firing, factored per player: owner 0 = P1 (pad 0), 1 = P2 (pad 1).
+// The laser / rapid timers are SHARED in co-op — pods power the ship,
+// not one gunner — but each player keeps their own cooldown. Every
+// bullet is stamped with its owner so kills score to the right player.
+void fire_owner( G* g, int owner, float lane )
 {
-    if( g->fire_cooldown > 0 ) return;
+    if( owner == 0 && g->fire_cooldown > 0 ) return;
+    if( owner == 1 && g->p2_fire_cooldown > 0 ) return;
     sfx( g, PEWPEW );
     // SUPER LASER: three shots at once — the claw's own lane plus the
     // two half-lanes either side of it, blanketing neighbouring rim
     // lanes. Slightly slower cycle than the single blaster.
     if( g->laser_timer > 0 )
     {
-        g->fire_cooldown = 8;
+        if( owner == 0 ) g->fire_cooldown = 8;
+        else             g->p2_fire_cooldown = 8;
         int k;
         for( k = -1; k <= 1; k++ )
         {
-            float ln = g->player_lane + k * 1.5;
+            float ln = lane + k * 1.5;
             if( ln < 0 ) ln += LANES;
             if( ln >= LANES ) ln -= LANES;
             int i;
@@ -1040,6 +1065,7 @@ void fire( G* g )
                 if( !g->BULLETS[ i ].alive )
                 {
                     g->BULLETS[ i ].alive = 1;
+                    g->BULLETS[ i ].owner = owner;
                     g->BULLETS[ i ].lane = ln;
                     g->BULLETS[ i ].z = 0.02;
                     break;
@@ -1053,26 +1079,39 @@ void fire( G* g )
     // Spelled as if/else: a ternary here once leaked unrewritten into
     // the generated C ("character '?' is not a valid identifier
     // start") — the limitations doc tracks the transpiler gap.
-    g->fire_cooldown = 6;
+    int cd = 6;
     if( g->rapid_timer > 0 )
     {
-        g->fire_cooldown = 4;
-        if( ( g->frame & 1 ) != 0 ) g->fire_cooldown = 5;
+        cd = 4;
+        if( ( g->frame & 1 ) != 0 ) cd = 5;
     }
+    if( owner == 0 ) g->fire_cooldown = cd;
+    else             g->p2_fire_cooldown = cd;
     int i;
     for( i = 0; i < MAX_BULLETS; i++ )
     {
         if( !g->BULLETS[ i ].alive )
         {
             g->BULLETS[ i ].alive = 1;
-            g->BULLETS[ i ].lane = g->player_lane;
+            g->BULLETS[ i ].owner = owner;
+            g->BULLETS[ i ].lane = lane;
             g->BULLETS[ i ].z = 0.02;
             return;
         }
     }
 }
 
-void superzap( G* g )
+void fire( G* g )
+{
+    fire_owner( g, 0, g->player_lane );
+}
+
+void fire2( G* g )
+{
+    fire_owner( g, 1, g->p2_lane );
+}
+
+void superzap( G* g, int owner )
 {
     if( g->superzaps <= 0 ) return;
     g->superzaps--;
@@ -1086,7 +1125,8 @@ void superzap( G* g )
             project( g, g->ENEMIES[ i ].lane, g->ENEMIES[ i ].z );
             explode( g, g->px, g->py, 18, 3 );
             g->ENEMIES[ i ].alive = 0;
-            g->score += 150;
+            if( owner == 0 ) g->score += 150;
+            else             g->p2_score += 150;
         }
     }
     // the zap can wipe out the last enemies — check for level clear
@@ -1094,13 +1134,17 @@ void superzap( G* g )
 }
 
 // claw movement, factored out of update_player so it can also run
-// during the warp-out transition (dodge the spikes streaming past!)
-void move_claw( G* g )
+// during the warp-out transition (dodge the spikes streaming past!).
+// LANE-VERSION: the moved lane comes in by POINTER (scalar references
+// are a documented transpiler gap), so P2's claw shares the exact
+// same movement + rim-clamp code. airborne = 1 suspends the open-web
+// rim clamp.
+void move_claw_lane( G* g, float* lane, int airborne )
 {
-    if( gamepad_left() > 0 )  g->player_lane -= 0.12;
-    if( gamepad_right() > 0 ) g->player_lane += 0.12;
-    if( g->player_lane < 0 ) g->player_lane += LANES;
-    if( g->player_lane >= LANES ) g->player_lane -= LANES;
+    if( gamepad_left() > 0 )  *lane -= 0.12;
+    if( gamepad_right() > 0 ) *lane += 0.12;
+    if( *lane < 0 ) *lane += LANES;
+    if( *lane >= LANES ) *lane -= LANES;
 
     // OPEN WEBS: clamp the claw to its contiguous rim run so it can't
     // slide over a missing outline edge (see run_bounds). Fully closed
@@ -1111,17 +1155,17 @@ void move_claw( G* g )
     // one: a claw at 8.91 sits in the (8,9) gap and must fall back to
     // lane 9's run — with truncation it clamped into the OTHER arc
     // (the cross-half teleport bug).
-    if( !web_full( g ) && g->jump_timer <= 0 )
+    if( !web_full( g ) && !airborne )
     {
         int plo; int phi;
-        int pli = (int)( g->player_lane + 0.5 );
+        int pli = (int)( *lane + 0.5 );
         if( pli >= LANES ) pli -= LANES;
         run_bounds( g, pli, &plo, &phi );
-        if( plo == phi ) g->player_lane = plo;               // single-lane run
+        if( plo == phi ) *lane = plo;               // single-lane run
         else if( plo < phi )
         {
-            if( g->player_lane < plo ) g->player_lane = plo;
-            if( g->player_lane > phi ) g->player_lane = phi;
+            if( *lane < plo ) *lane = plo;
+            if( *lane > phi ) *lane = phi;
         }
         else  // wrapped run [plo..15]+[0..phi]: the gap zone is the
               // open interval (phi,plo) — ONLY positions there get
@@ -1130,18 +1174,24 @@ void move_claw( G* g )
               // END of the gap the claw just left (nearest by run
               // midpoint) — never across it.
         {
-            if( g->player_lane > phi && g->player_lane < plo )
+            if( *lane > phi && *lane < plo )
             {
                 float mid = ( plo + phi ) * 0.5;
-                if( g->player_lane < mid ) g->player_lane = phi;
-                else                       g->player_lane = plo;
+                if( *lane < mid ) *lane = phi;
+                else             *lane = plo;
             }
         }
     }
+}
+
+void move_claw( G* g )
+{
+    move_claw_lane( g, &g->player_lane, g->jump_timer > 0 );
 
     // camera sway: ease the vanishing point toward a fraction of the
     // claw's offset from the tube axis — the tube appears to lean and
-    // follow you around the web (Tempest 2000 flavour)
+    // follow you around the web (Tempest 2000 flavour). P1 drives the
+    // camera in co-op; P2's claw does not lean the tube.
     project( g, g->player_lane, 0 );
     float camtx = ( g->px - CX ) * CAM_SWAY;
     float camty = ( g->py - CY ) * CAM_SWAY;
@@ -1149,32 +1199,69 @@ void move_claw( G* g )
     g->cam_y += ( camty - g->cam_y ) * CAM_EASE;
 }
 
+// P2's claw: identical movement and rim clamp, no camera sway
+void move_claw2( G* g )
+{
+    move_claw_lane( g, &g->p2_lane, g->p2_jump_timer > 0 );
+}
+
 // JUMP (button Y), factored out so it also runs during the warp-out:
 // the claw leaps off the web toward the camera — airborne frames are
 // invulnerable at the rim, so you can hop over a camper, or over a
-// spike sweeping past during the level transition
-void claw_jump( G* g )
+// spike sweeping past during the level transition. The timers come in
+// by pointer so both players share the one code path.
+void claw_jump_lane( G* g, float* lane, int* jt, int* jc )
 {
-    if( g->jump_cooldown > 0 ) g->jump_cooldown--;
-    if( g->jump_timer > 0 ) g->jump_timer--;
-    else if( gamepad_button_y() == 1 && g->jump_cooldown == 0 )
+    if( *jc > 0 ) ( *jc )--;
+    if( *jt > 0 ) ( *jt )--;
+    else if( gamepad_button_y() == 1 && *jc == 0 )
     {
-        g->jump_timer = 34;
-        g->jump_cooldown = 60;   // lands at 34, 26 frames of recovery
+        *jt = 34;
+        *jc = 60;   // lands at 34, 26 frames of recovery
+        project( g, *lane, 0 );
         burst( g, g->px, g->py, 8, 1.5 );   // takeoff puff
         sfx( g, JUMP );
     }
 }
 
+void claw_jump( G* g )
+{
+    claw_jump_lane( g, &g->player_lane, &g->jump_timer, &g->jump_cooldown );
+}
+
+void claw_jump2( G* g )
+{
+    claw_jump_lane( g, &g->p2_lane, &g->p2_jump_timer, &g->p2_jump_cooldown );
+}
+
 void update_player( G* g )
 {
-    move_claw( g );
-    claw_jump( g );
+    // the SHARED pod timers tick even when P1 is out of the game,
+    // so P2 keeps the laser / rapid power running in co-op
     if( g->laser_timer > 0 ) g->laser_timer--;
     if( g->rapid_timer > 0 ) g->rapid_timer--;
+    if( g->p1_out ) return;
+    move_claw( g );
+    claw_jump( g );
+    if( g->p1_respawn > 0 ) g->p1_respawn--;
     if( gamepad_button_a() > 0 ) fire( g );
-    if( gamepad_button_b() == 1 ) superzap( g );   // == 1: just-pressed edge
+    if( gamepad_button_b() == 1 ) superzap( g, 0 );   // == 1: just-pressed edge
     if( g->fire_cooldown > 0 ) g->fire_cooldown--;
+}
+
+// PLAYER 2 (co-op): main() selects pad 1 around this call. The shared
+// laser/rapid timers are NOT touched here (update_player already
+// ticks them exactly once per frame). P2 can also pause the game.
+void update_player2( G* g )
+{
+    if( g->p2_out ) return;
+    move_claw2( g );
+    claw_jump2( g );
+    if( g->p2_respawn > 0 ) g->p2_respawn--;
+    if( gamepad_button_a() > 0 ) fire2( g );
+    if( gamepad_button_b() == 1 ) superzap( g, 1 );
+    if( g->p2_fire_cooldown > 0 ) g->p2_fire_cooldown--;
+    if( gamepad_button_start() == 1 ) g->state = 5;
 }
 
 void kill_player( G* g )
@@ -1189,6 +1276,69 @@ void kill_player( G* g )
     sfx( g, DEATH );
 }
 
+// both players out of lives: end the run with the BETTER of the two
+// scores (it goes on the high-score table as one team result)
+void coop_game_over( G* g )
+{
+    if( g->p2_score > g->score ) g->score = g->p2_score;
+    g->state = 3;
+    show_message( g, "GAME OVER" );
+    g->state_timer = 300;
+    play_title_music( g );   // gameplay succession ends here
+}
+
+// who got hit: 0 = P1, 1 = P2. SOLO is unchanged — kill_player's full
+// death cinematic and the restart-via-state-1 flow stay exactly as
+// they were. In CO-OP a hit costs the struck player one life: they
+// blink invulnerable for 2 seconds while respawning in place, and
+// only when BOTH players are out does the run end.
+void hit_player( G* g, int who )
+{
+    if( !g->twoplayer )
+    {
+        if( who == 0 ) kill_player( g );
+        return;
+    }
+    if( who == 0 )
+    {
+        if( g->p1_out || g->p1_respawn > 0 ) return;
+        g->lives--;
+        project( g, g->player_lane, 0 );
+        explode( g, g->px, g->py, 40, 4 );
+        sfx( g, DEATH );
+        if( g->lives <= 0 )
+        {
+            g->p1_out = 1;
+            show_message( g, "P1 OUT!" );
+            if( g->p2_out ) coop_game_over( g );
+        }
+        else
+        {
+            g->p1_respawn = 120;
+            show_message( g, "P1 DOWN!" );
+        }
+    }
+    else
+    {
+        if( g->p2_out || g->p2_respawn > 0 ) return;
+        g->p2_lives--;
+        project( g, g->p2_lane, 0 );
+        explode( g, g->px, g->py, 40, 4 );
+        sfx( g, DEATH );
+        if( g->p2_lives <= 0 )
+        {
+            g->p2_out = 1;
+            show_message( g, "P2 OUT!" );
+            if( g->p1_out ) coop_game_over( g );
+        }
+        else
+        {
+            g->p2_respawn = 120;
+            show_message( g, "P2 DOWN!" );
+        }
+    }
+}
+
 void level_clear( G* g );
 
 // ---------------------------------------------------------------------------
@@ -1197,7 +1347,7 @@ void level_clear( G* g );
 //    type 3 = SUPER LASER (triple-shot for a timed stretch),
 //    type 4 = RAPID BLASTER (25% faster single shots; easy = unlimited)
 // ---------------------------------------------------------------------------
-void collect_powerup( G* g, int i )
+void collect_powerup( G* g, int i, int owner )
 {
     if( g->POWERUPS[ i ].type == 0 )
     {
@@ -1208,7 +1358,8 @@ void collect_powerup( G* g, int i )
         }
         else
         {
-            g->score += 250;
+            if( owner == 0 ) g->score += 250;
+            else             g->p2_score += 250;
             show_message( g, "BONUS 250!" );
         }
     }
@@ -1241,14 +1392,20 @@ void collect_powerup( G* g, int i )
     }
     else
     {
-        if( g->lives < 4 )
+        // extra life (or bonus, at the cap) goes to the SHOOTING
+        // player — the rest of the pod roster is team-shared
+        int lv = g->lives;
+        if( owner == 1 ) lv = g->p2_lives;
+        if( lv < 4 )
         {
-            g->lives++;
+            if( owner == 0 ) g->lives++;
+            else             g->p2_lives++;
             show_message( g, "EXTRA LIFE!" );
         }
         else
         {
-            g->score += 250;
+            if( owner == 0 ) g->score += 250;
+            else             g->p2_score += 250;
             show_message( g, "BONUS 250!" );
         }
     }
@@ -1381,6 +1538,7 @@ void update_buddy( G* g )
                 if( !g->BULLETS[ j ].alive )
                 {
                     g->BULLETS[ j ].alive = 1;
+                    g->BULLETS[ j ].owner = 0;   // drone kills score P1
                     g->BULLETS[ j ].lane = g->buddy_lane;
                     g->BULLETS[ j ].z = 0.10;
                     // cooldown lengthened so the drone SUPPORTS the
@@ -1471,7 +1629,15 @@ void update_enemies( G* g )
                 float diffw = g->player_lane - g->ENEMIES[ i ].lane;
                 if( diffw < 0 ) diffw = -diffw;
                 if( diffw > LANES / 2 ) diffw = LANES - diffw;
-                if( diffw < 0.7 && g->jump_timer <= 0 ) { kill_player( g ); }
+                if( diffw < 0.7 && g->jump_timer <= 0 ) hit_player( g, 0 );
+                // P2 gets their own lane/jump test on the shared web
+                if( g->twoplayer && !g->p2_out )
+                {
+                    float d2w = g->p2_lane - g->ENEMIES[ i ].lane;
+                    if( d2w < 0 ) d2w = -d2w;
+                    if( d2w > LANES / 2 ) d2w = LANES - d2w;
+                    if( d2w < 0.7 && g->p2_jump_timer <= 0 ) hit_player( g, 1 );
+                }
 
                 if( g->ENEMIES[ i ].cooldown > 0 ) g->ENEMIES[ i ].cooldown--;
                 else
@@ -1536,14 +1702,21 @@ void update_enemies( G* g )
         }
 
         // rim behaviour: lethal if it shares your lane — unless the
-        // claw is mid-jump (hop over the camper)
+        // claw is mid-jump (hop over the camper); P2 mirrors the test
         if( g->ENEMIES[ i ].z < 0 )
         {
             g->ENEMIES[ i ].z = 0;
             float diff = g->player_lane - g->ENEMIES[ i ].lane;
             if( diff < 0 ) diff = -diff;
             if( diff > LANES / 2 ) diff = LANES - diff;
-            if( diff < 0.7 && g->jump_timer <= 0 ) { kill_player( g ); }
+            if( diff < 0.7 && g->jump_timer <= 0 ) hit_player( g, 0 );
+            if( g->twoplayer && !g->p2_out )
+            {
+                float d2 = g->p2_lane - g->ENEMIES[ i ].lane;
+                if( d2 < 0 ) d2 = -d2;
+                if( d2 > LANES / 2 ) d2 = LANES - d2;
+                if( d2 < 0.7 && g->p2_jump_timer <= 0 ) hit_player( g, 1 );
+            }
         }
     }
 }
@@ -1573,7 +1746,8 @@ void update_bullets( G* g )
             project( g, g->BULLETS[ i ].lane, g->BULLETS[ i ].z );
             burst( g, g->px, g->py, 6, 1.5 );
             g->BULLETS[ i ].alive = 0;
-            g->score += 5;
+            if( g->BULLETS[ i ].owner == 0 ) g->score += 5;
+            else                             g->p2_score += 5;
             continue;
         }
 
@@ -1591,7 +1765,7 @@ void update_bullets( G* g )
             if( dzp < 0.04 && dlp < 0.6 )
             {
                 g->BULLETS[ i ].alive = 0;
-                collect_powerup( g, p );
+                collect_powerup( g, p, g->BULLETS[ i ].owner );
                 collected = 1;
                 break;
             }
@@ -1618,13 +1792,15 @@ void update_bullets( G* g )
                 {
                     // tanker splits into two flippers
                     g->ENEMIES[ j ].type = 0;
-                    g->score += 100;
+                    if( g->BULLETS[ i ].owner == 0 ) g->score += 100;
+                    else                             g->p2_score += 100;
                     spawn_near( g, g->ENEMIES[ j ].lane + 1, g->ENEMIES[ j ].z );
                 }
                 else
                 {
                     g->ENEMIES[ j ].alive = 0;
-                    g->score += 100;
+                    if( g->BULLETS[ i ].owner == 0 ) g->score += 100;
+                    else                             g->p2_score += 100;
                     if( g->spawn_timer > 999 && count_enemies( g ) == 0 )
                         level_clear( g );
                 }
@@ -1650,6 +1826,8 @@ void level_clear( G* g )
     show_message( g, "EXCELLENT!" );
     sfx( g, CLEAR );
     g->score += 1000 + g->level * 250;
+    // co-op: the level bonus is paid to BOTH players' tallies
+    if( g->twoplayer ) g->p2_score += 1000 + g->level * 250;
 }
 
 void update_shocks( G* g )
@@ -1816,17 +1994,18 @@ void render_title( G* g )
     g->last_scale_y = -9999.0;
 
     // menu — stacked, centered; every option undulates, the selection
-    // gets the bigger wave + hue cycle. Row 3 shows the difficulty;
+    // gets the bigger wave + hue cycle. Row 4 shows the difficulty;
     // LEFT/RIGHT changes it while that row is selected.
-    char* rows[ 4 ];
+    char* rows[ 5 ];
     rows[ 0 ] = "PLAY";
-    rows[ 1 ] = "HIGH SCORES";
-    rows[ 2 ] = "LEVEL SELECT";
-    if( g->difficulty == 0 )      rows[ 3 ] = "DIFFICULTY: EASY";
-    else if( g->difficulty == 1 ) rows[ 3 ] = "DIFFICULTY: MEDIUM";
-    else                          rows[ 3 ] = "DIFFICULTY: HARD";
+    rows[ 1 ] = "2 PLAYERS";
+    rows[ 2 ] = "HIGH SCORES";
+    rows[ 3 ] = "LEVEL SELECT";
+    if( g->difficulty == 0 )      rows[ 4 ] = "DIFFICULTY: EASY";
+    else if( g->difficulty == 1 ) rows[ 4 ] = "DIFFICULTY: MEDIUM";
+    else                          rows[ 4 ] = "DIFFICULTY: HARD";
     int d; int ci;
-    for( d = 0; d < 4; d++ )
+    for( d = 0; d < 5; d++ )
     {
         float sel = 0;
         if( d == g->menu_row ) sel = 1;
@@ -1844,8 +2023,8 @@ void render_title( G* g )
             else
                 set_multiply_color( make_color( 90, 100, 125 ) );
             draw_glyph( g, rows[ d ][ ci ],
-                        320 + ( ci - ( string_len( rows[ d ] ) - 1 ) / 2.0 ) * adv,
-                        150 + d * 32 + wob, msz, msz * 1.2 );
+                        320 + ( ci - ( string_len( rows[ d ] ) - 1 ) * 0.5 ) * adv,
+                        140 + d * 30 + wob, msz, msz * 1.2 );
             ci++;
         }
     }
@@ -1854,11 +2033,11 @@ void render_title( G* g )
     // makes small text render fully, so the earlier size bump isn't
     // needed. X re-centered for the 0.78 advance.
     draw_text( g, "A: FIRE  B: SUPERZAP  Y: JUMP",
-               184, 282, 12, make_color( 120, 130, 160 ) );
+               184, 290, 12, make_color( 120, 130, 160 ) );
 
     // controls hint
     draw_text( g, "UP/DOWN: SELECT  LEFT/RIGHT: DIFFICULTY  A: GO",
-               109, 314, 12, make_color( 120, 130, 160 ) );
+               109, 320, 12, make_color( 120, 130, 160 ) );
 }
 
 // ---------------------------------------------------------------------------
@@ -1933,7 +2112,7 @@ void render_web( G* g )
         float scroll = 0.002 + g->warp * g->warp * 0.12;
         for( r = 0; r < RINGS; r++ )
         {
-            float z = ( ( g->frame * scroll ) + r / ( RINGS * 1.0 ) );
+            float z = ( ( g->frame * scroll ) + r * ( 1.0 / ( RINGS * 1.0 ) ) );
             while( z > 1 ) z -= 1;
             set_multiply_color( make_color( 20, 60 + r * 6, 90 ) );
             for( i = 0; i < LANES; i += ringstep )
@@ -1990,14 +2169,30 @@ void render_spikes( G* g )
     set_blending_mode( BLEND_SOLID );
 }
 
-void render_player( G* g )
+// one claw, any player: who = 0 (P1, gold) or 1 (P2, cyan). Both
+// share the jump-arc pop and the rim -> far-cap aim; in co-op a
+// respawning claw blinks and a player who is OUT is not drawn.
+void render_claw( G* g, int who )
 {
-    if( g->state == 1 ) return;   // dying: particles only
+    float lane = g->player_lane;
+    int jt = g->jump_timer;
+    int rsp = g->p1_respawn;
+    int bcol = make_color( 255, 220, 60 );
+    int ccol = make_color( 255, 120, 40 );
+    if( who == 1 )
+    {
+        lane = g->p2_lane;
+        jt = g->p2_jump_timer;
+        rsp = g->p2_respawn;
+        bcol = make_color( 60, 220, 255 );
+        ccol = make_color( 120, 60, 255 );
+    }
+    if( rsp > 0 && ( g->frame % 8 ) < 4 ) return;   // respawn blink
 
     // transition rework: the claw NO LONGER dives into the tube on
     // warp-out — it parks on the rim while the web streams past it.
     // project() has the fly factor baked in, so divide it back out.
-    project( g, g->player_lane, 0 );
+    project( g, lane, 0 );
     float x = g->px; float y = g->py; float s = g->pscale;
     float fly = fly_factor( g );
     x = CX + ( x - CX ) / fly;
@@ -2005,30 +2200,37 @@ void render_player( G* g )
 
     // jump arc: airborne claw pops toward the camera — bigger and
     // pushed radially outward from the tube axis (T2K-style leap)
-    if( g->jump_timer > 0 )
+    if( jt > 0 )
     {
-        float jarc = sin32( g, 3.14159 * ( 34 - g->jump_timer ) / 34.0 );
+        float jarc = sin32( g, 3.14159 * ( 34 - jt ) / 34.0 );
         x += ( x - CX ) * jarc * 0.18;
         y += ( y - CY ) * jarc * 0.18;
         s *= ( 1.0 + jarc * 1.2 );
     }
 
-    // THE CLAW IS BIOS REGION 123 — the left-curly-brace glyph: its aims
-    // down the lane spoke — the exact direction the shots travel — so
-    // the ship visibly points where it fires. aim = rim -> far-cap.
-    project( g, g->player_lane, 1 );
+    // THE CLAW IS BIOS REGION 123 — the left-curly-brace glyph: it
+    // aims down the lane spoke — the exact direction the shots
+    // travel — so the ship visibly points where it fires.
+    project( g, lane, 1 );
     float capx = CX + ( g->px - CX ) / fly;
     float capy = CY + ( g->py - CY ) / fly;
     float aim = dir_angle( g, capx - x, capy - y ) * 0.024543692;
 
     set_blending_mode( BLEND_SOLID );
-    set_multiply_color( make_color( 255, 220, 60 ) );
+    set_multiply_color( bcol );
     draw_rot_glyph( g, 123, x, y, 24 * s, 30 * s, aim );
     // hot core, glowing, riding the same rotation
     set_glow( 3 );
-    set_multiply_color( make_color( 255, 120, 40 ) );
+    set_multiply_color( ccol );
     draw_rot_glyph( g, 123, x, y, 12 * s, 18 * s, aim );
     set_blending_mode( BLEND_SOLID );
+}
+
+void render_player( G* g )
+{
+    if( g->state == 1 ) return;   // dying: particles only
+    if( !g->p1_out ) render_claw( g, 0 );
+    if( g->twoplayer && !g->p2_out ) render_claw( g, 1 );
 }
 
 void render_enemies( G* g )
@@ -2110,11 +2312,23 @@ void render_bullets( G* g )
         if( !g->BULLETS[ i ].alive ) continue;
         project( g, g->BULLETS[ i ].lane, g->BULLETS[ i ].z );
         float s = g->pscale;
-        set_multiply_color( make_color( 255, 200 - (int)( g->BULLETS[ i ].z * 180 ),
-                                       120 - (int)( g->BULLETS[ i ].z * 100 ) ) );
-        // normal shots are '.', rapid-blaster shots a fatter '*'
-        int bg = '.';
-        float bs = 7 * s + 3;
+        // P2's shots burn CYAN so each player can read their own
+        // stream on the shared web (P1 keeps the hot orange)
+        if( g->BULLETS[ i ].owner == 1 )
+        {
+            set_multiply_color( make_color( 140, 220 - (int)( g->BULLETS[ i ].z * 140 ),
+                                           255 - (int)( g->BULLETS[ i ].z * 100 ) ) );
+        }
+        else
+        {
+            set_multiply_color( make_color( 255, 200 - (int)( g->BULLETS[ i ].z * 180 ),
+                                           120 - (int)( g->BULLETS[ i ].z * 100 ) ) );
+        }
+        // normal shots are 'o' — the old '.' tracer rendered about as
+        // small as a background star and vanished in the streaks;
+        // rapid-blaster shots stay the fatter '*'
+        int bg = 'o';
+        float bs = 9 * s + 4;
         if( g->rapid_timer > 0 ) { bg = '*'; bs = 12 * s + 4; }
         draw_glyph( g, bg, g->px, g->py, bs, bs );
     }
@@ -2136,7 +2350,7 @@ void render_particles( G* g )
     {
         if( !g->PARTICLES[ i ].alive ) continue;
         if( par == 2 && ( ( i + g->frame ) % 2 ) == 1 ) continue;
-        float t = 1.0 - ( g->PARTICLES[ i ].life / 50.0 );
+        float t = 1.0 - ( g->PARTICLES[ i ].life * ( 1.0 / 50.0 ) );
         if( t < 0 ) t = 0;
         int f = (int)( t * 220 );
         // color varies by glyph: 'o'/'O' particles burn white-hot,
@@ -2164,7 +2378,7 @@ void render_shocks( G* g )
     for( i = 0; i < 3; i++ )
     {
         if( !g->SHOCKS[ i ].alive ) continue;
-        float t = g->SHOCKS[ i ].life / 22.0;      // 1 -> 0
+        float t = g->SHOCKS[ i ].life * ( 1.0 / 22.0 );      // 1 -> 0
         float r = 6 + ( 1.0 - t ) * 40;
         int fade = (int)( t * 160 );
         set_multiply_color( make_color( 255, 100 + fade, 60 + fade / 2 ) );
@@ -2271,6 +2485,32 @@ void render_hud( G* g )
     // rim and incoming enemies
     draw_party_text( g, tmp, 628 - len * 16 * 0.31, 18, 16, 0 );
 
+    // co-op: P2's tally rides directly beneath P1's, hue-shifted to
+    // the P2 claw's cyan so the two scores read apart at a glance
+    if( g->twoplayer )
+    {
+        char tmp2[ 16 ];
+        char buf2[ 16 ];
+        int n2 = g->p2_score;
+        int i2 = 0;
+        int len2 = 0;
+        if( n2 == 0 ) { tmp2[ 0 ] = '0'; len2 = 1; }
+        else
+        {
+            while( n2 > 0 && i2 < 15 )
+            {
+                tmp2[ i2 ] = '0' + ( n2 % 10 );
+                n2 /= 10;
+                i2++;
+            }
+            len2 = i2;
+            for( i2 = 0; i2 < len2; i2++ ) buf2[ i2 ] = tmp2[ len2 - 1 - i2 ];
+            for( i2 = 0; i2 < len2; i2++ ) tmp2[ i2 ] = buf2[ i2 ];
+            tmp2[ len2 ] = 0;
+        }
+        draw_party_text( g, tmp2, 628 - len2 * 16 * 0.31, 46, 16, 160 );
+    }
+
     // lives as spare claws: the brace ship (region 123), aimed at the
     // web's centre so the icons echo the player sprite ('X' now
     // belongs to the walker)
@@ -2283,6 +2523,20 @@ void render_hud( G* g )
         float iy = 346;
         int aimidx = dir_angle( g, CX - ix, CY - iy );
         draw_rot_glyph( g, 123, ix, iy, 12, 16, aimidx * 0.024543692 );
+    }
+
+    // P2's spare claws: cyan braces on the left half of the HUD row,
+    // clear of the LVL readout and the superzap charges
+    if( g->twoplayer )
+    {
+        set_multiply_color( make_color( 60, 220, 255 ) );
+        for( l = 0; l < g->p2_lives; l++ )
+        {
+            float ix = 100 + l * 22;
+            float iy = 346;
+            int aimidx = dir_angle( g, CX - ix, CY - iy );
+            draw_rot_glyph( g, 123, ix, iy, 12, 16, aimidx * 0.024543692 );
+        }
     }
 
     // level
@@ -2550,6 +2804,25 @@ void render_levelselect( G* g )
 // ---------------------------------------------------------------------------
 //  Level flow
 // ---------------------------------------------------------------------------
+// begin a 2-player co-op run: P2's claw starts on the opposite side
+// of the web. Lives and scores are tracked per player; the pods, the
+// superzaps and the level bonus are shared by the team.
+void start_coop( G* g )
+{
+    g->twoplayer = 1;
+    g->p2_lives = 3;
+    g->p2_score = 0;
+    g->p2_lane = g->player_lane + 8;
+    if( g->p2_lane >= LANES ) g->p2_lane -= LANES;
+    g->p2_jump_timer = 0;
+    g->p2_jump_cooldown = 0;
+    g->p2_fire_cooldown = 0;
+    g->p2_respawn = 0;
+    g->p2_out = 0;
+    g->p1_respawn = 0;
+    g->p1_out = 0;
+}
+
 void start_level( G* g )
 {
     int i;
@@ -2721,6 +2994,19 @@ void init_state( G* g )
     g->powerup_timer = 500;
     g->jump_timer = 0;
     g->jump_cooldown = 0;
+    // two-player state: cleared at boot and on every return to the
+    // title flow — start_coop re-arms it when a co-op run begins
+    g->twoplayer = 0;
+    g->p2_lane = 8;
+    g->p2_jump_timer = 0;
+    g->p2_jump_cooldown = 0;
+    g->p2_fire_cooldown = 0;
+    g->p2_lives = 3;
+    g->p2_score = 0;
+    g->p1_respawn = 0;
+    g->p2_respawn = 0;
+    g->p1_out = 0;
+    g->p2_out = 0;
     g->music_index = 0;
     g->sfx_channel = 2;
     g->music_volume = 0.8;
@@ -2760,6 +3046,15 @@ void main()
             else
             {
                 update_player( g );
+                // co-op: P2 reads pad 1 for one update, then pad 0 is
+                // re-selected — every other input site in the game
+                // (menus, pause) reads pad 0
+                if( g->twoplayer )
+                {
+                    select_gamepad( 1 );
+                    update_player2( g );
+                    select_gamepad( 0 );
+                }
                 update_spawning( g );
                 update_enemies( g );
                 update_bullets( g );
@@ -2794,6 +3089,14 @@ void main()
             // outward with it and sweep past the claw plane
             move_claw( g );
             claw_jump( g );
+            // co-op: P2's claw rides the transition on pad 1 too
+            if( g->twoplayer && !g->p2_out )
+            {
+                select_gamepad( 1 );
+                move_claw2( g );
+                claw_jump2( g );
+                select_gamepad( 0 );
+            }
             // SPIKE SWEEP (phase A): as the old web streams outward, the
             // tip of any spike sweeps past the claw plane. The crossing
             // is edge-detected per lane from fly_factor (a pure function
@@ -2802,11 +3105,15 @@ void main()
             // cleanly, since airborne frames are invulnerable.
             //   EASY        — deflected: replay the same level
             //   MEDIUM/HARD — killed: lose a life AND replay the level
+            //   In co-op medium/hard the STRUCK player pays but the warp
+            //   carries on — one player's lapse must not cancel the
+            //   whole team's transition.
             if( g->warp_phase == 0 && g->warp_bounce == 0 )
             {
                 int li = (int)g->player_lane;
                 if( li >= LANES ) li -= LANES;
-                if( g->SPIKE[ li ] > 0.05 && g->jump_timer <= 0 )
+                if( g->SPIKE[ li ] > 0.05 && g->jump_timer <= 0 &&
+                    ( !g->twoplayer || !g->p1_out ) )
                 {
                     float ztip = 1.0 - g->SPIKE[ li ];
                     float rad = lerp( OUT_RX, IN_RX, ztip );
@@ -2816,14 +3123,19 @@ void main()
                     if( rad * fly_factor( g ) >= OUT_RX &&
                         rad * fprev < OUT_RX )
                     {
-                        project( g, g->player_lane, 0 );
                         if( g->difficulty == 0 )
                         {
                             g->warp_bounce = 1;
+                            project( g, g->player_lane, 0 );
                             explode( g, g->px, g->py, 30, 3 );
                             shockwave( g, g->px, g->py );
                             show_message( g, "SPIKED! REPLAY LEVEL" );
                             sfx( g, BOOM );
+                        }
+                        else if( g->twoplayer )
+                        {
+                            hit_player( g, 0 );
+                            show_message( g, "SPIKED!" );
                         }
                         else
                         {
@@ -2832,6 +3144,41 @@ void main()
                             g->warp = 0;
                             g->warp_phase = 0;
                             kill_player( g );
+                            show_message( g, "SPIKED!" );
+                        }
+                    }
+                }
+            }
+            // P2's own sweep check: same edge detection against P2's
+            // lane and jump state (the easy bounce is team-wide, so
+            // warp_bounce still gates it)
+            if( g->twoplayer && !g->p2_out &&
+                g->warp_phase == 0 && g->warp_bounce == 0 )
+            {
+                int li2 = (int)g->p2_lane;
+                if( li2 >= LANES ) li2 -= LANES;
+                if( g->SPIKE[ li2 ] > 0.05 && g->p2_jump_timer <= 0 )
+                {
+                    float ztip = 1.0 - g->SPIKE[ li2 ];
+                    float rad = lerp( OUT_RX, IN_RX, ztip );
+                    float wprev = g->warp - 0.0125;
+                    if( wprev < 0 ) wprev = 0;
+                    float fprev = 1.0 + wprev * wprev * 12.0;
+                    if( rad * fly_factor( g ) >= OUT_RX &&
+                        rad * fprev < OUT_RX )
+                    {
+                        if( g->difficulty == 0 )
+                        {
+                            g->warp_bounce = 1;
+                            project( g, g->p2_lane, 0 );
+                            explode( g, g->px, g->py, 30, 3 );
+                            shockwave( g, g->px, g->py );
+                            show_message( g, "SPIKED! REPLAY LEVEL" );
+                            sfx( g, BOOM );
+                        }
+                        else
+                        {
+                            hit_player( g, 1 );
                             show_message( g, "SPIKED!" );
                         }
                     }
@@ -2895,15 +3242,15 @@ void main()
             if( g->menu_cooldown == 0 )
             {
                 if( gamepad_up() > 0 )
-                { g->menu_row--; if( g->menu_row < 0 ) g->menu_row = 3;
+                { g->menu_row--; if( g->menu_row < 0 ) g->menu_row = 4;
                   g->menu_cooldown = 10; sfx( g, BLIP ); }
                 else if( gamepad_down() > 0 )
-                { g->menu_row++; if( g->menu_row > 3 ) g->menu_row = 0;
+                { g->menu_row++; if( g->menu_row > 4 ) g->menu_row = 0;
                   g->menu_cooldown = 10; sfx( g, BLIP ); }
-                else if( g->menu_row == 3 && gamepad_left() > 0 )
+                else if( g->menu_row == 4 && gamepad_left() > 0 )
                 { g->difficulty--; if( g->difficulty < 0 ) g->difficulty = 2;
                   g->menu_cooldown = 10; sfx( g, BLIP ); }
-                else if( g->menu_row == 3 && gamepad_right() > 0 )
+                else if( g->menu_row == 4 && gamepad_right() > 0 )
                 { g->difficulty++; if( g->difficulty > 2 ) g->difficulty = 0;
                   g->menu_cooldown = 10; sfx( g, BLIP ); }
             }
@@ -2914,8 +3261,15 @@ void main()
                     play_track( g, level_track( g ) );   // begin the track run
                     start_level( g );
                 }
-                else if( g->menu_row == 1 ) g->state = 7;   // high scores
-                else if( g->menu_row == 2 )
+                else if( g->menu_row == 1 )
+                {
+                    // 2 PLAYERS: co-op on the shared web — pads 0 + 1
+                    start_coop( g );
+                    play_track( g, level_track( g ) );
+                    start_level( g );
+                }
+                else if( g->menu_row == 2 ) g->state = 7;   // high scores
+                else if( g->menu_row == 3 )
                 {
                     g->select_level = 1;
                     g->level = 1;
@@ -2923,7 +3277,7 @@ void main()
                     g->state = 8;         // level select
                     sfx( g, BLIP );
                 }
-                // row 3 (difficulty): A does nothing — LEFT/RIGHT changes it
+                // row 4 (difficulty): A does nothing — LEFT/RIGHT changes it
             }
         }
         else if( g->state == 6 )      // new high score: initials entry
