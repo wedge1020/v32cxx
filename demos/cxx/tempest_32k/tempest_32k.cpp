@@ -181,6 +181,8 @@ struct Star
 {
     float x; float y;
     float spd;               // radial px/frame
+    float dirx; float diry;  // cached UNIT direction from the web's
+                             // vanishing point (see update_stars)
 };
 
 struct PowerUp
@@ -270,15 +272,30 @@ struct G
     int   p2_cpu;          // the CPU drives the claw (watered-down
                            // AI: slower to move AND fire than the
                            // AI buddy drone, scaled by difficulty)
-    // DEBUG GPU METER (see gpu_meter): heuristic per-frame fill-cost
-    // accumulator, compared against the 250,000-cycle frame budget.
-    // NOT a hardware measurement — a relative busy-ness indicator.
-    // debug_gpu = 1 draws the readout top-left; flip to 0 to hide.
+    // WEB BAR ANGLE CACHE (see render_web): the rim and far-cap bar
+    // directions are per-LEVEL constants — make_shape invalidates,
+    // and the first render_web of the level refills (one-time
+    // segment_angle pass, instead of 32 dir_angle scans per frame)
+    float RIM_ANG[ 16 ];   // cached rim bar angle, per lane
+    float CAP_ANG[ 16 ];   // cached far-cap bar angle, per lane
+    int   web_ang_ok;      // 1 = angle caches valid for this shape
+    // DEBUG METERS (see gpu_meter): TWO readout lines. The CPU line
+    // is a heuristic cost model — 24 cycles per command plus 1 per
+    // filled pixel (rotozoomed fills cost double, the slow path) —
+    // compared against the 250,000-CYCLE CPU frame budget (the CPU's
+    // per-frame cycle allowance at 60 fps). The GPU line is REAL
+    // hardware usage: the GPU_RemainingPixels port, sampled at frame
+    // start (this frame's pixel budget) and again at meter time
+    // (used = start - remaining). debug_gpu = 1 draws the readout
+    // top-left; flip to 0 to hide.
     int   debug_gpu;
-    int   gpu_cycles;      // this frame's running total
-    int   gpu_even;        // latest even-frame total
-    int   gpu_odd;         // latest odd-frame total
-    int   gpu_parity;      // which parity the readout shows (0=even/1=odd)
+    int   cpu_cycles;      // CPU model: this frame's running total
+    int   cpu_even;        // CPU model: latest even-frame total
+    int   cpu_odd;         // CPU model: latest odd-frame total
+    int   cpu_parity;      // which parity the readout shows (0=E/1=O)
+    int   gpixels_start;   // GPU: pixel budget at frame start (real)
+    int   gpu_pix_even;    // GPU: latest even-frame pixels used
+    int   gpu_pix_odd;     // GPU: latest odd-frame pixels used
     // music: a track picked in the pause menu OVERRIDES the level
     // band until the run crosses a real band edge (9/17/25/1) —
     // start_level honors the lock and clears it there
@@ -457,7 +474,7 @@ void draw_glyph( G* g, int c, float x, float y, float w, float h )
     // DEBUG GPU METER: 24-cycle command base + 1 cycle per filled
     // pixel (zoomed fill). draw_text/draw_party_text/draw_dot_line
     // all flow through here, so every glyph in the frame is charged.
-    g->gpu_cycles += 24 + (int)( w * h );
+    g->cpu_cycles += 24 + (int)( w * h );
 }
 
 // dotted line of tiny glyphs between two points (tunnel edges, rings).
@@ -536,13 +553,13 @@ int dir_angle( G* g, float dx, float dy )
 //  SOLID-alpha only — additive bars would re-trigger the emulator's
 //  BlendAdd saturation bug. Invalidates draw_glyph's region/scale
 //  cache, since this bypasses it and changes GPU state directly.
-void draw_segment( G* g, float x0, float y0, float x1, float y1, float thick )
+// full-precision bar angle: dir_angle's table scan plus the
+// sub-index refine — factored out of draw_segment so the web bar
+// angle cache (see render_web) can compute an angle WITHOUT drawing
+float segment_angle( G* g, float dx, float dy )
 {
-    float dx = x1 - x0;
-    float dy = y1 - y0;
     float len = sqrt( dx * dx + dy * dy );
-    if( len < 2.0 ) return;
-
+    if( len < 2.0 ) return 0;
     float idx = dir_angle( g, dx, dy );   // integer turn index
     // SUB-INDEX REFINEMENT: the perpendicular component of (dx,dy)
     // relative to the table direction equals sin(angle error), which
@@ -550,7 +567,17 @@ void draw_segment( G* g, float x0, float y0, float x1, float y1, float thick )
     // Adding it gives a near-exact angle, killing vertex drift.
     float c0 = g->COS_TABLE[ (int)idx ];
     float s0 = g->SIN_TABLE[ (int)idx ];
-    float a = idx * 0.024543692 + ( -s0 * dx + c0 * dy ) / len;
+    return idx * 0.024543692 + ( -s0 * dx + c0 * dy ) / len;
+}
+
+void draw_segment( G* g, float x0, float y0, float x1, float y1, float thick )
+{
+    float dx = x1 - x0;
+    float dy = y1 - y0;
+    float len = sqrt( dx * dx + dy * dy );
+    if( len < 2.0 ) return;
+
+    float a = segment_angle( g, dx, dy );
     float c = cos32( g, a );
     float s = sin32( g, a );
 
@@ -562,9 +589,38 @@ void draw_segment( G* g, float x0, float y0, float x1, float y1, float thick )
     // thickness along the perpendicular centers the bar on the line
     draw_region_rotozoomed_at( (int)( x0 + s * thick * 0.5 ),
                                (int)( y0 - c * thick * 0.5 ) );
-    // DEBUG GPU METER: rotozoomed fill charged DOUBLE (the known
+    // CPU meter: rotozoomed fill charged DOUBLE (the known
     // slow path) over the bar's length*thickness pixel area
-    g->gpu_cycles += 24 + (int)( len * thick * 2.0 );
+    g->cpu_cycles += 24 + (int)( len * thick * 2.0 );
+    set_drawing_angle( 0 );
+    g->last_region = -1;   // draw_glyph cache is stale now
+    g->last_scale_x = -9999.0;
+    g->last_scale_y = -9999.0;
+}
+
+// draw_segment with the angle SUPPLIED — the web bar angle cache
+// (see render_web) precomputes each level's rim/cap bar directions
+// once, so the hot per-frame path skips segment_angle's dir_angle
+// scan entirely. Identical draw path to draw_segment otherwise; the
+// caller passes the cached angle. Length is still measured per call
+// (it changes with the warp fly factor and the jump pull-back).
+void draw_segment_c( G* g, float x0, float y0, float x1, float y1, float thick, float a )
+{
+    float dx = x1 - x0;
+    float dy = y1 - y0;
+    float len = sqrt( dx * dx + dy * dy );
+    if( len < 2.0 ) return;
+
+    float c = cos32( g, a );
+    float s = sin32( g, a );
+
+    select_region( 20 );   // solid block, DEFAULT hotspot (top-left)
+    set_drawing_scale( len / 10.0 + 0.3, thick / 20.0 );
+    set_drawing_angle( a );
+    draw_region_rotozoomed_at( (int)( x0 + s * thick * 0.5 ),
+                               (int)( y0 - c * thick * 0.5 ) );
+    // CPU meter: rotozoomed fill charged double (slow path)
+    g->cpu_cycles += 24 + (int)( len * thick * 2.0 );
     set_drawing_angle( 0 );
     g->last_region = -1;   // draw_glyph cache is stale now
     g->last_scale_x = -9999.0;
@@ -586,8 +642,8 @@ void draw_rot_glyph( G* g, int c, float x, float y, float w, float h, float a )
     float ox = ( w / 2 ) * ca - ( h / 2 ) * sa;
     float oy = ( w / 2 ) * sa + ( h / 2 ) * ca;
     draw_region_rotozoomed_at( (int)( x - ox ), (int)( y - oy ) );
-    // DEBUG GPU METER: rotozoomed fill charged double (slow path)
-    g->gpu_cycles += 24 + (int)( w * h * 2.0 );
+    // CPU meter: rotozoomed fill charged double (slow path)
+    g->cpu_cycles += 24 + (int)( w * h * 2.0 );
     set_drawing_angle( 0 );
     g->last_region = -1;
     g->last_scale_x = -9999.0;
@@ -652,49 +708,34 @@ void score_str( int n, char* out )
     out[ len ] = 0;
 }
 
-// DEBUG GPU METER — a "likely busy-ness" sight indicator, NOT a
-// hardware measurement. Every instrumented draw charges a cost
-// model: 24 cycles per command plus 1 cycle per filled pixel
-// (rotozoomed fills — web bars, rotated claws — cost double, the
-// GPU's documented slow path), against the 250,000-cycle frame
-// budget (the GPU's per-frame cycle allowance at 60 fps).
-//
-// PARITY READOUT: the game deliberately halves its draws on
-// alternating frames (stars, rings, particles parity-split), so a
-// single number hides half the story. The frame's total is filed
-// under its parity each frame, and every half second (30 frames)
-// the readout SWAPS which parity it shows, labelled E: / O: — one
-// half-second of even frames, the next of odd frames.
-//
-// The meter samples the frame's total BEFORE drawing itself, so the
-// readout's own cost never feeds back into the number.
-void gpu_meter( G* g )
+// REAL hardware GPU pixel usage: the GPU_RemainingPixels port (the
+// same SDK asm-reader pattern as get_multiply_color — value returns
+// through R0). The counter refills at vsync with the frame's pixel
+// budget (2,073,600 on the 640x360 screen) and counts down as the
+// GPU fills pixels, so (frame-start reading - current) = pixels used.
+int gpu_remaining_pixels()
 {
-    if( g->debug_gpu == 0 ) return;
-    // file this frame's total under its parity
-    if( ( g->frame & 1 ) == 0 ) g->gpu_even = g->gpu_cycles;
-    else                        g->gpu_odd = g->gpu_cycles;
-    // every 30 frames: swap which parity the readout shows
-    if( g->frame % 30 == 0 )
+    asm
     {
-        if( g->gpu_parity == 0 ) g->gpu_parity = 1;
-        else                     g->gpu_parity = 0;
+        "in R0, GPU_RemainingPixels"
     }
-    int total = g->gpu_even;
-    char tag = 'E';
-    if( g->gpu_parity == 1 ) { total = g->gpu_odd; tag = 'O'; }
+}
 
-    // "GPU E: 61k 24%" — k-precision total + percent of the budget.
-    // All integer math (250000/100 = 2500 cycles per percent).
-    char buf[ 16 ];
-    buf[ 0 ] = 'G'; buf[ 1 ] = 'P'; buf[ 2 ] = 'U'; buf[ 3 ] = ' ';
+// one meter line: "XYZ E: 61k 24%" — k-precision total plus percent
+// of the given budget, drawn at (8, y). All integer math; tmp holds
+// up to 4 k-digits (GPU pixel totals can exceed 999k). Multiply-
+// first-division-last per the proven-expression rule.
+void meter_line( G* g, char l0, char l1, char l2, char tag, int total, int budget, int y )
+{
+    char buf[ 20 ];
+    buf[ 0 ] = l0; buf[ 1 ] = l1; buf[ 2 ] = l2; buf[ 3 ] = ' ';
     buf[ 4 ] = tag; buf[ 5 ] = ':'; buf[ 6 ] = ' ';
     int p = 7;
-    char tmp[ 4 ];
+    char tmp[ 5 ];
     int n = 0;
     int v = total / 1000;
     if( v == 0 ) { tmp[ 0 ] = '0'; n = 1; }
-    while( v > 0 && n < 3 )
+    while( v > 0 && n < 4 )
     {
         tmp[ n ] = '0' + v % 10;
         v /= 10;
@@ -705,13 +746,69 @@ void gpu_meter( G* g )
     p += n;
     buf[ p ] = 'k'; p++;
     buf[ p ] = ' '; p++;
-    int pct = total / 2500;
+    int pct = total * 100 / budget;
     if( pct > 99 ) pct = 99;
     buf[ p ] = '0' + ( pct / 10 ) % 10; p++;
     buf[ p ] = '0' + pct % 10; p++;
     buf[ p ] = '%'; p++;
     buf[ p ] = 0;
-    draw_text( g, buf, 8, 6, 10, make_color( 200, 210, 230 ) );
+    draw_text( g, buf, 8, y, 10, make_color( 200, 210, 230 ) );
+}
+
+// DEBUG METERS — a "likely busy-ness" sight indicator, drawn as TWO
+// lines top-left. The CPU line is the heuristic cost model: every
+// instrumented draw charges 24 cycles per command plus 1 cycle per
+// filled pixel (rotozoomed fills — web bars, rotated claws — cost
+// double, the GPU's documented slow path), against the 250,000-
+// CYCLE CPU frame budget (the CPU's per-frame cycle allowance at
+// 60 fps — the CPU cycles, NOT GPU cycles). The GPU line is REAL
+// hardware usage: pixels consumed this frame out of the frame's
+// opening GPU_RemainingPixels reading (self-calibrating budget).
+//
+// PARITY READOUT: the game deliberately halves its draws on
+// alternating frames (stars, rings, particles parity-split), so a
+// single number hides half the story. Each frame's totals are filed
+// under their parity, and every half second (30 frames) the
+// readout SWAPS which parity it shows, labelled E: / O: — one
+// half-second of even frames, the next of odd frames.
+//
+// Both meters sample BEFORE drawing themselves, so the readout's
+// own cost never feeds back into the numbers.
+void gpu_meter( G* g )
+{
+    if( g->debug_gpu == 0 ) return;
+    // real GPU pixels used so far this frame
+    int remaining = gpu_remaining_pixels();
+    int gused = g->gpixels_start - remaining;
+    if( gused < 0 ) gused = 0;
+    // file this frame's totals under their parity
+    if( ( g->frame & 1 ) == 0 )
+    {
+        g->cpu_even = g->cpu_cycles;
+        g->gpu_pix_even = gused;
+    }
+    else
+    {
+        g->cpu_odd = g->cpu_cycles;
+        g->gpu_pix_odd = gused;
+    }
+    // every 30 frames: swap which parity the readout shows
+    if( g->frame % 30 == 0 )
+    {
+        if( g->cpu_parity == 0 ) g->cpu_parity = 1;
+        else                     g->cpu_parity = 0;
+    }
+    int cputot = g->cpu_even;
+    int gputot = g->gpu_pix_even;
+    char tag = 'E';
+    if( g->cpu_parity == 1 )
+    {
+        cputot = g->cpu_odd;
+        gputot = g->gpu_pix_odd;
+        tag = 'O';
+    }
+    meter_line( g, 'C', 'P', 'U', tag, cputot, 250000, 8 );
+    meter_line( g, 'G', 'P', 'U', tag, gputot, g->gpixels_start, 21 );
 }
 
 // ---------------------------------------------------------------------------
@@ -831,6 +928,9 @@ void make_shape( G* g )
 {
     int i;
     int kind = ( g->level - 1 ) % 16;
+    // the web bar angle caches (RIM_ANG/CAP_ANG) are keyed to this
+    // shape — invalidate so the first render_web of the level refills
+    g->web_ang_ok = 0;
     // TRUE-GEOMETRY pass on levels 17-32 (and every other 16-level
     // block forever): SHAPE_Y == SHAPE, so both axes carry the shape
     int true2d = ( ( ( g->level - 1 ) / 16 ) % 2 );
@@ -1083,7 +1183,11 @@ void burst( G* g, float x, float y, int count, int strength )
     // draw. When lots are already flying (multi-kills, superzap
     // chains, death salvo) shrink NEW bursts instead of piling on —
     // the explosion still reads, calm frames get the full show.
-    int alivep = count_particles( g );
+    // g->partcount (maintained once per frame in main) replaces a
+    // fresh 220-slot walk per explosion — one frame stale is fine
+    // for a throttle heuristic, and a superzap chain no longer pays
+    // a recount per enemy.
+    int alivep = g->partcount;
     if( alivep > 160 ) count = count / 4;
     else if( alivep > 100 ) count = count / 2;
     else if( alivep > 60 ) count = count * 3 / 4;
@@ -1750,25 +1854,26 @@ void update_buddy( G* g )
 void update_enemies( G* g )
 {
     int i;
+    // SPEED RAMP, RESCALED ACROSS THE BOARD: player feedback —
+    // even medium was unmanageable past the mid levels, not from
+    // enemy COUNT but from ADVANCE SPEED: enemies hit the rim
+    // faster than the claw could circle the web, and (with the
+    // bullet-order bug) rim campers could not be shot at all.
+    // Base curve lowered ~20%, past-16 ramp kept at 35%, and the
+    // difficulty spread flattened so every level buys the player
+    // a real beat to reposition. Cross times at MEDIUM, rim to
+    // far cap: ~2.6s at level 17, ~2.3s at level 32.
+    // HOISTED out of the loop: identical for every enemy, it was
+    // recomputed per enemy per frame for nothing.
+    float lv = g->level;
+    if( lv > 16 ) lv = 16 + ( lv - 16 ) * 0.35;
+    float speed = 0.0028 + lv * 0.0003;
+    if( g->difficulty == 0 ) speed *= 0.55;
+    if( g->difficulty == 1 ) speed *= 0.80;
+    if( g->difficulty == 2 ) speed *= 1.05;
     for( i = 0; i < MAX_ENEMIES; i++ )
     {
         if( !g->ENEMIES[ i ].alive ) continue;
-
-        // SPEED RAMP, RESCALED ACROSS THE BOARD: player feedback —
-        // even medium was unmanageable past the mid levels, not from
-        // enemy COUNT but from ADVANCE SPEED: enemies hit the rim
-        // faster than the claw could circle the web, and (with the
-        // bullet-order bug) rim campers could not be shot at all.
-        // Base curve lowered ~20%, past-16 ramp kept at 35%, and the
-        // difficulty spread flattened so every level buys the player
-        // a real beat to reposition. Cross times at MEDIUM, rim to
-        // far cap: ~2.6s at level 17, ~2.3s at level 32.
-        float lv = g->level;
-        if( lv > 16 ) lv = 16 + ( lv - 16 ) * 0.35;
-        float speed = 0.0028 + lv * 0.0003;
-        if( g->difficulty == 0 ) speed *= 0.55;
-        if( g->difficulty == 1 ) speed *= 0.80;
-        if( g->difficulty == 2 ) speed *= 1.05;
 
         // spiker: patrols mid-tunnel laying spikes
         if( g->ENEMIES[ i ].type == 2 )
@@ -2063,6 +2168,13 @@ void init_starfield( G* g )
         g->STARFIELD[ i ].x = frand( g ) * 640;
         g->STARFIELD[ i ].y = frand( g ) * 336;
         g->STARFIELD[ i ].spd = 0.8 + frand( g ) * 1.6;
+        // seed the direction cache (cam starts centred)
+        float dx = g->STARFIELD[ i ].x - CX;
+        float dy = g->STARFIELD[ i ].y - CY;
+        float d = sqrt( dx * dx + dy * dy );
+        if( d < 1 ) d = 1;
+        g->STARFIELD[ i ].dirx = dx / d;
+        g->STARFIELD[ i ].diry = dy / d;
     }
 }
 
@@ -2081,20 +2193,36 @@ void update_stars( G* g )
     float oy = CY + g->cam_y;
     for( i = 0; i < MAX_STARS; i++ )
     {
-        float dx = g->STARFIELD[ i ].x - ox;
-        float dy = g->STARFIELD[ i ].y - oy;
-        float d = sqrt( dx * dx + dy * dy );
-        if( d < 1 ) d = 1;
-        g->STARFIELD[ i ].x += dx / d * g->STARFIELD[ i ].spd * boost;
-        g->STARFIELD[ i ].y += dy / d * g->STARFIELD[ i ].spd * boost;
+        // DIRECTION CACHE: a star's unit direction from the vanishing
+        // point only changes when the camera lean moves (a slow ease),
+        // so each star refreshes its cached vector one frame in eight
+        // (staggered by index) and the other seven use the cache.
+        // This deletes 80 sqrt calls and 160 divisions per frame —
+        // the bulk of the star update's CPU cost.
+        if( ( i + g->frame ) % 8 == 0 )
+        {
+            float dx = g->STARFIELD[ i ].x - ox;
+            float dy = g->STARFIELD[ i ].y - oy;
+            float d = sqrt( dx * dx + dy * dy );
+            if( d < 1 ) d = 1;
+            g->STARFIELD[ i ].dirx = dx / d;
+            g->STARFIELD[ i ].diry = dy / d;
+        }
+        g->STARFIELD[ i ].x += g->STARFIELD[ i ].dirx * g->STARFIELD[ i ].spd * boost;
+        g->STARFIELD[ i ].y += g->STARFIELD[ i ].diry * g->STARFIELD[ i ].spd * boost;
         if( g->STARFIELD[ i ].x < -4 || g->STARFIELD[ i ].x > 644 ||
             g->STARFIELD[ i ].y < -4 || g->STARFIELD[ i ].y > 340 )
         {
-            // respawn near the vanishing point so the stream is endless
+            // respawn near the vanishing point so the stream is
+            // endless — the spawn angle IS the direction: no sqrt
             float a = frand( g ) * 6.28318;
             float r = 4 + frand( g ) * 30;
-            g->STARFIELD[ i ].x = ox + cos32( g, a ) * r;
-            g->STARFIELD[ i ].y = oy + sin32( g, a ) * r;
+            float ca = cos32( g, a );
+            float sa = sin32( g, a );
+            g->STARFIELD[ i ].x = ox + ca * r;
+            g->STARFIELD[ i ].y = oy + sa * r;
+            g->STARFIELD[ i ].dirx = ca;
+            g->STARFIELD[ i ].diry = sa;
             g->STARFIELD[ i ].spd = 0.8 + frand( g ) * 1.6;
         }
     }
@@ -2180,7 +2308,7 @@ void render_title( G* g )
                 float bx = 56 + i * 48 + c * 8 + wv * 5.0;
                 float by = 48 + r * 8 + sin32( g, colg * 0.28 + t * 0.7 ) * 3.5;
                 draw_region_zoomed_at( (int)( bx ), (int)( by ) );
-                g->gpu_cycles += 24 + 64;   // GPU meter: 8x8 block fill
+                g->cpu_cycles += 24 + 64;   // CPU meter: 8x8 block fill
             }
         }
         i++;
@@ -2254,6 +2382,31 @@ void render_web( G* g )
     int warping = 0;
     if( g->warp > 0 ) warping = 1;
 
+    // WEB BAR ANGLE CACHE: the rim and far-cap bar DIRECTIONS are
+    // per-level constants — camera sway shifts both endpoints of a
+    // bar by the same amount (it is z-proportional and both endpoints
+    // share z), the jump pull-back and the warp fly scale both
+    // endpoints uniformly, so a bar's direction changes ONLY when the
+    // web shape does. make_shape invalidates; this block refills the
+    // cache once per level (32 segment_angle calls total, replacing
+    // 32 forty-iteration dir_angle scans EVERY frame — the single
+    // biggest CPU win in the web renderer). Spokes and spikes span
+    // z (camera sway bends them), so they keep computing angles.
+    if( g->web_ang_ok == 0 )
+    {
+        int j;
+        for( j = 0; j < LANES; j++ )
+        {
+            project( g, j, 0 );     float ax0 = g->px; float ay0 = g->py;
+            project( g, j + 1, 0 ); float ax1 = g->px; float ay1 = g->py;
+            g->RIM_ANG[ j ] = segment_angle( g, ax1 - ax0, ay1 - ay0 );
+            project( g, j, 1 );     float bx0 = g->px; float by0 = g->py;
+            project( g, j + 1, 1 ); float bx1 = g->px; float by1 = g->py;
+            g->CAP_ANG[ j ] = segment_angle( g, bx1 - bx0, by1 - by0 );
+        }
+        g->web_ang_ok = 1;
+    }
+
     // WEB BARS DRAW UNDER ALPHA, not mode 0: the one draw_segment
     // path proven to render on the real emulator is the spikes'
     // (set_glow -> BlendAlpha). Mode-0 draws of region 20 with a
@@ -2279,7 +2432,7 @@ void render_web( G* g )
     {
         if( !g->CONN[ i ] ) continue;   // open web: cap mirrors the rim gap
         project( g, i, 1 );     float x0 = g->px; float y0 = g->py;
-        project( g, i + 1, 1 ); draw_segment( g, x0, y0, g->px, g->py, 2.0 );
+        project( g, i + 1, 1 ); draw_segment_c( g, x0, y0, g->px, g->py, 2.0, g->CAP_ANG[ i ] );
     }
 
     // far-cap vertex caps: the cap polygon is tiny, so a 1-2px angular
@@ -2293,7 +2446,7 @@ void render_web( G* g )
         select_region( 20 );
         set_drawing_scale( 0.5, 0.35 );     // ~5 x 7 px block
         draw_region_zoomed_at( (int)( g->px - 3 ), (int)( g->py - 3 ) );
-        g->gpu_cycles += 24 + 35;   // GPU meter: 5x7 block fill
+        g->cpu_cycles += 24 + 35;   // CPU meter: 5x7 block fill
         g->last_region = -1;
     }
 
@@ -2332,7 +2485,7 @@ void render_web( G* g )
     {
         if( !g->CONN[ i ] ) continue;   // open web: no bar over the gap
         project( g, i, 0 );     float x0 = g->px; float y0 = g->py;
-        project( g, i + 1, 0 ); draw_segment( g, x0, y0, g->px, g->py, 3.5 );
+        project( g, i + 1, 0 ); draw_segment_c( g, x0, y0, g->px, g->py, 3.5, g->RIM_ANG[ i ] );
     }
 
     // vertex caps: a small block at each rim vertex, exactly like the
@@ -2346,7 +2499,7 @@ void render_web( G* g )
         select_region( 20 );
         set_drawing_scale( 0.55, 0.3 );     // ~5.5 x 6 px block
         draw_region_zoomed_at( (int)( g->px - 3 ), (int)( g->py - 3 ) );
-        g->gpu_cycles += 24 + 33;   // GPU meter: 5.5x6 block fill
+        g->cpu_cycles += 24 + 33;   // CPU meter: 5.5x6 block fill
         g->last_region = -1;
     }
 }
@@ -2420,10 +2573,14 @@ void render_claw( G* g, int who )
     set_blending_mode( BLEND_SOLID );
     set_multiply_color( bcol );
     draw_rot_glyph( g, 123, x, y, 24 * s, 30 * s, aim );
-    // hot core, glowing, riding the same rotation
-    set_glow( 3 );
-    set_multiply_color( ccol );
-    draw_rot_glyph( g, 123, x, y, 12 * s, 18 * s, aim );
+    // hot core, glowing, riding the same rotation — CULLED on busy
+    // frames (explosion salvos) exactly like the enemy glow cores
+    if( g->partcount <= 160 )
+    {
+        set_glow( 3 );
+        set_multiply_color( ccol );
+        draw_rot_glyph( g, 123, x, y, 12 * s, 18 * s, aim );
+    }
     set_blending_mode( BLEND_SOLID );
 }
 
@@ -2832,7 +2989,7 @@ void draw_meter( G* g, int x, int y, float vol )
         if( s < segs ) set_multiply_color( make_color( 90, 220, 120 ) );
         else          set_multiply_color( make_color( 30, 45, 40 ) );
         draw_region_zoomed_at( x + s * 22, y );
-        g->gpu_cycles += 24 + 200;   // GPU meter: 20x10 block fill
+        g->cpu_cycles += 24 + 200;   // CPU meter: 20x10 block fill
     }
     g->last_region = -1;
     g->last_scale_x = -9999.0;
@@ -2846,9 +3003,9 @@ void render_pause( G* g )
     set_drawing_scale( 64.0, 18.0 );          // 640 x 360 fullscreen veil
     set_multiply_color( make_color( 8, 8, 26 ) );
     draw_region_zoomed_at( 0, 0 );
-    // GPU meter: a full-screen fill is nearly the whole frame budget
+    // CPU meter: a full-screen fill is nearly the whole frame budget
     // in this model — the paused readout will read ~90%+
-    g->gpu_cycles += 24 + 230400;
+    g->cpu_cycles += 24 + 230400;
     g->last_region = -1;
     g->last_scale_x = -9999.0;
     g->last_scale_y = -9999.0;
@@ -3226,12 +3383,16 @@ void init_state( G* g )
     g->players = 1;         // menu default; preserved across games
     g->p1_cpu = 0;          // sampled from pad connectivity each frame
     g->p2_cpu = 0;
-    // DEBUG GPU METER: on by default — set 0 to hide the readout
+    // DEBUG METERS: on by default — set 0 to hide the readout
     g->debug_gpu = 1;
-    g->gpu_cycles = 0;
-    g->gpu_even = 0;
-    g->gpu_odd = 0;
-    g->gpu_parity = 0;
+    g->cpu_cycles = 0;
+    g->cpu_even = 0;
+    g->cpu_odd = 0;
+    g->cpu_parity = 0;
+    g->gpixels_start = 2073600;   // placeholder; real reading on frame 1
+    g->gpu_pix_even = 0;
+    g->gpu_pix_odd = 0;
+    g->web_ang_ok = 0;            // angle caches refill on first render_web
     // fresh run: no manual track choice pending
     g->track_lock = 0;
     g->track_lock_band = 0;
@@ -3715,16 +3876,19 @@ void main()
         g->frame++;
 
         // -- render ---------------------------------------------------------
-        // DEBUG GPU METER: the per-frame fill-cost accumulator is
-        // reset before the first draw; instrumented draws add their
-        // model cost as they happen (see gpu_meter)
-        g->gpu_cycles = 0;
+        // DEBUG METERS: the CPU cost model accumulator is reset before
+        // the first draw (instrumented draws add their model cost as
+        // they happen), and the GPU pixel counter is sampled BEFORE
+        // the clear — that opening reading is this frame's pixel
+        // budget, so the GPU line self-calibrates (see gpu_meter)
+        g->cpu_cycles = 0;
         // insurance: force known GPU state before the clear, so no
         // stale blending mode or multiply color can interfere with it
         set_blending_mode( BLEND_SOLID );
         set_multiply_color( make_color( 255, 255, 255 ) );
+        g->gpixels_start = gpu_remaining_pixels();
         clear_screen( make_color( 2, 2, 8 ) );
-        g->gpu_cycles += 4000;   // GPU meter: flat charge, hw clear path
+        g->cpu_cycles += 4000;   // CPU meter: flat charge, hw clear path
         // particle count is queried by several render-phase throttles —
         // count once here instead of walking the array per call site
         g->partcount = count_particles( g );
