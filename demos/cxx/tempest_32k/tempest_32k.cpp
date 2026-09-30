@@ -270,6 +270,20 @@ struct G
     int   p2_cpu;          // the CPU drives the claw (watered-down
                            // AI: slower to move AND fire than the
                            // AI buddy drone, scaled by difficulty)
+    // DEBUG GPU METER (see gpu_meter): heuristic per-frame fill-cost
+    // accumulator, compared against the 250,000-cycle frame budget.
+    // NOT a hardware measurement — a relative busy-ness indicator.
+    // debug_gpu = 1 draws the readout top-left; flip to 0 to hide.
+    int   debug_gpu;
+    int   gpu_cycles;      // this frame's running total
+    int   gpu_even;        // latest even-frame total
+    int   gpu_odd;         // latest odd-frame total
+    int   gpu_parity;      // which parity the readout shows (0=even/1=odd)
+    // music: a track picked in the pause menu OVERRIDES the level
+    // band until the run crosses a real band edge (9/17/25/1) —
+    // start_level honors the lock and clears it there
+    int   track_lock;      // 1 = the player's manual choice is active
+    int   track_lock_band; // band index (level_track) at lock time
     int   buddy_timer;      // AI buddy drone: frames remaining
     int   buddy_cooldown;   // AI buddy: frames until next auto-shot
     float buddy_lane;       // AI buddy: its OWN lane (eases to targets)
@@ -440,6 +454,10 @@ void draw_glyph( G* g, int c, float x, float y, float w, float h )
     // shows plain DrawRegion ignores the scale ports — only the
     // Zoomed/Rotozoomed variants apply them
     draw_region_zoomed_at( (int)( x - w / 2 ), (int)( y - h / 2 ) );
+    // DEBUG GPU METER: 24-cycle command base + 1 cycle per filled
+    // pixel (zoomed fill). draw_text/draw_party_text/draw_dot_line
+    // all flow through here, so every glyph in the frame is charged.
+    g->gpu_cycles += 24 + (int)( w * h );
 }
 
 // dotted line of tiny glyphs between two points (tunnel edges, rings).
@@ -544,6 +562,9 @@ void draw_segment( G* g, float x0, float y0, float x1, float y1, float thick )
     // thickness along the perpendicular centers the bar on the line
     draw_region_rotozoomed_at( (int)( x0 + s * thick * 0.5 ),
                                (int)( y0 - c * thick * 0.5 ) );
+    // DEBUG GPU METER: rotozoomed fill charged DOUBLE (the known
+    // slow path) over the bar's length*thickness pixel area
+    g->gpu_cycles += 24 + (int)( len * thick * 2.0 );
     set_drawing_angle( 0 );
     g->last_region = -1;   // draw_glyph cache is stale now
     g->last_scale_x = -9999.0;
@@ -565,6 +586,8 @@ void draw_rot_glyph( G* g, int c, float x, float y, float w, float h, float a )
     float ox = ( w / 2 ) * ca - ( h / 2 ) * sa;
     float oy = ( w / 2 ) * sa + ( h / 2 ) * ca;
     draw_region_rotozoomed_at( (int)( x - ox ), (int)( y - oy ) );
+    // DEBUG GPU METER: rotozoomed fill charged double (slow path)
+    g->gpu_cycles += 24 + (int)( w * h * 2.0 );
     set_drawing_angle( 0 );
     g->last_region = -1;
     g->last_scale_x = -9999.0;
@@ -627,6 +650,68 @@ void score_str( int n, char* out )
     len = i;
     for( i = 0; i < len; i++ ) out[ i ] = tmp[ len - 1 - i ];
     out[ len ] = 0;
+}
+
+// DEBUG GPU METER — a "likely busy-ness" sight indicator, NOT a
+// hardware measurement. Every instrumented draw charges a cost
+// model: 24 cycles per command plus 1 cycle per filled pixel
+// (rotozoomed fills — web bars, rotated claws — cost double, the
+// GPU's documented slow path), against the 250,000-cycle frame
+// budget (the GPU's per-frame cycle allowance at 60 fps).
+//
+// PARITY READOUT: the game deliberately halves its draws on
+// alternating frames (stars, rings, particles parity-split), so a
+// single number hides half the story. The frame's total is filed
+// under its parity each frame, and every half second (30 frames)
+// the readout SWAPS which parity it shows, labelled E: / O: — one
+// half-second of even frames, the next of odd frames.
+//
+// The meter samples the frame's total BEFORE drawing itself, so the
+// readout's own cost never feeds back into the number.
+void gpu_meter( G* g )
+{
+    if( g->debug_gpu == 0 ) return;
+    // file this frame's total under its parity
+    if( ( g->frame & 1 ) == 0 ) g->gpu_even = g->gpu_cycles;
+    else                        g->gpu_odd = g->gpu_cycles;
+    // every 30 frames: swap which parity the readout shows
+    if( g->frame % 30 == 0 )
+    {
+        if( g->gpu_parity == 0 ) g->gpu_parity = 1;
+        else                     g->gpu_parity = 0;
+    }
+    int total = g->gpu_even;
+    char tag = 'E';
+    if( g->gpu_parity == 1 ) { total = g->gpu_odd; tag = 'O'; }
+
+    // "GPU E: 61k 24%" — k-precision total + percent of the budget.
+    // All integer math (250000/100 = 2500 cycles per percent).
+    char buf[ 16 ];
+    buf[ 0 ] = 'G'; buf[ 1 ] = 'P'; buf[ 2 ] = 'U'; buf[ 3 ] = ' ';
+    buf[ 4 ] = tag; buf[ 5 ] = ':'; buf[ 6 ] = ' ';
+    int p = 7;
+    char tmp[ 4 ];
+    int n = 0;
+    int v = total / 1000;
+    if( v == 0 ) { tmp[ 0 ] = '0'; n = 1; }
+    while( v > 0 && n < 3 )
+    {
+        tmp[ n ] = '0' + v % 10;
+        v /= 10;
+        n++;
+    }
+    int q;
+    for( q = 0; q < n; q++ ) buf[ p + q ] = tmp[ n - 1 - q ];
+    p += n;
+    buf[ p ] = 'k'; p++;
+    buf[ p ] = ' '; p++;
+    int pct = total / 2500;
+    if( pct > 99 ) pct = 99;
+    buf[ p ] = '0' + ( pct / 10 ) % 10; p++;
+    buf[ p ] = '0' + pct % 10; p++;
+    buf[ p ] = '%'; p++;
+    buf[ p ] = 0;
+    draw_text( g, buf, 8, 6, 10, make_color( 200, 210, 230 ) );
 }
 
 // ---------------------------------------------------------------------------
@@ -1933,9 +2018,12 @@ void level_clear( G* g )
     g->warp = 0;
     show_message( g, "EXCELLENT!" );
     sfx( g, CLEAR );
-    g->score += 1000 + g->level * 250;
-    // co-op: the level bonus is paid to BOTH players' tallies
-    if( g->twoplayer ) g->p2_score += 1000 + g->level * 250;
+    // level bonus: paid only to players still IN the run — an out
+    // player's tally FREEZES at their final score (no riding the
+    // team's progress after losing the last life). Solo P1 is never
+    // flagged out, so its bonus is unchanged.
+    if( !g->p1_out ) g->score += 1000 + g->level * 250;
+    if( g->twoplayer && !g->p2_out ) g->p2_score += 1000 + g->level * 250;
 }
 
 void update_shocks( G* g )
@@ -2092,6 +2180,7 @@ void render_title( G* g )
                 float bx = 56 + i * 48 + c * 8 + wv * 5.0;
                 float by = 48 + r * 8 + sin32( g, colg * 0.28 + t * 0.7 ) * 3.5;
                 draw_region_zoomed_at( (int)( bx ), (int)( by ) );
+                g->gpu_cycles += 24 + 64;   // GPU meter: 8x8 block fill
             }
         }
         i++;
@@ -2204,6 +2293,7 @@ void render_web( G* g )
         select_region( 20 );
         set_drawing_scale( 0.5, 0.35 );     // ~5 x 7 px block
         draw_region_zoomed_at( (int)( g->px - 3 ), (int)( g->py - 3 ) );
+        g->gpu_cycles += 24 + 35;   // GPU meter: 5x7 block fill
         g->last_region = -1;
     }
 
@@ -2256,6 +2346,7 @@ void render_web( G* g )
         select_region( 20 );
         set_drawing_scale( 0.55, 0.3 );     // ~5.5 x 6 px block
         draw_region_zoomed_at( (int)( g->px - 3 ), (int)( g->py - 3 ) );
+        g->gpu_cycles += 24 + 33;   // GPU meter: 5.5x6 block fill
         g->last_region = -1;
     }
 }
@@ -2741,6 +2832,7 @@ void draw_meter( G* g, int x, int y, float vol )
         if( s < segs ) set_multiply_color( make_color( 90, 220, 120 ) );
         else          set_multiply_color( make_color( 30, 45, 40 ) );
         draw_region_zoomed_at( x + s * 22, y );
+        g->gpu_cycles += 24 + 200;   // GPU meter: 20x10 block fill
     }
     g->last_region = -1;
     g->last_scale_x = -9999.0;
@@ -2754,6 +2846,9 @@ void render_pause( G* g )
     set_drawing_scale( 64.0, 18.0 );          // 640 x 360 fullscreen veil
     set_multiply_color( make_color( 8, 8, 26 ) );
     draw_region_zoomed_at( 0, 0 );
+    // GPU meter: a full-screen fill is nearly the whole frame budget
+    // in this model — the paused readout will read ~90%+
+    g->gpu_cycles += 24 + 230400;
     g->last_region = -1;
     g->last_scale_x = -9999.0;
     g->last_scale_y = -9999.0;
@@ -2945,10 +3040,21 @@ void start_level( G* g )
     for( i = 0; i < LANES; i++ ) g->SPIKE[ i ] = 0;
     g->launched = 0;
     make_shape( g );
-    // crossed a music band edge (or respawn)? stamp the band's track —
-    // if the current track already IS the band track this is a no-op
+    // MUSIC BAND STAMPING — but a track the player picked in the
+    // pause menu OVERRIDES the band: the choice survives level
+    // starts until the run crosses a real band edge (the hard
+    // shifts at 9/17/25/1), and only there does the band track
+    // take over again.
     int bt = level_track( g );
-    if( bt != g->music_index ) play_track( g, bt );
+    if( g->track_lock == 1 )
+    {
+        if( bt != g->track_lock_band )
+        {
+            g->track_lock = 0;
+            play_track( g, bt );
+        }
+    }
+    else if( bt != g->music_index ) play_track( g, bt );
     g->warp = 0;              // insurance: no transition residue in play
     g->warp_phase = 0;
     g->warp_bounce = 0;
@@ -3120,6 +3226,15 @@ void init_state( G* g )
     g->players = 1;         // menu default; preserved across games
     g->p1_cpu = 0;          // sampled from pad connectivity each frame
     g->p2_cpu = 0;
+    // DEBUG GPU METER: on by default — set 0 to hide the readout
+    g->debug_gpu = 1;
+    g->gpu_cycles = 0;
+    g->gpu_even = 0;
+    g->gpu_odd = 0;
+    g->gpu_parity = 0;
+    // fresh run: no manual track choice pending
+    g->track_lock = 0;
+    g->track_lock_band = 0;
     g->music_index = 0;
     g->sfx_channel = 2;
     g->music_volume = 0.8;
@@ -3569,6 +3684,10 @@ void main()
                     int t = g->music_index + 1;
                     if( t > 3 ) t = 0;
                     play_track( g, t );
+                    // manual choice: LOCK the track against the band
+                    // stamping until the next band edge
+                    g->track_lock = 1;
+                    g->track_lock_band = level_track( g );
                     g->menu_cooldown = 12; sfx( g, BLIP );
                 }
                 else if( gamepad_up() > 0 )
@@ -3576,6 +3695,8 @@ void main()
                     int t = g->music_index - 1;
                     if( t < 0 ) t = 3;
                     play_track( g, t );
+                    g->track_lock = 1;
+                    g->track_lock_band = level_track( g );
                     g->menu_cooldown = 12; sfx( g, BLIP );
                 }
             }
@@ -3594,11 +3715,16 @@ void main()
         g->frame++;
 
         // -- render ---------------------------------------------------------
+        // DEBUG GPU METER: the per-frame fill-cost accumulator is
+        // reset before the first draw; instrumented draws add their
+        // model cost as they happen (see gpu_meter)
+        g->gpu_cycles = 0;
         // insurance: force known GPU state before the clear, so no
         // stale blending mode or multiply color can interfere with it
         set_blending_mode( BLEND_SOLID );
         set_multiply_color( make_color( 255, 255, 255 ) );
         clear_screen( make_color( 2, 2, 8 ) );
+        g->gpu_cycles += 4000;   // GPU meter: flat charge, hw clear path
         // particle count is queried by several render-phase throttles —
         // count once here instead of walking the array per call site
         g->partcount = count_particles( g );
@@ -3639,6 +3765,7 @@ void main()
         render_hud( g );
         if( g->state == 5 ) render_pause( g );
         render_message( g );
+        if( g->debug_gpu ) gpu_meter( g );
 
         end_frame();
     }
