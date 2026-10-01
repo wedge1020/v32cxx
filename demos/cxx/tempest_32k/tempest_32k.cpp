@@ -148,11 +148,13 @@ struct Bullet
 struct Enemy
 {
     int alive;
-    int type;          // 0 = flipper, 1 = tanker, 2 = spiker, 3 = rim walker ('X')
+    int type;          // 0 = flipper, 1 = tanker, 2 = spiker, 3 = rim walker ('X'),
+                       // 4 = inchworm ('W' electric) — stretches/bunches as it climbs
     float lane;
     float z;
     int cooldown;
-    int wig;
+    int wig;           // walkers: tumble angle. inchworms: phase clock
+                       // (0..63; 0..31 = lunge, 32..63 = bunch up)
     int dir;           // patrol direction (+1/-1): spikers mid-tunnel,
                        // rim walkers along the edge; both reverse at gaps
 };
@@ -279,6 +281,14 @@ struct G
     float RIM_ANG[ 16 ];   // cached rim bar angle, per lane
     float CAP_ANG[ 16 ];   // cached far-cap bar angle, per lane
     int   web_ang_ok;      // 1 = angle caches valid for this shape
+    // HUD LIVES-ICON ANGLE CACHE (see render_hud): every spare-claw
+    // icon sits at a FIXED screen slot (560/100 + slot*22, y=346), so
+    // each slot's aim at the web centre is a constant — filled once
+    // on the first HUD draw instead of 8 forty-iteration dir_angle
+    // scans EVERY frame
+    float HUD1_ANG[ 8 ];    // P1 spare-claw icon angles, per slot
+    float HUD2_ANG[ 8 ];    // P2 spare-claw icon angles, per slot
+    int   hud_ang_ok;       // 1 = HUD angle caches filled
     // DEBUG METERS (see gpu_meter): TWO readout lines. The CPU line
     // is a heuristic cost model — 24 cycles per command plus 1 per
     // filled pixel (rotozoomed fills cost double, the slow path) —
@@ -1974,7 +1984,26 @@ void update_enemies( G* g )
             continue;
         }
 
-        g->ENEMIES[ i ].z -= speed;
+        // INCHWORM (type 4, 'W' electric): advances in a repeating
+        // stretch/bunch cycle — LUNGES ahead while stretched out,
+        // nearly halts while bunched up. Same AVERAGE climb speed as
+        // a flipper (the bursts cost the recovery), but the rhythm
+        // reads as a crawling arc of electricity. wig is the phase
+        // clock: 0..31 lunge (render stretched, move fast),
+        // 32..63 recovery (render bunched, barely move). One full
+        // cycle = 64 frames at wig+3, just over a second.
+        if( g->ENEMIES[ i ].type == 4 )
+        {
+            g->ENEMIES[ i ].wig += 3;
+            int ph = g->ENEMIES[ i ].wig & 63;
+            float wspeed = speed * 0.2;
+            if( ph < 32 ) wspeed = speed * 1.8;
+            g->ENEMIES[ i ].z -= wspeed;
+        }
+        else
+        {
+            g->ENEMIES[ i ].z -= speed;
+        }
 
         // flipper: switches lanes when near the rim, hunting the player
         if( g->ENEMIES[ i ].type == 0 && g->ENEMIES[ i ].z < 0.45 )
@@ -2878,15 +2907,28 @@ void render_hud( G* g )
     // lives as spare claws: the brace ship (region 123), aimed at the
     // web's centre so the icons echo the player sprite ('X' now
     // belongs to the walker)
+    // ANGLE CACHE: every icon slot is at a fixed screen position, so
+    // each slot's centre-aim angle is a CONSTANT — computed once
+    // (8 slots total; the lives cap is 4 per player), replacing 8
+    // forty-iteration dir_angle table scans per frame.
+    if( g->hud_ang_ok == 0 )
+    {
+        int lc;
+        for( lc = 0; lc < 8; lc++ )
+        {
+            float ix1 = 560 + lc * 22;
+            float ix2 = 100 + lc * 22;
+            g->HUD1_ANG[ lc ] = dir_angle( g, CX - ix1, CY - 346 ) * 0.024543692;
+            g->HUD2_ANG[ lc ] = dir_angle( g, CX - ix2, CY - 346 ) * 0.024543692;
+        }
+        g->hud_ang_ok = 1;
+    }
     int l;
     set_blending_mode( BLEND_SOLID );
     set_multiply_color( make_color( 255, 220, 60 ) );
     for( l = 0; l < g->lives; l++ )
     {
-        float ix = 560 + l * 22;
-        float iy = 346;
-        int aimidx = dir_angle( g, CX - ix, CY - iy );
-        draw_rot_glyph( g, 123, ix, iy, 12, 16, aimidx * 0.024543692 );
+        draw_rot_glyph( g, 123, 560 + l * 22, 346, 12, 16, g->HUD1_ANG[ l ] );
     }
 
     // P2's spare claws: cyan braces on the left half of the HUD row,
@@ -2896,10 +2938,7 @@ void render_hud( G* g )
         set_multiply_color( make_color( 60, 220, 255 ) );
         for( l = 0; l < g->p2_lives; l++ )
         {
-            float ix = 100 + l * 22;
-            float iy = 346;
-            int aimidx = dir_angle( g, CX - ix, CY - iy );
-            draw_rot_glyph( g, 123, ix, iy, 12, 16, aimidx * 0.024543692 );
+            draw_rot_glyph( g, 123, 100 + l * 22, 346, 12, 16, g->HUD2_ANG[ l ] );
         }
     }
 
@@ -3399,6 +3438,7 @@ void init_state( G* g )
     g->gpu_pix_even = 0;
     g->gpu_pix_odd = 0;
     g->web_ang_ok = 0;            // angle caches refill on first render_web
+    g->hud_ang_ok = 0;            // HUD icon angles refill on first render_hud
     // fresh run: no manual track choice pending
     g->track_lock = 0;
     g->track_lock_band = 0;
