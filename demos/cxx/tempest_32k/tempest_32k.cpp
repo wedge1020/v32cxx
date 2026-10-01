@@ -149,12 +149,14 @@ struct Enemy
 {
     int alive;
     int type;          // 0 = flipper, 1 = tanker, 2 = spiker, 3 = rim walker ('X'),
-                       // 4 = inchworm ('W' electric) — stretches/bunches as it climbs
+                       // 4 = inchworm ('W' electric) — spans the strand, surges in pulses
     float lane;
-    float z;
+    float z;           // inchworm: the HEAD (front end)
+    float stretch;     // inchworm only: body length in z units behind
+                       // the head (0 bunched .. reach fully extended)
     int cooldown;
     int wig;           // walkers: tumble angle. inchworms: phase clock
-                       // (0..63; 0..31 = lunge, 32..63 = bunch up)
+                       // (0..63; 0..31 = head surge, 32..63 = tail catch-up)
     int dir;           // patrol direction (+1/-1): spikers mid-tunnel,
                        // rim walkers along the edge; both reverse at gaps
 };
@@ -1121,8 +1123,9 @@ void spawn_enemy( G* g, int type )
             if( type == 2 ) g->ENEMIES[ i ].z = 0.45;   // spiker: mid-tunnel
             else            g->ENEMIES[ i ].z = 1.0;
             g->ENEMIES[ i ].cooldown = 30 + rng( g ) % 40;
-            g->ENEMIES[ i ].wig = rng( g ) % 256;
+            g->ENEMIES[ i ].wig = rng( g ) % 256;   // worm: random cycle phase
             g->ENEMIES[ i ].dir = ( rng( g ) % 2 ) * 2 - 1;
+            g->ENEMIES[ i ].stretch = 0;           // worm: starts bunched
             // walkers start their rim patrol aimed at the player
             if( type == 3 )
             {
@@ -1153,6 +1156,7 @@ void spawn_near( G* g, float lane, float z )
             g->ENEMIES[ i ].cooldown = 20;
             g->ENEMIES[ i ].wig = rng( g ) % 256;
             g->ENEMIES[ i ].dir = ( rng( g ) % 2 ) * 2 - 1;
+            g->ENEMIES[ i ].stretch = 0;
             return;
         }
     }
@@ -1175,6 +1179,14 @@ int count_walkers( G* g )
     int i; int n = 0;
     for( i = 0; i < MAX_ENEMIES; i++ )
         if( g->ENEMIES[ i ].alive && g->ENEMIES[ i ].type == 3 ) n++;
+    return n;
+}
+
+int count_worms( G* g )
+{
+    int i; int n = 0;
+    for( i = 0; i < MAX_ENEMIES; i++ )
+        if( g->ENEMIES[ i ].alive && g->ENEMIES[ i ].type == 4 ) n++;
     return n;
 }
 
@@ -1984,21 +1996,36 @@ void update_enemies( G* g )
             continue;
         }
 
-        // INCHWORM (type 4, 'W' electric): advances in a repeating
-        // stretch/bunch cycle — LUNGES ahead while stretched out,
-        // nearly halts while bunched up. Same AVERAGE climb speed as
-        // a flipper (the bursts cost the recovery), but the rhythm
-        // reads as a crawling arc of electricity. wig is the phase
-        // clock: 0..31 lunge (render stretched, move fast),
-        // 32..63 recovery (render bunched, barely move). One full
-        // cycle = 64 frames at wig+3, just over a second.
+        // INCHWORM (type 4, 'W' electric): TRUE inchworm mechanics —
+        // the body is a SPAN of the strand, and its two ends move
+        // ALTERNATELY, never together. z is the HEAD, stretch the
+        // body's z-length trailing behind it. SURGE (phase 0..31):
+        // the tail stays anchored while the head surges forward —
+        // the worm ADVANCES exactly as it elongates. CATCH-UP
+        // (32..63): the head pauses while the tail slides forward
+        // and the body shrinks back to a point. Net advance per
+        // 64-frame cycle = reach = speed*64, so the AVERAGE climb
+        // speed equals a flipper's — but the motion is pulses:
+        // surge, stall, surge. (An earlier draft just sped up and
+        // slowed down a pulsating sprite: it read as a throbbing
+        // blob sliding at even pace — the stretch has to move the
+        // WORM, not just resize it.)
         if( g->ENEMIES[ i ].type == 4 )
         {
             g->ENEMIES[ i ].wig += 3;
+            float reach = speed * 64.0;
             int ph = g->ENEMIES[ i ].wig & 63;
-            float wspeed = speed * 0.2;
-            if( ph < 32 ) wspeed = speed * 1.8;
-            g->ENEMIES[ i ].z -= wspeed;
+            float step = reach * 0.03125;      // reach/32 per frame
+            if( ph < 32 )
+            {
+                g->ENEMIES[ i ].z -= step;         // head surges ahead
+                g->ENEMIES[ i ].stretch += step;   // body elongates
+            }
+            else
+            {
+                g->ENEMIES[ i ].stretch -= step;   // tail catches up
+                if( g->ENEMIES[ i ].stretch < 0 ) g->ENEMIES[ i ].stretch = 0;
+            }
         }
         else
         {
@@ -2114,7 +2141,14 @@ void update_bullets( G* g )
             float dl = g->BULLETS[ i ].lane - g->ENEMIES[ j ].lane;
             if( dl < 0 ) dl = -dl;
             if( dl > LANES / 2 ) dl = LANES - dl;
-            if( dz < 0.03 && dl < 0.6 )
+            // inchworm: the body SPANS the strand from head (z) back
+            // to z + stretch — a bullet anywhere along that span
+            // connects, not just within 0.03 of the head (a long
+            // worm would otherwise have shotproof segments)
+            float dzwin = 0.03;
+            if( g->ENEMIES[ j ].type == 4 )
+                dzwin = g->ENEMIES[ j ].stretch + 0.03;
+            if( dz < dzwin && dl < 0.6 )
             {
                 g->BULLETS[ i ].alive = 0;
                 project( g, g->ENEMIES[ j ].lane, g->ENEMIES[ j ].z );
@@ -2681,6 +2715,47 @@ void render_enemies( G* g )
             set_multiply_color( make_color( 255, 70, 70 ) );
             float rot = ( g->ENEMIES[ i ].wig & 255 ) * 0.024543692;
             draw_rot_glyph( g, 'X', x, y, 22 * sv, 28 * sv, rot );
+        }
+        else if( g->ENEMIES[ i ].type == 4 )
+        {
+            // the INCHWORM: a segmented electric body SPANNING the
+            // strand — a head bead at z, a tail bead at z + stretch,
+            // a middle bead between. Each bead is projected at its
+            // own z on the same lane, so the elongation lies ALONG
+            // the web strand automatically (no angle math, no
+            // rotation — the projection does the work). The head
+            // surges while the body stretches (update_enemies), so
+            // the length you SEE is the distance it just MOVED.
+            // Electric flicker: each bead strobes white on every
+            // 4th frame, phase-shifted per bead — the body ripples.
+            set_multiply_color( make_color( 80, 230, 255 ) );
+            if( ( ( g->frame + i ) & 3 ) == 0 )
+                set_multiply_color( make_color( 255, 255, 255 ) );
+            draw_glyph( g, 'W', x, y, 20 * sv, 16 * sv );
+            if( g->ENEMIES[ i ].stretch > 0.03 )
+            {
+                // middle bead: halfway down the body
+                project( g, g->ENEMIES[ i ].lane,
+                         g->ENEMIES[ i ].z + g->ENEMIES[ i ].stretch * 0.5 );
+                float svm = ( g->pscale + ( 1.0 - g->pscale ) * 0.40 ) * 1.15;
+                set_multiply_color( make_color( 80, 230, 255 ) );
+                if( ( ( g->frame + i + 1 ) & 3 ) == 0 )
+                    set_multiply_color( make_color( 255, 255, 255 ) );
+                draw_glyph( g, 'W', g->px, g->py, 20 * svm, 16 * svm );
+                // tail bead: the anchored rear end
+                project( g, g->ENEMIES[ i ].lane,
+                         g->ENEMIES[ i ].z + g->ENEMIES[ i ].stretch );
+                float svt = ( g->pscale + ( 1.0 - g->pscale ) * 0.40 ) * 1.15;
+                set_multiply_color( make_color( 80, 230, 255 ) );
+                if( ( ( g->frame + i + 2 ) & 3 ) == 0 )
+                    set_multiply_color( make_color( 255, 255, 255 ) );
+                draw_glyph( g, 'W', g->px, g->py, 20 * svt, 16 * svt );
+            }
+            if( busyp <= 160 )
+            {
+                set_glow( 4 );
+                draw_glyph( g, '*', x, y, 12 * sv, 12 * sv );
+            }
         }
         else
         {
@@ -3299,11 +3374,15 @@ void update_spawning( G* g )
         // WALKERS ('X'): a rim patrol that tumbles end-over-end —
         // max two at once; they are persistent lane hazards
         int walker = ( roll == 2 && count_walkers( g ) < 2 );
+        // INCHWORMS ('W' electric): the stretch-surge climber —
+        // from level 5, max two at once
+        int worm = ( roll == 3 && g->level >= 5 && count_worms( g ) < 2 );
         // if/else, not a nested ternary: the ternary rewrite leaked a
         // raw '?' into the generated C (transpiler gap, see doc)
         int etype = 0;
         if( spiker ) etype = 2;
         else if( walker ) etype = 3;
+        else if( worm ) etype = 4;
         else if( tanker ) etype = 1;
         spawn_enemy( g, etype );
         int quota = 18 + g->level;
