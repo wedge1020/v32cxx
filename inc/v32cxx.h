@@ -2,35 +2,32 @@
 #define V32CXX_H
 
 /*
- * Project-wide identifying information and build-time configuration
- * constants -- modeled after the sibling v32lua project's own
+ * Project-wide identifying information (build-time configuration lives
+ * in config.h) -- modeled after the sibling v32lua project's own
  * v32lua.h, which every one of that project's source files includes.
  * THIS project doesn't need that same everything-includes-it structure
  * (v32c++'s files are already more narrowly, individually scoped -- ast.h,
  * sema.h, lower.h, codegen.h, driver.h, symtab.h each own a specific
  * piece), so only whatever actually needs something declared here
  * includes this file. Currently: main.c (VERSION/AUTHOR/URL, for
- * --version) and symtab.h (SYMTAB_BUCKETS).
+ * --version). Build-time configuration lives in config.h.
  *
  * VERSION follows v32lua's own YYYYMMDD + single-digit same-day sequence
- * + "-dev" scheme, for consistency between the two sibling projects --
- * adjust freely; there was no prior VERSION string to preserve
- * compatibility with, so this is a starting point, not a fixed
- * convention this project is locked into.
+ * + "-dev" scheme, for consistency between the two sibling projects.
+ *
+ * The #define below is the SINGLE SOURCE of the version. `v32c++ --version`
+ * reads it directly; everything else that prints it (the man page's .TH
+ * header) is stamped from it by `make version` in the base Makefile,
+ * which parses the #define below with sed -- so keep it on one line, in
+ * this exact `#define VERSION "..."` shape. To release: edit the string,
+ * then run `make version`.
+ *
+ * Installation-dependent defaults (the include search path, ...) live in
+ * config.h, not here -- this file is identity, that one is configuration.
  */
 
-#define  VERSION  "20260925-dev"
+#define  VERSION  "20261001-dev"
 #define  AUTHOR   "Matthew Haas"
 #define  URL      "https://github.com/wedge1020/v32cxx"
-
-/* Symbol table hash bucket count (symtab.c/symtab.h) -- a tuning
- * constant, not something correctness depends on at any particular
- * value (more buckets: less hash-chain collision at the cost of a
- * larger fixed per-scope allocation; fewer buckets: the reverse).
- * Relocated here from symtab.h specifically as a small, real
- * demonstration of the "build-time configuration lives here for
- * convenience" pattern this file exists for -- not because symtab.h
- * itself needed to change. */
-#define  SYMTAB_BUCKETS  64
 
 #endif /* V32CXX_H */

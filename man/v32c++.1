@@ -1,4 +1,4 @@
-.TH V32C++ 1 "September 2026" "v32c++ 20260925-dev" "User Commands"
+.TH V32C++ 1 "October 2026" "v32c++ 20261001-dev" "User Commands"
 .SH NAME
 v32c++ \- transpile a subset of C++ to Vircon32 C
 .SH SYNOPSIS
@@ -9,6 +9,10 @@ v32c++ \- transpile a subset of C++ to Vircon32 C
 .RB [ \-v ... ]
 .RB [ \-I
 .IR dir ]...
+.RB [ \-D
+.IR name [= value ]]...
+.RB [ \-U
+.IR name ]...
 .RB [ \-x ]
 .RB [ \-b ]
 .RB [ \-g ]
@@ -143,9 +147,28 @@ an angle-bracket
 .B #include
 looks only in the
 .I dir
-list. Has no effect on
+list. Both forms then fall back to the directories in
+.B V32CXX_INCLUDE
+and finally to the installed header directory (see
+.BR ENVIRONMENT ).
+Has no effect on
 .I .h
 includes, which always pass through to the generated C unchanged.
+.TP
+.BI \-D " name\fR[" = value\fR]
+Define a macro, as if
+.BI "#define " "name value"
+began the input
+.RI ( value
+defaults to 1). It is visible to
+.BR #if / #ifdef
+and expanded like any other macro, and is passed through to the
+generated C. May be repeated.
+.TP
+.BI \-U " name"
+Undefine a macro (one from an earlier
+.BR \-D ).
+Options are applied in command-line order.
 .TP
 .B \-\-version
 Print version, author, and project URL information, and exit
@@ -511,10 +534,7 @@ anywhere in this project yet); virtual destructor dispatch through
 .B delete[]
 specifically (plain
 .B delete
-through a base pointer already dispatches correctly); a real
-preprocessor (macro expansion, C++-side visibility of
-.BR #define d
-names, conditional compilation);
+through a base pointer already dispatches correctly);
 .B static
 class members; range-based
 .BR for .
@@ -564,35 +584,84 @@ as a single expression). None of these are implemented yet.
 .PP
 Never supported, by design: templates, exceptions, RTTI, multiple
 inheritance.
-.SH HEADERS AND C TYPES
+.SH PREPROCESSOR
+Before parsing,
 .B v32c++
-is not a C preprocessor, but it does resolve C++ headers. Before
-parsing, every
+preprocesses the C++ source itself, so the parser sees it fully
+expanded:
+.IP \(bu 2
+Every
 .B #include
 of a file ending in
 .I .hpp
 or
 .I .cpp
-is replaced by that file's contents, recursively. Lookup follows the
-same order real compilers use (see
+is replaced by that file's contents, recursively (lookup order: see
 .BR \-I ).
 A header containing
 .B #pragma once
 is inlined at most once, and an include cycle without it is an error.
+.I .h
+includes pass through to the generated C, once each.
+.IP \(bu 2
+.B #define
+and
+.B #undef
+work as in C++: object-like and function-like macros,
+.B #
+stringizing,
+.B ##
+pasting, and variadic
+.B ...
+with
+.BR __VA_ARGS__ .
+A self-referencing macro expands once.
+.BR __V32CXX__ ,
+.B __FILE__
+and
+.B __LINE__
+are predefined.
+.IP \(bu 2
+.BR #if ", " #ifdef ", " #ifndef ", " #elif ", " #else " and " #endif
+are evaluated (integer arithmetic,
+.BR defined() );
+only the active branch is transpiled. A condition sees only macros
+.B v32c++
+read itself \(em from the source, its
+.I .hpp
+includes, and
+.B \-D
+\(em not ones defined inside a pass-through
+.I .h
+header.
+.B #error
+stops the transpile;
+.B #warning
+prints a message. Any other
+.B #pragma
+is dropped with a warning, since the Vircon32 C compiler rejects it.
+.PP
+Every
+.B #define
+and
+.B #undef
+is also passed through to the top of the generated C, and a use of a
+simple named constant keeps its name there
+.RI ( "int [MAX] scores;" ).
+Macros the Vircon32 C preprocessor cannot accept (using
+.BR # ,
+.B ##
+or
+.BR ... ,
+or referring to themselves) are expanded and not passed on.
 Diagnostics and
 .B \-g
-debug maps still report the original file and line inside an inlined
-header.
+debug maps report original files and lines throughout.
 .PP
-Every other
-.B #
-line, including every
-.I .h
-include, is passed through verbatim to the top of the generated C,
-where the Vircon32 C compiler handles it. Nothing is macro-expanded,
-and
-.BR #if / #ifdef
-are not evaluated.
+An array dimension may be any integer constant expression: a literal,
+a macro, an enum constant, or arithmetic on those
+.RI ( "int grid[ROWS][COLS];" ).
+.SH HEADERS AND C TYPES
 .PP
 The
 .I v32/
@@ -628,9 +697,9 @@ considers only functions in that namespace, and is an error if there
 are none. An unqualified call inside a namespace finds that
 namespace's functions before those of enclosing scopes.
 .PP
-An overloaded call whose arguments include an SDK
-.B #define
-or a C API call result (whose types
+An overloaded call whose arguments include a macro from an SDK
+.I .h
+header or a C API call result (whose types
 .B v32c++
 cannot see) still resolves when the remaining arguments' known types
 leave exactly one candidate, e.g.
@@ -972,6 +1041,30 @@ header) by the preprocessor pass-through \(em these headers are provided by the 
 by
 .BR v32c++ ,
 and must be available wherever the generated C is actually compiled.
+.SH ENVIRONMENT
+.TP
+.B V32CXX_INCLUDE
+A colon-separated list of directories searched for
+.I .hpp
+and
+.I .cpp
+includes after every
+.B \-I
+directory (and, for a quoted include, the current directory), before
+the installed header directory.
+.SH FILES (INSTALLATION)
+.TP
+.I /usr/local/Vircon32/v32c++/include
+The installed header directory, searched last for
+.I .hpp
+and
+.I .cpp
+includes;
+.B make sysinstall
+puts the
+.I v32/
+headers there. Set at build time in
+.IR inc/config.h .
 .SH SEE ALSO
 .BR v32lua (1),
 the Vircon32 C compiler documentation.

@@ -356,6 +356,24 @@ important default to protect.
   would risk double-evaluating a side effect inside it -- the generic
   hoist sidesteps this entirely, since it introduces a fresh temp
   rather than duplicating the original lvalue).
+- **Update (20261001-dev): every position, with C++ evaluation rules.**
+  The TEMPEST 32K demo hit a `?` that leaked through to the generated C
+  despite the above. A sweep of 31 contexts found the real gaps: switch
+  case bodies (never visited at all), `else if` conditions, all three
+  `for` clauses, brace-less bodies, labeled statements, initializer
+  lists, and a ternary used as another ternary's condition. Phase 10 was
+  rewritten to cover all of them -- the two "narrow boundaries" above
+  are gone -- and to keep C++'s evaluation rules, which the old hoisting
+  didn't: branches are rewritten inside their own if/else (the untaken
+  side never runs, so `p ? p->x : 0` is safe), a ternary on the right of
+  `&&`/`||` runs only when the left side doesn't decide, and a ternary
+  in a loop condition is re-evaluated every pass (the loop becomes
+  `while (1)` with the test at the top; a first-pass flag handles
+  do-while and the `for` increment so `continue` keeps its meaning).
+  After the phase, `check_no_ternaries` guarantees no `?` reaches the
+  output: a leftover outside a function body is folded if it's an
+  integer constant, otherwise reported as an error at its line.
+  `tests/97sample.cpp` checks all of this at run time on the emulator.
 
 ---
 
@@ -602,6 +620,68 @@ fails with a  misleading expecting COLONCOLON error,  because the lexer's
 TYPE_NAME classification  is registration-order dependent."  A friendlier
 sema/lexer  diagnostic (e.g.  "GameDifficulty  used before  declaration")
 would make this much easier to spot than the parser error.
+
+---
+
+## 16. Float literals: no exponent form, and a whole number needs its `.0`
+
+- **Vircon32 C**: rejects exponent notation outright -- `1e8`, `1.0e8`
+  and `1.5e-3` all fail with "bad floating point literal" (confirmed
+  against the real compiler). `5.` and `0.0015` are fine; `.5` is not.
+- **The bug this exposed in v32c++**: float literals were printed with
+  `%.17g`, which (a) drops the decimal point from whole numbers, so
+  `t / 34.0` came out as the INTEGER division `t / 34` -- compiled
+  cleanly and silently produced wrong values (the TEMPEST 32K camera
+  pull-back that never moved), and also hit `v32/math.hpp`'s
+  `value / 2147483647.0` -- and (b) switches to exponent form below
+  1e-4, which the Vircon32 lexer then rejects.
+- **For Vircon32 mode (and standard)**: **FIXED** -- `codegen.c`'s
+  `format_float_literal` prints fixed-point with the fewest decimals that
+  read back as the same value (`34.0`, `0.1`, `0.00001`), never an
+  exponent.
+
+---
+
+## 17. Escapes: no octal, no `\0`, `\x` takes exactly two digits
+
+- **Vircon32 C**: its lexer knows `\n \r \t \\ \' \"` and `\xHH` with
+  EXACTLY two hex digits. Anything else -- including `\0` and every octal
+  escape -- draws "unknown escape character" and decodes as the character
+  itself: `'\0'` becomes `'0'` (48), so a `c != '\0'` test compares
+  against the wrong value.
+- **For Vircon32 mode**: **FIXED** -- char literals print `'\x00'` for
+  NUL (and `\xHH` for any other non-printable); string literals have
+  every escape outside that set rewritten to `\xHH`
+  (`print_vircon32_string`). The C++ side now decodes hex and octal
+  escapes correctly too (`ast_decode_escape`): `'\x41'` used to read as
+  `'x'`.
+
+---
+
+## 18. No declarations in a switch body after a case label
+
+- **Vircon32 C**: "variables cannot be declared in a switch after
+  case/default are used" -- any declaration at the top level of a switch
+  body after the first label, initialized or not (confirmed against the
+  real compiler). Inside a nested `{ }` block within the case is fine.
+- **For Vircon32 mode**: temporaries v32c++ itself introduces in a case
+  body (the ternary rewrite's `__v32_tern_tmpN`) are wrapped in their own
+  block. A declaration written directly in a case body is still the
+  program's own error; brace the case body.
+
+---
+
+## 19. Array sizes may be constant expressions
+
+- **Vircon32 C**: accepts macros, enum constants and constant
+  arithmetic in an array dimension: `int[ M * 2 ] b;`, `int[ N2 ] c;`,
+  `int[ B ] d;` all compile (confirmed against the real compiler).
+- **For Vircon32 mode**: v32c++ folds the dimension to its value at
+  parse time (everything downstream needs the number) and prints it back
+  as written when it's only literals, named constants and arithmetic
+  (`int [MAX] a;`, `int [(ROWS * COLS)] flat;`); a dimension naming an
+  enum constant prints its value, since an enumerator's C name isn't
+  guaranteed to match.
 
 ---
 

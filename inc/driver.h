@@ -28,6 +28,11 @@ extern AstNode *g_program;
 extern Symbol *g_current_class_sym;
 
 extern int g_lex_lineno;
+
+/* Errors a grammar action reported itself (e.g. an array size that isn't
+ * a constant expression) without stopping the parse; main.c treats a
+ * nonzero count like a failed parse. */
+extern int g_parse_errors;
 extern const char *g_current_filename;
 
 /*

@@ -69,21 +69,10 @@ static AstNode *string_literal_init_list(int line, const char *text)
 {
     AstNode *list = ast_new(AST_INIT_LIST, line);
     list->list = ast_list_new();
-    for (const char *p = text; *p != '\0'; p++) {
-        int ch = (unsigned char)*p;
-        if (*p == '\\' && p[1] != '\0') {
-            p++;
-            switch (*p) {
-                case 'n':  ch = '\n';  break;
-                case 't':  ch = '\t';  break;
-                case 'r':  ch = '\r';  break;
-                case '0':  ch = 0;     break;
-                case '\\': ch = '\\';  break;
-                case '"':  ch = '"';   break;
-                case '\'': ch = '\'';  break;
-                default:   ch = (unsigned char)*p; break;
-            }
-        }
+    for (const char *p = text; *p != '\0'; ) {
+        int ch = (unsigned char)*p++;
+        if (ch == '\\' && *p != '\0')
+            ch = ast_decode_escape(&p);  /* hex/octal too, not just \n etc. */
         AstNode *lit = ast_new(AST_INT_LIT, line);
         lit->ival = ch;
         ast_list_append(&list->list, lit);
@@ -94,6 +83,83 @@ static AstNode *string_literal_init_list(int line, const char *text)
     nul->ival = 0;
     ast_list_append(&list->list, nul);
     return list;
+}
+
+/* Concatenates two raw (escapes undecoded) string-literal bodies, freeing
+ * both. If `a` ends in a hex escape (\x41) or an octal escape shorter
+ * than three digits (\1, \12) and `b` starts with a character that would
+ * extend it, that first character is written as a \xHH escape instead,
+ * so the two literals keep their separate meanings (codegen then
+ * normalizes every escape to the forms Vircon32 C reads). */
+static char *join_string_literals(char *a, char *b) {
+    size_t la = strlen(a), lb = strlen(b);
+    int hex = 0, oct = 0;
+    /* find the escape (if any) the left piece ends in */
+    size_t i = la;
+    while (i > 0 && strchr("0123456789abcdefABCDEF", a[i - 1])) i--;
+    size_t digits = la - i;
+    if (digits > 0 && i >= 2 && (a[i - 1] == 'x' || a[i - 1] == 'X') && a[i - 2] == '\\') {
+        size_t bs = 0, k = i - 2;
+        while (k > 0 && a[k - 1] == '\\') { bs++; k--; }
+        hex = (bs % 2 == 0);
+    } else if (digits > 0 && digits < 3 && i >= 1 && a[i - 1] == '\\') {
+        size_t bs = 0, k = i - 1;
+        while (k > 0 && a[k - 1] == '\\') { bs++; k--; }
+        int all_octal = 1;
+        for (size_t d = i; d < la; d++) if (a[d] > '7') all_octal = 0;
+        oct = (bs % 2 == 0) && all_octal;
+    }
+    int hazard = lb > 0 && ((hex && strchr("0123456789abcdefABCDEF", b[0])) ||
+                            (oct && b[0] >= '0' && b[0] <= '7'));
+    char *r = malloc(la + lb + 4 + 1);
+    memcpy(r, a, la);
+    size_t n = la;
+    size_t start = 0;
+    if (hazard) {
+        n += (size_t)sprintf(r + n, "\\x%02x", (unsigned char)b[0]);
+        start = 1;
+    }
+    memcpy(r + n, b + start, lb - start + 1);
+    free(a);
+    free(b);
+    return r;
+}
+
+/* Enum constants known so far, for folding array dimensions like
+ * `int counts[COLOR_COUNT];` at parse time (array_dim). Filled by
+ * enum_decl as each enum finishes parsing; enums are file/namespace
+ * scope only in this project, so one flat table (latest definition of a
+ * name wins) is the whole story. An enumerator whose own value isn't a
+ * foldable constant -- or one implicitly following such -- is simply
+ * left out, and a dimension naming it gets the ordinary "not an integer
+ * constant expression" error. */
+typedef struct EnumConst { char *name; int value; } EnumConst;
+static EnumConst *g_enum_consts = NULL;
+static int g_enum_const_count = 0;
+
+static int parse_enum_value(const char *name, int *value) {
+    for (int i = g_enum_const_count - 1; i >= 0; i--)
+        if (strcmp(g_enum_consts[i].name, name) == 0) {
+            *value = g_enum_consts[i].value;
+            return 1;
+        }
+    return 0;
+}
+
+static void parse_record_enum_values(const AstList *enumerators) {
+    int next = 0, known = 1;
+    for (int i = 0; i < enumerators->count; i++) {
+        const AstNode *ev = enumerators->items[i];
+        int v;
+        if (ev->a != NULL) known = ast_fold_int(ev->a, parse_enum_value, &v);
+        else v = next;
+        if (!known) continue;
+        g_enum_consts = realloc(g_enum_consts, sizeof(EnumConst) * (size_t)(g_enum_const_count + 1));
+        g_enum_consts[g_enum_const_count].name = strdup(ev->str1);
+        g_enum_consts[g_enum_const_count].value = v;
+        g_enum_const_count++;
+        next = v + 1;
+    }
 }
 %}
 
@@ -262,11 +328,17 @@ static AstNode *string_literal_init_list(int line, const char *text)
     int ival;
     double fval;
     AccessSpec access;
+    /* INT_LITERAL / FLOAT_LITERAL / CHAR_LITERAL: the value plus the
+     * object-like macro it was expanded from, if any (lexer.l reads the
+     * pre-scan's @NAME@ annotation; see AstNode's macro_name). Carried in
+     * the token's own semantic value -- never a side global -- because a
+     * GLR parse may run this token's action long after the lexer moved
+     * on. */
+    struct { int ival; double fval; char *macro; } lit;
 }
 
 %token <str> IDENTIFIER TYPE_NAME STRING_LITERAL
-%token <ival> INT_LITERAL CHAR_LITERAL
-%token <fval> FLOAT_LITERAL
+%token <lit> INT_LITERAL CHAR_LITERAL FLOAT_LITERAL
 
 %token CLASS STRUCT ENUM UNION PUBLIC PRIVATE PROTECTED NAMESPACE TYPEDEF
 %token RETURN IF ELSE DO WHILE FOR BREAK CONTINUE GOTO
@@ -290,6 +362,8 @@ static AstNode *string_literal_init_list(int line, const char *text)
 %type <list> top_decl_list member_list stmt_list
 %type <list> param_list opt_param_list arg_list opt_arg_list qname_prefix
 %type <list> member_init_list
+%type <node> array_dim
+%type <str> string_seq
 %type <list> switch_body enumerator_list union_member_list func_ptr_param_list opt_func_ptr_param_list array_bracket_list
 %type <list> more_plain_declarators
 %type <list> asm_string_list
@@ -969,13 +1043,13 @@ param:
                           : $1;
             $$->type = ast_wrap_pointer(base, @1.first_line);
         }
-    | type_spec pointer_opt IDENTIFIER '[' INT_LITERAL ']'
+    | type_spec pointer_opt IDENTIFIER '[' array_dim ']'
         {
             /* Array parameter WITH a size written, `void foo(int
-             * arr[8])` -- real C++ accepts and silently ignores the
-             * size here too (it plays no role at all; the parameter is
-             * still just a pointer), so this project does the same:
-             * $5 (the size) is intentionally unused. Same decay
+             * arr[8])` or `int arr[MAX]` -- real C++ accepts and silently
+             * ignores the size here too (it plays no role at all; the
+             * parameter is still just a pointer), so this project does
+             * the same: $5 (the size) is intentionally unused. Same decay
              * reasoning as the empty-bracket alternative immediately
              * above. */
             symtab_insert(g_symtab, g_symtab->current, $3, SYM_PARAM);
@@ -1290,7 +1364,7 @@ var_decl:
             $$->type = ast_wrap_func_ptr(ret, $4, @1.first_line);
             $$->a = $8;
         }
-    | type_spec pointer_opt '(' '*' IDENTIFIER '[' INT_LITERAL ']' ')' '(' opt_func_ptr_param_list ')' opt_array_initializer
+    | type_spec pointer_opt '(' '*' IDENTIFIER '[' array_dim ']' ')' '(' opt_func_ptr_param_list ')' opt_array_initializer
         {
             /* Standard-C ARRAY-of-function-pointers declarator --
              * `ReturnType (*name[N])(ParamTypes);`. Builds an
@@ -1308,10 +1382,11 @@ var_decl:
                          : ($2 == 2) ? ast_wrap_reference($1, @1.first_line)
                          : $1;
             AstNode *fp = ast_wrap_func_ptr(ret, $11, @1.first_line);
-            $$->type = ast_wrap_array(fp, $7, @1.first_line);
+            $$->type = ast_wrap_array(fp, $7->ival, @1.first_line);
+            $$->type->b = $7->a;
             $$->a = $13;
         }
-    | type_spec pointer_opt '(' opt_func_ptr_param_list ')' '*' '[' INT_LITERAL ']' IDENTIFIER opt_array_initializer
+    | type_spec pointer_opt '(' opt_func_ptr_param_list ')' '*' '[' array_dim ']' IDENTIFIER opt_array_initializer
         {
             /* Vircon32-native ARRAY-of-function-pointers declarator.
              * CONFIRMED against the real compiler (Matthew directly):
@@ -1329,7 +1404,8 @@ var_decl:
                          : ($2 == 2) ? ast_wrap_reference($1, @1.first_line)
                          : $1;
             AstNode *fp = ast_wrap_func_ptr(ret, $4, @1.first_line);
-            $$->type = ast_wrap_array(fp, $8, @1.first_line);
+            $$->type = ast_wrap_array(fp, $8->ival, @1.first_line);
+            $$->type->b = $8->a;
             $$->a = $11;
         }
     ;
@@ -1427,19 +1503,47 @@ opt_func_ptr_param_list:
  * bracket's length, not the last).
  */
 array_bracket_list:
-      '[' INT_LITERAL ']'
+      '[' array_dim ']'
         {
             $$ = ast_list_new();
-            AstNode *n = ast_new(AST_INT_LIT, @1.first_line);
-            n->ival = $2;
-            ast_list_append(&$$, n);
+            ast_list_append(&$$, $2);
         }
-    | array_bracket_list '[' INT_LITERAL ']'
+    | array_bracket_list '[' array_dim ']'
         {
             $$ = $1;
-            AstNode *n = ast_new(AST_INT_LIT, @2.first_line);
-            n->ival = $3;
-            ast_list_append(&$$, n);
+            ast_list_append(&$$, $3);
+        }
+    ;
+
+/* One array dimension: any integer constant expression -- a literal,
+ * a #define (already expanded by the pre-scan, so `[MAX]` arrives here
+ * as an INT_LITERAL that remembers its macro name), an enum constant,
+ * or arithmetic on those (`[ROWS * COLS]`, `[N + 1]`). Folded to its
+ * value right here, at parse time, because AST_ARRAY_TYPE's length is
+ * a plain int everything downstream already relies on. Produces an
+ * AST_INT_LIT carrying the value, with `a` = the source expression when
+ * it was anything more than a bare, unnamed literal -- ast_wrap_array_
+ * dims moves that onto AST_ARRAY_TYPE's `b` so codegen can print
+ * `int [MAX] a;` rather than `int [5] a;`. */
+array_dim:
+      expr
+        {
+            int v = 0;
+            if (!ast_fold_int($1, parse_enum_value, &v)) {
+                fprintf(stderr, "%s:%d: error: array size is not an integer constant "
+                        "expression (use a literal, a #define, an enum constant, or "
+                        "arithmetic on those)\n", g_current_filename, @1.first_line);
+                g_parse_errors++;
+                v = 1;
+            } else if (v < 0) {
+                fprintf(stderr, "%s:%d: error: array size is negative (%d)\n",
+                        g_current_filename, @1.first_line, v);
+                g_parse_errors++;
+                v = 1;
+            }
+            $$ = ast_new(AST_INT_LIT, @1.first_line);
+            $$->ival = v;
+            $$->a = ($1->kind == AST_INT_LIT && $1->macro_name == NULL) ? NULL : $1;
         }
     ;
 
@@ -1457,7 +1561,7 @@ opt_array_initializer:
             $$ = ast_new(AST_INIT_LIST, @1.first_line);
             $$->list = $3;
         }
-    | '=' STRING_LITERAL
+    | '=' string_seq
         {
             /* `int msg[8] = "Hello";` -- a string literal as an array
              * initializer, either accepted array-declarator spelling
@@ -1558,6 +1662,7 @@ typedef_decl:
 enum_decl:
     ENUM IDENTIFIER '{' enumerator_list '}'
         {
+            parse_record_enum_values(&$4);
             symtab_insert(g_symtab, g_symtab->current, $2, SYM_ENUM);
             $$ = ast_new(AST_ENUM_DECL, @1.first_line);
             $$->str1 = strdup($2);
@@ -1889,10 +1994,10 @@ switch_body:
 
 primary_expr:
       IDENTIFIER        { $$ = ast_ident($1, @1.first_line); }
-    | INT_LITERAL         { $$ = ast_new(AST_INT_LIT, @1.first_line); $$->ival = $1; }
-    | FLOAT_LITERAL        { $$ = ast_new(AST_FLOAT_LIT, @1.first_line); $$->fval = $1; }
-    | STRING_LITERAL        { $$ = ast_new(AST_STRING_LIT, @1.first_line); $$->str1 = $1; }
-    | CHAR_LITERAL            { $$ = ast_new(AST_CHAR_LIT, @1.first_line); $$->ival = $1; }
+    | INT_LITERAL         { $$ = ast_new(AST_INT_LIT, @1.first_line); $$->ival = $1.ival; $$->macro_name = $1.macro; }
+    | FLOAT_LITERAL        { $$ = ast_new(AST_FLOAT_LIT, @1.first_line); $$->fval = $1.fval; $$->macro_name = $1.macro; }
+    | string_seq            { $$ = ast_new(AST_STRING_LIT, @1.first_line); $$->str1 = $1; }
+    | CHAR_LITERAL            { $$ = ast_new(AST_CHAR_LIT, @1.first_line); $$->ival = $1.ival; $$->macro_name = $1.macro; }
     | TRUE_KW                  { $$ = ast_new(AST_BOOL_LIT, @1.first_line); $$->ival = 1; }
     | FALSE_KW                  { $$ = ast_new(AST_BOOL_LIT, @1.first_line); $$->ival = 0; }
     | NULLPTR_KW                 { $$ = ast_new(AST_NULL_LIT, @1.first_line); }
@@ -2213,6 +2318,18 @@ opt_arg_list:
 arg_list:
       expr                  { $$ = ast_list_new(); ast_list_append(&$$, $1); }
     | arg_list ',' expr      { $$ = $1; ast_list_append(&$$, $3); }
+    ;
+
+/* Adjacent string literals concatenate, as in C/C++: "foo" "bar" is
+ * "foobar" (also what makes "v" STR(x) work after macro expansion). The
+ * lexer keeps escapes raw, so joining is plain text concatenation --
+ * except where the left piece ends in a hex or octal escape the right
+ * piece's first character would extend ("\x41" "B" must not become
+ * "\x41B"); see join_string_literals. asm bodies keep their own list
+ * (asm_string_list below) -- one line per literal there. */
+string_seq:
+      STRING_LITERAL                { $$ = $1; }
+    | string_seq STRING_LITERAL     { $$ = join_string_literals($1, $2); }
     ;
 
 /* Consecutive string literals forming one asm body -- `asm { "a" "b" }`

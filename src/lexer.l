@@ -72,8 +72,31 @@
  * (e.g. "foo ; bar :: baz" must not treat foo as bar's qualifier). */
 static Symbol *g_last_ident_sym = NULL;
 
+/* Macro-name annotation handoff (see the "@" rule below). The pre-scan
+ * writes `@MAX@5` for a use of `#define MAX 5`; the "@" rule stores the
+ * name in g_pending_macro, and the very next rule to run -- the literal
+ * immediately after it -- finds it moved into g_lit_macro by this macro
+ * (which runs before every rule's own action), then takes ownership.
+ * Any other rule simply lets it go, so a stale name can never attach to
+ * a later, unrelated literal. */
+static char *g_pending_macro = NULL;
+static char *g_lit_macro = NULL;
+static int g_pending_negate = 0;   /* `@NAME@-5`: a negative constant */
+static int g_lit_negate = 0;
+
+static char *take_lit_macro(void) {
+    char *m = g_lit_macro;
+    g_lit_macro = NULL;
+    return m;
+}
+
+/* The sign a "@NAME@-" annotation folded away, applied to the literal. */
+#define LIT_SIGN (g_lit_negate ? -1 : 1)
+
 #define YY_USER_ACTION \
-    yylloc.first_line = yylloc.last_line = g_lex_lineno;
+    yylloc.first_line = yylloc.last_line = g_lex_lineno; \
+    free(g_lit_macro); g_lit_macro = g_pending_macro; g_pending_macro = NULL; \
+    g_lit_negate = g_pending_negate; g_pending_negate = 0;
 
 /* Appends one cart resource (a `#texture`/`#sound` hint) to `list`,
  * keeping id == list position exactly the way v32lua's own
@@ -194,6 +217,23 @@ ALNUM   [A-Za-z0-9_]
 }
 
 \n                              { g_lex_lineno++; }
+
+    /* `@NAME@` -- the pre-scan's annotation in front of a literal that
+     * came from the object-like macro NAME (see YY_USER_ACTION above and
+     * macro.c's annotate rule). Never a token itself; '@' cannot appear
+     * in C++ source outside a string, comment or this annotation. */
+"@"{ALPHA}{ALNUM}*"@"           {
+    g_pending_macro = strndup(yytext + 1, (size_t)yyleng - 2);
+}
+
+    /* `#define LOW -1`: the annotation swallows the minus, and the literal
+     * right after it takes the negative value -- so the parser sees ONE
+     * literal, -1, named LOW, never `-(LOW)` (which would print back as
+     * -LOW, i.e. +1). */
+"@"{ALPHA}{ALNUM}*"@-"          {
+    g_pending_macro = strndup(yytext + 1, (size_t)yyleng - 3);
+    g_pending_negate = 1;
+}
 [ \t\r]+                        { /* whitespace */ }
 
 "class"      { g_last_ident_sym = NULL; return CLASS; }
@@ -243,6 +283,14 @@ ALNUM   [A-Za-z0-9_]
 "false"      { g_last_ident_sym = NULL; return FALSE_KW; }
 "nullptr"    { g_last_ident_sym = NULL; return NULLPTR_KW; }
 "friend"     { g_last_ident_sym = NULL; return FRIEND; }
+
+    /* `inline` and `register` are pure hints in a single translation unit
+     * (v32c++ always transpiles one): accepted and dropped, so code
+     * written with them -- headers especially -- doesn't need editing.
+     * `static`/`extern` are NOT: a static local keeps its value between
+     * calls, which dropping the word would silently break. */
+"inline"     { g_last_ident_sym = NULL; }
+"register"   { g_last_ident_sym = NULL; }
 
 "::"  {
     /* Arm (or clear) the qualifier context for the *next* token, using
@@ -300,7 +348,8 @@ ALNUM   [A-Za-z0-9_]
      * is accepted purely for compatibility with real C++ source that
      * writes it out of habit, not because it changes anything here. */
     g_last_ident_sym = NULL;
-    yylval.fval = atof(yytext);
+    yylval.lit.fval = LIT_SIGN * atof(yytext);
+    yylval.lit.macro = take_lit_macro();
     return FLOAT_LITERAL;
 }
 
@@ -313,7 +362,8 @@ ALNUM   [A-Za-z0-9_]
      * where it needs to" reasoning the float-suffix rule above relies
      * on for atof(). */
     g_last_ident_sym = NULL;
-    yylval.ival = (int)strtol(yytext, NULL, 16);
+    yylval.lit.ival = LIT_SIGN * (int)strtol(yytext, NULL, 16);
+    yylval.lit.macro = take_lit_macro();
     return INT_LITERAL;
 }
 
@@ -331,7 +381,8 @@ ALNUM   [A-Za-z0-9_]
      * handing the rest to strtol(), which then stops at the suffix the
      * same way the hex/decimal rules do. */
     g_last_ident_sym = NULL;
-    yylval.ival = (int)strtol(yytext + 2, NULL, 2);
+    yylval.lit.ival = LIT_SIGN * (int)strtol(yytext + 2, NULL, 2);
+    yylval.lit.macro = take_lit_macro();
     return INT_LITERAL;
 }
 
@@ -357,7 +408,8 @@ ALNUM   [A-Za-z0-9_]
      * digits -- no separate prefix-skipping needed, unlike binary
      * above. */
     g_last_ident_sym = NULL;
-    yylval.ival = (int)strtol(yytext, NULL, 8);
+    yylval.lit.ival = LIT_SIGN * (int)strtol(yytext, NULL, 8);
+    yylval.lit.macro = take_lit_macro();
     return INT_LITERAL;
 }
 
@@ -373,7 +425,8 @@ ALNUM   [A-Za-z0-9_]
      * avoids rejecting otherwise-valid code over a distinction that
      * has no effect either way. */
     g_last_ident_sym = NULL;
-    yylval.ival = atoi(yytext);
+    yylval.lit.ival = LIT_SIGN * atoi(yytext);
+    yylval.lit.macro = take_lit_macro();
     return INT_LITERAL;
 }
 
@@ -392,22 +445,15 @@ ALNUM   [A-Za-z0-9_]
     return STRING_LITERAL;
 }
 
-'([^'\\]|\\.)'  {
+'([^'\\]|\\[0-7]{1,3}|\\[xX][0-9a-fA-F]+|\\.)'  {
     g_last_ident_sym = NULL;
     if (yytext[1] == '\\') {
-        switch (yytext[2]) {
-            case 'n': yylval.ival = '\n'; break;
-            case 't': yylval.ival = '\t'; break;
-            case 'r': yylval.ival = '\r'; break;
-            case '0': yylval.ival = '\0'; break;
-            case '\\': yylval.ival = '\\'; break;
-            case '\'': yylval.ival = '\''; break;
-            case '"': yylval.ival = '"'; break;
-            default: yylval.ival = yytext[2];
-        }
+        const char *p = yytext + 2;
+        yylval.lit.ival = ast_decode_escape(&p);   /* \n, \x41, \101, ... */
     } else {
-        yylval.ival = yytext[1];
+        yylval.lit.ival = (unsigned char)yytext[1];
     }
+    yylval.lit.macro = take_lit_macro();
     return CHAR_LITERAL;
 }
 

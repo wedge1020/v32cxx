@@ -8,6 +8,7 @@
 #include "codegen.h"
 #include "driver.h" /* g_preprocessor_lines -- see its own doc comment there */
 #include "debugmap.h"
+#include "macro.h"     /* macro_name_is_stable */
 
 /* ---- output-line tracking, for -g's debug map ---------------------------
  *
@@ -156,6 +157,51 @@ static AstNode *find_enum_or_union_decl(const AstList *decls, const char *name) 
         }
     }
     return NULL;
+}
+
+static void print_expr(FILE *out, const AstNode *e);
+
+/* Spells a float literal for the generated C: fixed-point with the
+ * FEWEST decimals that read back as exactly the same double (0.1, not
+ * 0.10000000000000001), and never in exponent form. Two real bugs this
+ * fixes, both silent at transpile time:
+ *   - a plain %.17g turned 34.0 into "34" -- an INT literal -- so
+ *     `t / 34.0` came out as the integer division `t / 34`, and
+ *     `1.0 - t / 34.0` as `1 - t / 34` (found in the TEMPEST 32K demo:
+ *     compiled cleanly, produced wrong values);
+ *   - %g switches to exponent notation for small/large magnitudes
+ *     (1.0000000000000001e-05), which the Vircon32 C lexer rejects as a
+ *     "bad floating point literal" -- confirmed against the real compiler,
+ *     which accepts neither 1e8 nor 1.5e-3. */
+static void format_float_literal(char *buf, size_t size, double v) {
+    if (v != v || v - v != 0) {          /* nan / inf: not representable */
+        snprintf(buf, size, "0.0");
+        return;
+    }
+    for (int places = 1; places <= 340; places++) {
+        snprintf(buf, size, "%.*f", places, v);
+        if (strtod(buf, NULL) == v) break;
+    }
+}
+
+/* A literal that came from `#define NAME value` prints as NAME when the
+ * name means the same thing throughout the run (the #define itself is
+ * passed through to the top of the generated C). Returns 1 if printed. */
+static int print_macro_name(FILE *out, const AstNode *lit) {
+    if (lit->macro_name == NULL || !macro_name_is_stable(lit->macro_name)) return 0;
+    fprintf(out, "%s", lit->macro_name);
+    return 1;
+}
+
+/* One array dimension: as written when that's safe to print back
+ * (`[MAX]`, `[ROWS * 2]` -- see ast_dim_expr_printable), else its value. */
+static void print_array_dim(FILE *out, const AstNode *array_type) {
+    fprintf(out, "[");
+    if (array_type->b != NULL && ast_dim_expr_printable(array_type->b))
+        print_expr(out, array_type->b);
+    else
+        fprintf(out, "%d", array_type->ival);
+    fprintf(out, "]");
 }
 
 static void print_type(FILE *out, const AstNode *type) {
@@ -308,7 +354,7 @@ static void print_type(FILE *out, const AstNode *type) {
              * bracket gets a leading space, separating it from the
              * base type's own name). */
             const AstNode *base = type;
-            int dims[64]; /* generous fixed cap, not a dynamically-sized
+            const AstNode *dims[64]; /* generous fixed cap, not a dynamically-sized
                 structure -- this is a purely local, transient printing
                 operation, not part of the persistent AST, and a
                 64-dimensional array is so far beyond anything remotely
@@ -318,7 +364,7 @@ static void print_type(FILE *out, const AstNode *type) {
                 in this file (e.g. indent tracking). */
             int dim_count = 0;
             while (base->kind == AST_ARRAY_TYPE && dim_count < 64) {
-                dims[dim_count++] = base->ival;
+                dims[dim_count++] = base;
                 base = base->a;
             }
             print_type(out, base);
@@ -338,7 +384,8 @@ static void print_type(FILE *out, const AstNode *type) {
                 break;
             }
             for (int i = 0; i < dim_count; i++) {
-                fprintf(out, "%s[%d]", (i == 0) ? " " : "", dims[i]);
+                if (i == 0) fprintf(out, " ");
+                print_array_dim(out, dims[i]);
             }
             break;
         }
@@ -471,7 +518,7 @@ static void print_class_type_name(FILE *out, const char *name) {
 static void print_array_suffix(FILE *out, const AstNode *type) {
     if (g_target != TARGET_STANDARD || type == NULL) return;
     while (type->kind == AST_ARRAY_TYPE) {
-        fprintf(out, "[%d]", type->ival);
+        print_array_dim(out, type);
         type = type->a;
     }
 }
@@ -1157,6 +1204,30 @@ static void emit_forward_declarations(FILE *out, const AstList *decls) {
  */
 static void print_expr(FILE *out, const AstNode *e);
 
+/* Prints a string literal's raw body (escapes undecoded) in the escape
+ * forms the Vircon32 C lexer actually reads: it knows only \n \r \t \\
+ * \' \" and \x with EXACTLY two hex digits -- \0 and every octal escape
+ * draw an "unknown escape character" warning and decode as the digit
+ * itself ('\0' becomes '0'), and a one-digit \x7 would swallow the next
+ * character. Everything else is rewritten as \xHH. */
+static void print_vircon32_string(FILE *out, const char *raw) {
+    fputc('"', out);
+    for (const char *p = raw; *p; ) {
+        if (*p != '\\' || p[1] == '\0') { fputc(*p++, out); continue; }
+        char c = p[1];
+        if (c == 'n' || c == 'r' || c == 't' || c == '\\' || c == '\'' || c == '"') {
+            fputc('\\', out);
+            fputc(c, out);
+            p += 2;
+            continue;
+        }
+        p++;
+        int v = ast_decode_escape(&p);
+        fprintf(out, "\\x%02x", (unsigned)(v & 0xFF));
+    }
+    fputc('"', out);
+}
+
 static void print_char_literal(FILE *out, int code) {
     /* Basic, standard C escaping -- not yet exercised by any test (no
      * current sample has a char literal reach codegen), implemented
@@ -1168,7 +1239,10 @@ static void print_char_literal(FILE *out, int code) {
         case '\r': fprintf(out, "'\\r'"); return;
         case '\\': fprintf(out, "'\\\\'"); return;
         case '\'': fprintf(out, "'\\''"); return;
-        case '\0': fprintf(out, "'\\0'"); return;
+        case '\0':
+            /* Vircon32 C has no \0 escape: it warns and reads '0' (48). */
+            fprintf(out, g_target == TARGET_VIRCON32 ? "'\\x00'" : "'\\0'");
+            return;
         default:
             if (code >= 32 && code < 127) {
                 fprintf(out, "'%c'", (char)code);
@@ -1221,7 +1295,11 @@ static void print_expr(FILE *out, const AstNode *e) {
     if (e == NULL) return;
     switch (e->kind) {
         case AST_INT_LIT:
-            fprintf(out, "%d", e->ival);
+            /* A negative value only arises from a negative named constant
+             * (`#define LOW -1`) whose name can't be printed; parenthesized
+             * so `x - LOW` can never come out as the decrement `x --1`. */
+            if (!print_macro_name(out, e))
+                fprintf(out, e->ival < 0 ? "(%d)" : "%d", e->ival);
             break;
         case AST_INIT_LIST:
             /* `{1, 2, 3}` -- positional, same reasoning as
@@ -1239,11 +1317,14 @@ static void print_expr(FILE *out, const AstNode *e) {
             fprintf(out, "}");
             break;
         case AST_FLOAT_LIT:
-            /* %.17g, not %g -- guarantees a double round-trips through
-             * source text exactly, at the cost of occasionally more
-             * digits than a human would write by hand. Correctness over
-             * cosmetics for generated code. */
-            fprintf(out, "%.17g", e->fval);
+            /* print_float_literal: shortest exact spelling, and ALWAYS
+             * with a '.' or exponent -- see its own comment for the bug
+             * that requirement fixes. */
+            if (!print_macro_name(out, e)) {
+                char text[400];
+                format_float_literal(text, sizeof text, e->fval);
+                fprintf(out, e->fval < 0 ? "(%s)" : "%s", text);
+            }
             break;
         case AST_BOOL_LIT:
             /* Assumes Vircon32 C has `true`/`false` keywords, consistent
@@ -1255,7 +1336,7 @@ static void print_expr(FILE *out, const AstNode *e) {
             fprintf(out, "%s", e->ival ? "true" : "false");
             break;
         case AST_CHAR_LIT:
-            print_char_literal(out, e->ival);
+            if (!print_macro_name(out, e)) print_char_literal(out, e->ival);
             break;
         case AST_NULL_LIT:
             /* `nullptr` always prints as the literal word `NULL`, in
@@ -1380,8 +1461,11 @@ static void print_expr(FILE *out, const AstNode *e) {
              * Found via a real user program (a Space Invaders port)
              * calling drawText(video, "SPACE INVADERS", ...) -- the call
              * parsed and resolved fine, then silently emitted a bare 0
-             * here, which Vircon32 rejected at the call site. */
-            fprintf(out, "\"%s\"", e->str1);
+             * here, which Vircon32 rejected at the call site.
+             * Vircon32 mode rewrites the escapes its lexer doesn't read
+             * (see print_vircon32_string). */
+            if (g_target == TARGET_VIRCON32) print_vircon32_string(out, e->str1);
+            else fprintf(out, "\"%s\"", e->str1);
             break;
         default:
             fprintf(out, "0 /* WARNING: unhandled expression kind in codegen */");

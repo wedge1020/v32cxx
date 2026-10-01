@@ -7287,3 +7287,112 @@ a mistake in its own first draft: `CreateMemoryCard` only writes a blank
 file, so without `LoadMemoryCard` the card isn't inserted and the
 memcard checks silently took their "no card" branch. That first
 "passing" run hadn't tested the memory card at all.
+
+---
+
+## Round: the C++-side preprocessor, config.h, ternary/switch/float fixes — 20261001-dev
+
+Driven by the TEMPEST 32K limitations write-up: its biggest day-to-day
+constraint was that `#define`d names were invisible to the parser, and it
+recorded two confirmed miscompiles (a ternary leaking into the C, and
+`int / 34.0` silently computing the wrong value).
+
+**Version and configuration (matching v32lua).**
+- `VERSION` → `20261001-dev`. `inc/v32cxx.h` is the single source;
+  `make version` parses it with sed (portable between GNU and BSD/macOS:
+  no `sed -i`) and stamps it, with the current month, into the man page's
+  `.TH` line.
+- New `inc/config.h`, every value `#ifndef`-guarded so it can be set with
+  `-D` at build time: `V32CXX_INCLUDE_PATH` (default
+  `/usr/local/Vircon32/v32c++/include`), `V32CXX_INCLUDE_ENV_VAR`
+  (`V32CXX_INCLUDE`), `V32CXX_MAX_INCLUDE_DIRS`, `V32CXX_MAX_MACRO_DEPTH`,
+  and `SYMTAB_BUCKETS` (moved out of `v32cxx.h`, which is now identity
+  only). Include search order: includer's dir (quote) → `-I` → current
+  dir (quote) → `$V32CXX_INCLUDE` → `V32CXX_INCLUDE_PATH`, so a project's
+  own header copy always wins over an installed one. `make sysinstall`
+  installs the binary and the `v32/` headers there.
+
+**The preprocessor (`src/macro.c`, `src/prescan.c`).** The pre-scan now
+does everything the parser needs done first:
+- `#define`/`#undef`: object- and function-like, `#`, `##`, variadic
+  (with GNU `, ## __VA_ARGS__`), rescanning with region-based hide sets
+  (a replacement is spliced into the line buffer and rescanned from its
+  start, so an expansion can combine with the text after it), invocations
+  spread across lines (the expander asks for the next line), backslash
+  continuations, `__FILE__`/`__LINE__`/`__V32CXX__`, `-D`/`-U`.
+- `#if`/`#ifdef`/`#ifndef`/`#elif`/`#else`/`#endif` with a small
+  recursive-descent evaluator (`defined` resolved before expansion,
+  unknown identifiers are 0, short-circuit suppresses division-by-zero on
+  the dead side). Inactive lines become blank lines, so line numbers
+  never drift. `#error`/`#warning` handled; any other `#pragma` is now
+  dropped with a warning (the Vircon32 C preprocessor rejects every
+  `#pragma` as unsupported, so passing one through could only fail).
+- **Pass-through, so nothing is lost.** Every `#define`/`#undef` still
+  reaches the top of the generated C -- except definitions the Vircon32
+  preprocessor rejects (`#`/`##` in the body, variadic, an object-like
+  self-reference: all hard errors there), which are fully expanded by
+  v32c++ anyway.
+- **Names survive into the C.** A use of a named constant (body is one
+  numeric or char literal, optionally negative) is spliced as `@NAME@5`;
+  lexer.l reads the annotation and the literal token carries `NAME` in
+  its semantic value (a `lit` struct in `%union` -- never a side global,
+  since GLR may run the action late). `AstNode.macro_name` lets codegen
+  print `MAX` instead of `5`, but only when `macro_name_is_stable`: a
+  name ever `#undef`'d or redefined differently prints its value, since
+  the hoisted `#define` block gives downstream only its final state. For
+  `#define LOW -1` the annotation swallows the minus (`@LOW@-` rule), so
+  the parser sees ONE literal -1 named LOW -- never `-(LOW)`, which would
+  print back as `-LOW` and mean +1. Negative literal values now print
+  parenthesized, closing a latent `(--1)` for `-0xFFFFFFFF`.
+- Demo check: all three C++ demos produce byte-identical C to before
+  (names preserved), apart from fixes below.
+
+**Array dimensions are constant expressions.** `'[' INT_LITERAL ']'`
+became `'[' array_dim ']'` (an `expr` folded at parse time by
+`ast_fold_int`, with enum constants from a parse-time table filled by
+`enum_decl`). The source expression is kept on `AST_ARRAY_TYPE.b` and
+printed back when it's only literals/named constants/arithmetic
+(`ast_dim_expr_printable`) -- the real compiler accepts macros and
+constant arithmetic in dimensions (VIRCON32_QUIRKS #19). No new grammar
+conflicts (%expect unchanged). A non-constant dimension is a parse-time
+error at its line (`tests/96sample.cpp`).
+
+**Ternary lowering rewritten (phase 10).** A 31-context sweep found the
+TEMPEST leak's likely home and several more: switch case bodies, `else
+if`, all `for` clauses, brace-less bodies, labels, initializer lists,
+ternary-as-condition. The old hoisting also evaluated eagerly: nested
+branches and `&&`/`||` right-hand sides ran unconditionally, and a
+`while` condition was hoisted once, before the loop. The new phase keeps
+C++ semantics (see its comment and VIRCON32_QUIRKS #10), wraps hoisted
+temporaries in a block inside switch bodies (VIRCON32_QUIRKS #18), and
+`check_no_ternaries` makes leaking impossible: fold or error, never a
+`?`. `lower_run` now returns an error count main.c honors.
+
+**Switch bodies were never lowered.** Seven lowering walkers (this-
+injection, call finalization, reference return/access, new/delete,
+constructor calls, pointer casts) had no `AST_SWITCH` case: inside a case
+body, `f(2)` stayed `f(2)` instead of `f__int(2)` and failed downstream.
+Found by the ternary sweep; fixed in all seven (plus the -vvv call
+dump).
+
+**Float literals** (VIRCON32_QUIRKS #16): `%.17g` dropped `.0` from whole
+numbers -- the real cause of the "`int / 34.0` mis-evaluates" report --
+and produced exponents the Vircon32 lexer rejects. Now shortest exact
+fixed-point.
+
+**Escapes** (VIRCON32_QUIRKS #17): shared `ast_decode_escape` (hex,
+octal, `\a\b\f\v`) for char literals and string array initializers
+(`'\x41'` used to read as `'x'`); Vircon32-mode output rewrites `\0`,
+octal and short hex escapes to `\xHH`.
+
+**Small additions.** Adjacent string literals concatenate (`"v" STR(x)`),
+with a hazard check so `"\x4" "1"` stays two characters. `inline` and
+`register` are accepted and ignored (pure hints in one translation unit);
+`static`/`extern` deliberately still aren't.
+
+**Tests.** 95 (preprocessor, self-checking, `-D FROM_CMDLINE=7`), 96
+(deliberately invalid: non-constant array size), 97 (ternary semantics,
+switch bodies, float division; self-checking). `make realcheck`: 68/68
+programs compile and assemble with the real tools; 94, 95 and 97 run to
+`test_errors == 0` on the emulated console (95 also confirmed to report
+a failure when fed a wrong `-D`).

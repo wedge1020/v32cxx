@@ -3277,6 +3277,10 @@ static void dump_calls_in_node(const AstNode *n) {
         case AST_LABEL:
             dump_calls_in_node(n->a);
             break;
+        case AST_SWITCH:
+            dump_calls_in_node(n->a);
+            for (int i = 0; i < n->list.count; i++) dump_calls_in_node(n->list.items[i]);
+            break;
         case AST_WHILE:
             dump_calls_in_node(n->a); dump_calls_in_node(n->b);
             break;

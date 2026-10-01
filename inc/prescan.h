@@ -4,10 +4,18 @@
 #include <stdio.h>
 
 /*
- * Include-resolution pre-scan -- the ONLY piece of preprocessor
- * behavior this project implements, ahead of the still-general
- * "#-line passes through verbatim" rule (see lexer.l and
- * PreprocessorLines in driver.h for that half).
+ * The pre-scan: v32c++'s C++-side preprocessor. It resolves .hpp/.cpp
+ * includes, defines and expands macros (see macro.h), and evaluates
+ * #if/#ifdef/#ifndef/#elif/#else/#endif -- everything the parser must
+ * see already done. Whatever should ALSO reach the generated C (.h
+ * includes, #define/#undef the Vircon32 C preprocessor accepts, cart
+ * hints) is left in the stream as a #-line for lexer.l's verbatim
+ * pass-through (PreprocessorLines in driver.h).
+ *
+ * Conditionals are consumed here: only the active branch's lines reach
+ * the parser (and the generated C). A condition can only test macros
+ * v32c++ itself has seen -- ones #define'd in the C++ source, its .hpp
+ * includes, or -D -- not ones from pass-through .h headers.
  *
  * prescan_expand() reads input_filename and copies it line-by-line
  * into a temporary stream, EXCEPT that:
@@ -25,8 +33,11 @@
  *
  * Nested includes resolve relative to the directory of the file that
  * physically contains the #include line; quote form additionally
- * falls back to the -I dirs (angle form searches ONLY the -I dirs),
- * matching real-compiler lookup order.
+ * falls back to the -I dirs and the current directory (angle form
+ * searches only the -I dirs), matching real-compiler lookup order.
+ * Both forms finally fall back to `system_dirs` -- the
+ * $V32CXX_INCLUDE entries and V32CXX_INCLUDE_PATH, assembled by main.c
+ * (see config.h for the full search-order table).
  *
  * To keep diagnostics (and -g's debug map) accurate across all this
  * splicing, each expanded file's content is preceded by a GCC-style
@@ -40,7 +51,8 @@
  * The tmpfile() is the caller's to fclose, but note tmpfile() also
  * unlinks on close, so "fclose and forget" is the whole cleanup.
  */
-FILE *prescan_expand(const char *input_filename, char *const *include_dirs, int include_dir_count);
+FILE *prescan_expand(const char *input_filename, char *const *include_dirs, int include_dir_count,
+                     char *const *system_dirs, int system_dir_count);
 
 /*
  * Returns a stable, interned copy of `filename` (a new copy the first
@@ -52,5 +64,11 @@ FILE *prescan_expand(const char *input_filename, char *const *include_dirs, int 
  * strdup'd entries (freed only by the OS at exit).
  */
 const char *prescan_intern_filename(const char *filename);
+
+/*
+ * Queues a command-line -D (is_undef = 0; "NAME" or "NAME=VALUE") or -U
+ * (is_undef = 1; "NAME"), applied in order when prescan_expand starts.
+ */
+void prescan_add_cmdline_macro(const char *spec, int is_undef);
 
 #endif /* PRESCAN_H */

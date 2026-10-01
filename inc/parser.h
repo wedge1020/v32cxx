@@ -130,7 +130,7 @@ extern int yydebug;
 #if ! defined YYSTYPE && ! defined YYSTYPE_IS_DECLARED
 union YYSTYPE
 {
-#line 258 "src/parser.y"
+#line 324 "src/parser.y"
 
     AstNode *node;
     AstList list;
@@ -138,8 +138,15 @@ union YYSTYPE
     int ival;
     double fval;
     AccessSpec access;
+    /* INT_LITERAL / FLOAT_LITERAL / CHAR_LITERAL: the value plus the
+     * object-like macro it was expanded from, if any (lexer.l reads the
+     * pre-scan's @NAME@ annotation; see AstNode's macro_name). Carried in
+     * the token's own semantic value -- never a side global -- because a
+     * GLR parse may run this token's action long after the lexer moved
+     * on. */
+    struct { int ival; double fval; char *macro; } lit;
 
-#line 143 "inc/parser.h"
+#line 150 "inc/parser.h"
 
 };
 typedef union YYSTYPE YYSTYPE;

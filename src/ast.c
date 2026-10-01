@@ -1,6 +1,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <ctype.h>
 #include "ast.h"
 
 AstList ast_list_new(void) {
@@ -95,8 +96,77 @@ AstNode *ast_wrap_array_dims(AstNode *inner, AstList dims, int line) {
     AstNode *result = inner;
     for (int i = dims.count - 1; i >= 0; i--) {
         result = ast_wrap_array(result, dims.items[i]->ival, line);
+        /* parser.y's array_dim: the item's `a` is the dimension's own
+         * source expression (NULL for a bare literal) -- see
+         * AST_ARRAY_TYPE's `b` in ast.h. */
+        result->b = dims.items[i]->a;
     }
     return result;
+}
+
+int ast_fold_int(const AstNode *e, int (*lookup)(const char *name, int *value), int *out) {
+    if (e == NULL) return 0;
+    int a, b, c;
+    switch (e->kind) {
+        case AST_INT_LIT:
+        case AST_CHAR_LIT:
+        case AST_BOOL_LIT:
+            *out = e->ival;
+            return 1;
+        case AST_IDENT:
+            return lookup != NULL && e->str1 != NULL && lookup(e->str1, out);
+        case AST_UNOP:
+            if (!ast_fold_int(e->a, lookup, &a)) return 0;
+            if (strcmp(e->str1, "neg") == 0) { *out = -a; return 1; }
+            if (strcmp(e->str1, "~") == 0)   { *out = ~a; return 1; }
+            if (strcmp(e->str1, "!") == 0)   { *out = !a; return 1; }
+            if (strcmp(e->str1, "+") == 0)   { *out = a;  return 1; }
+            return 0;
+        case AST_TERNARY:
+            if (!ast_fold_int(e->a, lookup, &c)) return 0;
+            return ast_fold_int(c ? e->b : e->c, lookup, out);
+        case AST_BINOP: {
+            if (!ast_fold_int(e->a, lookup, &a) || !ast_fold_int(e->b, lookup, &b)) return 0;
+            const char *op = e->str1;
+            if (strcmp(op, "+") == 0)  { *out = a + b; return 1; }
+            if (strcmp(op, "-") == 0)  { *out = a - b; return 1; }
+            if (strcmp(op, "*") == 0)  { *out = a * b; return 1; }
+            if (strcmp(op, "/") == 0)  { if (b == 0) return 0; *out = a / b; return 1; }
+            if (strcmp(op, "%") == 0)  { if (b == 0) return 0; *out = a % b; return 1; }
+            if (strcmp(op, "<<") == 0) { *out = a << b; return 1; }
+            if (strcmp(op, ">>") == 0) { *out = a >> b; return 1; }
+            if (strcmp(op, "&") == 0)  { *out = a & b; return 1; }
+            if (strcmp(op, "|") == 0)  { *out = a | b; return 1; }
+            if (strcmp(op, "^") == 0)  { *out = a ^ b; return 1; }
+            if (strcmp(op, "<") == 0)  { *out = a < b; return 1; }
+            if (strcmp(op, ">") == 0)  { *out = a > b; return 1; }
+            if (strcmp(op, "<=") == 0) { *out = a <= b; return 1; }
+            if (strcmp(op, ">=") == 0) { *out = a >= b; return 1; }
+            if (strcmp(op, "==") == 0) { *out = a == b; return 1; }
+            if (strcmp(op, "!=") == 0) { *out = a != b; return 1; }
+            if (strcmp(op, "&&") == 0) { *out = a && b; return 1; }
+            if (strcmp(op, "||") == 0) { *out = a || b; return 1; }
+            return 0;
+        }
+        default:
+            return 0;
+    }
+}
+
+int ast_dim_expr_printable(const AstNode *e) {
+    if (e == NULL) return 0;
+    switch (e->kind) {
+        case AST_INT_LIT:
+        case AST_CHAR_LIT:
+            return 1;
+        case AST_UNOP:
+            return (strcmp(e->str1, "neg") == 0 || strcmp(e->str1, "~") == 0 ||
+                    strcmp(e->str1, "!") == 0) && ast_dim_expr_printable(e->a);
+        case AST_BINOP:
+            return ast_dim_expr_printable(e->a) && ast_dim_expr_printable(e->b);
+        default:
+            return 0;
+    }
 }
 
 AstNode *ast_wrap_func_ptr(AstNode *return_type, AstList param_types, int line) {
@@ -212,5 +282,39 @@ void ast_dump(const AstNode *node, int indent) {
         indent_line(indent + 1);
         printf("[%d]:\n", i);
         ast_dump(node->list.items[i], indent + 2);
+    }
+}
+
+int ast_decode_escape(const char **p) {
+    const char *s = *p;
+    int v;
+    if (*s >= '0' && *s <= '7') {
+        v = 0;
+        for (int i = 0; i < 3 && *s >= '0' && *s <= '7'; i++) v = v * 8 + (*s++ - '0');
+        *p = s;
+        return v & 0xFF;
+    }
+    if (*s == 'x' || *s == 'X') {
+        const char *h = s + 1;
+        if (!isxdigit((unsigned char)*h)) { *p = s + 1; return 'x'; }
+        v = 0;
+        while (isxdigit((unsigned char)*h)) {
+            int d = isdigit((unsigned char)*h) ? *h - '0' : (tolower((unsigned char)*h) - 'a' + 10);
+            v = (v * 16 + d) & 0xFFFF;
+            h++;
+        }
+        *p = h;
+        return v & 0xFF;
+    }
+    *p = s + 1;
+    switch (*s) {
+        case 'n': return '\n';
+        case 't': return '\t';
+        case 'r': return '\r';
+        case 'a': return '\a';
+        case 'b': return '\b';
+        case 'f': return '\f';
+        case 'v': return '\v';
+        default:  return (unsigned char)*s;   /* \\ \' \" \? and unknown */
     }
 }

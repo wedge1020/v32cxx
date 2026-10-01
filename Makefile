@@ -17,7 +17,18 @@ CFLAGS  = -Wall -Wextra -g -I$(INC_DIR) -MMD -MP
 BISON   = bison
 FLEX    = flex
 
-.PHONY: all clean test realcheck install uninstall
+# The transpiler version: inc/v32cxx.h's VERSION is the single source.
+# `make version` shows it and stamps it into the other file that prints it
+# (the man page's .TH header); `v32c++ --version` reads it from the header
+# directly. Portable between GNU and BSD/macOS tools: no `sed -i` (BSD sed
+# takes the script as the backup suffix), no \t in brackets, no `date +%-d`.
+VERSION := $(shell sed -n 's/^\#define[[:space:]]*VERSION[[:space:]]*"\(.*\)".*/\1/p' $(INC_DIR)/v32cxx.h)
+MONTH   := $(shell LC_ALL=C date +"%B %Y")
+# The installed-header directory, from inc/config.h (same single-source
+# idea): `make sysinstall` puts the v32/ veneer headers there.
+INCPATH := $(shell sed -n 's/^\#define[[:space:]]*V32CXX_INCLUDE_PATH[[:space:]]*"\(.*\)".*/\1/p' $(INC_DIR)/config.h)
+
+.PHONY: all clean test realcheck install uninstall sysinstall version
 
 all: $(BIN_DIR)/v32c++
 
@@ -70,7 +81,8 @@ $(BIN_DIR)/v32c++: $(OBJ_DIR)/parser.o   $(OBJ_DIR)/lexer.o   \
 				   $(OBJ_DIR)/prescan.o  $(OBJ_DIR)/sema.o    \
                    $(OBJ_DIR)/lower.o    $(OBJ_DIR)/codegen.o \
 				   $(OBJ_DIR)/pathutil.o $(OBJ_DIR)/cartxml.o \
-				   $(OBJ_DIR)/debugmap.o $(OBJ_DIR)/main.o | $(BIN_DIR)
+				   $(OBJ_DIR)/debugmap.o $(OBJ_DIR)/macro.o    \
+				   $(OBJ_DIR)/main.o | $(BIN_DIR)
 	$(CC) $(CFLAGS) -o $@ $^
 # If linking fails looking for yywrap/yy_flex_* symbols on your system,
 # add -lfl to this link line (some flex installs need it even with
@@ -171,6 +183,9 @@ test: all | $(OUT_DIR)
 	$(BIN)  -vvv    -o out/92program.c tests/92sample.cpp 1> out/92sample.txt 2>&1
 	-$(BIN) -vvv    -o out/93failure.c tests/93sample.cpp 1> out/93sample.txt 2>&1
 	$(BIN)  -vvv -I . -o out/94program.c tests/94sample.cpp 1> out/94sample.txt 2>&1
+	$(BIN)  -vvv -D FROM_CMDLINE=7 -o out/95program.c tests/95sample.cpp 1> out/95sample.txt 2>&1
+	-$(BIN) -vvv    -o out/96failure.c tests/96sample.cpp 1> out/96sample.txt 2>&1
+	$(BIN)  -vvv    -o out/97program.c tests/97sample.cpp 1> out/97sample.txt 2>&1
 # `-vvv` (this project's own verbosity flag, a later round -- see
 # main.c) is passed to every sample specifically so `make test`'s own
 # output still captures the full AST/semantic-analysis/lowering dumps
@@ -260,6 +275,13 @@ test: all | $(OUT_DIR)
 realcheck: test
 	tools/vircon32/check.sh
 
+# Show the version (from inc/v32cxx.h) and stamp it into the man page.
+# Run after changing VERSION, before a release.
+version:
+	@echo "v32c++ $(VERSION)"
+	@sed 's/^\.TH V32C++ 1 "[^"]*" "v32c++ [^"]*"/.TH V32C++ 1 "$(MONTH)" "v32c++ $(VERSION)"/' man/v32c++.1 > man/v32c++.1.tmp && mv man/v32c++.1.tmp man/v32c++.1
+	@grep -H "^\.TH" man/v32c++.1
+
 install: all
 	mkdir -p $(HOME)/bin
 	cp $(BIN) $(HOME)/bin/
@@ -268,6 +290,15 @@ install: all
 
 uninstall:
 	rm -f $(HOME)/bin/v32c++
+
+# System-wide install: the binary to /usr/local/bin, and the v32/ veneer
+# headers to V32CXX_INCLUDE_PATH (inc/config.h), so <v32/math.hpp> resolves
+# from any directory with no -I. May need sudo.
+sysinstall: all
+	install -d /usr/local/bin $(INCPATH)/v32
+	install -m 755 $(BIN) /usr/local/bin/v32c++
+	install -m 644 v32/*.hpp $(INCPATH)/v32/
+	@echo "Installed v32c++ to /usr/local/bin and headers to $(INCPATH)/v32"
 
 put: clean
 	@mkdir -p put

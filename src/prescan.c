@@ -4,6 +4,7 @@
 #include <errno.h>
 #include <unistd.h> /* access() */
 #include "prescan.h"
+#include "macro.h"
 
 /* ---- tiny growable path-set --------------------------------------------
  * Used three times: the #pragma-once set, the inclusion stack, and the
@@ -186,14 +187,28 @@ static char *include_target(const char *rest, int *angle) {
 }
 
 /* ---- include resolution -------------------------------------------------
- * Quote form: includer's own dir, then -I dirs, then the path as-is.
- * Angle form: -I dirs only, like a real compiler's system search --
- * deliberately NOT also "next to the includer", since angle form
- * means "library header" and this project's libraries live on the -I
- * path. The bare-path last resort for quote form covers running
- * v32c++ from a directory containing headers referenced by name. */
+ * Quote form: includer's own dir, then -I dirs, then the path as-is
+ * (relative to the current directory), then the system dirs.
+ * Angle form: -I dirs, then the system dirs -- deliberately NOT also
+ * "next to the includer", since angle form means "library header".
+ * The system dirs ($V32CXX_INCLUDE, then V32CXX_INCLUDE_PATH -- see
+ * config.h) come LAST in both forms so a project-local copy of a header
+ * always wins over an installed one. */
+static char *const *g_system_dirs = NULL;
+static int g_system_dir_count = 0;
+
+static char *search_dirs(const char *target, char *const *dirs, int ndirs) {
+    for (int i = 0; i < ndirs; i++) {
+        char *candidate = join_path(dirs[i], target);
+        if (access(candidate, R_OK) == 0) return candidate;
+        free(candidate);
+    }
+    return NULL;
+}
+
 static char *resolve_include(const char *target, int angle, const char *including_file,
                               char *const *dirs, int ndirs) {
+    char *found;
     if (!angle) {
         char *dir = path_dirname(including_file);
         char *candidate = join_path(dir, target);
@@ -201,13 +216,9 @@ static char *resolve_include(const char *target, int angle, const char *includin
         if (access(candidate, R_OK) == 0) return candidate;
         free(candidate);
     }
-    for (int i = 0; i < ndirs; i++) {
-        char *candidate = join_path(dirs[i], target);
-        if (access(candidate, R_OK) == 0) return candidate;
-        free(candidate);
-    }
+    if ((found = search_dirs(target, dirs, ndirs)) != NULL) return found;
     if (!angle && access(target, R_OK) == 0) return strdup(target);
-    return NULL;
+    return search_dirs(target, g_system_dirs, g_system_dir_count);
 }
 
 /* ---- the pre-scan itself ------------------------------------------------ */
@@ -248,6 +259,175 @@ static void emit_marker(FILE *out, int lineno, const char *file) {
     fprintf(out, "# %d \"%s\"\n", lineno, file);
 }
 
+/* ---- logical lines ------------------------------------------------------
+ * Physical lines ending in a backslash are spliced onto the next one
+ * before anything else looks at them (translation phase 2), so a long
+ * #define can be continued the usual way. One line of pushback lets the
+ * macro expander peek ahead when a function-like invocation's arguments
+ * continue onto the following line. */
+typedef struct LineReader {
+    FILE *in;
+    int lineno;          /* physical lines consumed so far */
+    char *pushed;        /* pushed-back logical line, or NULL */
+    int pushed_nphys;
+    int pushed_first;
+} LineReader;
+
+/* Returns a malloc'd logical line (no trailing newline) or NULL at EOF;
+ * *first = its first physical line number, *nphys = physical lines used. */
+static char *read_logical(LineReader *r, int *first, int *nphys) {
+    if (r->pushed) {
+        char *l = r->pushed;
+        r->pushed = NULL;
+        *first = r->pushed_first;
+        *nphys = r->pushed_nphys;
+        return l;
+    }
+    char *line = NULL;
+    size_t cap = 0;
+    ssize_t len = getline(&line, &cap, r->in);
+    if (len == -1) { free(line); return NULL; }
+    *first = ++r->lineno;
+    *nphys = 1;
+    for (;;) {
+        /* strip the newline getline kept, so a marker can never end up
+         * glued to the last line of a file that lacks a final newline */
+        if (len > 0 && line[len - 1] == '\n') line[--len] = '\0';
+        size_t chk = (size_t)len;
+        while (chk > 0 && line[chk - 1] == '\r') chk--;
+        if (chk == 0 || line[chk - 1] != '\\') break;
+        line[chk - 1] = '\0';                /* splice: drop "\\" (+ any \r) */
+        len = (ssize_t)(chk - 1);
+        char *next = NULL;
+        size_t ncap = 0;
+        ssize_t nlen = getline(&next, &ncap, r->in);
+        if (nlen == -1) { free(next); break; }
+        r->lineno++;
+        (*nphys)++;
+        line = realloc(line, (size_t)len + (size_t)nlen + 1);
+        memcpy(line + len, next, (size_t)nlen + 1);
+        len += nlen;
+        free(next);
+    }
+    return line;
+}
+
+static void unread_logical(LineReader *r, char *line, int first, int nphys) {
+    r->pushed = line;
+    r->pushed_first = first;
+    r->pushed_nphys = nphys;
+}
+
+/* ---- conditional stack -------------------------------------------------- */
+
+typedef struct Cond {
+    int parent_active;   /* was the enclosing region active? */
+    int active;          /* is the current branch active? */
+    int taken;           /* has any branch of this group been taken? */
+    int seen_else;
+    int line;            /* the opening #if's line, for diagnostics */
+} Cond;
+
+typedef struct CondStack {
+    Cond *items;
+    int count;
+    int cap;
+} CondStack;
+
+static int cond_active(const CondStack *c) {
+    return c->count == 0 || c->items[c->count - 1].active;
+}
+
+static void cond_push(CondStack *c, int value, int line) {
+    if (c->count == c->cap) {
+        c->cap = c->cap ? c->cap * 2 : 8;
+        c->items = realloc(c->items, sizeof(Cond) * (size_t)c->cap);
+    }
+    int parent = cond_active(c);
+    Cond *n = &c->items[c->count++];
+    n->parent_active = parent;
+    n->active = parent && value;
+    n->taken = n->active;
+    n->seen_else = 0;
+    n->line = line;
+}
+
+/* The single identifier operand of #ifdef/#ifndef/#undef; malloc'd, or
+ * NULL when missing/malformed. Trailing comments are allowed. */
+static char *directive_ident(const char *rest) {
+    const char *p = rest;
+    while (*p == ' ' || *p == '\t') p++;
+    if (!macro_is_ident_start((unsigned char)*p)) return NULL;
+    const char *st = p;
+    while (macro_is_ident_char((unsigned char)*p)) p++;
+    char *name = malloc((size_t)(p - st) + 1);
+    memcpy(name, st, (size_t)(p - st));
+    name[p - st] = '\0';
+    return name;
+}
+
+static void emit_blank_lines(FILE *out, int n) {
+    while (n-- > 0) fputc('\n', out);
+}
+
+/* Command-line -D/-U, applied in order at the start of the run. */
+typedef struct CmdlineMacro { char *spec; int is_undef; } CmdlineMacro;
+static CmdlineMacro *g_cmdline_macros = NULL;
+static int g_cmdline_macro_count = 0;
+
+void prescan_add_cmdline_macro(const char *spec, int is_undef) {
+    g_cmdline_macros = realloc(g_cmdline_macros,
+                               sizeof(CmdlineMacro) * (size_t)(g_cmdline_macro_count + 1));
+    g_cmdline_macros[g_cmdline_macro_count].spec = strdup(spec);
+    g_cmdline_macros[g_cmdline_macro_count].is_undef = is_undef;
+    g_cmdline_macro_count++;
+}
+
+/* Expands one code line (plus however many following lines a multi-line
+ * function-like invocation needs) and writes it out. Returns 0 or -1. */
+static int emit_code_line(FILE *out, LineReader *r, char *line, int first, int nphys,
+                          int state_before, int *in_block_comment, const char *path) {
+    if (macro_count() == 0 && strstr(line, "__") == NULL) {
+        fprintf(out, "%s\n", line);
+        free(line);
+        return 0;
+    }
+    char *buf = line;
+    int total_phys = nphys;
+    char *expanded = NULL;
+    for (;;) {
+        int rc = macro_expand_text(buf, state_before, 1, path, first, &expanded);
+        if (rc == MACRO_OK) break;
+        if (rc == MACRO_ERROR) { free(buf); return -1; }
+        /* MACRO_NEED_MORE: pull in the next line unless it's a directive
+         * (or EOF), in which case the invocation simply isn't one. */
+        int nfirst, nn;
+        char *next = read_logical(r, &nfirst, &nn);
+        int saved = *in_block_comment;
+        if (next != NULL && find_directive(next, in_block_comment) != NULL) {
+            *in_block_comment = saved;
+            unread_logical(r, next, nfirst, nn);
+            next = NULL;
+        }
+        if (next == NULL) {
+            rc = macro_expand_text(buf, state_before, 0, path, first, &expanded);
+            if (rc != MACRO_OK) { free(buf); return -1; }
+            break;
+        }
+        size_t a = strlen(buf), b = strlen(next);
+        buf = realloc(buf, a + b + 2);
+        buf[a] = '\n';
+        memcpy(buf + a + 1, next, b + 1);
+        free(next);
+        total_phys += nn;
+    }
+    fprintf(out, "%s\n", expanded);
+    free(expanded);
+    free(buf);
+    if (total_phys > 1) emit_marker(out, first + total_phys, path);
+    return 0;
+}
+
 /* Expands one file into `out`. Returns 0 on success, -1 on any error
  * (message already printed, mentioning file and line). */
 static int expand_file(const char *path, FILE *out,
@@ -280,32 +460,133 @@ static int expand_file(const char *path, FILE *out,
     path_set_add(&g_stack, canonical);
     free(canonical);
 
+    /* Interned: macros defined in this file keep pointing at the name. */
+    path = prescan_intern_filename(path);
     emit_marker(out, 1, path);
 
-    char *line = NULL;
-    size_t cap = 0;
-    ssize_t len;
-    int lineno = 0;
+    LineReader reader = { in, 0, NULL, 0, 0 };
+    CondStack conds = { NULL, 0, 0 };
+    char *line;
+    int first, nphys;
     int in_block_comment = 0;
     int rc = 0;
 
-    while ((len = getline(&line, &cap, in)) != -1) {
-        lineno++;
-        /* strip the newline getline kept, re-add on emit: normalizes a
-         * final line without one so a marker can never end up glued to
-         * the last content line of a file. */
-        if (len > 0 && line[len - 1] == '\n') line[len - 1] = '\0';
-
+    while (rc == 0 && (line = read_logical(&reader, &first, &nphys)) != NULL) {
+        int lineno = first;
+        int state_before = in_block_comment;
         const char *hash = find_directive(line, &in_block_comment);
+        int active = cond_active(&conds);
+
         if (hash == NULL) {
-            fprintf(out, "%s\n", line);
+            if (!active) {
+                emit_blank_lines(out, nphys);
+                free(line);
+                continue;
+            }
+            rc = emit_code_line(out, &reader, line, first, nphys, state_before,
+                                &in_block_comment, path);
             continue;
         }
 
         const char *rest;
         char *word = directive_word(hash, &rest);
+        int consumed = 1;       /* default: the line does not reach the output */
+        char *emit_text = NULL; /* what reaches it otherwise (NULL: `line`) */
 
-        if (strcmp(word, "include") == 0) {
+        /* ---- conditionals: processed even inside inactive regions ---- */
+        if (strcmp(word, "ifdef") == 0 || strcmp(word, "ifndef") == 0) {
+            int value = 0;
+            if (cond_active(&conds)) {
+                char *name = directive_ident(rest);
+                if (name == NULL) {
+                    fprintf(stderr, "%s:%d: error: #%s expects a macro name\n", path, lineno, word);
+                    rc = -1;
+                } else {
+                    int defined = macro_lookup(name) != NULL ||
+                                  strcmp(name, "__FILE__") == 0 || strcmp(name, "__LINE__") == 0;
+                    value = (word[2] == 'd') ? defined : !defined;
+                    free(name);
+                }
+            }
+            cond_push(&conds, value, lineno);
+        }
+        else if (strcmp(word, "if") == 0) {
+            long value = 0;
+            if (cond_active(&conds) && macro_eval_condition(rest, path, lineno, &value) != 0)
+                rc = -1;
+            cond_push(&conds, value != 0, lineno);
+        }
+        else if (strcmp(word, "elif") == 0 || strcmp(word, "else") == 0) {
+            if (conds.count == 0) {
+                fprintf(stderr, "%s:%d: error: #%s without #if\n", path, lineno, word);
+                rc = -1;
+            } else {
+                Cond *c = &conds.items[conds.count - 1];
+                if (c->seen_else) {
+                    fprintf(stderr, "%s:%d: error: #%s after #else\n", path, lineno, word);
+                    rc = -1;
+                } else if (word[1] == 'l' && word[2] == 's') {        /* else */
+                    c->seen_else = 1;
+                    c->active = c->parent_active && !c->taken;
+                    c->taken = c->taken || c->active;
+                } else {                                              /* elif */
+                    long value = 0;
+                    if (c->parent_active && !c->taken &&
+                        macro_eval_condition(rest, path, lineno, &value) != 0)
+                        rc = -1;
+                    c->active = c->parent_active && !c->taken && value != 0;
+                    c->taken = c->taken || c->active;
+                }
+            }
+        }
+        else if (strcmp(word, "endif") == 0) {
+            if (conds.count == 0) {
+                fprintf(stderr, "%s:%d: error: #endif without #if\n", path, lineno);
+                rc = -1;
+            } else {
+                conds.count--;
+            }
+        }
+        /* ---- everything else only matters in an active region ---- */
+        else if (!active) {
+            /* dropped */
+        }
+        else if (strcmp(word, "define") == 0) {
+            Macro *m = macro_define(rest, path, lineno);
+            if (m == NULL) {
+                rc = -1;
+            } else if (macro_passthrough_ok(m)) {
+                /* Pass the definition through to the generated C too, so
+                 * the name still exists downstream (for pass-through .h
+                 * headers, and for whoever reads the output). Verbatim
+                 * when it was one physical line; rebuilt, comments
+                 * stripped, when it was continued with backslashes. */
+                if (nphys > 1) emit_text = macro_format_define(m);
+                consumed = 0;
+            }
+            /* else: # / ## / variadic / self-referencing bodies are hard
+             * errors for the Vircon32 C preprocessor -- every use has
+             * already been expanded here, so the line is just dropped. */
+        }
+        else if (strcmp(word, "undef") == 0) {
+            char *name = directive_ident(rest);
+            if (name == NULL) {
+                fprintf(stderr, "%s:%d: error: #undef expects a macro name\n", path, lineno);
+                rc = -1;
+            } else {
+                macro_undef(name);
+                free(name);
+                consumed = 0;   /* harmless downstream either way */
+            }
+        }
+        else if (strcmp(word, "error") == 0 || strcmp(word, "warning") == 0) {
+            const char *msg = rest;
+            while (*msg == ' ' || *msg == '\t') msg++;
+            fprintf(stderr, "%s:%d: %s: #%s %s\n", path, lineno,
+                    word[0] == 'e' ? "error" : "warning", word, msg);
+            if (word[0] == 'e') rc = -1;
+        }
+        else if (strcmp(word, "include") == 0) {
             int angle;
             char *target = include_target(rest, &angle);
             if (target != NULL && is_expanded_extension(target)) {
@@ -314,18 +595,15 @@ static int expand_file(const char *path, FILE *out,
                     fprintf(stderr, "---- error: cannot find #include %s%s%s (from %s:%d) ----\n",
                             angle ? "<" : "\"", target, angle ? ">" : "\"", path, lineno);
                     rc = -1;
-                    free(target);
-                    free(word);
-                    break;
+                } else {
+                    rc = expand_file(resolved, out, dirs, ndirs, 0);
+                    /* Re-sync to THIS file's next line before continuing. */
+                    emit_marker(out, lineno + nphys, path);
+                    free(resolved);
                 }
-                rc = expand_file(resolved, out, dirs, ndirs, 0);
-                /* Re-sync to THIS file's next line before continuing --
-                 * the only line-number desync source left after this. */
-                emit_marker(out, lineno + 1, path);
-                free(resolved);
                 free(target);
                 free(word);
-                if (rc != 0) break;
+                free(line);
                 continue;
             }
             else if (target != NULL) {
@@ -336,70 +614,98 @@ static int expand_file(const char *path, FILE *out,
                  * write differently while naming the same file. When the
                  * same file was already emitted once (verbatim) this run,
                  * drop the line entirely: lexer.l's pass-through would
-                 * otherwise re-emit it at the top of the generated C. Safe
-                 * even without guards on the target's side -- a second
-                 * inclusion of an UNGUARDED .h would be a real redefinition
-                 * problem downstream, and dropping it is strictly closer to
-                 * what #pragma once semantics already do for .hpp files. */
+                 * otherwise re-emit it at the top of the generated C.
+                 * An unresolvable one is NOT an error -- the downstream
+                 * Vircon32 C compiler owns those paths (SDK headers in its
+                 * own include dir) -- and passes through verbatim. */
                 char *resolved = resolve_include(target, angle, path, dirs, ndirs);
+                int duplicate = 0;
                 if (resolved != NULL) {
-                    char *canonical = canonical_path(resolved);
-                    if (path_set_contains(&g_verbatim_set, canonical)) {
-                        /* already emitted once this run: skip the line
-                         * entirely (fall through to the free/continue path,
-                         * without copying the line out) */
-                        free(canonical);
-                        free(resolved);
-                        free(target);
-                        free(word);
-                        /* re-sync the line marker as the expanding branch
-                         * does, since a line was consumed */
-                        emit_marker(out, lineno + 1, path);
-                        continue;
-                    }
-                    path_set_add(&g_verbatim_set, canonical);
-                    free(canonical);
+                    char *canon = canonical_path(resolved);
+                    if (path_set_contains(&g_verbatim_set, canon)) duplicate = 1;
+                    else path_set_add(&g_verbatim_set, canon);
+                    free(canon);
                     free(resolved);
                 }
-                /* resolution failure here is NOT an error -- unlike the
-                 * expanding branch, an unresolvable verbatim include is
-                 * today's normal passthrough case (the downstream Vircon32
-                 * C compiler owns those paths, e.g. SDK headers in its own
-                 * include dir). Just emit it verbatim, exactly as before. */
                 free(target);
+                if (!duplicate) consumed = 0;
+            }
+            else {
+                consumed = 0;   /* unrecognized shape: verbatim, as always */
             }
         }
         else if (strcmp(word, "pragma") == 0) {
             const char *p = rest;
             while (*p == ' ' || *p == '\t') p++;
             if (strncmp(p, "once", 4) == 0 &&
-                (p[4] == '\0' || p[4] == ' ' || p[4] == '\t')) {
+                (p[4] == '\0' || p[4] == ' ' || p[4] == '\t' || p[4] == '\r')) {
                 canonical = canonical_path(path);
                 path_set_add(&g_once_set, canonical);
                 free(canonical);
-                free(word);
-                /* dropped line: re-sync this file's line numbering */
-                emit_marker(out, lineno + 1, path);
-                continue;
+            } else {
+                /* The Vircon32 C preprocessor rejects every #pragma as an
+                 * unsupported directive, so passing one through could only
+                 * break the downstream compile. */
+                fprintf(stderr, "%s:%d: warning: ignoring '#pragma %s' (not supported by Vircon32 C)\n",
+                        path, lineno, p);
             }
-            /* any OTHER #pragma falls through to the verbatim emit below */
+        }
+        else if (word[0] == '\0') {
+            /* the null directive: a lone '#' */
+        }
+        else {
+            /* #texture / #sound / #title / #version cart hints (lexer.l
+             * recognizes those), and anything else: verbatim, as always. */
+            consumed = 0;
         }
 
+        if (consumed) {
+            emit_blank_lines(out, nphys);
+        } else {
+            fprintf(out, "%s\n", emit_text ? emit_text : line);
+            if (nphys > 1) emit_marker(out, lineno + nphys, path);
+        }
+        free(emit_text);
         free(word);
-        fprintf(out, "%s\n", line); /* generic verbatim pass-through */
+        free(line);
     }
 
-    free(line);
+    if (rc == 0 && conds.count > 0) {
+        fprintf(stderr, "%s:%d: error: unterminated #%s (opened here, never closed by #endif)\n",
+                path, conds.items[conds.count - 1].line, "if");
+        rc = -1;
+    }
+    free(conds.items);
+    free(reader.pushed);
     fclose(in);
     path_set_pop(&g_stack);
     return rc;
 }
 
-FILE *prescan_expand(const char *input_filename, char *const *include_dirs, int include_dir_count) {
+FILE *prescan_expand(const char *input_filename, char *const *include_dirs, int include_dir_count,
+                     char *const *system_dirs, int system_dir_count) {
+    g_system_dirs = system_dirs;
+    g_system_dir_count = system_dir_count;
     FILE *out = tmpfile();
     if (out == NULL) {
         perror("tmpfile");
         return NULL;
+    }
+    /* -D / -U, in command-line order. A -D definition reaches the
+     * generated C like any other #define (written ahead of the first
+     * line marker, so it costs no source line). */
+    for (int i = 0; i < g_cmdline_macro_count; i++) {
+        if (g_cmdline_macros[i].is_undef) {
+            macro_undef(g_cmdline_macros[i].spec);
+            continue;
+        }
+        Macro *m = macro_define_cmdline(g_cmdline_macros[i].spec);
+        if (m == NULL) { fclose(out); return NULL; }
+        if (macro_passthrough_ok(m)) {
+            char *def = macro_format_define(m);
+            fprintf(out, "%s\n", def);
+            free(def);
+        }
     }
     if (expand_file(input_filename, out, include_dirs, include_dir_count, 1) != 0) {
         fclose(out);

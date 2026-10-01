@@ -16,10 +16,10 @@ compiler do the rest.
 > confirmed against the real Vircon32 C compiler across dozens of test
 > programs (classes, inheritance, virtual dispatch, constructors and
 > destructors, `new`/`delete`, arrays, and `break`/`continue` all
-> compile and run). It's still genuinely early, though: there's no
-> macro preprocessor yet (only `.hpp`/`.cpp` include resolution, with
-> everything else passed through), and a few other pieces are
-> deliberately partial for now — see
+> compile and run). It has its own C++-side preprocessor (`.hpp`/`.cpp`
+> include resolution, `#define`/`#undef` with macro expansion, and
+> `#if`/`#ifdef` evaluation), but a few other pieces are deliberately
+> partial for now — see
 > [Current status](#current-status) for the honest, detailed picture,
 > and [`docs/DESIGN_NOTES.md`](docs/DESIGN_NOTES.md) for the full
 > round-by-round story of how it got here, including the real bugs
@@ -242,18 +242,44 @@ allocation-only for now — no per-element construction happens yet, since
 there's no per-element analogue of stack-array construction or any
 loop-emission machinery in the code generator yet.
 
-**`#include` resolution for C++ headers, pass-through for everything
-else.** An `#include` of a `.hpp` (or `.cpp`) file is resolved and
-inlined before parsing, recursively. Lookup is the including file's own
-directory first, then each `-I <dir>` in order; angle-bracket includes
-search only the `-I` directories. `#pragma once` is honored, and an
-include cycle without it is reported as an error. Every other `#`-line
-(`#include "video.h"`, `#define`, `#ifdef`, …) is captured and re-emitted
-verbatim at the top of the generated C, where the Vircon32 C compiler
-handles it. Line numbers in diagnostics and `-g` debug maps still point
-at the original file and line inside an inlined header. What doesn't
-exist yet: macro expansion, `#define` visibility on the C++ side, and
-`#if`/`#ifdef` evaluation. Those belong to a future `v32pp`.
+**A C++-side preprocessor.** Before parsing, v32c++ does what a C++
+compiler's preprocessor would, so the parser sees fully expanded source:
+
+- `#include` of a `.hpp` (or `.cpp`) file is resolved and inlined,
+  recursively. Quote form looks next to the including file, then in each
+  `-I <dir>`, then the current directory; angle form searches only the
+  `-I` directories. Both then fall back to `$V32CXX_INCLUDE` (a
+  colon-separated list) and finally the installed header directory,
+  `/usr/local/Vircon32/v32c++/include` by default (see
+  [`inc/config.h`](inc/config.h)). `#pragma once` is honored, and an
+  include cycle without it is an error. `.h` includes pass through to the
+  generated C for the Vircon32 C compiler, once each.
+- `#define` and `#undef`, object-like and function-like, with `#`
+  stringizing, `##` pasting and variadic `...`/`__VA_ARGS__`. So
+  `#define MAX 5` then `int scores[MAX];` works, a float `#define` is a
+  float to the type checker, and overloads resolve on `#define`d
+  arguments. `-D NAME[=VALUE]` and `-U NAME` work as usual, and
+  `__V32CXX__`, `__FILE__` and `__LINE__` are predefined.
+- `#if`/`#ifdef`/`#ifndef`/`#elif`/`#else`/`#endif`, with `defined()`
+  and integer arithmetic. Only the active branch reaches the parser.
+  Conditions only see macros v32c++ itself read (your source, its
+  `.hpp` includes, `-D`), not ones defined inside pass-through `.h` SDK
+  headers. `#error` stops the transpile; `#warning` prints and continues.
+
+Nothing is lost in translation: every `#define` and `#undef` is also
+passed through to the top of the generated C, and a use of a simple
+named constant keeps its name there (`int [MAX] scores;`, `x - LOW`).
+The exceptions are macros the Vircon32 C preprocessor would reject (ones
+using `#`, `##` or `...`, or referring to themselves): those are expanded
+by v32c++ and not passed on. Line numbers in diagnostics and `-g` debug
+maps point at the original file and line, including inside inlined
+headers, continued `#define`s and invocations spread over several
+lines.
+
+**Array sizes are constant expressions.** A dimension can be a literal,
+a `#define`, an enum constant, or arithmetic on those:
+`int grid[ROWS][COLS];`, `int buf[N * 2 + 1];`, `int counts[TILE_COUNT];`.
+Anything else (a variable) is a clear error at its line.
 
 **C++ headers for the Vircon32 C API** live in `v32/`, one per SDK
 header: `video.hpp`, `input.hpp`, `string.hpp`, `time.hpp`, `audio.hpp`,
@@ -282,8 +308,9 @@ error. (Classes are not namespaced this way yet: a class of your own
 named like a `v32::` class, such as `String` or `Channel`, will clash
 in the generated C. Pick a different name for now.)
 
-**Overloads and pass-through arguments.** v32c++ doesn't know the types
-of SDK `#define`s or C API calls. An overloaded call still resolves when
+**Overloads and pass-through arguments.** v32c++ knows the type of a
+`#define` it read itself, but not of one from an SDK `.h` header or of a
+C API call's result. An overloaded call still resolves when
 the arguments it does know settle it (`v32::clamp(x, 0, screen_width)`
 with `int x`, or `v32::minimum(rand(), 10)`). When none do
 (`v32::absolute(rand())`), it's an error: store the value in a typed
@@ -389,10 +416,10 @@ emitted alongside it.
   (see [Trying it out](#trying-it-out)); every place the two dialects
   differ is itemized in
   [`docs/VIRCON32_QUIRKS.md`](docs/VIRCON32_QUIRKS.md).
-- **A real preprocessor.** `.hpp`/`.cpp` include resolution and
-  `#pragma once` exist (see above). There's still no macro expansion,
-  no C++-side visibility of `#define`d names, and no `#if`/`#ifdef`
-  evaluation.
+- ~~**A real preprocessor.**~~ — **DONE** (20261001-dev): `#define`,
+  `#undef`, macro expansion, `#if`/`#ifdef` evaluation, `-D`/`-U`; see
+  above. Still not read: macros defined inside pass-through `.h` SDK
+  headers.
 - **Classes inside a namespace keep their bare C name.** Free functions
   in a namespace are mangled with it (`v32__draw__...`), but a class
   isn't: `v32::String` is `struct String` in the generated C, and a
@@ -1017,28 +1044,21 @@ real hardware's own requirement); standard mode honors it, typically
 Vircon32 mode ALSO rewrites the ternary operator (`cond ? a : b`) into
 an equivalent `if`/`else` — the real Vircon32 C compiler doesn't
 support the ternary operator at all, and its own lexer doesn't even
-recognize `?` as a token, so this isn't a style preference, an
-untranspiled ternary is a hard compile error there. Directly
-initializing a variable, being directly assigned to a bare identifier,
-or being a direct `return` expression (including a chain of these,
-`cond1 ? a : cond2 ? b : c`, fully unwound) rewrites with no temporary
-variable needed at all. Every OTHER position a ternary can appear in —
-a call argument, part of a larger arithmetic/subscript/member
-expression, assigned through anything but a bare identifier — is
-handled too, by hoisting it into its own preceding temporary set via
-an ordinary `if`/`else`; this was a real, previously-undiscovered
-miscompile, found only by an actual Vircon32 compiler run
-(`add(x > y ? x : y, 1)` transpiled with the literal `?`/`:` still in
-it and failed to even lex). Standard mode keeps every ternary exactly
-as written in every position, since real standard C supports it
-natively. Two narrow boundaries remain, stated plainly: a ternary
-inside a for-loop's own init/cond/incr clauses (would need restructuring
-the loop itself, not attempted), and one reachable only through a
-brace-less single-statement slot (`if (cond) foo(cond2 ? a : b);` with
-no block around it — inserting a preceding temp declaration needs a
-real statement list to insert into). See
-`hoist_ternaries_in_expr`'s own doc comment in `lower.c` and
-`docs/VIRCON32_QUIRKS.md`'s own entry #10 for the full reasoning.
+recognize `?` as a token, so an untranspiled ternary is a hard compile
+error there. Directly initializing a variable, being directly assigned
+to a bare identifier, or being a direct `return` expression (including
+chains, `cond1 ? a : cond2 ? b : c`) rewrites with no temporary at all.
+Every other position — call arguments, larger expressions, switch case
+bodies, `else if` conditions, `for` clauses, loop conditions, brace-less
+bodies, labeled statements, initializer lists — is handled by computing
+the value into a temporary first, keeping C++'s evaluation rules: only
+the chosen branch runs (`p ? p->x : 0` is safe), the right side of
+`&&`/`||` runs only when needed, and a ternary in a loop condition is
+re-evaluated every pass. After the rewrite, a check guarantees no `?`
+reaches the output: a leftover in a global or enum initializer is
+folded if it's an integer constant, otherwise reported as an error at
+its line. Standard mode keeps every ternary exactly as written. See
+`docs/VIRCON32_QUIRKS.md` entry #10 and `tests/97sample.cpp`.
 
 A large set of example inputs lives in `tests/`, including a couple that
 are *deliberately* invalid (an undeclared type, an out-of-line
@@ -1069,12 +1089,18 @@ src/            implementation (.c, plus the flex/bison sources)
   cartxml.c     Vircon32 cart-packing XML generation
   pathutil.c    shared filename-extension-swapping helper
   debugmap.c    C-line/C++-line debug map (-g) tracking and output
-  main.c        CLI entry point (-o, -c, -v, -I, -x, -b, -g, --target,
-                --version)
+  prescan.c     the C++-side preprocessor: include resolution,
+                #define/#undef, #if/#ifdef, line markers
+  macro.c       macro table, expander and #if expression evaluator
+                used by prescan.c
+  main.c        CLI entry point (-o, -c, -v, -I, -D, -U, -x, -b, -g,
+                --target, --version)
 inc/            headers for the above (one per .c, plus:)
   driver.h      shared state between the lexer and parser
-  v32cxx.h      project identity (VERSION/AUTHOR/URL) and build-time
-                configuration constants
+  v32cxx.h      project identity: VERSION (the single source -- see
+                `make version`), AUTHOR, URL
+  config.h      build-time configuration: the #include search path
+                and its environment variable, limits
 v32/            C++ headers wrapping the Vircon32 C API (video, input,
                 string, time, audio, math, misc, memcard) in namespace
                 v32 -- include with -I
@@ -1104,6 +1130,30 @@ make install
 Copies `bin/v32c++` to `~/bin/`. Make sure `~/bin` is on your `PATH` to
 run it as just `v32c++` from anywhere. `make uninstall` removes it
 again.
+
+```sh
+sudo make sysinstall
+```
+
+Installs system-wide instead: the binary to `/usr/local/bin`, and the
+`v32/` C++ headers to `/usr/local/Vircon32/v32c++/include/v32`, so
+`#include <v32/video.hpp>` works from any directory without `-I`.
+
+Installation-dependent defaults (the header directory, the name of the
+`V32CXX_INCLUDE` environment variable, a few limits) live in
+[`inc/config.h`](inc/config.h). Change one there and rebuild, or override
+it at build time without editing the file:
+
+```sh
+make CFLAGS="-Wall -Wextra -g -Iinc -MMD -MP -DV32CXX_INCLUDE_PATH='\"/opt/v32c++/include\"'"
+```
+
+## Versioning
+
+The version lives in one place: `VERSION` in
+[`inc/v32cxx.h`](inc/v32cxx.h), which `v32c++ --version` prints. For a
+release, edit it there and run `make version`, which shows it and stamps
+it (with the current month) into the man page header.
 
 ## Feedback
 

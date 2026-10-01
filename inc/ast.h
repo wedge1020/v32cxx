@@ -617,7 +617,11 @@ typedef enum {
                               downstream C/C++ compiler to catch, the
                               same best-effort philosophy this project
                               already applies elsewhere. */
-    AST_ARRAY_TYPE,       /* a=element type, ival=length -- represents "T[N]"
+    AST_ARRAY_TYPE,       /* a=element type, ival=length, b=the length's
+                              source expression when it was more than a
+                              bare literal (`[MAX]`, `[ROWS * 2]`), kept
+                              so codegen can print it back by name; NULL
+                              otherwise -- represents "T[N]"
                               on the C++ input side, in either accepted
                               declarator form (see parser.y's var_decl);
                               always emitted as Vircon32's own required
@@ -821,6 +825,14 @@ struct AstNode {
     int ival;
     double fval;
 
+    /* AST_INT_LIT / AST_FLOAT_LIT / AST_CHAR_LIT only: the object-like
+     * macro this literal came from (`#define MAX 5` ... `MAX`), or NULL.
+     * The pre-scan expands every macro before parsing, so the parser sees
+     * `5`; this remembers the name so codegen can print `MAX` back into
+     * the generated C, where the #define is passed through too (see
+     * macro_name_is_stable in macro.h for when it does). */
+    char *macro_name;
+
     AstNode *a, *b, *c, *d;
     AstList list;
 
@@ -881,9 +893,27 @@ AstNode *ast_wrap_const(AstNode *inner, int line);
  * produced it (parser.y's var_decl has both); the AST itself carries no
  * memory of which spelling the source used. */
 AstNode *ast_wrap_array(AstNode *inner, int length, int line);
+
+/* Folds an integer constant expression (literals, enum constants via
+ * `lookup`, unary/binary arithmetic, comparison, logic, ternary) to its
+ * value. Returns 1 and sets *out on success, 0 when `e` isn't constant.
+ * `lookup` may be NULL (then no identifier is constant). */
+int ast_fold_int(const AstNode *e, int (*lookup)(const char *name, int *value), int *out);
+
+/* 1 when a dimension expression can be printed back into the generated C
+ * as written: only literals and arithmetic, no identifiers (whose C names
+ * may be mangled) and no ternary (which Vircon32 C rejects). */
+int ast_dim_expr_printable(const AstNode *e);
 AstNode *ast_wrap_array_dims(AstNode *inner, AstList dims, int line);
 AstNode *ast_wrap_func_ptr(AstNode *return_type, AstList param_types, int line);
 
 void ast_dump(const AstNode *node, int indent);
+
+/* Decodes one C escape sequence. `*p` points just past the backslash;
+ * on return it points past the whole sequence. Handles \n \t \r \a \b
+ * \f \v \\ \' \" \?, octal (\0 .. \377, up to three digits) and hex
+ * (\x followed by any number of hex digits, as in C; the value is kept to
+ * one byte). An unknown escape yields the character itself. */
+int ast_decode_escape(const char **p);
 
 #endif /* AST_H */
