@@ -430,4 +430,8 @@ char *sema_ns_join(const char *outer, const char *name);  /* malloc'd */
  * actually happened rather than just "didn't error". */
 void sema_dump(const AstNode *program);
 
+/* 1 when `type` names an enum (plain or namespace-qualified). Valid until
+ * sema_cleanup(), i.e. through lowering. */
+int sema_is_enum_type(const AstNode *type);
+
 #endif /* SEMA_H */

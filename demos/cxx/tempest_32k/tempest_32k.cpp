@@ -4,7 +4,8 @@
 //  the BIOS font texture (-1). No custom textures, no 3D hardware.
 //  Revision: walker tumble + pause text size 14 + busy-frame draw culls.
 //
-//  Build:  v32c++ -I . tempest32k.cpp -o tempest32k.c
+//  Build:  v32c++ -I ../../.. -o obj/tempest_32k.c tempest_32k.cpp
+//          (see the Makefile; add -D PROFILE for the profiling build)
 //
 //  Fake-3D technique:
 //    * The web is N lanes around a center point. A point is (lane, z in 0..1).
@@ -15,41 +16,44 @@
 //    * All glow (particles, bullets, party text) uses ADD blending + hue
 //      cycling — the whole Tempest-2000 look.
 //
-//  IMPORTANT Vircon32 C limitation worked around here (twice over):
-//    (1) Vircon32 C rejects assigning ANY const-qualified value into a
-//        plain one ("discards const qualifier") — stricter than gcc and
-//        than the C standard. So reading a `const` global on the RHS of
-//        an assignment is a hard error. And (2) file-scope variables are
-//        read-only (ROM) unless declared with Vircon32's `global`
-//        keyword, which v32c++ cannot emit — so mutable statics are out
-//        too.
-//    Consequences for this file:
-//    * NO `const` variables anywhere — all tunables are #define macros.
-//      The v32c++ lexer carries `#` lines verbatim to the top of the
-//      generated C, and Vircon32 C's own preprocessor expands them
-//      (its SDK headers rely on #define, e.g. color_black).
-//    * ALL mutable state lives in a `struct G`, heap-allocated with
-//      `new` (real malloc() via the generated v32_new_G runtime), and
-//      a `G*` pointer is threaded through every function. Stack and
-//      heap are the only writable memory.
+//  WHAT THIS DEMO SHOWS OFF (v32c++ 20261001-dev and later):
+//    * The C++-side preprocessor. Tunables are #define macros that the
+//      parser now SEES: they size arrays (Bullet BULLETS[ MAX_BULLETS ],
+//      float SHAPE[ LANES ]), they're typed (CAM_SWAY is a float), and
+//      they keep their names in the generated C. #if / #elif / #error
+//      check configuration at transpile time (GLOW_MODE, LANES), and
+//      `v32c++ -D PROFILE` builds the profiling variant (see main).
+//    * Function-like macros as forced inlining (LERP, SIN32, COS32,
+//      RGB): the Vircon32 C compiler never inlines, so the hottest
+//      one-liners are spelled as macros and cost no call at all; RGB()
+//      of constants folds to a single immediate.
+//    * The SDK headers' own names (channel_playing, ...) -- v32c++ now
+//      reads the .h headers it passes through.
+//    * Ternaries anywhere, including chains -- lowered to if/else for
+//      Vircon32 C, which has no `?:`.
+//    * Plain float arithmetic: `t / 34.0` is float division, as written.
+//
+//  Vircon32 platform notes:
+//    * ALL mutable game state lives in a heap-allocated `struct G`
+//      (`new G`), with a `G*` threaded through every function -- one
+//      allocation, one pointer, easy to save/inspect. (An older note
+//      here claimed file-scope variables were read-only ROM and const
+//      reads were rejected; neither is true of the current Vircon32 C
+//      compiler -- globals live in RAM -- but the single-struct design
+//      stands on its own.)
+//    * Parameters and return values are one word: everything big goes
+//      by pointer.
 //
 //  Other Vircon32 API notes (checked against the SDK headers):
 //    * No `color` type: colors are plain ints, ABGR word order, red low byte.
-//    * set_multiply_color(int); set_blending_mode(int) — 0 = solid,
+//    * set_multiply_color(int); set_blending_mode(int) -- 0 = solid,
 //      v32::BlendAlpha = 0x20, v32::BlendAdd = 0x21.
-//    * BIOS font: texture -1 has ONE REGION PER CHARACTER — select_region
+//    * BIOS font: texture -1 has ONE REGION PER CHARACTER -- select_region
 //      with the character code, then draw_region_zoomed_at (the plain
 //      DrawRegion command ignores the scale ports). Base glyph is 10x20 px.
-//    * Array sizes must be INT LITERALS (grammar rule), so LANES = 16 is
-//      spelled out in every array declaration.
 //
 //  v32c++ subset compliance:
-//    * No STL, no templates. Ternary: DO NOT USE — the rewrite leaked a
-//      raw '?' into the generated C once (Vircon32 C lexer: "character
-//      '?' is not a valid identifier start"). if/else always; see the
-//      limitations doc. Array initializer lists are supported by
-//      current v32c++ builds, but this file still avoids them — arrays
-//      are filled at runtime; see VIRCON32_QUIRKS.md / README notes.
+//    * No STL, no templates.
 //    * `main` is void (transpiler emits `void main(void)`).
 // *****************************************************************************
 
@@ -60,11 +64,9 @@
 #include "audio.h"         // SPU: stop/assign/play channel, channel states
 #include "memcard.h"       // memory card: card_is_connected/read/write data
 
-// SPU channel-state register values (audio.h reads them raw): the
-// music succession logic compares against these
-#define CH_STOPPED 0x40
-#define CH_PAUSED  0x41
-#define CH_PLAYING 0x42
+// SPU channel states: audio.h's own channel_stopped / channel_paused /
+// channel_playing (0x40..0x42) -- visible here now that v32c++ reads the
+// SDK headers it passes through, so no private copies are needed.
 
 // 0 = solid (no blending); the v32 enum only names alpha/add/subtract
 #define BLEND_SOLID 0
@@ -95,15 +97,17 @@
 #sound M_TRACK4 "sounds/m_track4.wav"
 
 // ---------------------------------------------------------------------------
-//  Tunables — #define, NOT const variables: reading a const on the RHS of
-//  an assignment is a hard error in Vircon32 C ("discards const qualifier")
+//  Tunables -- #define macros, expanded by v32c++ itself, so they work as
+//  array sizes and in #if, and keep their names in the generated C
 // ---------------------------------------------------------------------------
-#define LANES 16          // web lanes (array sizes below spell this as 16!)
+#define LANES 16          // web lanes (power of two: see project())
 #define RINGS 7
 #define MAX_BULLETS 48
 #define MAX_ENEMIES 24
 #define MAX_PARTICLES 220
 #define MAX_STARS 80
+#define MAX_SHOCKS 3
+#define MAX_POWERUPS 4
 
 #define CX 320
 #define CY 168
@@ -133,6 +137,17 @@
 #define GLOW_SPIKE  0   // spikes
 #define GLOW_CLAW   0   // player claw accents
 #define GLOW_ENEMY  0   // enemy cores
+
+// the blend mode enabled glow layers use, settled at transpile time
+#if GLOW_MODE == 1
+#define GLOW_BLEND v32::BlendAdd
+#elif GLOW_MODE == 2
+#define GLOW_BLEND v32::BlendAlpha
+#elif GLOW_MODE == 0
+#define GLOW_BLEND BLEND_SOLID
+#else
+#error "GLOW_MODE must be 0 (solid), 1 (add) or 2 (alpha)"
+#endif
 
 // ---------------------------------------------------------------------------
 //  ALL mutable game state lives here, on the heap (see header comment)
@@ -205,26 +220,23 @@ struct G
     float COS_TABLE[ 256 ];
 
     // web geometry
-    float SHAPE[ 16 ];
-    float SHAPE_Y[ 16 ];   // vertical radius factor: 1.0 on the CLASSIC
+    float SHAPE[ LANES ];
+    float SHAPE_Y[ LANES ];   // vertical radius factor: 1.0 on the CLASSIC
                            // pass (levels 1-16) so the shape modulates
                            // only x; equal to SHAPE on the TRUE pass
                            // (17-32) so webs trace their real polygon
-    int   CONN[ 16 ];          // CONN[i]: 1 = rim edge between lanes i,i+1 exists
+    int   CONN[ LANES ];          // CONN[i]: 1 = rim edge between lanes i,i+1 exists
     float px; float py; float pscale;   // project() outputs
 
     // entities
     char  GLYPHS[ 6 ];
-    Bullet   BULLETS[ 48 ];
-    Enemy    ENEMIES[ 24 ];
-    Particle PARTICLES[ 220 ];
-    Shock    SHOCKS[ 3 ];
-    PowerUp  POWERUPS[ 4 ];
-    // array size MUST be an int literal (v32c++ grammar rule — macros
-    // like MAX_STARS are fine in expressions but NOT in declarations;
-    // same reason LANES is spelled 16 everywhere below)
-    Star     STARFIELD[ 80 ];
-    float SPIKE[ 16 ];
+    Bullet   BULLETS[ MAX_BULLETS ];
+    Enemy    ENEMIES[ MAX_ENEMIES ];
+    Particle PARTICLES[ MAX_PARTICLES ];
+    Shock    SHOCKS[ MAX_SHOCKS ];
+    PowerUp  POWERUPS[ MAX_POWERUPS ];
+    Star     STARFIELD[ MAX_STARS ];
+    float SPIKE[ LANES ];
 
     // game state
     float player_lane;
@@ -280,8 +292,13 @@ struct G
     // directions are per-LEVEL constants — make_shape invalidates,
     // and the first render_web of the level refills (one-time
     // segment_angle pass, instead of 32 dir_angle scans per frame)
-    float RIM_ANG[ 16 ];   // cached rim bar angle, per lane
-    float CAP_ANG[ 16 ];   // cached far-cap bar angle, per lane
+    float RIM_ANG[ LANES ];   // cached rim bar angle, per lane
+    float CAP_ANG[ LANES ];   // cached far-cap bar angle, per lane
+    // WEB POINT CACHE (see render_web): this frame's projected rim
+    // (z=0) and far-cap (z=1) vertex per lane -- 32 project() calls
+    // per frame instead of ~96 for the spokes, bars and vertex caps
+    float RIM_X[ LANES ]; float RIM_Y[ LANES ];
+    float CAP_X[ LANES ]; float CAP_Y[ LANES ];
     int   web_ang_ok;      // 1 = angle caches valid for this shape
     // HUD LIVES-ICON ANGLE CACHE (see render_hud): every spare-claw
     // icon sits at a FIXED screen slot (560/100 + slot*22, y=346), so
@@ -327,6 +344,13 @@ struct G
     int   frame;
     int   rng_state;
 
+    // project() fly-factor cache (see project_refresh): the inputs it
+    // was computed from, and the result
+    float proj_warp;
+    int   proj_jt;
+    int   proj_jt2;
+    float proj_fly;
+
     // draw-call throttles: the last region/scale we set, so draw_glyph
     // can skip redundant GPU register writes (a big deal at hundreds of
     // glyphs per frame)
@@ -342,6 +366,17 @@ float lerp( float a, float b, float t )
 {
     return a + ( b - a ) * t;
 }
+
+// HOT-PATH INLINING. The Vircon32 C compiler never inlines: every call
+// costs argument pushes, a frame setup and a return before the body
+// runs -- more than the body itself for one-liners like lerp or a table
+// lookup. v32c++ expands function-like macros on the C++ side, so these
+// give the hottest paths (project, the web, the HUD) call-free versions;
+// the functions above and below stay for everything else.
+#define LERP( a, b, t )   ( (a) + ( (b) - (a) ) * (t) )
+#define TURN_INDEX( x )   ( ( (int)( (x) * 40.7436611 + 1024.5 ) ) & 255 )
+#define SIN32( g, x )     ( (g)->SIN_TABLE[ TURN_INDEX( x ) ] )
+#define COS32( g, x )     ( (g)->COS_TABLE[ TURN_INDEX( x ) ] )
 
 float cos_taylor( float x );   // fwd: used by build_tables below
 
@@ -428,6 +463,11 @@ int make_color( int r, int g_, int b )
     return ( 255 << 24 ) | ( b << 16 ) | ( g_ << 8 ) | r;
 }
 
+// make_color for CONSTANT components: as a macro the Vircon32 C
+// compiler folds the whole expression to one immediate -- no call, no
+// shifts at run time. (make_color stays for computed components.)
+#define RGB( r, g_, b ) ( ( 255 << 24 ) | ( (b) << 16 ) | ( (g_) << 8 ) | (r) )
+
 int hue( int h )
 {
     int region = ( h / 43 ) % 6;
@@ -452,9 +492,7 @@ void set_glow( int layer )
     if( layer == 2 ) { if( GLOW_SPIKE )  on = 1; }
     if( layer == 3 ) { if( GLOW_CLAW )   on = 1; }
     if( layer == 4 ) { if( GLOW_ENEMY )  on = 1; }
-    if( !on || GLOW_MODE == 0 ) set_blending_mode( BLEND_SOLID );
-    else if( GLOW_MODE == 1 ) set_blending_mode( v32::BlendAdd );
-    else set_blending_mode( v32::BlendAlpha );
+    set_blending_mode( on ? GLOW_BLEND : BLEND_SOLID );
 }
 
 // ---------------------------------------------------------------------------
@@ -506,8 +544,7 @@ void draw_dot_line( G* g, float x0, float y0, float x1, float y1, int step )
     {
         float t = ( i * 1.0 ) / n;
         // alternate glyph sizes for a shimmer
-        float s = 2.0;
-        if( ( i + g->frame ) % 2 == 0 ) s = 3.0;
+        float s = ( ( i + g->frame ) & 1 ) ? 2.0 : 3.0;
         draw_glyph( g, '.', x0 + dx * t, y0 + dy * t, s, s );
     }
 }
@@ -528,24 +565,46 @@ int string_len( char* s )
 //  around the winner. Multiply by 2*PI/256 (0.024543692) for radians.
 //  Convention matches set_drawing_angle: in y-down screen coords the
 //  resulting angle grows clockwise, which is what the GPU expects.
+//
+//  FAST PATH (was a 32-step coarse scan + 8-step refine: 40 dot
+//  products, the single biggest CPU cost in busy frames -- every
+//  spoke, spike and shockwave bar paid it). Now: a polynomial atan2
+//  guess (max error ~0.004 rad, a sixth of one table step), rounded
+//  to the nearest index, then the SAME dot-product test on that index
+//  and its two neighbours. The best of three always contains the scan's
+//  answer, so the result is unchanged -- for 3 dot products instead of
+//  40.
 int dir_angle( G* g, float dx, float dy )
 {
-    int i;
-    int best = 0;
-    float bestdot = -1000000000.0;
-    for( i = 0; i < 256; i += 8 )          // coarse: 32 steps
+    float ax = dx;
+    if( ax < 0 ) ax = -ax;
+    float ay = dy;
+    if( ay < 0 ) ay = -ay;
+    if( ax + ay < 0.000001 ) return 0;
+    // atan of the octant ratio z = min/max in [0,1]:
+    //   atan(z) ~= z * (pi/4 + 0.273 * (1 - z))
+    float a;
+    if( ax >= ay )
     {
-        float dot = g->COS_TABLE[ i ] * dx + g->SIN_TABLE[ i ] * dy;
-        if( dot > bestdot ) { bestdot = dot; best = i; }
+        float z = ay / ax;
+        a = z * ( 0.7853982 + 0.273 * ( 1.0 - z ) );
     }
-    int j0 = best - 4;
-    if( j0 < 0 ) j0 += 256;
-    for( i = 0; i < 8; i++ )               // refine around the winner
+    else
     {
-        int j = ( j0 + i ) & 255;
-        float dot = g->COS_TABLE[ j ] * dx + g->SIN_TABLE[ j ] * dy;
-        if( dot > bestdot ) { bestdot = dot; best = j; }
+        float z = ax / ay;
+        a = 1.5707963 - z * ( 0.7853982 + 0.273 * ( 1.0 - z ) );
     }
+    if( dx < 0 ) a = 3.14159265 - a;
+    if( dy < 0 ) a = -a;
+    int guess = TURN_INDEX( a );
+    int best = guess;
+    float bestdot = g->COS_TABLE[ guess ] * dx + g->SIN_TABLE[ guess ] * dy;
+    int j = ( guess + 255 ) & 255;
+    float dot = g->COS_TABLE[ j ] * dx + g->SIN_TABLE[ j ] * dy;
+    if( dot > bestdot ) { bestdot = dot; best = j; }
+    j = ( guess + 1 ) & 255;
+    dot = g->COS_TABLE[ j ] * dx + g->SIN_TABLE[ j ] * dy;
+    if( dot > bestdot ) best = j;
     return best;   // 256-step turn index; caller converts to radians
 }
 
@@ -665,14 +724,13 @@ void draw_rot_glyph( G* g, int c, float x, float y, float w, float h, float a )
 void draw_party_text( G* g, char* s, float x, float y, float size, int huebase )
 {
     int i = 0;
+    // measured once, not per letter (that was quadratic in the length)
+    float left = x - string_len( s ) * 0.5 * size * 0.62;
     while( s[ i ] != 0 )
     {
-        float wob = sin32( g, i * 0.35 + g->frame * 0.05 ) * size * 0.28;
+        float wob = SIN32( g, i * 0.35 + g->frame * 0.05 ) * size * 0.28;
         set_multiply_color( hue( huebase + i * 9 + ( g->frame >> 1 ) ) );
-        draw_glyph( g, s[ i ],
-                    x + ( i - string_len( s ) * 0.5 ) * size * 0.62,
-                    y + wob,
-                    size, size * 1.15 );
+        draw_glyph( g, s[ i ], left + i * size * 0.62, y + wob, size, size * 1.15 );
         i++;
     }
 }
@@ -735,8 +793,7 @@ int gpu_remaining_pixels()
 
 // one meter line: "XYZ E: 61k 24%" — k-precision total plus percent
 // of the given budget, drawn at (8, y). All integer math; tmp holds
-// up to 4 k-digits (GPU pixel totals can exceed 999k). Multiply-
-// first-division-last per the proven-expression rule.
+// up to 4 k-digits (GPU pixel totals can exceed 999k).
 void meter_line( G* g, char l0, char l1, char l2, char tag, int total, int budget, int y )
 {
     char buf[ 20 ];
@@ -764,7 +821,7 @@ void meter_line( G* g, char l0, char l1, char l2, char tag, int total, int budge
     buf[ p ] = '0' + pct % 10; p++;
     buf[ p ] = '%'; p++;
     buf[ p ] = 0;
-    draw_text( g, buf, 8, y, 10, make_color( 200, 210, 230 ) );
+    draw_text( g, buf, 8, y, 10, RGB( 200, 210, 230 ) );
 }
 
 // DEBUG METERS — a "likely busy-ness" sight indicator, drawn as TWO
@@ -842,78 +899,83 @@ float fly_factor( G* g )
     return 13.0 - t * 12.0;
 }
 
+// The projection's FLY FACTOR -- the level-transition streaming scale
+// times the jump camera's pull-back -- depends only on warp and the two
+// jump timers, yet project() runs ~200 times a frame. It's cached in g
+// and recomputed only when one of those three inputs actually changes.
+//
+// JUMP CAMERA: while a claw is airborne the camera FOLLOWS it -- the
+// whole web (bars, rings, spikes, enemies, pods: everything flows
+// through project) RECEDES toward the vanishing point and settles back
+// as the claw lands. The profile is a HALF-SINE over the jump's
+// progress: 0 at takeoff, peaking mid-jump, 0 at landing. THE SIGN IS
+// THE WHOLE TRICK: fly BELOW 1.0 pulls the web inward (the camera rises
+// with the jumper); multiplying by (1.0 + arc) swelled the web toward
+// the camera instead, exactly backwards. In co-op whichever claw is
+// higher drives the pull. Deliberately NOT part of fly_factor itself:
+// the spike-sweep crossing test reads fly_factor directly and its
+// timing must not shift mid-jump.
+//
+// (This used to need a "proven expression" spelling -- multiply first,
+// divide last -- because `timer / 34.0` silently evaluated as INTEGER
+// division. That was a v32c++ codegen bug, fixed in 20261001-dev: the
+// natural spelling below is now exactly what runs.)
+#define JUMP_FRAMES 34.0
+void project_refresh( G* g )
+{
+    g->proj_warp = g->warp;
+    g->proj_jt = g->jump_timer;
+    g->proj_jt2 = g->p2_jump_timer;
+    float fly = fly_factor( g );
+    float jarc = 0;
+    if( g->jump_timer > 0 )
+        jarc = SIN32( g, 3.14159265 * ( 1.0 - g->jump_timer / JUMP_FRAMES ) );
+    if( g->twoplayer && g->p2_jump_timer > 0 )
+    {
+        float jarc2 = SIN32( g, 3.14159265 * ( 1.0 - g->p2_jump_timer / JUMP_FRAMES ) );
+        if( jarc2 > jarc ) jarc = jarc2;
+    }
+    g->proj_fly = fly * ( 1.0 - jarc * 0.08 );
+}
+
+// lanes wrap with a bit mask in project(): that needs a power of two
+#if ( LANES & ( LANES - 1 ) ) != 0
+#error "LANES must be a power of two (project() wraps lane indices with a mask)"
+#endif
+
 void project( G* g, float lane, float z )
 {
-    float ang = -1.57079632 + ( lane / LANES ) * 6.28318531;
+    if( g->warp != g->proj_warp || g->jump_timer != g->proj_jt ||
+        g->p2_jump_timer != g->proj_jt2 )
+        project_refresh( g );
+    float ang = -1.57079632 + lane * ( 6.28318531 / LANES );
     // interpolate SHAPE across fractional lanes: the player glides
     // (0.12/frame) and rings use i+0.5; a truncated index made the
     // radius step discretely while the angle glided, so the claw
     // visibly jumped off the outline on non-circle levels. Integer
-    // lanes hit exact values — the web bars are unaffected.
-    int li = ( (int)lane ) % LANES;
-    if( li < 0 ) li += LANES;
-    int ln = ( li + 1 ) % LANES;
-    float f = lane - (int)lane;
+    // lanes hit exact values -- the web bars are unaffected.
+    int whole = (int)lane;
+    int li = whole & ( LANES - 1 );      // also right for negative lanes
+    int ln = ( li + 1 ) & ( LANES - 1 );
+    float f = lane - whole;
     float shape = g->SHAPE[ li ] + ( g->SHAPE[ ln ] - g->SHAPE[ li ] ) * f;
     float shapey = g->SHAPE_Y[ li ] + ( g->SHAPE_Y[ ln ] - g->SHAPE_Y[ li ] ) * f;
     // SHAPE scales the HORIZONTAL radius, SHAPE_Y the vertical one.
-    // On the classic pass SHAPE_Y is all 1.0 — the shape reads as a
-    // horizontally-modulated ellipse (the tuned look of levels 1-16,
-    // and the reason the "square"/"triangle" webs never looked truly
-    // square/triangular). On the true-geometry pass SHAPE_Y == SHAPE,
-    // so the rim traces the actual polygon in both axes.
-    float rx = lerp( OUT_RX, IN_RX, z ) * shape;
-    float ry = lerp( OUT_RY, IN_RY, z ) * shapey;
-    // level transition: uniform outward streaming (see fly_factor) —
-    // everything scales together, so the tube never inverts
-    float fly = fly_factor( g );
-    // JUMP CAMERA: while a claw is airborne the camera FOLLOWS it —
-    // the whole web (bars, rings, spikes, enemies, pods — everything
-    // flows through project) RECEDES toward the vanishing point and
-    // settles back as the claw lands. The profile is a HALF-SINE over
-    // the jump's progress: 0 at takeoff, peaking mid-jump, 0 at
-    // landing — one continuous camera move. THE SIGN IS THE WHOLE
-    // TRICK: fly BELOW 1.0 pulls the web inward (the camera rises
-    // with the jumper); the first build multiplied by (1.0 + jarc)
-    // and the web SWELLED outward — the web appeared to chase the
-    // claw toward the camera, exactly backwards. In co-op whichever
-    // claw is higher drives the pull (max of the two arcs).
-    // Deliberately NOT in fly_factor itself: the spike-sweep crossing
-    // test reads fly_factor directly and its timing must not shift
-    // mid-jump.
-    if( g->jump_timer > 0 || ( g->twoplayer && g->p2_jump_timer > 0 ) )
-    {
-        // PROVEN-EXPRESSION RULE: this must be spelled EXACTLY like
-        // the claw's own jump arc in render_claw —
-        //   sin32( g, 3.14159 * ( 34 - timer ) / 34.0 )
-        // Two earlier "equivalent" spellings silently no-opped on the
-        // emulator: `g->jump_timer / 34.0` as a lone division, and
-        // `1.0 - g->jump_timer / 34.0` (see the limitations doc —
-        // int-typed / float-literal division and the a - b/c shape
-        // are both suspect in the transpiler's codegen). The claw
-        // arc's shape — float multiply first, divide last — is the
-        // one form observed to evaluate correctly.
-        float jarc = 0;
-        if( g->jump_timer > 0 )
-            jarc = sin32( g, 3.14159 * ( 34 - g->jump_timer ) / 34.0 );
-        if( g->twoplayer && g->p2_jump_timer > 0 )
-        {
-            float jarc2 = sin32( g, 3.14159 * ( 34 - g->p2_jump_timer ) / 34.0 );
-            if( jarc2 > jarc ) jarc = jarc2;
-        }
-        fly *= 1.0 - jarc * 0.08;
-    }
-    rx *= fly;
-    ry *= fly;
+    // On the classic pass SHAPE_Y is all 1.0 -- the shape reads as a
+    // horizontally-modulated ellipse (the tuned look of levels 1-16).
+    // On the true-geometry pass SHAPE_Y == SHAPE, so the rim traces
+    // the actual polygon in both axes. The fly factor (above) scales
+    // everything uniformly, so the tube never inverts.
+    float rx = LERP( OUT_RX, IN_RX, z ) * shape * g->proj_fly;
+    float ry = LERP( OUT_RY, IN_RY, z ) * shapey * g->proj_fly;
     // camera sway: the vanishing point (z=1) leans toward the player's
-    // lane; the rim (z=0) is unaffected. Everything drawn — web bars,
-    // spikes, enemies, pods, bullets — flows through here, so the whole
-    // scene stays internally consistent.
-    float cx = CX + g->cam_x * z;
-    float cy = CY + g->cam_y * z;
-    g->px = cx + cos32( g, ang ) * rx;
-    g->py = cy + sin32( g, ang ) * ry;
-    g->pscale = lerp( 1.0, 0.10, z );
+    // lane; the rim (z=0) is unaffected. Everything drawn -- web bars,
+    // spikes, enemies, pods, bullets -- flows through here, so the
+    // whole scene stays internally consistent.
+    int ti = TURN_INDEX( ang );
+    g->px = CX + g->cam_x * z + g->COS_TABLE[ ti ] * rx;
+    g->py = CY + g->cam_y * z + g->SIN_TABLE[ ti ] * ry;
+    g->pscale = LERP( 1.0, 0.10, z );
 }
 
 // SIXTEEN distinct webs, cycling by level — and TWO passes across the
@@ -1091,7 +1153,7 @@ void play_title_music( G* g )
 // one finishes (called only during play/dying/transition/pause)
 void update_music( G* g )
 {
-    if( get_channel_state( 0 ) == CH_STOPPED )
+    if( get_channel_state( 0 ) == channel_stopped )
     {
         int t = g->music_index + 1;
         if( t > 3 ) t = 0;
@@ -1238,7 +1300,7 @@ void burst( G* g, float x, float y, int count, int strength )
 void shockwave( G* g, float x, float y )
 {
     int s;
-    for( s = 0; s < 3; s++ )
+    for( s = 0; s < MAX_SHOCKS; s++ )
     {
         if( !g->SHOCKS[ s ].alive )
         {
@@ -1301,17 +1363,9 @@ void fire_owner( G* g, int owner, float lane )
         }
         return;
     }
-    // RAPID BLASTER: 25% faster cycle — alternating 5/4-frame
+    // RAPID BLASTER: 25% faster cycle -- alternating 5/4-frame
     // cooldowns average 4.5 (the cooldown is an int, the rate isn't).
-    // Spelled as if/else: a ternary here once leaked unrewritten into
-    // the generated C ("character '?' is not a valid identifier
-    // start") — the limitations doc tracks the transpiler gap.
-    int cd = 6;
-    if( g->rapid_timer > 0 )
-    {
-        cd = 4;
-        if( ( g->frame & 1 ) != 0 ) cd = 5;
-    }
+    int cd = g->rapid_timer > 0 ? ( ( g->frame & 1 ) ? 5 : 4 ) : 6;
     if( owner == 0 ) g->fire_cooldown = cd;
     else             g->p2_fire_cooldown = cd;
     int i;
@@ -1366,10 +1420,20 @@ void superzap( G* g, int owner )
 // are a documented transpiler gap), so P2's claw shares the exact
 // same movement + rim-clamp code. airborne = 1 suspends the open-web
 // rim clamp.
+void clamp_claw_lane( G* g, float* lane, int airborne );
+
 void move_claw_lane( G* g, float* lane, int airborne )
 {
     if( gamepad_left() > 0 )  *lane -= 0.12;
     if( gamepad_right() > 0 ) *lane += 0.12;
+    clamp_claw_lane( g, lane, airborne );
+}
+
+// wrap the lane, then keep the claw on its own rim run (shared by the
+// human and CPU claws -- the CPU claw used to skip the run clamp and
+// could drift into a gap)
+void clamp_claw_lane( G* g, float* lane, int airborne )
+{
     if( *lane < 0 ) *lane += LANES;
     if( *lane >= LANES ) *lane -= LANES;
 
@@ -1480,52 +1544,140 @@ int pad_connected( int n )
 // It never jumps, never superzaps, and it parks OUTSIDE the rim
 // contact kill zone (0.7 lanes) so it shoots campers instead of
 // walking into them.
+// 1 when lane l lies on the rim run [lo..hi] (which may wrap past 15)
+int lane_in_run( float l, int lo, int hi )
+{
+    if( lo <= hi ) return l >= lo - 0.01 && l <= hi + 0.01;
+    return l >= lo - 0.01 || l <= hi + 0.01;
+}
+
 void ai_claw( G* g, int who )
 {
-    float* lane = &g->player_lane;
-    int* fcd = &g->fire_cooldown;
-    if( who == 1 ) { lane = &g->p2_lane; fcd = &g->p2_fire_cooldown; }
+    float* lane = who == 1 ? &g->p2_lane : &g->player_lane;
+    int* fcd = who == 1 ? &g->p2_fire_cooldown : &g->fire_cooldown;
+    int* jt = who == 1 ? &g->p2_jump_timer : &g->jump_timer;
+    int* jc = who == 1 ? &g->p2_jump_cooldown : &g->jump_cooldown;
 
-    // target: the alive enemy closest to the rim (the imminent
-    // threat). No enemies = hold position.
+    // a human's jump timers tick in claw_jump_lane; the CPU's tick here
+    if( *jc > 0 ) ( *jc )--;
+    if( *jt > 0 ) ( *jt )--;
+
+    // REACHABLE targets only: on an open web the claw can't cross a rim
+    // gap, so an enemy on another arc is not a target -- chasing one
+    // (the old rule) parked the claw against the gap forever once the
+    // nearest-to-rim enemy happened to sit across it, and the level
+    // never ended.
+    int lo = 0;
+    int hi = LANES - 1;
+    int open = !web_full( g );
+    if( open ) run_bounds( g, ( (int)( *lane + 0.5 ) ) & ( LANES - 1 ), &lo, &hi );
+
+    // target: the reachable enemy closest to the rim (the imminent
+    // threat). No reachable enemies = hold position.
     int best = -1;
     float bestz = 1.1;
+    int other = -1;           // nearest enemy on ANOTHER arc, by lane distance
+    float otherd = 99;
     int i;
     for( i = 0; i < MAX_ENEMIES; i++ )
     {
-        if( !g->ENEMIES[ i ].alive ) continue;
-        if( g->ENEMIES[ i ].z < bestz ) { bestz = g->ENEMIES[ i ].z; best = i; }
+        Enemy* e = &g->ENEMIES[ i ];
+        if( !e->alive ) continue;
+        if( open && !lane_in_run( e->lane, lo, hi ) )
+        {
+            float od = e->lane - *lane;
+            while( od > LANES / 2 ) od -= LANES;
+            while( od < -LANES / 2 ) od += LANES;
+            if( od < 0 ) od = -od;
+            if( od < otherd ) { otherd = od; other = i; }
+            continue;
+        }
+        if( e->z < bestz ) { bestz = e->z; best = i; }
+    }
+    if( best < 0 && other >= 0 )
+    {
+        // EVERY enemy is on another arc: head for it and LEAP the gap
+        // (the clamp is suspended while airborne). Blocked against the
+        // run's end = time to jump.
+        float d = g->ENEMIES[ other ].lane - *lane;
+        while( d > LANES / 2 ) d -= LANES;
+        while( d < -LANES / 2 ) d += LANES;
+        float before = *lane;
+        float step = d > 0 ? 0.12 : -0.12;          // a human claw's top speed
+        if( *jt > 0 || ( d < 0.12 && d > -0.12 ) ) step = d * 0.15;
+        *lane += step;
+        clamp_claw_lane( g, lane, *jt > 0 );
+        float moved = *lane - before;
+        if( moved < 0 ) moved = -moved;
+        if( *jt == 0 && *jc == 0 && moved < 0.001 )
+        {
+            *jt = 34;
+            *jc = 60;
+            project( g, *lane, 0 );
+            burst( g, g->px, g->py, 8, 1.5 );
+            sfx( g, JUMP );
+        }
+        return;
     }
     if( best >= 0 )
     {
-        float d = g->ENEMIES[ best ].lane - *lane;
+        Enemy* e = &g->ENEMIES[ best ];
+        float d = e->lane - *lane;
         while( d > LANES / 2 ) d -= LANES;
         while( d < -LANES / 2 ) d += LANES;
-        float ad = d;
-        if( ad < 0 ) ad = -ad;
-        // approach only while outside the kill zone — park about a
-        // lane off and let the gun finish it. Slower than the buddy
-        // drone's 0.08 ease on every difficulty.
-        if( ad > 1.0 )
+        float ad = d < 0 ? -d : d;
+        float ease = g->difficulty == 0 ? 0.06 : g->difficulty == 2 ? 0.03 : 0.045;
+        int acd = g->difficulty == 0 ? 70 : g->difficulty == 2 ? 120 : 95;
+        // a spiker hides behind its own spike, which eats shots (each
+        // trims it 0.10) and regrows 0.006 a frame: at the usual pace
+        // the spike wins forever. Chip through it at ~2/3 human pace.
+        if( e->type == 2 ) acd = 10;
+        // RIM CAMPER: it kills anything within 0.7 lanes, but a shot only
+        // connects within 0.6 -- the one way to kill it is the JUMP-SHOT
+        // (an airborne claw is invulnerable). Wait just outside the kill
+        // zone with the gun ready, leap, slide into line, fire.
+        int camper = e->z < 0.05 && e->type != 2;
+        int ready = *jc == 0 && *fcd <= 0;      // jump AND gun available
+        if( camper && *jt > 0 )
         {
-            float ease = 0.045;
-            if( g->difficulty == 0 ) ease = 0.06;
-            if( g->difficulty == 2 ) ease = 0.03;
-            *lane += d * ease;
+            *lane += d * 0.15;                       // airborne: close in
+            if( ad < 0.55 && *fcd <= 0 ) { fire_owner( g, who, *lane ); *fcd = acd; }
         }
-        // fire when roughly aligned — long cooldowns (the drone runs
-        // 45, or 80 on easy), again inverse with difficulty
-        if( ad < 0.55 && *fcd <= 0 )
+        else if( camper && ( ( ad >= 0.9 && ad <= 1.2 ) || ( ad < 0.9 && ready ) ) )
         {
-            fire_owner( g, who, *lane );
-            int acd = 95;
-            if( g->difficulty == 0 ) acd = 70;
-            if( g->difficulty == 2 ) acd = 120;
-            *fcd = acd;
+            *jt = 34;                                // the same leap as claw_jump_lane
+            *jc = 60;
+            project( g, *lane, 0 );
+            burst( g, g->px, g->py, 8, 1.5 );
+            sfx( g, JUMP );
+        }
+        else if( camper && ad < 0.9 )
+        {
+            // too close and not ready to leap: step away -- toward
+            // whichever side the run allows (d may be 0: sitting right
+            // on it, e.g. clamped at a run end where it camps)
+            float away = d > 0 ? -0.08 : 0.08;
+            float before = *lane;
+            *lane += away;
+            clamp_claw_lane( g, lane, 0 );
+            if( *lane == before ) *lane -= away * 2;
+        }
+        else if( camper )
+            *lane += d * ease;                       // approach the waiting spot
+        else
+        {
+            // a CLIMBING enemy is harmless until it reaches the rim: line
+            // up under it and shoot. Close to the rim, park about a lane
+            // off instead and let it come into the line of fire (slower
+            // than the buddy drone's 0.08 ease on every difficulty).
+            float stand = e->z > 0.15 ? 0.3 : 1.0;
+            if( ad > stand ) *lane += d * ease;
+            // fire when roughly aligned -- long cooldowns (the drone runs
+            // 45, or 80 on easy), again inverse with difficulty
+            if( ad < 0.55 && *fcd <= 0 ) { fire_owner( g, who, *lane ); *fcd = acd; }
         }
     }
-    if( *lane < 0 ) *lane += LANES;
-    if( *lane >= LANES ) *lane -= LANES;
+    clamp_claw_lane( g, lane, *jt > 0 );
 }
 
 void update_player( G* g )
@@ -1743,7 +1895,7 @@ void collect_powerup( G* g, int i, int owner )
 void spawn_powerup( G* g )
 {
     int i;
-    for( i = 0; i < 4; i++ )
+    for( i = 0; i < MAX_POWERUPS; i++ )
     {
         if( g->POWERUPS[ i ].alive ) continue;
         g->POWERUPS[ i ].alive = 1;
@@ -1786,7 +1938,7 @@ void spawn_powerup( G* g )
 void update_powerups( G* g )
 {
     int i;
-    for( i = 0; i < 4; i++ )
+    for( i = 0; i < MAX_POWERUPS; i++ )
     {
         if( !g->POWERUPS[ i ].alive ) continue;
         g->POWERUPS[ i ].z -= 0.0016;          // drift toward the rim
@@ -1802,7 +1954,7 @@ void update_powerups( G* g )
         if( g->difficulty == 0 ) cap = 3;   // easy: pods stack up
         if( g->difficulty == 2 ) cap = 1;   // hard: one at a time
         int n = 0;
-        for( i = 0; i < 4; i++ ) if( g->POWERUPS[ i ].alive ) n++;
+        for( i = 0; i < MAX_POWERUPS; i++ ) if( g->POWERUPS[ i ].alive ) n++;
         if( n < cap ) spawn_powerup( g );
     }
 }
@@ -2203,7 +2355,7 @@ void level_clear( G* g )
 void update_shocks( G* g )
 {
     int i;
-    for( i = 0; i < 3; i++ )
+    for( i = 0; i < MAX_SHOCKS; i++ )
     {
         if( !g->SHOCKS[ i ].alive ) continue;
         g->SHOCKS[ i ].life--;
@@ -2211,19 +2363,33 @@ void update_shocks( G* g )
     }
 }
 
+// POINTER PER ELEMENT: the Vircon32 C compiler recomputes the full
+// address of g->PARTICLES[ i ].field (load g, add the array offset,
+// multiply i by the struct size, add the field) on EVERY access -- six
+// instructions, eight accesses per live particle. Taking the element's
+// address once makes each access a single offset load. The same
+// pattern is used in the other hot per-element loops.
+//
+// Also keeps g->partcount (live particles, read by the render-phase
+// throttles) current: this loop already visits every particle, so the
+// separate once-a-frame count_particles walk is no longer needed.
 void update_particles( G* g )
 {
     int i;
+    int alive = 0;
     for( i = 0; i < MAX_PARTICLES; i++ )
     {
-        if( !g->PARTICLES[ i ].alive ) continue;
-        g->PARTICLES[ i ].x += g->PARTICLES[ i ].vx;
-        g->PARTICLES[ i ].y += g->PARTICLES[ i ].vy;
-        g->PARTICLES[ i ].vx *= 0.96;
-        g->PARTICLES[ i ].vy *= 0.96;
-        g->PARTICLES[ i ].life--;
-        if( g->PARTICLES[ i ].life <= 0 ) g->PARTICLES[ i ].alive = 0;
+        Particle* p = &g->PARTICLES[ i ];
+        if( !p->alive ) continue;
+        p->x += p->vx;
+        p->y += p->vy;
+        p->vx *= 0.96;
+        p->vy *= 0.96;
+        p->life--;
+        if( p->life <= 0 ) p->alive = 0;
+        else alive++;
     }
+    g->partcount = alive;
 }
 
 // ---------------------------------------------------------------------------
@@ -2262,37 +2428,38 @@ void update_stars( G* g )
     float oy = CY + g->cam_y;
     for( i = 0; i < MAX_STARS; i++ )
     {
+        Star* st = &g->STARFIELD[ i ];   // see update_particles
         // DIRECTION CACHE: a star's unit direction from the vanishing
         // point only changes when the camera lean moves (a slow ease),
         // so each star refreshes its cached vector one frame in eight
         // (staggered by index) and the other seven use the cache.
-        // This deletes 80 sqrt calls and 160 divisions per frame —
+        // This deletes 80 sqrt calls and 160 divisions per frame --
         // the bulk of the star update's CPU cost.
-        if( ( i + g->frame ) % 8 == 0 )
+        if( ( ( i + g->frame ) & 7 ) == 0 )
         {
-            float dx = g->STARFIELD[ i ].x - ox;
-            float dy = g->STARFIELD[ i ].y - oy;
+            float dx = st->x - ox;
+            float dy = st->y - oy;
             float d = sqrt( dx * dx + dy * dy );
             if( d < 1 ) d = 1;
-            g->STARFIELD[ i ].dirx = dx / d;
-            g->STARFIELD[ i ].diry = dy / d;
+            st->dirx = dx / d;
+            st->diry = dy / d;
         }
-        g->STARFIELD[ i ].x += g->STARFIELD[ i ].dirx * g->STARFIELD[ i ].spd * boost;
-        g->STARFIELD[ i ].y += g->STARFIELD[ i ].diry * g->STARFIELD[ i ].spd * boost;
-        if( g->STARFIELD[ i ].x < -4 || g->STARFIELD[ i ].x > 644 ||
-            g->STARFIELD[ i ].y < -4 || g->STARFIELD[ i ].y > 340 )
+        float step = st->spd * boost;
+        st->x += st->dirx * step;
+        st->y += st->diry * step;
+        if( st->x < -4 || st->x > 644 || st->y < -4 || st->y > 340 )
         {
             // respawn near the vanishing point so the stream is
-            // endless — the spawn angle IS the direction: no sqrt
+            // endless -- the spawn angle IS the direction: no sqrt
             float a = frand( g ) * 6.28318;
             float r = 4 + frand( g ) * 30;
-            float ca = cos32( g, a );
-            float sa = sin32( g, a );
-            g->STARFIELD[ i ].x = ox + ca * r;
-            g->STARFIELD[ i ].y = oy + sa * r;
-            g->STARFIELD[ i ].dirx = ca;
-            g->STARFIELD[ i ].diry = sa;
-            g->STARFIELD[ i ].spd = 0.8 + frand( g ) * 1.6;
+            float ca = COS32( g, a );
+            float sa = SIN32( g, a );
+            st->x = ox + ca * r;
+            st->y = oy + sa * r;
+            st->dirx = ca;
+            st->diry = sa;
+            st->spd = 0.8 + frand( g ) * 1.6;
         }
     }
 }
@@ -2308,19 +2475,23 @@ void render_starfield( G* g )
     // thin to a quarter.
     int starstep = 1;
     if( g->partcount > 120 ) starstep = 2;
+    // the two star colors, built once instead of once per star
+    int near_color = RGB( 240, 245, 255 );
+    int far_color = RGB( 150, 165, 215 );
     for( i = 0; i < MAX_STARS; i += starstep )
     {
         if( ( ( i + g->frame ) / starstep ) % 2 == 1 ) continue;
+        Star* st = &g->STARFIELD[ i ];
         // fast/near stars: big and white; slow/far: smaller, cool blue
-        if( g->STARFIELD[ i ].spd > 1.6 )
+        if( st->spd > 1.6 )
         {
-            set_multiply_color( make_color( 240, 245, 255 ) );
-            draw_glyph( g, '.', g->STARFIELD[ i ].x, g->STARFIELD[ i ].y, 5, 5 );
+            set_multiply_color( near_color );
+            draw_glyph( g, '.', st->x, st->y, 5, 5 );
         }
         else
         {
-            set_multiply_color( make_color( 150, 165, 215 ) );
-            draw_glyph( g, '.', g->STARFIELD[ i ].x, g->STARFIELD[ i ].y, 3, 3 );
+            set_multiply_color( far_color );
+            draw_glyph( g, '.', st->x, st->y, 3, 3 );
         }
     }
 }
@@ -2368,14 +2539,14 @@ void render_title( G* g )
             {
                 if( bm[ r * 5 + c ] != '1' ) continue;
                 int colg = i * 5 + c;
-                float wv = sin32( g, colg * 0.5 + t );
+                float wv = SIN32( g, colg * 0.5 + t );
                 int reg = 17;
                 if( wv > 0.55 )       reg = 20;   // crest: solid
                 else if( wv > 0.0 )   reg = 19;
                 else if( wv > -0.55 ) reg = 18;
                 if( reg != creg ) { select_region( reg ); creg = reg; }
                 float bx = 56 + i * 48 + c * 8 + wv * 5.0;
-                float by = 48 + r * 8 + sin32( g, colg * 0.28 + t * 0.7 ) * 3.5;
+                float by = 48 + r * 8 + SIN32( g, colg * 0.28 + t * 0.7 ) * 3.5;
                 draw_region_zoomed_at( (int)( bx ), (int)( by ) );
                 g->cpu_cycles += 24 + 64;   // CPU meter: 8x8 block fill
             }
@@ -2410,16 +2581,18 @@ void render_title( G* g )
         // as squeezed), selected gets an extra-wide 0.90 for pop
         float adv = msz * 0.78;
         if( sel > 0 ) adv = msz * 0.9;
+        // centring offset: measured once per row (it used to be
+        // re-measured for every letter -- quadratic in the row length)
+        float left = 320 - ( string_len( rows[ d ] ) - 1 ) * 0.5 * adv;
         ci = 0;
         while( rows[ d ][ ci ] != 0 )
         {
-            float wob = sin32( g, ci * 0.6 + g->frame * 0.04 + d ) * ( 2 + sel * 4 );
+            float wob = SIN32( g, ci * 0.6 + g->frame * 0.04 + d ) * ( 2 + sel * 4 );
             if( d == g->menu_row )
                 set_multiply_color( hue( g->frame + ci * 14 ) );
             else
-                set_multiply_color( make_color( 90, 100, 125 ) );
-            draw_glyph( g, rows[ d ][ ci ],
-                        320 + ( ci - ( string_len( rows[ d ] ) - 1 ) * 0.5 ) * adv,
+                set_multiply_color( RGB( 90, 100, 125 ) );
+            draw_glyph( g, rows[ d ][ ci ], left + ci * adv,
                         140 + d * 30 + wob, msz, msz * 1.2 );
             ci++;
         }
@@ -2429,11 +2602,11 @@ void render_title( G* g )
     // makes small text render fully, so the earlier size bump isn't
     // needed. X re-centered for the 0.78 advance.
     draw_text( g, "A: FIRE  B: SUPERZAP  Y: JUMP",
-               184, 290, 12, make_color( 120, 130, 160 ) );
+               184, 290, 12, RGB( 120, 130, 160 ) );
 
     // controls hint
     draw_text( g, "UP/DOWN: SELECT  LEFT/RIGHT: CHANGE  A: GO",
-               109, 320, 12, make_color( 120, 130, 160 ) );
+               109, 320, 12, RGB( 120, 130, 160 ) );
 }
 
 // ---------------------------------------------------------------------------
@@ -2448,8 +2621,7 @@ void render_web( G* g )
     // strobe visibly. During the transition the garnish sits out:
     // no ring dots, no seam-hiding vertex caps. The spokes, cap and
     // rim bars plus the streaking stars fully sell the motion.
-    int warping = 0;
-    if( g->warp > 0 ) warping = 1;
+    int warping = g->warp > 0 ? 1 : 0;
 
     // WEB BAR ANGLE CACHE: the rim and far-cap bar DIRECTIONS are
     // per-level constants — camera sway shifts both endpoints of a
@@ -2461,17 +2633,28 @@ void render_web( G* g )
     // 32 forty-iteration dir_angle scans EVERY frame — the single
     // biggest CPU win in the web renderer). Spokes and spikes span
     // z (camera sway bends them), so they keep computing angles.
+    // WEB POINT CACHE: every bar, spoke and vertex cap below starts and
+    // ends on a rim (z=0) or far-cap (z=1) vertex, so project each of
+    // those 32 points ONCE per frame. Lane 16 is lane 0 (the web wraps),
+    // hence the `& ( LANES - 1 )` on every "next lane" index below.
+    for( i = 0; i < LANES; i++ )
+    {
+        project( g, i, 0 );
+        g->RIM_X[ i ] = g->px; g->RIM_Y[ i ] = g->py;
+        project( g, i, 1 );
+        g->CAP_X[ i ] = g->px; g->CAP_Y[ i ] = g->py;
+    }
+
     if( g->web_ang_ok == 0 )
     {
         int j;
         for( j = 0; j < LANES; j++ )
         {
-            project( g, j, 0 );     float ax0 = g->px; float ay0 = g->py;
-            project( g, j + 1, 0 ); float ax1 = g->px; float ay1 = g->py;
-            g->RIM_ANG[ j ] = segment_angle( g, ax1 - ax0, ay1 - ay0 );
-            project( g, j, 1 );     float bx0 = g->px; float by0 = g->py;
-            project( g, j + 1, 1 ); float bx1 = g->px; float by1 = g->py;
-            g->CAP_ANG[ j ] = segment_angle( g, bx1 - bx0, by1 - by0 );
+            int k = ( j + 1 ) & ( LANES - 1 );
+            g->RIM_ANG[ j ] = segment_angle( g, g->RIM_X[ k ] - g->RIM_X[ j ],
+                                                g->RIM_Y[ k ] - g->RIM_Y[ j ] );
+            g->CAP_ANG[ j ] = segment_angle( g, g->CAP_X[ k ] - g->CAP_X[ j ],
+                                                g->CAP_Y[ k ] - g->CAP_Y[ j ] );
         }
         g->web_ang_ok = 1;
     }
@@ -2483,25 +2666,20 @@ void render_web( G* g )
     // blending = same visual result as solid for our purposes.
     set_blending_mode( v32::BlendAlpha );
 
-    // lane edges (SPOKES): production build — dim teal-blue, thickness 2.
-    // (The bright-green + white-marker variant was a diagnostic build
-    // for the sin_taylor misalignment; that fix is confirmed good.)
-    set_multiply_color( make_color( 25, 70, 110 ) );
+    // lane edges (SPOKES): production build -- dim teal-blue, thickness 2.
+    set_multiply_color( RGB( 25, 70, 110 ) );
     for( i = 0; i < LANES; i++ )
-    {
-        project( g, i, 0 );  float x0 = g->px; float y0 = g->py;
-        project( g, i, 1 );  float x1 = g->px; float y1 = g->py;
-        draw_segment( g, x0, y0, x1, y1, 2.0 );
-    }
+        draw_segment( g, g->RIM_X[ i ], g->RIM_Y[ i ], g->CAP_X[ i ], g->CAP_Y[ i ], 2.0 );
 
-    // far end cap: full outline, every lane joined (16 bars) — 2-lane
+    // far end cap: full outline, every lane joined (16 bars) -- 2-lane
     // chords cut corners and left gaps that read as detached segments
-    set_multiply_color( make_color( 40, 90, 130 ) );
+    set_multiply_color( RGB( 40, 90, 130 ) );
     for( i = 0; i < LANES; i++ )
     {
         if( !g->CONN[ i ] ) continue;   // open web: cap mirrors the rim gap
-        project( g, i, 1 );     float x0 = g->px; float y0 = g->py;
-        project( g, i + 1, 1 ); draw_segment_c( g, x0, y0, g->px, g->py, 2.0, g->CAP_ANG[ i ] );
+        int k = ( i + 1 ) & ( LANES - 1 );
+        draw_segment_c( g, g->CAP_X[ i ], g->CAP_Y[ i ], g->CAP_X[ k ], g->CAP_Y[ k ],
+                        2.0, g->CAP_ANG[ i ] );
     }
 
     // far-cap vertex caps: the cap polygon is tiny, so a 1-2px angular
@@ -2509,20 +2687,22 @@ void render_web( G* g )
     // on the right side). Small blocks at each cap vertex cover the
     // joints, matching the rim's point markers. 16 cheap zoomed draws.
     if( !warping )
-    for( i = 0; i < LANES; i++ )
     {
-        project( g, i, 1 );
         select_region( 20 );
         set_drawing_scale( 0.5, 0.35 );     // ~5 x 7 px block
-        draw_region_zoomed_at( (int)( g->px - 3 ), (int)( g->py - 3 ) );
-        g->cpu_cycles += 24 + 35;   // CPU meter: 5x7 block fill
+        for( i = 0; i < LANES; i++ )
+        {
+            draw_region_zoomed_at( (int)( g->CAP_X[ i ] - 3 ), (int)( g->CAP_Y[ i ] - 3 ) );
+            g->cpu_cycles += 24 + 35;   // CPU meter: 5x7 block fill
+        }
         g->last_region = -1;
+        g->last_scale_x = -9999.0;
     }
 
     // depth rings: cheap zoomed DOTS (the rotozoomed command is the
-    // emulator's slow path — rings move every frame, so they get the
+    // emulator's slow path -- rings move every frame, so they get the
     // budget treatment). EVERY-OTHER-DOT PARITY: each frame draws
-    // half the dots, the complementary half next frame — the ring
+    // half the dots, the complementary half next frame -- the ring
     // reads as a steady shimmering circle at HALF the draw cost
     // (56/frame instead of 112, the second-biggest consumer after
     // particles). Heavy salvos thin it further via ringstep.
@@ -2534,27 +2714,28 @@ void render_web( G* g )
         float scroll = 0.002 + g->warp * g->warp * 0.12;
         for( r = 0; r < RINGS; r++ )
         {
-            float z = ( ( g->frame * scroll ) + r * ( 1.0 / ( RINGS * 1.0 ) ) );
+            float z = ( ( g->frame * scroll ) + r * ( 1.0 / RINGS ) );
             while( z > 1 ) z -= 1;
             set_multiply_color( make_color( 20, 60 + r * 6, 90 ) );
+            float s = 3.0 + z * 3.0;
             for( i = 0; i < LANES; i += ringstep )
             {
                 if( ( i + g->frame ) % 2 == 1 ) continue;   // parity split
                 project( g, i + 0.5, z );
-                float s = 3.0 + z * 3.0;
                 draw_glyph( g, '.', g->px, g->py, s, s );
             }
         }
     }
 
     // the rim: bright neon outline, every lane joined (16 bars), pulsing
-    int pulse = 200 + (int)( sin32( g, g->frame * 0.1 ) * 55 );
+    int pulse = 200 + (int)( SIN32( g, g->frame * 0.1 ) * 55 );
     set_multiply_color( make_color( 60, 180, pulse ) );
     for( i = 0; i < LANES; i++ )
     {
         if( !g->CONN[ i ] ) continue;   // open web: no bar over the gap
-        project( g, i, 0 );     float x0 = g->px; float y0 = g->py;
-        project( g, i + 1, 0 ); draw_segment_c( g, x0, y0, g->px, g->py, 3.5, g->RIM_ANG[ i ] );
+        int k = ( i + 1 ) & ( LANES - 1 );
+        draw_segment_c( g, g->RIM_X[ i ], g->RIM_Y[ i ], g->RIM_X[ k ], g->RIM_Y[ k ],
+                        3.5, g->RIM_ANG[ i ] );
     }
 
     // vertex caps: a small block at each rim vertex, exactly like the
@@ -2562,14 +2743,16 @@ void render_web( G* g )
     // wrap (lane 15 -> 16) and caps any chord ends that stick out
     // past a joint. 16 cheap zoomed draws. Skipped mid-warp.
     if( !warping )
-    for( i = 0; i < LANES; i++ )
     {
-        project( g, i, 0 );
         select_region( 20 );
         set_drawing_scale( 0.55, 0.3 );     // ~5.5 x 6 px block
-        draw_region_zoomed_at( (int)( g->px - 3 ), (int)( g->py - 3 ) );
-        g->cpu_cycles += 24 + 33;   // CPU meter: 5.5x6 block fill
+        for( i = 0; i < LANES; i++ )
+        {
+            draw_region_zoomed_at( (int)( g->RIM_X[ i ] - 3 ), (int)( g->RIM_Y[ i ] - 3 ) );
+            g->cpu_cycles += 24 + 33;   // CPU meter: 5.5x6 block fill
+        }
         g->last_region = -1;
+        g->last_scale_x = -9999.0;
     }
 }
 
@@ -2578,16 +2761,14 @@ void render_spikes( G* g )
 {
     int i;
     set_glow( 2 );
-    set_multiply_color( make_color( 255, 60, 30 ) );
+    set_multiply_color( RGB( 255, 60, 30 ) );
     for( i = 0; i < LANES; i++ )
     {
         if( g->SPIKE[ i ] <= 0 ) continue;
         project( g, i, 1.0 - g->SPIKE[ i ] );  float x0 = g->px; float y0 = g->py;
-        project( g, i, 1.0 );
-        draw_segment( g, x0, y0, g->px, g->py, 3.0 );
-        // hot tip
-        project( g, i, 1.0 - g->SPIKE[ i ] );
-        draw_glyph( g, '+', g->px, g->py, 8, 8 );
+        // the base sits on the far cap: render_web cached that point
+        draw_segment( g, x0, y0, g->CAP_X[ i ], g->CAP_Y[ i ], 3.0 );
+        draw_glyph( g, '+', x0, y0, 8, 8 );     // hot tip
     }
     set_blending_mode( BLEND_SOLID );
 }
@@ -2600,15 +2781,15 @@ void render_claw( G* g, int who )
     float lane = g->player_lane;
     int jt = g->jump_timer;
     int rsp = g->p1_respawn;
-    int bcol = make_color( 255, 220, 60 );
-    int ccol = make_color( 255, 120, 40 );
+    int bcol = RGB( 255, 220, 60 );
+    int ccol = RGB( 255, 120, 40 );
     if( who == 1 )
     {
         lane = g->p2_lane;
         jt = g->p2_jump_timer;
         rsp = g->p2_respawn;
-        bcol = make_color( 60, 220, 255 );
-        ccol = make_color( 120, 60, 255 );
+        bcol = RGB( 60, 220, 255 );
+        ccol = RGB( 120, 60, 255 );
     }
     if( rsp > 0 && ( g->frame % 8 ) < 4 ) return;   // respawn blink
 
@@ -2699,7 +2880,7 @@ void render_enemies( G* g )
         }
         else if( g->ENEMIES[ i ].type == 1 )
         {
-            set_multiply_color( make_color( 255, 80, 160 ) );
+            set_multiply_color( RGB( 255, 80, 160 ) );
             draw_glyph( g, 'H', x, y, 26 * sv, 24 * sv );
             if( busyp <= 160 )
             {
@@ -2712,7 +2893,7 @@ void render_enemies( G* g )
             // the WALKER: a red 'X' cartwheeling end-over-end as it
             // patrols the rim (wig advances every frame — its angle on
             // the 0..255 turn table)
-            set_multiply_color( make_color( 255, 70, 70 ) );
+            set_multiply_color( RGB( 255, 70, 70 ) );
             float rot = ( g->ENEMIES[ i ].wig & 255 ) * 0.024543692;
             draw_rot_glyph( g, 'X', x, y, 22 * sv, 28 * sv, rot );
         }
@@ -2728,9 +2909,9 @@ void render_enemies( G* g )
             // the length you SEE is the distance it just MOVED.
             // Electric flicker: each bead strobes white on every
             // 4th frame, phase-shifted per bead — the body ripples.
-            set_multiply_color( make_color( 80, 230, 255 ) );
+            set_multiply_color( RGB( 80, 230, 255 ) );
             if( ( ( g->frame + i ) & 3 ) == 0 )
-                set_multiply_color( make_color( 255, 255, 255 ) );
+                set_multiply_color( RGB( 255, 255, 255 ) );
             draw_glyph( g, 'W', x, y, 20 * sv, 16 * sv );
             if( g->ENEMIES[ i ].stretch > 0.03 )
             {
@@ -2738,17 +2919,17 @@ void render_enemies( G* g )
                 project( g, g->ENEMIES[ i ].lane,
                          g->ENEMIES[ i ].z + g->ENEMIES[ i ].stretch * 0.5 );
                 float svm = ( g->pscale + ( 1.0 - g->pscale ) * 0.40 ) * 1.15;
-                set_multiply_color( make_color( 80, 230, 255 ) );
+                set_multiply_color( RGB( 80, 230, 255 ) );
                 if( ( ( g->frame + i + 1 ) & 3 ) == 0 )
-                    set_multiply_color( make_color( 255, 255, 255 ) );
+                    set_multiply_color( RGB( 255, 255, 255 ) );
                 draw_glyph( g, 'W', g->px, g->py, 20 * svm, 16 * svm );
                 // tail bead: the anchored rear end
                 project( g, g->ENEMIES[ i ].lane,
                          g->ENEMIES[ i ].z + g->ENEMIES[ i ].stretch );
                 float svt = ( g->pscale + ( 1.0 - g->pscale ) * 0.40 ) * 1.15;
-                set_multiply_color( make_color( 80, 230, 255 ) );
+                set_multiply_color( RGB( 80, 230, 255 ) );
                 if( ( ( g->frame + i + 2 ) & 3 ) == 0 )
-                    set_multiply_color( make_color( 255, 255, 255 ) );
+                    set_multiply_color( RGB( 255, 255, 255 ) );
                 draw_glyph( g, 'W', g->px, g->py, 20 * svt, 16 * svt );
             }
             if( busyp <= 160 )
@@ -2759,7 +2940,7 @@ void render_enemies( G* g )
         }
         else
         {
-            set_multiply_color( make_color( 255, 150, 40 ) );
+            set_multiply_color( RGB( 255, 150, 40 ) );
             draw_glyph( g, 'M', x, y, 22 * sv, 18 * sv );
             if( busyp <= 160 )
             {
@@ -2816,23 +2997,23 @@ void render_particles( G* g )
     if( g->partcount > 120 ) par = 2;
     for( i = 0; i < MAX_PARTICLES; i++ )
     {
-        if( !g->PARTICLES[ i ].alive ) continue;
-        if( par == 2 && ( ( i + g->frame ) % 2 ) == 1 ) continue;
-        float t = 1.0 - ( g->PARTICLES[ i ].life * ( 1.0 / 50.0 ) );
+        Particle* p = &g->PARTICLES[ i ];
+        if( !p->alive ) continue;
+        if( par == 2 && ( ( i + g->frame ) & 1 ) == 1 ) continue;
+        float t = 1.0 - p->life / 50.0;
         if( t < 0 ) t = 0;
         int f = (int)( t * 220 );
         // color varies by glyph: 'o'/'O' particles burn white-hot,
         // the rest go orange-to-red as they age. Sizes twinkle so
         // bursts sparkle instead of just fading.
-        int gl = g->PARTICLES[ i ].glyph;
+        int gl = p->glyph;
         if( gl >= 4 )
             set_multiply_color( make_color( 255, 250 - f / 3, 200 - f ) );
         else
             set_multiply_color( make_color( 255, 220 - f, 120 - f / 2 ) );
         float s = 4 + gl * 1.5;
         if( ( i + g->frame ) % 3 == 0 ) s *= 1.4;   // twinkle
-        draw_glyph( g, g->GLYPHS[ gl ],
-                    g->PARTICLES[ i ].x, g->PARTICLES[ i ].y, s, s );
+        draw_glyph( g, g->GLYPHS[ gl ], p->x, p->y, s, s );
     }
     set_blending_mode( BLEND_SOLID );
 }
@@ -2843,7 +3024,7 @@ void render_shocks( G* g )
 {
     int i; int k;
     set_blending_mode( v32::BlendAlpha );
-    for( i = 0; i < 3; i++ )
+    for( i = 0; i < MAX_SHOCKS; i++ )
     {
         if( !g->SHOCKS[ i ].alive ) continue;
         float t = g->SHOCKS[ i ].life * ( 1.0 / 22.0 );      // 1 -> 0
@@ -2851,12 +3032,18 @@ void render_shocks( G* g )
         int fade = (int)( t * 160 );
         set_multiply_color( make_color( 255, 100 + fade, 60 + fade / 2 ) );
         float px0 = 0; float py0 = 0;
+        float thick = 1.0 + t * 2.0;
         for( k = 0; k <= 12; k++ )
         {
             float a = k * 0.523598776;            // 2*PI/12
-            float x = g->SHOCKS[ i ].x + cos32( g, a ) * r;
-            float y = g->SHOCKS[ i ].y + sin32( g, a ) * r;
-            if( k > 0 ) draw_segment( g, px0, py0, x, y, 1.0 + t * 2.0 );
+            float x = g->SHOCKS[ i ].x + COS32( g, a ) * r;
+            float y = g->SHOCKS[ i ].y + SIN32( g, a ) * r;
+            // a chord of a circle runs at its midpoint angle plus 90
+            // degrees: from point k-1 to point k that's
+            // k*30 - 15 + 90 degrees. Known exactly, so draw_segment_c
+            // skips the angle search (36 of them per frame with three
+            // rings up -- shockwaves come with every explosion)
+            if( k > 0 ) draw_segment_c( g, px0, py0, x, y, thick, a + 1.30899694 );
             px0 = x; py0 = y;
         }
     }
@@ -2868,18 +3055,18 @@ void render_shocks( G* g )
 void render_powerups( G* g )
 {
     int i;
-    for( i = 0; i < 4; i++ )
+    for( i = 0; i < MAX_POWERUPS; i++ )
     {
         if( !g->POWERUPS[ i ].alive ) continue;
         project( g, g->POWERUPS[ i ].lane, g->POWERUPS[ i ].z );
         float pulse = 0.8 + 0.25 * sin32( g, g->frame * 0.25 );
         float s = ( 12 * g->pscale + 3 ) * pulse;
         int col;
-        if( g->POWERUPS[ i ].type == 0 )      col = make_color( 255, 0, 255 );
-        else if( g->POWERUPS[ i ].type == 1 ) col = make_color( 60, 255, 60 );
-        else if( g->POWERUPS[ i ].type == 3 ) col = make_color( 80, 220, 255 );
-        else if( g->POWERUPS[ i ].type == 4 ) col = make_color( 255, 160, 60 );
-        else                                  col = make_color( 255, 220, 60 );
+        if( g->POWERUPS[ i ].type == 0 )      col = RGB( 255, 0, 255 );
+        else if( g->POWERUPS[ i ].type == 1 ) col = RGB( 60, 255, 60 );
+        else if( g->POWERUPS[ i ].type == 3 ) col = RGB( 80, 220, 255 );
+        else if( g->POWERUPS[ i ].type == 4 ) col = RGB( 255, 160, 60 );
+        else                                  col = RGB( 255, 220, 60 );
         set_blending_mode( BLEND_SOLID );
         set_multiply_color( col );
         draw_glyph( g, 'O', g->px, g->py, s, s * 0.8 );
@@ -2906,7 +3093,7 @@ void render_buddy( G* g )
     // 22x44 with a ROTATED "ai" inside: the letters are BIOS font
     // regions 'a' and 'i' turned 90 deg clockwise via the ROTOZOOMED
     // command, so the word reads top-to-bottom inside the tall frame
-    set_multiply_color( make_color( 120, 255, 160 ) );
+    set_multiply_color( RGB( 120, 255, 160 ) );
     draw_glyph( g, 14, x, y, 22, 44 );
 
     // letter placement: a rotated draw pivots on the region HOTSPOT
@@ -3000,7 +3187,7 @@ void render_hud( G* g )
     }
     int l;
     set_blending_mode( BLEND_SOLID );
-    set_multiply_color( make_color( 255, 220, 60 ) );
+    set_multiply_color( RGB( 255, 220, 60 ) );
     for( l = 0; l < g->lives; l++ )
     {
         draw_rot_glyph( g, 123, 560 + l * 22, 346, 12, 16, g->HUD1_ANG[ l ] );
@@ -3010,7 +3197,7 @@ void render_hud( G* g )
     // clear of the LVL readout and the superzap charges
     if( g->twoplayer )
     {
-        set_multiply_color( make_color( 60, 220, 255 ) );
+        set_multiply_color( RGB( 60, 220, 255 ) );
         for( l = 0; l < g->p2_lives; l++ )
         {
             draw_rot_glyph( g, 123, 100 + l * 22, 346, 12, 16, g->HUD2_ANG[ l ] );
@@ -3023,13 +3210,13 @@ void render_hud( G* g )
     lvl[ 4 ] = '0' + ( g->level / 10 ) % 10;
     lvl[ 5 ] = '0' + g->level % 10;
     lvl[ 6 ] = 0;
-    draw_text( g, lvl, 20, 346, 12, make_color( 120, 200, 255 ) );
+    draw_text( g, lvl, 20, 346, 12, RGB( 120, 200, 255 ) );
 
     // superzapper charges — bottom row spread out so the pod timers
     // (AI / RAPID / LASER) never crowd them or each other. Row sits
     // at y=346: the screen is 640x360, and the 336-360 band is free
     // space (stars streak through it).
-    set_multiply_color( make_color( 255, 255, 255 ) );
+    set_multiply_color( RGB( 255, 255, 255 ) );
     for( l = 0; l < g->superzaps; l++ )
         draw_glyph( g, 'Z', 240 + l * 20, 346, 12, 14.4 );
 
@@ -3042,7 +3229,7 @@ void render_hud( G* g )
         bud[ 3 ] = '0' + ( secs / 10 ) % 10;
         bud[ 4 ] = '0' + secs % 10;
         bud[ 5 ] = 0;
-        draw_text( g, bud, 316, 346, 12, make_color( 120, 255, 160 ) );
+        draw_text( g, bud, 316, 346, 12, RGB( 120, 255, 160 ) );
     }
 
     // rapid blaster countdown while active (blinks in the final
@@ -3064,7 +3251,7 @@ void render_hud( G* g )
                 rp = 8;
             }
             rap[ rp ] = 0;
-            draw_text( g, rap, 386, 346, 12, make_color( 255, 160, 60 ) );
+            draw_text( g, rap, 386, 346, 12, RGB( 255, 160, 60 ) );
         }
     }
 
@@ -3080,7 +3267,7 @@ void render_hud( G* g )
             las[ 6 ] = '0' + ( secs / 10 ) % 10;
             las[ 7 ] = '0' + secs % 10;
             las[ 8 ] = 0;
-            draw_text( g, las, 470, 346, 12, make_color( 80, 220, 255 ) );
+            draw_text( g, las, 470, 346, 12, RGB( 80, 220, 255 ) );
         }
     }
 }
@@ -3106,8 +3293,8 @@ void draw_meter( G* g, int x, int y, float vol )
     {
         select_region( 20 );
         set_drawing_scale( 2.0, 0.5 );          // 20 x 10 px blocks
-        if( s < segs ) set_multiply_color( make_color( 90, 220, 120 ) );
-        else          set_multiply_color( make_color( 30, 45, 40 ) );
+        if( s < segs ) set_multiply_color( RGB( 90, 220, 120 ) );
+        else          set_multiply_color( RGB( 30, 45, 40 ) );
         draw_region_zoomed_at( x + s * 22, y );
         g->cpu_cycles += 24 + 200;   // CPU meter: 20x10 block fill
     }
@@ -3121,7 +3308,7 @@ void render_pause( G* g )
     set_blending_mode( v32::BlendAlpha );
     select_region( 20 );
     set_drawing_scale( 64.0, 18.0 );          // 640 x 360 fullscreen veil
-    set_multiply_color( make_color( 8, 8, 26 ) );
+    set_multiply_color( RGB( 8, 8, 26 ) );
     draw_region_zoomed_at( 0, 0 );
     // CPU meter: a full-screen fill is nearly the whole frame budget
     // in this model — the paused readout will read ~90%+
@@ -3136,13 +3323,13 @@ void render_pause( G* g )
     // separate meters: MUSIC (channel 0) and SFX (channels 2..13).
     // Rows are spaced for the 1.2x-tall oversampled glyphs — the old
     // 12px/18px-pitch layout read as clipped, crowded lines.
-    draw_text( g, "MUSIC", 240, 84, 14, make_color( 150, 160, 190 ) );
+    draw_text( g, "MUSIC", 240, 84, 14, RGB( 150, 160, 190 ) );
     draw_meter( g, 220, 106, g->music_volume );
-    draw_text( g, "SFX", 240, 140, 14, make_color( 150, 160, 190 ) );
+    draw_text( g, "SFX", 240, 140, 14, RGB( 150, 160, 190 ) );
     draw_meter( g, 220, 162, g->sfx_volume );
 
     // track list
-    draw_text( g, "TRACK", 240, 196, 14, make_color( 150, 160, 190 ) );
+    draw_text( g, "TRACK", 240, 196, 14, RGB( 150, 160, 190 ) );
     char* tracks[ 4 ];
     tracks[ 0 ] = "1 WEB CRAWLER";
     tracks[ 1 ] = "2 SPIKE SURFER";
@@ -3153,12 +3340,12 @@ void render_pause( G* g )
     {
         int colr;
         if( t == g->music_index ) colr = hue( g->frame + t * 20 );
-        else                      colr = make_color( 90, 100, 125 );
+        else                      colr = RGB( 90, 100, 125 );
         draw_text( g, tracks[ t ], 250, 220 + t * 22, 14, colr );
     }
 
     draw_text( g, "START: RESUME  LEFT/RIGHT: MUSIC  L/R: SFX  UP/DOWN: TRACK",
-               49, 318, 12, make_color( 120, 130, 160 ) );
+               49, 318, 12, RGB( 120, 130, 160 ) );
 }
 
 // ---------------------------------------------------------------------------
@@ -3180,13 +3367,13 @@ void render_entry( G* g )
         char ch[ 2 ];
         ch[ 0 ] = g->entry_letters[ i ];
         ch[ 1 ] = 0;
-        int colr = make_color( 90, 100, 125 );
+        int colr = RGB( 90, 100, 125 );
         if( i == g->entry_pos ) colr = hue( g->frame );
         draw_text( g, &ch[ 0 ], 320 + ( i - 1 ) * 56 - 10, 180, 30, colr );
     }
-    draw_text( g, "ENTER YOUR INITIALS", 231, 148, 12, make_color( 120, 130, 160 ) );
+    draw_text( g, "ENTER YOUR INITIALS", 231, 148, 12, RGB( 120, 130, 160 ) );
     draw_text( g, "UP/DOWN: LETTER  LEFT/RIGHT: MOVE  A: OK",
-               133, 280, 12, make_color( 120, 130, 160 ) );
+               133, 280, 12, RGB( 120, 130, 160 ) );
 }
 
 // state 7: the stored table, top 5
@@ -3197,7 +3384,7 @@ void render_scores( G* g )
     for( i = 0; i < 5; i++ )
     {
         int y = 130 + i * 32;
-        int colr = make_color( 120, 130, 160 );
+        int colr = RGB( 120, 130, 160 );
         if( i == 0 ) colr = hue( g->frame );
         char rk[ 3 ];
         rk[ 0 ] = '1' + i;
@@ -3219,7 +3406,7 @@ void render_scores( G* g )
         score_str( g->HISCORE[ i ], &sbuf[ 0 ] );
         draw_text( g, &sbuf[ 0 ], 348, y, 14, colr );
     }
-    draw_text( g, "A: BACK", 287, 326, 12, make_color( 120, 130, 160 ) );
+    draw_text( g, "A: BACK", 287, 326, 12, RGB( 120, 130, 160 ) );
 }
 
 // state 8: level select — a slowly ROTATING wireframe of the chosen
@@ -3267,7 +3454,7 @@ void render_levelselect( G* g )
 
     // depth ring of dots at the tube's far end
     set_blending_mode( BLEND_SOLID );
-    set_multiply_color( make_color( 90, 100, 130 ) );
+    set_multiply_color( RGB( 90, 100, 130 ) );
     for( i = 0; i < LANES; i++ )
     {
         float a = spin + i * 0.392699081 + 0.196;   // half-step between bars
@@ -3280,7 +3467,7 @@ void render_levelselect( G* g )
     g->last_scale_y = -9999.0;
 
     draw_text( g, "LEFT/RIGHT: LEVEL  A: START  B: BACK",
-               147, 326, 12, make_color( 120, 130, 160 ) );
+               147, 326, 12, RGB( 120, 130, 160 ) );
 }
 
 // ---------------------------------------------------------------------------
@@ -3377,13 +3564,8 @@ void update_spawning( G* g )
         // INCHWORMS ('W' electric): the stretch-surge climber —
         // from level 5, max two at once
         int worm = ( roll == 3 && g->level >= 5 && count_worms( g ) < 2 );
-        // if/else, not a nested ternary: the ternary rewrite leaked a
-        // raw '?' into the generated C (transpiler gap, see doc)
-        int etype = 0;
-        if( spiker ) etype = 2;
-        else if( walker ) etype = 3;
-        else if( worm ) etype = 4;
-        else if( tanker ) etype = 1;
+        // first match wins: spiker, walker, worm, tanker, else flipper
+        int etype = spiker ? 2 : walker ? 3 : worm ? 4 : tanker ? 1 : 0;
         spawn_enemy( g, etype );
         int quota = 18 + g->level;
         if( g->difficulty == 0 ) quota = 14 + g->level;
@@ -3461,6 +3643,7 @@ void init_state( G* g )
     g->GLYPHS[ 3 ] = 'o';
     g->GLYPHS[ 4 ] = 'O';
     g->GLYPHS[ 5 ] = '#';
+    g->proj_warp = -1.0;          // force project()'s fly cache to fill
     g->player_lane = 0;
     g->cam_x = 0;
     g->cam_y = 0;
@@ -3534,8 +3717,8 @@ void init_state( G* g )
     g->entry_letters[ 2 ] = 'A';
     int i;
     for( i = 0; i < LANES; i++ ) g->CONN[ i ] = 1;   // closed until make_shape
-    for( i = 0; i < 3; i++ ) g->SHOCKS[ i ].alive = 0;
-    for( i = 0; i < 4; i++ ) g->POWERUPS[ i ].alive = 0;
+    for( i = 0; i < MAX_SHOCKS; i++ ) g->SHOCKS[ i ].alive = 0;
+    for( i = 0; i < MAX_POWERUPS; i++ ) g->POWERUPS[ i ].alive = 0;
     build_tables( g );
     init_starfield( g );
     hs_load( g );
@@ -3546,8 +3729,7 @@ void main()
     select_texture( -1 );           // BIOS font
     select_gamepad( 0 );
 
-    // ALL mutable state lives on the heap: file-scope variables in
-    // generated Vircon32 C are read-only (no `global` keyword emitted)
+    // ALL mutable state lives in one heap object (see the header notes)
     G* g = new G;
     init_state( g );          // sets state 4 = title screen; heap-safe boot
 
@@ -3562,6 +3744,15 @@ void main()
         if( !pad_connected( 0 ) ) g->p1_cpu = 1;
         g->p2_cpu = 0;
         if( !pad_connected( 1 ) ) g->p2_cpu = 1;
+
+#ifdef PROFILE
+        // PROFILING BUILD (v32c++ -D PROFILE ...): nobody ever runs out
+        // of lives, so a scripted CPU-vs-CPU run stays in the thick of
+        // play -- deaths and their explosions included -- instead of
+        // ending at GAME OVER. tools/vircon32/v32prof drives it.
+        if( g->lives < 3 ) g->lives = 3;
+        if( g->p2_lives < 3 ) g->p2_lives = 3;
+#endif
 
         // -- update ---------------------------------------------------------
         if( g->state == 0 )
@@ -3772,7 +3963,7 @@ void main()
         else if( g->state == 4 )      // title screen
         {
             // title theme loops; (re)start it if it isn't running
-            if( get_channel_state( 0 ) != CH_PLAYING ) play_title_music( g );
+            if( get_channel_state( 0 ) != channel_playing ) play_title_music( g );
             if( g->menu_cooldown > 0 ) g->menu_cooldown--;
             if( g->menu_cooldown == 0 )
             {
@@ -3819,7 +4010,7 @@ void main()
         }
         else if( g->state == 6 )      // new high score: initials entry
         {
-            if( get_channel_state( 0 ) != CH_PLAYING ) play_title_music( g );
+            if( get_channel_state( 0 ) != channel_playing ) play_title_music( g );
             if( g->menu_cooldown > 0 ) g->menu_cooldown--;
             if( g->menu_cooldown == 0 )
             {
@@ -3877,7 +4068,7 @@ void main()
         }
         else if( g->state == 7 )      // high scores table
         {
-            if( get_channel_state( 0 ) != CH_PLAYING ) play_title_music( g );
+            if( get_channel_state( 0 ) != channel_playing ) play_title_music( g );
             if( gamepad_button_a() == 1 || gamepad_button_b() == 1 ||
                 gamepad_button_start() == 1 )
             {
@@ -3890,7 +4081,7 @@ void main()
         }
         else if( g->state == 8 )      // level select
         {
-            if( get_channel_state( 0 ) != CH_PLAYING ) play_title_music( g );
+            if( get_channel_state( 0 ) != channel_playing ) play_title_music( g );
             if( g->menu_cooldown > 0 ) g->menu_cooldown--;
             if( g->menu_cooldown == 0 )
             {
@@ -4010,13 +4201,13 @@ void main()
         // insurance: force known GPU state before the clear, so no
         // stale blending mode or multiply color can interfere with it
         set_blending_mode( BLEND_SOLID );
-        set_multiply_color( make_color( 255, 255, 255 ) );
+        set_multiply_color( RGB( 255, 255, 255 ) );
         g->gpixels_start = gpu_remaining_pixels();
-        clear_screen( make_color( 2, 2, 8 ) );
+        clear_screen( RGB( 2, 2, 8 ) );
         g->cpu_cycles += 4000;   // CPU meter: flat charge, hw clear path
-        // particle count is queried by several render-phase throttles —
-        // count once here instead of walking the array per call site
-        g->partcount = count_particles( g );
+        // (g->partcount -- live particles, read by several render-phase
+        // throttles -- is kept current by update_particles; a paused
+        // world doesn't change it)
         render_starfield( g );
         if( g->state == 4 )
         {

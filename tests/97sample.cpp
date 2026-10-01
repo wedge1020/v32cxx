@@ -16,6 +16,11 @@
 //      AST_SWITCH.
 //   3. `t / 34.0` was emitted as `t / 34` -- integer division -- because
 //      whole-number float literals lost their decimal point.
+//   4. (20261001 later) the comma operator -- `a, b` -- which Vircon32 C
+//      lacks, in expression statements, parentheses and for clauses
+//      (continue still runs `i++, j--`); `for (int i = 0, j = 5; ...)`;
+//      and a ternary mixing an enum with an int (the temporary must be an
+//      int: Vircon32 C won't store an int into an enum variable).
 // *****************************************************************************
 
 #include "video.h"
@@ -186,6 +191,46 @@ int float_literals()
     return errors;
 }
 
+enum Blend { BLEND_A = 32, BLEND_B = 33 };
+
+int comma_checks()
+{
+    int errors = 0;
+
+    int i; int j;
+    int s = 0;
+    int passes = 0;
+    for( i = 0, j = 5; i < j; i++, j-- )         // pairs (0,5) (1,4) (2,3)
+    {
+        passes++;
+        if( i == 1 ) continue;                   // must still run i++, j--
+        s += i * 10 + j;
+    }
+    if( passes != 3 || s != 5 + 23 )             errors++;
+
+    int t = 0;
+    for( int a = 0, b = 3; a < b; a++ ) t += a + b;   // 3 + 4 + 5
+    if( t != 12 )                                errors++;
+
+    int x = 0, y = 0;
+    x = 1, y = 2;
+    if( x != 1 || y != 2 )                       errors++;
+
+    calls = 0;
+    int z = ( x++, bump( y + 3 ) );              // x++ runs, z is the bump
+    if( x != 2 || z != 5 || calls != 1 )         errors++;
+
+    int n = 0;
+    while( ( x += 1, x < 6 ) ) n++;              // x: 3 4 5 -> 6 stops
+    if( n != 3 )                                 errors++;
+
+    int on = 1;
+    int mode = on ? BLEND_B : 0;                 // enum meets int: an int
+    if( mode != 33 )                             errors++;
+
+    return errors;
+}
+
 // -----------------------------------------------------------------------------
 
 int test_errors = -1;
@@ -193,7 +238,7 @@ int test_errors = -1;
 void main()
 {
     int errors = ternary_laziness() + ternary_statements() + ternary_loops()
-               + switch_bodies() + float_literals();
+               + switch_bodies() + float_literals() + comma_checks();
     test_errors = errors;
 
     int text[ 32 ];

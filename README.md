@@ -262,9 +262,20 @@ compiler's preprocessor would, so the parser sees fully expanded source:
   `__V32CXX__`, `__FILE__` and `__LINE__` are predefined.
 - `#if`/`#ifdef`/`#ifndef`/`#elif`/`#else`/`#endif`, with `defined()`
   and integer arithmetic. Only the active branch reaches the parser.
-  Conditions only see macros v32c++ itself read (your source, its
-  `.hpp` includes, `-D`), not ones defined inside pass-through `.h` SDK
-  headers. `#error` stops the transpile; `#warning` prints and continues.
+  `#error` stops the transpile; `#warning` prints and continues.
+- **The SDK's `.h` headers are read too.** A `.h` include still passes
+  through to the generated C, but v32c++ also reads the header when it
+  can find it, so its macros (`screen_width`, `color_red`, `pi`,
+  `frames_per_second`, `channel_playing`, ...) work in array sizes and
+  `#if`, are typed for overload resolution, and keep their names in the
+  output, and its struct/typedef names (`date_info`, `time_info`,
+  `game_signature`) are declared `native` automatically. Lookup: the
+  normal include search, then `$V32CXX_SDK_INCLUDE`, then the
+  `include/` folder next to the Vircon32 `compile` on your `PATH` (the
+  same folder the real compiler uses), then
+  `/usr/local/Vircon32/DevTools/include` (the DevTools' default
+  install; see [`inc/config.h`](inc/config.h)). `-v` lists the folders
+  searched. A header found nowhere passes through silently, as before.
 
 Nothing is lost in translation: every `#define` and `#undef` is also
 passed through to the top of the generated C, and a use of a simple
@@ -418,8 +429,8 @@ emitted alongside it.
   [`docs/VIRCON32_QUIRKS.md`](docs/VIRCON32_QUIRKS.md).
 - ~~**A real preprocessor.**~~ — **DONE** (20261001-dev): `#define`,
   `#undef`, macro expansion, `#if`/`#ifdef` evaluation, `-D`/`-U`; see
-  above. Still not read: macros defined inside pass-through `.h` SDK
-  headers.
+  above. Pass-through `.h` SDK headers are read for their macros and
+  type names as well.
 - **Classes inside a namespace keep their bare C name.** Free functions
   in a namespace are mangled with it (`v32__draw__...`), but a class
   isn't: `v32::String` is `struct String` in the generated C, and a
@@ -442,15 +453,18 @@ emitted alongside it.
   still missing — see the next bullet.
 - **A second round of basic C gaps, found by a fresh audit**: `const`
   is now supported (see below), and so are multiple declarators in one
-  statement and function-pointer `typedef`s (both also below) —
-  `static`, `extern`, `inline`, and `register` are still not (none of
-  these keywords are recognized at all; `volatile` is recognized only
-  in `asm volatile`); no adjacent
-  string-literal concatenation (`"foo" "bar"` does not become
-  `"foobar"`); no bit-fields (`unsigned x : 4;` inside a `struct`/
-  `union`); no comma operator (`a, b, c` as a single expression, e.g.
-  in a `for` loop's own increment clause). None of these remaining
-  ones are implemented yet.
+  statement and function-pointer `typedef`s (both also below). As of
+  20261001-dev: adjacent string literals concatenate (`"foo" "bar"`);
+  `inline` and `register` are accepted and ignored (pure hints in one
+  translation unit); and the **comma operator** works — `a, b` in an
+  expression statement, in parentheses (`x = (a++, b)`) and in all
+  three `for` clauses (`for (i = 0, j = n; i < j; i++, j--)`). Vircon32
+  C has no comma operator, so Vircon32 mode splits it into statements
+  (a loop whose condition or increment uses one becomes `while (1)` with
+  `continue` still running the increment); standard mode keeps it.
+  Still not supported: `static` and `extern` (dropping `static` would
+  silently break a static local), `volatile` outside `asm volatile`,
+  and bit-fields (`unsigned x : 4;`).
 - **Multiple declarators in one statement** (`int a, b, c;`,
   `int a, *b, c = 5;`) are now accepted — pointer-ness is genuinely
   PER-declarator, matching real C++ (`int *a, b;` makes `a` a pointer
@@ -459,9 +473,10 @@ emitted alongside it.
   pointer/reference-wrapped) can appear in a multi-declarator
   statement — an array or function-pointer declarator mixed in
   (`int a, arr[8];`) isn't supported. Works for locals, globals, and
-  class members; a for-loop's own init clause deliberately does NOT
-  support it (`for (int i = 0, j = 0; ...)` is a real, stated gap —
-  reported directly at parse time rather than silently mishandled).
+  class members, and (20261001-dev) a for-loop's init clause too:
+  `for (int i = 0, j = 5; ...)` becomes a block holding the
+  declarations around the loop — the same scope, plain C in both
+  dialects.
 - **Function-pointer `typedef`s** (`typedef int (*Callback)(int);`,
   and Vircon32's own `typedef int(int)* Callback;` spelling — both
   accepted, the same dual-acceptance treatment every other

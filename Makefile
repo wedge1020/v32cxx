@@ -186,6 +186,10 @@ test: all | $(OUT_DIR)
 	$(BIN)  -vvv -D FROM_CMDLINE=7 -o out/95program.c tests/95sample.cpp 1> out/95sample.txt 2>&1
 	-$(BIN) -vvv    -o out/96failure.c tests/96sample.cpp 1> out/96sample.txt 2>&1
 	$(BIN)  -vvv    -o out/97program.c tests/97sample.cpp 1> out/97sample.txt 2>&1
+	@if [ -f tools/vircon32/bin/include/video.h ]; then \
+	    echo "V32CXX_SDK_INCLUDE=tools/vircon32/bin/include $(BIN) -vvv -o out/98program.c tests/98sample.cpp"; \
+	    V32CXX_SDK_INCLUDE=tools/vircon32/bin/include $(BIN) -vvv -o out/98program.c tests/98sample.cpp 1> out/98sample.txt 2>&1; \
+	else echo "skipping sample 98: needs the SDK headers (run tools/vircon32/build-tools.sh)"; fi
 # `-vvv` (this project's own verbosity flag, a later round -- see
 # main.c) is passed to every sample specifically so `make test`'s own
 # output still captures the full AST/semantic-analysis/lowering dumps

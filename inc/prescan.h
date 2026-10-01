@@ -71,4 +71,13 @@ const char *prescan_intern_filename(const char *filename);
  */
 void prescan_add_cmdline_macro(const char *spec, int is_undef);
 
+/*
+ * The Vircon32 SDK include directories, searched (after the normal include
+ * search) for pass-through .h headers so their macros and struct/typedef
+ * names are visible on the C++ side. Assembled by main.c: $V32CXX_SDK_INCLUDE,
+ * the include/ folder beside the `compile` found on $PATH, then
+ * V32CXX_SDK_INCLUDE_PATH (config.h). Call before prescan_expand.
+ */
+void prescan_set_sdk_dirs(char *const *dirs, int count);
+
 #endif /* PRESCAN_H */

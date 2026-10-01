@@ -428,10 +428,92 @@ static int emit_code_line(FILE *out, LineReader *r, char *line, int first, int n
     return 0;
 }
 
+/* ---- pass-through header harvesting ---------------------------------------
+ * A .h header passes through to the generated C (the Vircon32 C compiler
+ * includes it), but v32c++ ALSO reads it when it can find it -- in
+ * "harvest" mode -- so the C++ side sees what it defines:
+ *   - its #define'd macros (screen_width, color_red, pi, ...) become
+ *     ordinary macros here: usable in array sizes and #if, typed for
+ *     overload resolution, and named constants keep their names in the
+ *     output. They are NOT re-emitted -- the header itself still defines
+ *     them downstream;
+ *   - its struct and typedef names (date_info, game_signature, ...) are
+ *     declared `native` automatically, right after the #include line, so
+ *     source can use them by pointer without writing `native` itself.
+ * Only directives are processed; code is skipped, so nothing in the header
+ * has to be C++ v32c++ can parse. Lookup: the normal include search, then
+ * the SDK include directories (see config.h). An unfound header is
+ * skipped silently, exactly as before. */
+static char *const *g_sdk_dirs = NULL;
+static int g_sdk_dir_count = 0;
+
+void prescan_set_sdk_dirs(char *const *dirs, int count) {
+    g_sdk_dirs = dirs;
+    g_sdk_dir_count = count;
+}
+
+static PathSet g_harvest_types;     /* struct/typedef names found this harvest */
+
+/* Records `struct NAME` (a definition: `{` follows, or nothing more on the
+ * line) and `typedef ... NAME;` found on a header's code line. Comment-
+ * and string-free enough for SDK headers; anything odder is just missed. */
+static void harvest_type_names(const char *line) {
+    const char *p = line;
+    while (*p == ' ' || *p == '\t') p++;
+    if (strncmp(p, "struct", 6) == 0 && (p[6] == ' ' || p[6] == '\t')) {
+        p += 6;
+        while (*p == ' ' || *p == '\t') p++;
+        const char *st = p;
+        while (macro_is_ident_char((unsigned char)*p)) p++;
+        if (p == st) return;
+        const char *q = p;
+        while (*q == ' ' || *q == '\t' || *q == '\r') q++;
+        if (*q != '{' && *q != '\0' && strncmp(q, "//", 2) != 0) return;   /* a use, not a definition */
+        char name[128];
+        size_t n = (size_t)(p - st) < sizeof(name) - 1 ? (size_t)(p - st) : sizeof(name) - 1;
+        memcpy(name, st, n);
+        name[n] = '\0';
+        if (!path_set_contains(&g_harvest_types, name)) path_set_add(&g_harvest_types, name);
+        return;
+    }
+    if (strncmp(p, "typedef", 7) == 0 && (p[7] == ' ' || p[7] == '\t')) {
+        const char *semi = strchr(p, ';');
+        if (semi == NULL) return;
+        const char *e = semi;
+        while (e > p && (e[-1] == ' ' || e[-1] == '\t')) e--;
+        const char *st = e;
+        while (st > p && macro_is_ident_char((unsigned char)st[-1])) st--;
+        if (st == e || !macro_is_ident_start((unsigned char)*st)) return;
+        char name[128];
+        size_t n = (size_t)(e - st) < sizeof(name) - 1 ? (size_t)(e - st) : sizeof(name) - 1;
+        memcpy(name, st, n);
+        name[n] = '\0';
+        if (!path_set_contains(&g_harvest_types, name)) path_set_add(&g_harvest_types, name);
+    }
+}
+
+/* resolve_include, then the SDK directories (pass-through .h only). */
+static char *resolve_header(const char *target, int angle, const char *including_file,
+                            char *const *dirs, int ndirs) {
+    char *found = resolve_include(target, angle, including_file, dirs, ndirs);
+    if (found == NULL) found = search_dirs(target, g_sdk_dirs, g_sdk_dir_count);
+    return found;
+}
+
 /* Expands one file into `out`. Returns 0 on success, -1 on any error
- * (message already printed, mentioning file and line). */
+ * (message already printed, mentioning file and line). With `harvest`
+ * set, only reads it for macros and type names (see above): `out` is
+ * NULL and nothing is written. */
+static int expand_file_mode(const char *path, FILE *out,
+                            char *const *dirs, int ndirs, int is_top, int harvest);
+
 static int expand_file(const char *path, FILE *out,
                        char *const *dirs, int ndirs, int is_top) {
+    return expand_file_mode(path, out, dirs, ndirs, is_top, 0);
+}
+
+static int expand_file_mode(const char *path, FILE *out,
+                            char *const *dirs, int ndirs, int is_top, int harvest) {
     FILE *in = fopen(path, "r");
     if (in == NULL) {
         if (is_top)
@@ -462,7 +544,7 @@ static int expand_file(const char *path, FILE *out,
 
     /* Interned: macros defined in this file keep pointing at the name. */
     path = prescan_intern_filename(path);
-    emit_marker(out, 1, path);
+    if (!harvest) emit_marker(out, 1, path);
 
     LineReader reader = { in, 0, NULL, 0, 0 };
     CondStack conds = { NULL, 0, 0 };
@@ -478,6 +560,11 @@ static int expand_file(const char *path, FILE *out,
         int active = cond_active(&conds);
 
         if (hash == NULL) {
+            if (harvest) {
+                if (active && !state_before) harvest_type_names(line);
+                free(line);
+                continue;
+            }
             if (!active) {
                 emit_blank_lines(out, nphys);
                 free(line);
@@ -492,6 +579,7 @@ static int expand_file(const char *path, FILE *out,
         char *word = directive_word(hash, &rest);
         int consumed = 1;       /* default: the line does not reach the output */
         char *emit_text = NULL; /* what reaches it otherwise (NULL: `line`) */
+        int extra_lines = 0;    /* lines emit_text adds beyond the one it replaces */
 
         /* ---- conditionals: processed even inside inactive regions ---- */
         if (strcmp(word, "ifdef") == 0 || strcmp(word, "ifndef") == 0) {
@@ -555,6 +643,8 @@ static int expand_file(const char *path, FILE *out,
             Macro *m = macro_define(rest, path, lineno);
             if (m == NULL) {
                 rc = -1;
+            } else if (harvest) {
+                /* the header defines it downstream itself */
             } else if (macro_passthrough_ok(m)) {
                 /* Pass the definition through to the generated C too, so
                  * the name still exists downstream (for pass-through .h
@@ -589,7 +679,11 @@ static int expand_file(const char *path, FILE *out,
         else if (strcmp(word, "include") == 0) {
             int angle;
             char *target = include_target(rest, &angle);
-            if (target != NULL && is_expanded_extension(target)) {
+            if (target != NULL && is_expanded_extension(target) && harvest) {
+                /* a .hpp included from a pass-through .h: not ours to read */
+                free(target);
+            }
+            else if (target != NULL && is_expanded_extension(target)) {
                 char *resolved = resolve_include(target, angle, path, dirs, ndirs);
                 if (resolved == NULL) {
                     fprintf(stderr, "---- error: cannot find #include %s%s%s (from %s:%d) ----\n",
@@ -618,13 +712,33 @@ static int expand_file(const char *path, FILE *out,
                  * An unresolvable one is NOT an error -- the downstream
                  * Vircon32 C compiler owns those paths (SDK headers in its
                  * own include dir) -- and passes through verbatim. */
-                char *resolved = resolve_include(target, angle, path, dirs, ndirs);
+                char *resolved = resolve_header(target, angle, path, dirs, ndirs);
                 int duplicate = 0;
                 if (resolved != NULL) {
                     char *canon = canonical_path(resolved);
                     if (path_set_contains(&g_verbatim_set, canon)) duplicate = 1;
                     else path_set_add(&g_verbatim_set, canon);
                     free(canon);
+                    if (!duplicate) {
+                        /* read it for its macros and type names */
+                        int before = g_harvest_types.count;
+                        rc = expand_file_mode(resolved, NULL, dirs, ndirs, 0, 1);
+                        if (!harvest && g_harvest_types.count > before) {
+                            /* `native NAME;` for each new struct/typedef,
+                             * on lines right after the #include itself */
+                            size_t len = strlen(line) + 1;
+                            for (int t = before; t < g_harvest_types.count; t++)
+                                len += strlen(g_harvest_types.items[t]) + 10;
+                            emit_text = malloc(len);
+                            strcpy(emit_text, line);
+                            for (int t = before; t < g_harvest_types.count; t++) {
+                                strcat(emit_text, "\nnative ");
+                                strcat(emit_text, g_harvest_types.items[t]);
+                                strcat(emit_text, ";");
+                                extra_lines++;
+                            }
+                        }
+                    }
                     free(resolved);
                 }
                 free(target);
@@ -642,7 +756,7 @@ static int expand_file(const char *path, FILE *out,
                 canonical = canonical_path(path);
                 path_set_add(&g_once_set, canonical);
                 free(canonical);
-            } else {
+            } else if (!harvest) {
                 /* The Vircon32 C preprocessor rejects every #pragma as an
                  * unsupported directive, so passing one through could only
                  * break the downstream compile. */
@@ -659,11 +773,13 @@ static int expand_file(const char *path, FILE *out,
             consumed = 0;
         }
 
-        if (consumed) {
+        if (harvest) {
+            /* nothing reaches the stream */
+        } else if (consumed) {
             emit_blank_lines(out, nphys);
         } else {
             fprintf(out, "%s\n", emit_text ? emit_text : line);
-            if (nphys > 1) emit_marker(out, lineno + nphys, path);
+            if (nphys > 1 || extra_lines > 0) emit_marker(out, lineno + nphys, path);
         }
         free(emit_text);
         free(word);

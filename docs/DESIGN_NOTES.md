@@ -7396,3 +7396,66 @@ switch bodies, float division; self-checking). `make realcheck`: 68/68
 programs compile and assemble with the real tools; 94, 95 and 97 run to
 `test_errors == 0` on the emulated console (95 also confirmed to report
 a failure when fed a wrong `-D`).
+
+---
+
+## Round: SDK header reading, comma operator, profiler, TEMPEST 32K audit — 20261001-dev (second pass)
+
+**Pass-through `.h` headers are now read** (`prescan.c`, "harvest" mode of
+`expand_file`). The `#include` line still reaches the generated C; in
+addition the header's directives are processed (code lines skipped, so
+nothing in it has to parse as C++): its `#define`s join the macro table
+(not re-emitted -- the header defines them downstream), its include
+guards are honored, and `struct NAME` / `typedef ... NAME;` are declared
+`native` on lines injected after the include. Lookup: normal include
+search, then `$V32CXX_SDK_INCLUDE`, then `include/` beside the `compile`
+found on `$PATH` (accepted only if it holds `video.h`), then
+`V32CXX_SDK_INCLUDE_PATH` (`/usr/local/Vircon32/DevTools/include`, the
+DevTools' CMake install default). All 37 SDK macros are object-like
+constants, so they expand as typed, named literals. Side effect: a `.h`
+that now resolves is deduplicated, so a second include of it is dropped.
+Two zero-byte stubs (`tests/video.h`, `tests/audio.h`, unreferenced)
+were removed: they shadowed the real headers for every sample.
+`tests/98sample.cpp` (self-checking; `make test` skips it when
+`tools/vircon32/bin/include` isn't built).
+
+**Comma operator and two-declaration `for`.** `comma_expr` in the grammar
+(expression statements, the three `for` clauses, parentheses; no new
+conflicts), stored as `AST_BINOP ","` so every walker already visits it;
+sema types it as its right operand. Phase 10 lowers it with the ternary
+machinery: left side becomes its own statement, expression becomes the
+right side, loop clauses go through the `while (1)` rewrite.
+`for (int i = 0, j = 5; ...)` is wrapped by the parser in a block holding
+the declarations. Standard mode prints commas as written.
+
+**Ternary temp typing.** `on ? v32::BlendAlpha : BLEND_SOLID` gave the
+hoisted temporary the enum type; Vircon32 C rejects an int stored into an
+enum variable. An enum meeting anything but the same enum now yields
+`int` (`sema_is_enum_type`). Found by the TEMPEST modernization.
+
+**`tools/vircon32/v32prof`** -- a headless profiler on the emulator's
+ConsoleLogic: scripted gamepad input (plug/unplug, press, tap), per-frame
+CPU and GPU load per named segment, and the instruction pointer sampled
+every cycle and attributed to functions via `assemble -g program`
+(overall and for heavy frames only). `V32PROF_RAMDUMP` writes final RAM
+for post-mortem state decoding.
+
+**TEMPEST 32K audit** (measured with v32prof; CPU claws, co-op, a
+`-D PROFILE` build that refills lives):
+- level 1: 70.4% avg / 100% max / 636 of 5400 frames at 100% CPU
+  -> 37.3% / 59.7% / 0. Levels 8, 24, 32 similar (max now 62-67%).
+- What it took: `dir_angle` (a 40-step table scan per bar; 24% of heavy
+  frames) replaced by an atan2 guess + best-of-3 check (verified never
+  worse than the scan over 1M directions); `project`'s fly factor cached
+  on its three inputs and `lerp`/`sin32`/`cos32` inlined as function-like
+  macros; rim/cap vertices projected once per frame; shockwave chords
+  given their analytic angle; per-element pointers in the particle and
+  star loops (the Vircon32 compiler re-derives `g->ARR[i].f` on every
+  access); quadratic `string_len` in text centring removed.
+- CPU claw fixes (it could stall a level forever): targets only its own
+  arc, obeys the gap clamp, jump-shoots rim campers, leaps gaps when
+  every enemy is elsewhere, lines up under climbing enemies, and fires
+  fast enough to out-chip a spiker's spike.
+- Modernized: macro-sized arrays, SDK `channel_*` names, `#if`/`#error`
+  configuration checks, `RGB()` constant folding, ternaries, natural float
+  division; header notes corrected (VIRCON32_QUIRKS #20).

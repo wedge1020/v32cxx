@@ -42,6 +42,36 @@
 #define V32CXX_INCLUDE_ENV_VAR "V32CXX_INCLUDE"
 #endif
 
+// ----------------------------------------------------------------------------
+// Vircon32 SDK headers
+// ----------------------------------------------------------------------------
+// .h headers pass through to the generated C, where the Vircon32 C
+// compiler includes them. v32c++ also READS them when it can find them, so
+// their macros (screen_width, color_red, pi, ...) and struct/typedef names
+// (date_info, game_signature, ...) are visible on the C++ side too. A .h
+// is looked for with the normal #include search first, then in:
+//
+//     1. each directory in $V32CXX_SDK_INCLUDE (colon-separated)
+//     2. the include/ folder next to the `compile` found on $PATH -- the
+//        very folder the Vircon32 C compiler itself searches -- when it
+//        holds video.h
+//     3. V32CXX_SDK_INCLUDE_PATH -- the Vircon32 DevTools' default install
+//        location on Linux and macOS
+//
+// A header found nowhere is skipped, exactly as before this existed.
+#ifndef V32CXX_SDK_INCLUDE_PATH
+#define V32CXX_SDK_INCLUDE_PATH "/usr/local/Vircon32/DevTools/include"
+#endif
+
+#ifndef V32CXX_SDK_INCLUDE_ENV_VAR
+#define V32CXX_SDK_INCLUDE_ENV_VAR "V32CXX_SDK_INCLUDE"
+#endif
+
+// The Vircon32 C compiler's executable name, looked up on $PATH (item 2).
+#ifndef V32CXX_SDK_COMPILER_NAME
+#define V32CXX_SDK_COMPILER_NAME "compile"
+#endif
+
 // Upper bound on include directories from all sources combined (-I flags
 // plus $V32CXX_INCLUDE entries plus V32CXX_INCLUDE_PATH).
 #ifndef V32CXX_MAX_INCLUDE_DIRS

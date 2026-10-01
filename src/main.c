@@ -2,6 +2,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <getopt.h>
+#include <unistd.h> /* access() */
 #include "driver.h"
 #include "parser.h"
 #include "sema.h"
@@ -108,6 +109,64 @@ static int build_system_include_dirs(char **dirs, int max) {
     if (V32CXX_INCLUDE_PATH[0] != '\0') {
         if (n >= max) return -1;
         dirs[n++] = strdup(V32CXX_INCLUDE_PATH);
+    }
+    return n;
+}
+
+/* Appends each non-empty entry of a colon-separated list. Returns the new
+ * count, or -1 past `max`. */
+static int add_path_list(char **dirs, int n, int max, const char *list) {
+    const char *p = list;
+    while (p != NULL && *p) {
+        const char *colon = strchr(p, ':');
+        size_t len = colon ? (size_t)(colon - p) : strlen(p);
+        if (len > 0) {
+            if (n >= max) return -1;
+            char *dir = malloc(len + 1);
+            memcpy(dir, p, len);
+            dir[len] = '\0';
+            dirs[n++] = dir;
+        }
+        if (colon == NULL) break;
+        p = colon + 1;
+    }
+    return n;
+}
+
+/* The SDK include directories (see config.h): $V32CXX_SDK_INCLUDE, then the
+ * include/ folder beside the Vircon32 `compile` on $PATH (recognized by
+ * holding video.h, so an unrelated `compile` is ignored), then
+ * V32CXX_SDK_INCLUDE_PATH. Returns the count, or -1 past `max`. */
+static int build_sdk_include_dirs(char **dirs, int max) {
+    int n = add_path_list(dirs, 0, max, getenv(V32CXX_SDK_INCLUDE_ENV_VAR));
+    if (n < 0) return -1;
+    const char *path = getenv("PATH");
+    for (const char *p = path; p != NULL && *p; ) {
+        const char *colon = strchr(p, ':');
+        size_t len = colon ? (size_t)(colon - p) : strlen(p);
+        if (len > 0) {
+            char *exe = malloc(len + strlen(V32CXX_SDK_COMPILER_NAME) + 2);
+            char *inc = malloc(len + 32);
+            sprintf(exe, "%.*s/%s", (int)len, p, V32CXX_SDK_COMPILER_NAME);
+            sprintf(inc, "%.*s/include", (int)len, p);
+            char *probe = malloc(strlen(inc) + 16);
+            sprintf(probe, "%s/video.h", inc);
+            int ok = access(exe, X_OK) == 0 && access(probe, R_OK) == 0;
+            free(exe);
+            free(probe);
+            if (ok) {
+                if (n >= max) { free(inc); return -1; }
+                dirs[n++] = inc;
+                break;                 /* the first one on $PATH, as the shell would run */
+            }
+            free(inc);
+        }
+        if (colon == NULL) break;
+        p = colon + 1;
+    }
+    if (V32CXX_SDK_INCLUDE_PATH[0] != '\0') {
+        if (n >= max) return -1;
+        dirs[n++] = strdup(V32CXX_SDK_INCLUDE_PATH);
     }
     return n;
 }
@@ -286,6 +345,17 @@ int  main (int  argc, char **argv)
                 V32CXX_INCLUDE_ENV_VAR, MAX_INCLUDE_DIRS);
         return 1;
     }
+    char *sdk_dirs[MAX_INCLUDE_DIRS];
+    int sdk_dir_count = build_sdk_include_dirs(sdk_dirs, MAX_INCLUDE_DIRS);
+    if (sdk_dir_count < 0) {
+        fprintf(stderr, "---- error: too many SDK include directories ($%s, max %d) ----\n",
+                V32CXX_SDK_INCLUDE_ENV_VAR, MAX_INCLUDE_DIRS);
+        return 1;
+    }
+    if (verbosity >= 1)
+        for (int i = 0; i < sdk_dir_count; i++)
+            printf("SDK header search: %s\n", sdk_dirs[i]);
+    prescan_set_sdk_dirs(sdk_dirs, sdk_dir_count);
     FILE *f = prescan_expand(input_filename, include_dirs, include_dir_count,
                              system_dirs, system_dir_count);
     if (f == NULL) {

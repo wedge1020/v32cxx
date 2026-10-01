@@ -4453,7 +4453,9 @@ static void insert_pointer_cast_free_functions(AstList *decls) {
 /* ---- phase 10: ternary-to-if/else rewriting (--target=vircon32 only) ---
  *
  * The Vircon32 C lexer doesn't accept '?' at all, so no `cond ? a : b`
- * may reach Vircon32-mode output. This phase rewrites every ternary in
+ * may reach Vircon32-mode output -- and Vircon32 C has no comma operator
+ * either, so `a, b` is lowered here the same way (a becomes a statement
+ * of its own, run first; the expression is b). This phase rewrites every ternary in
  * every function body into if/else, and lower_check_no_ternaries (run
  * right after it) guarantees nothing slipped through: a leftover ternary
  * is folded if it's an integer constant (a global or enum initializer)
@@ -4482,7 +4484,8 @@ static void insert_pointer_cast_free_functions(AstList *decls) {
  * best that way: `T v = c ? a : b;`, `v = c ? a : b;` and
  * `return c ? a : b;`. Everything else goes into a fresh
  * __v32_tern_tmpN declared just before the statement (int when no
- * branch's type can be inferred; float when one branch is float).
+ * branch's type can be inferred, or an enum meets a non-enum; float when
+ * one branch is float).
  *
  * Runs only when g_target == TARGET_VIRCON32 -- standard C keeps `?:`.
  */
@@ -4493,11 +4496,16 @@ typedef struct TernCtx {
     int tmp_counter;
 } TernCtx;
 
-/* Does this subtree contain a ternary? Walks the expression/statement
- * slots (a..d, list), never `type`. */
+static int is_comma(const AstNode *n) {
+    return n != NULL && n->kind == AST_BINOP && n->str1 != NULL && strcmp(n->str1, ",") == 0;
+}
+
+/* Does this subtree contain something Vircon32 C lacks -- a ternary or a
+ * comma operator? Walks the expression/statement slots (a..d, list),
+ * never `type`. */
 static int has_ternary(const AstNode *n) {
     if (n == NULL) return 0;
-    if (n->kind == AST_TERNARY) return 1;
+    if (n->kind == AST_TERNARY || is_comma(n)) return 1;
     if (has_ternary(n->a) || has_ternary(n->b) || has_ternary(n->c) || has_ternary(n->d))
         return 1;
     for (int i = 0; i < n->list.count; i++)
@@ -4587,6 +4595,13 @@ static int is_int_like_type(const AstNode *t) {
 static AstNode *ternary_type(AstNode *t, TernCtx *cx) {
     AstNode *tb = infer_expr_type(t->b, cx->class_decl, cx->locals);
     AstNode *tc = infer_expr_type(t->c, cx->class_decl, cx->locals);
+    /* An enum meeting anything but the SAME enum converts to int in C++
+     * (`on ? v32::BlendAlpha : 0`), and Vircon32 C refuses an int stored
+     * into an enum-typed temporary -- so the temporary is an int. */
+    int eb = sema_is_enum_type(tb), ec = sema_is_enum_type(tc);
+    if ((eb || ec) && !(eb && ec && tb->kind == AST_IDENT && tc->kind == AST_IDENT &&
+                        strcmp(tb->str1, tc->str1) == 0))
+        return ast_ident("int", t->line);
     if ((is_float_type(tb) && is_int_like_type(tc)) || (is_int_like_type(tb) && is_float_type(tc)))
         return ast_ident("float", t->line);
     if (tb != NULL) return tb;
@@ -4623,6 +4638,17 @@ static void tern_lower_expr(AstNode **slot, TernCtx *cx, AstList *pre) {
         AstNode *else_b = tern_block_rewriting(tern_assign_stmt(tmp, n->c, line), cx, line);
         ast_list_append(pre, tern_if(n->a, then_b, else_b, line));
         *slot = ast_ident(tmp, line);
+        return;
+    }
+
+    if (is_comma(n)) {
+        /* `a, b`: a runs first, as a statement of its own (it may hold
+         * ternaries or commas itself); the expression is then b. */
+        AstNode *first = ast_new(AST_EXPR_STMT, line);
+        first->a = n->a;
+        tern_rewrite_stmt(first, cx, pre);
+        *slot = n->b;
+        tern_lower_expr(slot, cx, pre);
         return;
     }
 
@@ -4896,6 +4922,11 @@ static void rewrite_ternary_in_method(AstNode *method, AstNode *class_decl) {
 static int check_no_ternaries(AstNode *n) {
     if (n == NULL) return 0;
     int errors = 0;
+    if (is_comma(n)) {
+        fprintf(stderr, "lowering error at line %d: the comma operator can't be lowered "
+                "for Vircon32 C outside a function body\n", n->line);
+        return 1;
+    }
     if (n->kind == AST_TERNARY) {
         int v;
         if (ast_fold_int(n, NULL, &v)) {

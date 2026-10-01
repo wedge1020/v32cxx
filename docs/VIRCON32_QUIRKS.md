@@ -685,6 +685,39 @@ would make this much easier to spot than the parser error.
 
 ---
 
+## 20. NOT a quirk: globals are writable, and const values can be read
+
+- Recorded here because the TEMPEST 32K demo's notes (and the
+  limitations write-up built from them) said otherwise: that file-scope
+  variables are read-only ROM unless declared with Vircon32's `global`
+  keyword, and that reading a `const` into a plain variable fails with
+  "discards const qualifier".
+- **Confirmed against the real compiler (v26.04.24)**: neither holds.
+  `int counter = 5; ... counter += 10;` and a file-scope `int[ 4 ] table;`
+  written at run time both work (globals live in RAM, initialized at
+  startup), and `const int K = 7; int x = K;` compiles and reads 7. The
+  self-checking samples rely on this: `test_errors` is a global the
+  program writes. (Assigning a `const T*` to a plain `T*` is a different
+  matter and may still be rejected.)
+
+---
+
+## 21. A comma operator doesn't exist
+
+- **Vircon32 C**: no comma operator (`a, b` as one expression).
+- **For Vircon32 mode**: **LOWERED** (20261001-dev), in the same phase as
+  the ternary rewrite (#10): the left side becomes a statement of its
+  own, run first, and the expression is the right side. A loop whose
+  condition or increment uses one becomes `while (1)` with the test at
+  the top and a first-pass flag running the increment, so `continue`
+  keeps its meaning (`for (i = 0, j = n; i < j; i++, j--)`). Standard
+  mode prints it as written. `tests/97sample.cpp` checks it at run time.
+- Related: `for (int i = 0, j = 5; ...)` (two declarations, not the comma
+  operator) becomes a block holding the declarations, around a loop with
+  an empty init clause -- the same scope, plain C either way.
+
+---
+
 ## What this list does NOT cover
 
 - Anything this project hasn't discovered yet -- this is a record of

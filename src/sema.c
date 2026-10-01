@@ -494,6 +494,15 @@ static AstNode *find_enum_decl_by_name(const char *name) {
     return NULL;
 }
 
+int sema_is_enum_type(const AstNode *type) {
+    if (type == NULL) return 0;
+    const char *name = NULL;
+    if (type->kind == AST_IDENT) name = type->str1;
+    else if (type->kind == AST_QUALIFIED_ID && type->list.count > 0)
+        name = type->list.items[type->list.count - 1]->str1;
+    return name != NULL && find_enum_decl_by_name(name) != NULL;
+}
+
 static void free_enum_registries(void) {
     EnumRegEntry *e = g_enum_registry;
     while (e != NULL) { EnumRegEntry *next = e->next; free(e); e = next; }
@@ -1697,6 +1706,9 @@ AstNode *infer_expr_type(const AstNode *expr, AstNode *current_class, LocalVarTy
             return NULL;
         }
         case AST_BINOP: {
+            /* comma operator: `a, b` is b */
+            if (expr->str1 != NULL && strcmp(expr->str1, ",") == 0)
+                return infer_expr_type(expr->b, current_class, locals);
             /* Without this, every arithmetic/logical expression's type
              * silently fell through to "unknown" -- harmless until it
              * reached resolve_overload_generic's genuinely-overloaded

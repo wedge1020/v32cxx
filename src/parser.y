@@ -362,7 +362,7 @@ static void parse_record_enum_values(const AstList *enumerators) {
 %type <list> top_decl_list member_list stmt_list
 %type <list> param_list opt_param_list arg_list opt_arg_list qname_prefix
 %type <list> member_init_list
-%type <node> array_dim
+%type <node> array_dim comma_expr comma_expr_opt
 %type <str> string_seq
 %type <list> switch_body enumerator_list union_member_list func_ptr_param_list opt_func_ptr_param_list array_bracket_list
 %type <list> more_plain_declarators
@@ -1783,7 +1783,7 @@ stmt:
             $$->a = $3;
             $$->list = $6;
         }
-    | FOR '(' { symtab_push_scope(g_symtab, NULL, 0); } for_init ';' expr_opt ';' expr_opt ')' stmt
+    | FOR '(' { symtab_push_scope(g_symtab, NULL, 0); } for_init ';' comma_expr_opt ';' comma_expr_opt ')' stmt
         {
             /* Own scope so a loop-local `int i` in for_init doesn't leak
              * into the enclosing block/function (and so a second, later
@@ -1792,6 +1792,18 @@ stmt:
             symtab_pop_scope(g_symtab);
             $$ = ast_new(AST_FOR, @1.first_line);
             $$->a = $4; $$->b = $6; $$->c = $8; $$->d = $10;
+            if ($4 != NULL && $4->kind == AST_VAR_DECL_GROUP) {
+                /* `for (int i = 0, j = 5; ...)`: the declarations move
+                 * into a block wrapped around the loop -- the same
+                 * scope they had (nothing outside the loop sees them),
+                 * and plain C in both output dialects. */
+                AstNode *wrapper = ast_new(AST_BLOCK, @1.first_line);
+                wrapper->list = ast_list_new();
+                ast_list_append_flatten(&wrapper->list, $4);
+                $$->a = NULL;
+                ast_list_append(&wrapper->list, $$);
+                $$ = wrapper;
+            }
         }
     | RETURN expr_opt ';'
         {
@@ -1881,7 +1893,7 @@ stmt:
         }
     | var_decl ';'      { $$ = $1; }
     | typedef_decl ';'  { $$ = $1; }
-    | expr ';'
+    | comma_expr ';'
         {
             $$ = ast_new(AST_EXPR_STMT, @1.first_line);
             $$->a = $1;
@@ -1895,48 +1907,12 @@ stmt:
 for_init:
       /* empty */  { $$ = NULL; }
     | var_decl      {
-            /* A deliberate, stated scope boundary: multi-declarator
-             * support (AST_VAR_DECL_GROUP -- see its own doc comment in
-             * ast.h) is for an ORDINARY statement/member/global, whose
-             * caller flattens the group back into several list entries
-             * (ast_list_append_flatten). A for-loop's own init clause
-             * isn't a list entry at all -- it's AST_FOR's own single `a`
-             * slot -- so a group reaching here unflattened would either
-             * silently corrupt the AST (nothing downstream has a case
-             * for this node kind) or need real, separate codegen work
-             * teaching the for-loop's own init-clause printer the C
-             * comma-declarator syntax it doesn't have today
-             * (`for (int i = 0, j = 0; ...)`). Reported directly rather
-             * than silently mishandled: real C++ multi-declarator
-             * for-loop inits (`for (int i = 0, j = 0; ...; ...)`) are
-             * NOT supported yet -- only the first declarator is kept,
-             * with a clear parse-time error naming the file/line, the
-             * same diagnostic shape yyerror (below) already uses. */
-            if ($1->kind == AST_VAR_DECL_GROUP) {
-                /* YYERROR (not just a printed message) -- this grammar
-                 * has no `error`-token recovery production anywhere, so
-                 * this makes yyparse() itself return failure immediately,
-                 * the same real, build-stopping outcome an ordinary
-                 * syntax error already has, rather than silently
-                 * DROPPING every declarator but the first the way a mere
-                 * warning-and-degrade response would -- dropping a
-                 * user-written declaration is a correctness problem, not
-                 * a style nit sema_warning's own non-fatal treatment
-                 * elsewhere in this project is right for. Bison's own
-                 * default "syntax error" follows this message on the
-                 * same line-numbered basis, which is fine -- a second,
-                 * generic line is a small redundancy, not a wrong one. */
-                fprintf(stderr, "%s:%d: error: a for-loop's own init clause"
-                    " doesn't support multiple declarators yet"
-                    " (`for (int i = 0, j = 0; ...)`) -- split this into"
-                    " one declarator here plus assignment(s) in the loop"
-                    " body, or separate statements before the loop\n",
-                    g_current_filename, $1->line);
-                YYERROR;
-            }
+            /* A multi-declarator group (`int i = 0, j = 5`) is passed up
+             * as-is: the FOR rule above wraps the loop in a block that
+             * holds the declarations. */
             $$ = $1;
         }
-    | expr
+    | comma_expr
         {
             $$ = ast_new(AST_EXPR_STMT, @1.first_line);
             $$->a = $1;
@@ -1946,6 +1922,30 @@ for_init:
 expr_opt:
       /* empty */  { $$ = NULL; }
     | expr          { $$ = $1; }
+    ;
+
+/* The COMMA OPERATOR -- `a, b` evaluates a, then b, and is b. Only where
+ * C++ allows it unparenthesized without ambiguity: an expression
+ * statement, the three for-loop clauses, and inside parentheses
+ * (`x = (a++, b)`). Call arguments, initializer lists and declarators keep
+ * their own commas, as in C++. An AST_BINOP with operator ",": every
+ * lowering walker already visits binops. Vircon32 C has no comma operator,
+ * so lower.c's phase 10 turns the left side into a statement of its own
+ * (see tern_lower_expr); standard C prints it back as written. */
+comma_expr:
+      expr                     { $$ = $1; }
+    | comma_expr ',' expr
+        {
+            $$ = ast_new(AST_BINOP, @2.first_line);
+            $$->str1 = strdup(",");
+            $$->a = $1;
+            $$->b = $3;
+        }
+    ;
+
+comma_expr_opt:
+      /* empty */      { $$ = NULL; }
+    | comma_expr       { $$ = $1; }
     ;
 
 /* ---- switch bodies -------------------------------------------------------
@@ -2003,7 +2003,7 @@ primary_expr:
     | NULLPTR_KW                 { $$ = ast_new(AST_NULL_LIT, @1.first_line); }
     | THIS                        { $$ = ast_new(AST_THIS, @1.first_line); }
     | qualified_id_expr             { $$ = $1; }
-    | '(' expr ')'                    { $$ = $2; }
+    | '(' comma_expr ')'              { $$ = $2; }
     ;
 
 postfix_expr:

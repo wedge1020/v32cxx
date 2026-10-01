@@ -562,25 +562,27 @@ multiple declarators in one statement, and function-pointer
 .BR typedef s
 are now closed (see above, and BUGS below for
 .BR const 's
-exact boundary). Still open:
-.BR static ", " extern ", " inline ,
+exact boundary), and so are adjacent string-literal concatenation,
+.B inline
 and
 .B register
-(none recognized at all;
+(accepted and ignored), multiple declarators in a
+.B for
+init clause, and the comma operator
+.RI ( "a, b"
+in expression statements, parentheses and all three
+.B for
+clauses \(em split into statements for Vircon32 C, which has none).
+Still open:
+.B static
+and
+.B extern
+(not recognized),
 .B volatile
-only inside
-.BR "asm volatile" );
-no adjacent string-literal concatenation
-.RI ( "\(dqfoo\(dq \(dqbar\(dq"
-does not become
-.IR "\(dqfoobar\(dq" );
-no bit-fields
-.RI ( "unsigned x : 4;"
-inside a
-.BR struct / union );
-no comma operator
-.RI ( "a, b, c"
-as a single expression). None of these are implemented yet.
+outside
+.BR "asm volatile" ,
+and bit-fields
+.RI ( "unsigned x : 4;" ).
 .PP
 Never supported, by design: templates, exceptions, RTTI, multiple
 inheritance.
@@ -625,21 +627,29 @@ are predefined.
 .BR #if ", " #ifdef ", " #ifndef ", " #elif ", " #else " and " #endif
 are evaluated (integer arithmetic,
 .BR defined() );
-only the active branch is transpiled. A condition sees only macros
-.B v32c++
-read itself \(em from the source, its
-.I .hpp
-includes, and
-.B \-D
-\(em not ones defined inside a pass-through
-.I .h
-header.
+only the active branch is transpiled.
 .B #error
 stops the transpile;
 .B #warning
 prints a message. Any other
 .B #pragma
 is dropped with a warning, since the Vircon32 C compiler rejects it.
+.IP \(bu 2
+A pass-through
+.I .h
+header is also READ when it can be found (see
+.B V32CXX_SDK_INCLUDE
+under ENVIRONMENT): its macros
+.RI ( screen_width ", " color_red ", " pi ", ...)"
+work in array sizes and conditions and keep their names in the output,
+and its struct and typedef names
+.RI ( date_info ", " game_signature ", ...)"
+are declared
+.B native
+automatically. Only its directives are processed; the header itself
+still reaches the generated C as an
+.B #include
+line.
 .PP
 Every
 .B #define
@@ -1052,6 +1062,23 @@ includes after every
 .B \-I
 directory (and, for a quoted include, the current directory), before
 the installed header directory.
+.TP
+.B V32CXX_SDK_INCLUDE
+A colon-separated list of directories searched for pass-through
+.I .h
+headers (after the normal include search), so their macros and
+struct/typedef names are visible to
+.BR v32c++ .
+Searched before the
+.I include
+folder next to the Vircon32
+.B compile
+found on
+.B PATH
+and before
+.IR /usr/local/Vircon32/DevTools/include .
+.B \-v
+lists the folders searched.
 .SH FILES (INSTALLATION)
 .TP
 .I /usr/local/Vircon32/v32c++/include
