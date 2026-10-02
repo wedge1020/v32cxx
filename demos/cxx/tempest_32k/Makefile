@@ -10,6 +10,7 @@ OPTIMIZER     = v32opt -O3 -v
 ASSEMBLER     = assemble
 TEXTURE_TOOL  = png2vircon
 SOUND_TOOL    = wav2vircon
+FFMPEG_TOOL   = ffmpeg
 PACKER        = packrom
 
 # Is the optimizer installed? Looks up the first word of OPTIMIZER (v32opt)
@@ -77,19 +78,24 @@ textures/$(DEMO)_sprites.vtex: textures/$(DEMO)_sprites.png
 	$(TEXTURE_TOOL) textures/$(DEMO)_sprites.png -o textures/$(DEMO)_sprites.vtex
 
 vsnd:
-	$(SOUND_TOOL)   sounds/blip.wav       -o sounds/blip.vsnd
-	$(SOUND_TOOL)   sounds/boom.wav       -o sounds/boom.vsnd
-	$(SOUND_TOOL)   sounds/clear.wav      -o sounds/clear.vsnd
-	$(SOUND_TOOL)   sounds/death.wav      -o sounds/death.vsnd
-	$(SOUND_TOOL)   sounds/jump.wav       -o sounds/jump.vsnd
-	$(SOUND_TOOL)   sounds/m_title.wav    -o sounds/m_title.vsnd
-	$(SOUND_TOOL)   sounds/m_track1.wav   -o sounds/m_track1.vsnd
-	$(SOUND_TOOL)   sounds/m_track2.wav   -o sounds/m_track2.vsnd
-	$(SOUND_TOOL)   sounds/m_track3.wav   -o sounds/m_track3.vsnd
-	$(SOUND_TOOL)   sounds/m_track4.wav   -o sounds/m_track4.vsnd
-	$(SOUND_TOOL)   sounds/pickup.wav     -o sounds/pickup.vsnd
-	$(SOUND_TOOL)   sounds/shootsound.wav -o sounds/shootsound.vsnd
-	$(SOUND_TOOL)   sounds/zap.wav        -o sounds/zap.vsnd
+	$(FFMPEG_TOOL)  -i sounds/m_title.m4a       sounds/m_title.wav
+	$(FFMPEG_TOOL)  -i sounds/m_track1.m4a      sounds/m_track1.wav
+	$(FFMPEG_TOOL)  -i sounds/m_track2.m4a      sounds/m_track2.wav
+	$(FFMPEG_TOOL)  -i sounds/m_track3.m4a      sounds/m_track3.wav
+	$(FFMPEG_TOOL)  -i sounds/m_track4.m4a      sounds/m_track4.wav
+	$(SOUND_TOOL)      sounds/blip.wav       -o sounds/blip.vsnd
+	$(SOUND_TOOL)      sounds/boom.wav       -o sounds/boom.vsnd
+	$(SOUND_TOOL)      sounds/clear.wav      -o sounds/clear.vsnd
+	$(SOUND_TOOL)      sounds/death.wav      -o sounds/death.vsnd
+	$(SOUND_TOOL)      sounds/jump.wav       -o sounds/jump.vsnd
+	$(SOUND_TOOL)      sounds/m_title.wav    -o sounds/m_title.vsnd
+	$(SOUND_TOOL)      sounds/m_track1.wav   -o sounds/m_track1.vsnd
+	$(SOUND_TOOL)      sounds/m_track2.wav   -o sounds/m_track2.vsnd
+	$(SOUND_TOOL)      sounds/m_track3.wav   -o sounds/m_track3.vsnd
+	$(SOUND_TOOL)      sounds/m_track4.wav   -o sounds/m_track4.vsnd
+	$(SOUND_TOOL)      sounds/pickup.wav     -o sounds/pickup.vsnd
+	$(SOUND_TOOL)      sounds/shootsound.wav -o sounds/shootsound.vsnd
+	$(SOUND_TOOL)      sounds/zap.wav        -o sounds/zap.vsnd
 
 # Pack ROM cartridge (Depends on the binary and texture to ensure they are built first)
 v32: vsnd bin/$(DEMO).v32
@@ -108,4 +114,4 @@ context:
 
 # --- Clean Up ---
 clean:
-	rm -f bin/*.v32 obj/* textures/*.vtex sounds/*.vsnd *.xml
+	rm -f bin/*.v32 obj/* textures/*.vtex sounds/*.vsnd *.xml sounds/m_t*.wav

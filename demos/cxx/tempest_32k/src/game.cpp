@@ -225,7 +225,7 @@ void init_state( G* g )
     g->p1_cpu = 0;          // sampled from pad connectivity each frame
     g->p2_cpu = 0;
     // DEBUG METERS: on by default — set 0 to hide the readout
-    g->debug_gpu = 1;
+    g->debug_gpu = 0;
     g->cpu_cycles = 0;
     g->cpu_even = 0;
     g->cpu_odd = 0;
