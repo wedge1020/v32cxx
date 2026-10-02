@@ -206,13 +206,14 @@ void update_enemies( G* g )
     }
 }
 
-// distance along the strand between neighbouring inchworm segments:
-// half the body's stretch (head, middle, tail), never closer than
-// WORM_MIN_GAP. Shared by the hit test, the knock-back and the renderer
-// so what you see is exactly what you can hit.
+// distance along the strand between neighbouring inchworm segments: a
+// fixed share of the body's stretch, never closer than WORM_MIN_GAP. The
+// whole chain breathes with the surge, and its length is simply the gap
+// times the segments left. Shared by the hit test, the knock-back and the
+// renderer so what you see is exactly what you can hit.
 float worm_gap( Enemy* e )
 {
-    float gap = e->stretch * 0.5;
+    float gap = e->stretch * WORM_GAP;
     return gap > WORM_MIN_GAP ? gap : WORM_MIN_GAP;
 }
 
@@ -308,7 +309,6 @@ void update_bullets( G* g )
                     sfx( g, BOOM );
                     w->z += worm_gap( w );
                     if( w->z > 1.0 ) w->z = 1.0;
-                    w->stretch *= 0.5;
                     w->segs--;
                     if( g->BULLETS[ i ].owner == 0 ) g->score += 50;
                     else                             g->p2_score += 50;

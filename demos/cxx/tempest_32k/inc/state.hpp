@@ -26,8 +26,9 @@ struct Enemy
     float z;           // inchworm: the HEAD (front end)
     float stretch;     // inchworm only: body length in z units behind
                        // the head (0 bunched .. reach fully extended)
-    int segs;          // inchworm only: segments left (WORM_SEGMENTS
-                       // at spawn); each hit destroys the front one
+    int segs;          // inchworm only: segments left (a random
+                       // WORM_MIN_SEGMENTS..WORM_MAX_SEGMENTS at spawn);
+                       // each hit destroys the front one
     int cooldown;
     int wig;           // walkers: tumble angle. inchworms: phase clock
                        // (0..63; 0..31 = head surge, 32..63 = tail catch-up)
@@ -109,7 +110,7 @@ struct G
     int   spawn_interval;
     int   state;               // 0 play, 1 dying, 2 warp-out, 3 game over, 4 title, 5 pause, 6 initials, 7 scores, 8 level select
     int   warp_phase;          // transition: 0 = old web flying out, 1 = new web flying in
-    int   warp_bounce;         // transition: spike hit on EASY — skip the level advance
+    int   warp_bounce;         // transition: a spike hit is REBOUNDING the web back to the same level
     int   menu_row;            // title menu: selected row (0 play 1 scores 2 levels 3 difficulty)
     int   select_level;        // level select screen: chosen level (1..32)
     int   HISCORE[ 5 ];        // high score table, highest first (memcard)

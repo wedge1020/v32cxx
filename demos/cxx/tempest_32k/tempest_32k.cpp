@@ -128,6 +128,13 @@ void main()
         }
         else if( g->state == 1 )      // dying
         {
+            // spiked during a level exit: the web rebounds back in while
+            // the death plays out (a no-op for any other death: warp is 0)
+            if( g->warp > 0 )
+            {
+                g->warp -= WARP_REBOUND;
+                if( g->warp < 0 ) g->warp = 0;
+            }
             g->state_timer--;
             if( g->state_timer <= 0 )
             {
@@ -151,7 +158,11 @@ void main()
             // B — the next level's web shrinks back in to settle.
             // At the halfway point the level number and silhouette
             // switch, so what flies IN is the new level.
-            g->warp += 0.0125;
+            // SPIKE REBOUND: once a claw has been spiked (warp_bounce) the
+            // outward rush REVERSES -- the web snaps back in from wherever
+            // it had got to and settles on the same level
+            if( g->warp_bounce ) g->warp -= WARP_REBOUND;
+            else                 g->warp += 0.0125;
             // the claw stays live during the fly-out: you can slide
             // between lanes and JUMP — the old web's spikes stream
             // outward with it and sweep past the claw plane
@@ -217,9 +228,10 @@ void main()
                         }
                         else
                         {
-                            // kill, but do NOT advance the level —
-                            // start_level respawns on the same web
-                            g->warp = 0;
+                            // kill, but do NOT advance the level --
+                            // start_level respawns on the same web. The
+                            // warp is left where it is: the dying state
+                            // rebounds the web back in (see state 1)
                             g->warp_phase = 0;
                             kill_player( g );
                             show_message( g, "SPIKED!" );
@@ -262,21 +274,30 @@ void main()
                     }
                 }
             }
-            if( g->warp >= 1.0 && g->warp_phase == 0 )
+            if( g->warp_bounce )
             {
-                if( g->warp_bounce == 0 )
+                // rebounding: back at rest = replay the same level
+                // (start_level clears warp_bounce and the web's spikes)
+                if( g->warp <= 0 )
+                {
+                    g->warp = 0;
+                    start_level( g );
+                }
+            }
+            else
+            {
+                if( g->warp >= 1.0 && g->warp_phase == 0 )
                 {
                     g->level++;
                     make_shape( g );
+                    g->warp_phase = 1;
                 }
-                else g->warp_bounce = 0;   // bounced: same web flies back in
-                g->warp_phase = 1;
-            }
-            g->state_timer--;
-            if( g->state_timer <= 0 )
-            {
-                g->warp = 0;
-                start_level( g );   // warp_phase reset inside
+                g->state_timer--;
+                if( g->state_timer <= 0 )
+                {
+                    g->warp = 0;
+                    start_level( g );   // warp_phase reset inside
+                }
             }
         }
         else if( g->state == 3 )      // game over -> initials entry / title

@@ -49,10 +49,23 @@
 #define MAX_SHOCKS 3
 #define MAX_POWERUPS 4
 
-// INCHWORM: body segments (one per hit), and the closest two neighbours
-// ever sit along the strand -- so a bunched worm still reads as a chain
-#define WORM_SEGMENTS 3
+// INCHWORM: each one spawns with a random number of body segments in this
+// range, and loses one per hit. Neighbouring segments sit WORM_GAP of the
+// body's current stretch apart along the strand, never closer than
+// WORM_MIN_GAP -- so a bunched worm still reads as a chain, and a long
+// worm really is long.
+#define WORM_MIN_SEGMENTS 3
+#define WORM_MAX_SEGMENTS 8
+#define WORM_GAP 0.2
 #define WORM_MIN_GAP 0.022
+
+#if WORM_MIN_SEGMENTS < 1 || WORM_MAX_SEGMENTS < WORM_MIN_SEGMENTS
+#error "inchworm segment range: need 1 <= WORM_MIN_SEGMENTS <= WORM_MAX_SEGMENTS"
+#endif
+
+// SPIKE REBOUND: how fast the web snaps back (warp units per frame; the
+// outward rush runs at 0.0125) after a claw is spiked during a level exit
+#define WARP_REBOUND 0.015
 // a spike shorter than this is harmless (the warp sweep ignores it)
 #define SPIKE_STUB 0.05
 

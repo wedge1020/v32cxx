@@ -31,7 +31,10 @@ void spawn_enemy( G* g, int type )
             g->ENEMIES[ i ].wig = rng( g ) % 256;   // worm: random cycle phase
             g->ENEMIES[ i ].dir = ( rng( g ) % 2 ) * 2 - 1;
             g->ENEMIES[ i ].stretch = 0;           // worm: starts bunched
-            g->ENEMIES[ i ].segs = WORM_SEGMENTS;
+            g->ENEMIES[ i ].segs = 1;
+            if( type == 4 )
+                g->ENEMIES[ i ].segs = WORM_MIN_SEGMENTS
+                    + rng( g ) % ( WORM_MAX_SEGMENTS - WORM_MIN_SEGMENTS + 1 );
             // walkers start their rim patrol aimed at the player
             if( type == 3 )
             {

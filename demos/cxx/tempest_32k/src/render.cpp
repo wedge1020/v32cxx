@@ -306,11 +306,12 @@ void render_enemies( G* g )
             // 4th frame, phase-shifted per bead — the body ripples.
             // SEGMENTS: one bead per segment left, worm_gap apart
             // behind the head (so a bunched worm is still a visible
-            // chain). The whole body shifts colour as it's whittled
-            // down: cyan with all three, amber with two, red on its
-            // last -- you can read the hits left at a glance.
+            // chain). The length shows the hits left, and the colour
+            // warns when it's nearly done: cyan with four or more,
+            // green with three, amber with two, red on its last.
             Enemy* w = &g->ENEMIES[ i ];
-            int body = w->segs >= 3 ? RGB( 80, 230, 255 )
+            int body = w->segs >= 4 ? RGB( 80, 230, 255 )
+                     : w->segs == 3 ? RGB( 110, 255, 140 )
                      : w->segs == 2 ? RGB( 255, 200, 60 ) : RGB( 255, 80, 60 );
             float gap = worm_gap( w );
             int b;
