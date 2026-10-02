@@ -7462,7 +7462,7 @@ for post-mortem state decoding.
 
 ---
 
-## Round: multi-file TEMPEST 32K, per-file diagnostics and debug maps, segmented inchworm — 20261001-dev (third pass)
+## Round: multi-file TEMPEST 32K, per-file diagnostics and debug maps, segmented inchworm — 20261002-dev (third pass)
 
 **TEMPEST 32K is now a multi-file project**, to exercise v32c++'s own
 include handling: `inc/tempest.hpp` (umbrella: SDK + `v32/` headers,
@@ -7497,3 +7497,20 @@ test: the split project generates byte-identical C to the single file.
   (the sweep ignores spikes under 0.05). A trim leaving less than
   SPIKE_STUB (0.05) now clears the lane, and a shot reaching the far end
   clears any stub there.
+
+## 20261002-dev: TEMPEST 32K inchworm lengths, spike rebound, README
+
+Demo-only round; no transpiler changes.
+
+* Inchworms spawn with a random segment count, `WORM_MIN_SEGMENTS` to
+  `WORM_MAX_SEGMENTS` (3 to 8) in `inc/config.hpp`, range-checked with
+  `#if` / `#error`. A hit removes the front segment; the minimum bead
+  spacing (`WORM_MIN_GAP`) keeps a bunched worm readable as a chain.
+* Hitting a spike while flying out of a cleared level now rebounds the
+  camera (`WARP_REBOUND` per frame) back to the rim of the same level
+  instead of cutting to it. EASY: no life lost. MEDIUM/HARD solo: the
+  dying state eases the warp back. Co-op MEDIUM/HARD is unchanged: the
+  struck player loses a life and the team carries on.
+* `demos/cxx/tempest_32k/README.md` describes the gameplay.
+* `tools/vircon32/build-tools.sh` no longer tries to build wav2vircon
+  (it needs SDL audio, which the tool build does not have).
