@@ -277,6 +277,12 @@ compiler's preprocessor would, so the parser sees fully expanded source:
   install; see [`inc/config.h`](inc/config.h)). `-v` lists the folders
   searched. A header found nowhere passes through silently, as before.
 
+Multi-file projects work the usual way: headers in an `inc/` folder
+found with `-I`, modules pooled by `#include "src/module.cpp"` lines in
+the main file (`demos/cxx/tempest_32k` is laid out like this). Errors
+name the file they are in (`semantic error at src/hud.cpp:363: ...`),
+and the `-g` debug map records each line against its own source file.
+
 Nothing is lost in translation: every `#define` and `#undef` is also
 passed through to the top of the generated C, and a use of a simple
 named constant keeps its name there (`int [MAX] scores;`, `x - LOW`).

@@ -54,6 +54,9 @@ static char *path_dirname(const char *path) {
 
 /* malloc'd "dir/target". */
 static char *join_path(const char *dir, const char *target) {
+    /* "." + "src/a.cpp" is just "src/a.cpp": the name shows up in
+     * diagnostics and debug maps, so keep it as the person would write it */
+    if (strcmp(dir, ".") == 0) return strdup(target);
     char *joined = malloc(strlen(dir) + strlen(target) + 2);
     sprintf(joined, "%s/%s", dir, target);
     return joined;

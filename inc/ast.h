@@ -816,6 +816,12 @@ typedef struct AstList {
 struct AstNode {
     AstKind kind;
     int line;
+    /* The source file `line` refers to -- the main .cpp or whichever
+     * .hpp/.cpp include the node was parsed from (an interned string,
+     * never freed). Stamped by ast_new from the lexer's current file, so
+     * a node synthesized AFTER parsing (by lowering) carries the main
+     * file's name: use the enclosing function's node for those. */
+    const char *file;
 
     char *str1;
     char *str2;

@@ -7459,3 +7459,41 @@ for post-mortem state decoding.
 - Modernized: macro-sized arrays, SDK `channel_*` names, `#if`/`#error`
   configuration checks, `RGB()` constant folding, ternaries, natural float
   division; header notes corrected (VIRCON32_QUIRKS #20).
+
+---
+
+## Round: multi-file TEMPEST 32K, per-file diagnostics and debug maps, segmented inchworm — 20261001-dev (third pass)
+
+**TEMPEST 32K is now a multi-file project**, to exercise v32c++'s own
+include handling: `inc/tempest.hpp` (umbrella: SDK + `v32/` headers,
+`config.hpp`, `state.hpp`, all `#pragma once`), thirteen modules in `src/`
+pooled by `#include "src/x.cpp"` lines in `tempest_32k.cpp` (which keeps
+the notes and `main`), built with `-I ../../.. -I inc`. Cut along the
+existing section order, so no new prototypes were needed. Acceptance
+test: the split project generates byte-identical C to the single file.
+
+**What the split exposed in v32c++ (fixed):**
+- The `-g` debug map wrote every entry against the main `.cpp`, so a line
+  of `src/render.cpp` mapped to that line number of `tempest_32k.cpp`.
+  `AstNode.file` (stamped by `ast_new` from the lexer's current file) and
+  a per-entry `cpp_file` fix it; statements use their enclosing function's
+  file, since lowering-synthesized nodes have no reliable file of their own.
+- Semantic errors printed a bare line number. They now read
+  `semantic error at src/hud.cpp:363: ...` (file of the node `check_node`
+  is visiting); lowering errors likewise.
+- Included files resolved next to a file in the current directory were
+  named `./src/x.cpp`; now `src/x.cpp`.
+
+**Game changes** (`src/enemies.cpp`, `src/render.cpp`):
+- Inchworm: `Enemy.segs` (WORM_SEGMENTS = 3). A hit destroys the front
+  segment (+50), the next one back becomes the head where it already was
+  (a one-segment knock-back), the last hit kills it (+100). Beads are
+  drawn and hit-tested `worm_gap()` apart (half the stretch, never under
+  WORM_MIN_GAP, so a bunched worm is still a chain); the hit window is the
+  body BEHIND the head only (it used to extend the same distance in front).
+  Colour shows segments left: cyan 3, amber 2, red 1.
+- Spike fragments: bullets step 0.035 and retire past z = 1.0, so a stub
+  shorter than a step was never tested -- drawn forever, and inactive
+  (the sweep ignores spikes under 0.05). A trim leaving less than
+  SPIKE_STUB (0.05) now clears the lane, and a shot reaching the far end
+  clears any stub there.

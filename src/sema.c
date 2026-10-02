@@ -6,8 +6,14 @@
 
 static int g_error_count = 0;
 
+/* The file of the node check_node is visiting, so an error in a multi-file
+ * project says WHICH file its line number is in. NULL (line only) for
+ * errors raised outside that walk. */
+static const char *g_sema_file = NULL;
+
 static void sema_error(int line, const char *fmt, ...) {
-    fprintf(stderr, "semantic error at line %d: ", line);
+    if (g_sema_file != NULL) fprintf(stderr, "semantic error at %s:%d: ", g_sema_file, line);
+    else fprintf(stderr, "semantic error at line %d: ", line);
     va_list ap;
     va_start(ap, fmt);
     vfprintf(stderr, fmt, ap);
@@ -2566,6 +2572,7 @@ static AstNode *native_base_of(const AstNode *expr,
 
 static void check_node(AstNode *n, AstNode *current_class, LocalVarType **locals) {
     if (n == NULL) return;
+    if (n->file != NULL) g_sema_file = n->file;
     switch (n->kind) {
         case AST_BLOCK:
             for (int i = 0; i < n->list.count; i++) check_node(n->list.items[i], current_class, locals);

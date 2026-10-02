@@ -24,6 +24,9 @@
 typedef struct DebugMapEntry {
     int c_line;
     int cpp_line;
+    const char *cpp_file; /* the source file cpp_line is in (interned, not
+                             owned): the main .cpp or an included
+                             .hpp/.cpp. NULL = the main file. */
     char *function_name; /* NULL unless this entry marks a function's own first line of C output */
 } DebugMapEntry;
 
@@ -39,7 +42,7 @@ extern DebugMap g_debug_map;
  * the caller (codegen.c) is the one deciding whether this point is
  * actually worth recording. `function_name` may be NULL; when given,
  * it's copied (strdup'd), not just referenced. */
-void debug_map_record(int c_line, int cpp_line, const char *function_name);
+void debug_map_record(int c_line, int cpp_line, const char *cpp_file, const char *function_name);
 
 /* Frees every entry (including each one's own function_name, if any)
  * and resets g_debug_map to empty. Call once after the map has been
@@ -53,6 +56,9 @@ void debug_map_free(void);
 /* Writes every recorded entry to `path`, one per line, in the format
  * Matthew's own example .asm.debug file uses:
  *     c_path,c_line,cpp_path,cpp_line[,function_name]
+ * Each entry names its OWN source file (a multi-file project maps lines
+ * of every included .hpp/.cpp to that file, not to the main one);
+ * `cpp_path` is used only for an entry that has none.
  * `c_path`/`cpp_path` are written EXACTLY as given -- no path
  * normalization, resolution, or validation of any kind happens here.
  * Returns 1 on success; on failure to open `path` for writing, reports

@@ -41,10 +41,13 @@ void ast_list_append_flatten(AstList *list, AstNode *node) {
     }
 }
 
+extern const char *g_current_filename;   /* driver.h; kept current by lexer.l */
+
 AstNode *ast_new(AstKind kind, int line) {
     AstNode *n = calloc(1, sizeof(AstNode));
     n->kind = kind;
     n->line = line;
+    n->file = g_current_filename;
     n->list = ast_list_new();
     return n;
 }

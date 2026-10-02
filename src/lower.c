@@ -4923,8 +4923,8 @@ static int check_no_ternaries(AstNode *n) {
     if (n == NULL) return 0;
     int errors = 0;
     if (is_comma(n)) {
-        fprintf(stderr, "lowering error at line %d: the comma operator can't be lowered "
-                "for Vircon32 C outside a function body\n", n->line);
+        fprintf(stderr, "lowering error at %s:%d: the comma operator can't be lowered "
+                "for Vircon32 C outside a function body\n", n->file ? n->file : "?", n->line);
         return 1;
     }
     if (n->kind == AST_TERNARY) {
@@ -4936,9 +4936,10 @@ static int check_no_ternaries(AstNode *n) {
             n->a = n->b = n->c = NULL;
             return 0;
         }
-        fprintf(stderr, "lowering error at line %d: this `?:` can't be lowered for "
+        fprintf(stderr, "lowering error at %s:%d: this `?:` can't be lowered for "
                 "Vircon32 C (which has no ternary operator) -- outside a function "
-                "body it must be an integer constant; use if/else instead\n", n->line);
+                "body it must be an integer constant; use if/else instead\n",
+                n->file ? n->file : "?", n->line);
         return 1;
     }
     errors += check_no_ternaries(n->a);

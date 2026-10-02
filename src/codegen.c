@@ -1513,6 +1513,7 @@ static void print_var_decl_inline(FILE *out, const AstNode *n) {
  * if/while/for/block structure and there's nothing about a RETURN
  * statement itself that says which function it belongs to. */
 static int g_debug_last_cpp_line = -1;
+static const char *g_debug_cur_file = NULL; /* source file of the function being emitted */
 
 static void print_stmt(FILE *out, const AstNode *s, int indent, int strip_return_value) {
     if (s == NULL) return;
@@ -1531,7 +1532,7 @@ static void print_stmt(FILE *out, const AstNode *s, int indent, int strip_return
      * for what the person directly wrote; it is not perfectly precise
      * for every synthesized statement, and isn't claimed to be. */
     if (s->line != g_debug_last_cpp_line) {
-        debug_map_record(g_codegen_out_line, s->line, NULL);
+        debug_map_record(g_codegen_out_line, s->line, g_debug_cur_file, NULL);
         g_debug_last_cpp_line = s->line;
     }
     switch (s->kind) {
@@ -1868,7 +1869,11 @@ static void emit_function_definition(FILE *out, const AstNode *func) {
      * .c file's own function is called, not what the .cpp called it,
      * matching which side of the mapping the function-name column is
      * actually documenting. */
-    debug_map_record(g_codegen_out_line, func->line, name);
+    /* The function's own file stands for every statement in it: a function
+     * never spans files, and statements synthesized by lowering don't
+     * carry a reliable file of their own (see AstNode.file). */
+    g_debug_cur_file = func->file;
+    debug_map_record(g_codegen_out_line, func->line, g_debug_cur_file, name);
     g_debug_last_cpp_line = func->line;
 
     /* this-injection (lower.c phase 2) gives every METHOD an explicit
