@@ -80,9 +80,16 @@ public:
     // One glyph stretched: its 10 x 20 cell becomes (10 * sx) x (20 * sy),
     // growing right and down from (x, y). The saucer is built from these.
     void blitScaled(int spriteId, int x, int y, float sx, float sy) {
-        set_drawing_scale(1.40625 * sx, 1.40625 * sy);
+        setGlyphScale(sx, sy);
         blit(spriteId, x, y);
-        set_drawing_scale(1.40625, 1.40625);
+        setGlyphScale(1.0, 1.0);
+    }
+
+    // The same stretch for every blit() that follows, until it is set back
+    // to (1, 1) -- cheaper than blitScaled() when many glyphs share one
+    // size, as the title logo's blocks do.
+    void setGlyphScale(float sx, float sy) {
+        set_drawing_scale(1.40625 * sx, 1.40625 * sy);
     }
 
 private:

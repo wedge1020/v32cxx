@@ -3,8 +3,9 @@
 //  entities.hpp — everything that moves or gets shot
 //
 //      Entity                  position, size, life cycle, collision
-//       +- Player              the cannon
-//       +- Bullet              the player's shot and the aliens' bombs
+//       +- Player              the cannon, its weapon and its shield
+//       +- Bullet              the player's shots and the aliens' bombs
+//       +- PowerUp             a falling capsule
 //       +- Alien               one invader
 //       |   +- AlienTopRow / AlienMiddleRow / AlienBottomRow
 //       +- Bunker              a destructible shield
@@ -65,6 +66,17 @@ protected:
 };
 
 // ---------------------------------------------------------------------------
+// What the cannon fires. Changed by catching a power-up capsule; lost when
+// the cannon is destroyed, or when its time runs out.
+// ---------------------------------------------------------------------------
+enum Weapon {
+    WEAPON_SINGLE,     // one shot
+    WEAPON_DOUBLE,     // two, side by side
+    WEAPON_TRIPLE,     // three, the outer two fanning out
+    WEAPON_MEGA        // one thick bolt that goes THROUGH what it destroys
+};
+
+// ---------------------------------------------------------------------------
 // Player cannon
 // ---------------------------------------------------------------------------
 class Player : public Entity {
@@ -72,7 +84,7 @@ public:
     Player(int px = 0, int py = PLAYER_HOME_Y)
         : Entity(px, py, PLAYER_WIDTH, PLAYER_HEIGHT) {}
 
-    // back to a fresh three-life cannon at (px, py)
+    // back to a fresh three-life cannon at (px, py), plain weapon, no shield
     void reset(int px, int py) {
         mPos = Vec2(px, py);
         mLives = 3;
@@ -80,12 +92,15 @@ public:
         mWantsFire = false;
         mState = STATE_ALIVE;
         mTimer = 0;
+        mWeapon = WEAPON_SINGLE;
+        mWeaponFrames = 0;
+        mShield = 0;
     }
 
-    // the visible turret+base band is roughly the lower 8 px of the cell
+    // the visible turret+base band, not the whole 20 x 40 cell
     Rect bounds() const {
-        return Rect(mPos.x, mPos.y + PLAYER_HIT_INSET_Y,
-                    PLAYER_WIDTH, PLAYER_HEIGHT - 2 * PLAYER_HIT_INSET_Y);
+        return Rect(mPos.x + PLAYER_HIT_INSET_X, mPos.y + PLAYER_HIT_TOP,
+                    PLAYER_WIDTH - 2 * PLAYER_HIT_INSET_X, PLAYER_HIT_HEIGHT);
     }
 
     void handleInput(const Input& in) {
@@ -98,6 +113,7 @@ public:
     }
 
     void update() {
+        ++mAnim;
         if (mState == STATE_DYING) {
             tickDeath();
             if (mState == STATE_DEAD) mRespawn = PLAYER_RESPAWN_FRAMES;
@@ -108,28 +124,53 @@ public:
                 mState = STATE_ALIVE;
             }
         }
+        // a timed weapon runs down (0 frames with a weapon = no time limit)
+        if (mWeaponFrames > 0) {
+            --mWeaponFrames;
+            if (mWeaponFrames == 0) mWeapon = WEAPON_SINGLE;
+        }
     }
 
     void draw(Video& video) {
         if (mState == STATE_ALIVE) {
             video.tint(color_green);
-            video.blit2(AssetIds::PLAYER_SHIP_TURRET, AssetIds::PLAYER_SHIP_BASE,
-                        mPos.x, mPos.y, PLAYER_TURRET_DROP);
+            // '^' turret dropped onto the '_' base, both at twice the size
+            video.blitScaled(AssetIds::PLAYER_SHIP_TURRET, mPos.x,
+                             mPos.y + PLAYER_TURRET_DROP * PLAYER_SCALE,
+                             PLAYER_SCALE, PLAYER_SCALE);
+            video.blitScaled(AssetIds::PLAYER_SHIP_BASE, mPos.x, mPos.y,
+                             PLAYER_SCALE, PLAYER_SCALE);
+            drawShield(video);
         } else if (mState == STATE_DYING) {
             video.tint(color_orange);
-            video.blit(AssetIds::PLAYER_EXPLOSION, mPos.x, mPos.y);
+            video.blitScaled(AssetIds::PLAYER_EXPLOSION, mPos.x, mPos.y,
+                             PLAYER_SCALE, PLAYER_SCALE);
         }
     }
 
     bool wantsFire() const { return mWantsFire; }
     void clearFire()       { mWantsFire = false; }
 
-    // where a new shot starts: one cell above the cannon
-    Vec2 muzzle() const { return Vec2(mPos.x + PLAYER_WIDTH / 2, mPos.y - SPRITE_H); }
+    // Where a new shot's cell goes so that the shot is centered on the
+    // cannon and starts at the turret's tip. (A shot is a 10 px cell like
+    // any glyph; the cannon's center is the middle of ITS cell -- so the
+    // shot's cell starts half a shot-cell to the left of that.)
+    Vec2 muzzle() const {
+        return Vec2(mPos.x + PLAYER_WIDTH / 2 - SPRITE_W / 2, mPos.y + 8);
+    }
 
+    // A bomb landed. The shield, if any, takes it; otherwise the cannon is
+    // destroyed and whatever weapon it carried is lost.
     void hit(Sound& sfx) {
         if (!alive()) return;
+        if (mShield > 0) {
+            --mShield;
+            sfx.play(AssetIds::SOUND_BUNKER_HIT);
+            return;
+        }
         --mLives;
+        mWeapon = WEAPON_SINGLE;
+        mWeaponFrames = 0;
         startDying(PLAYER_DEATH_FRAMES);
         sfx.play(AssetIds::SOUND_PLAYER_DEATH);
     }
@@ -138,41 +179,152 @@ public:
     void awardLife()      { ++mLives; }
     bool gameOver() const { return mLives <= 0 && mState == STATE_DEAD; }
 
+    // ---- weapon and shield ----------------------------------------------------
+    Weapon weapon() const { return mWeapon; }
+    // frames = 0: keep it until the cannon is destroyed
+    void giveWeapon(Weapon w, int frames) { mWeapon = w; mWeaponFrames = frames; }
+    // whole seconds left on a timed weapon, 0 if it has no time limit
+    int weaponSecondsLeft() const { return (mWeaponFrames + 59) / 60; }
+
+    int  shield() const       { return mShield; }
+    void giveShield(int hits) { mShield = hits; }
+
 private:
-    int  mLives = 3;
-    int  mRespawn = 0;
-    bool mWantsFire = false;
+    // A cyan bubble round the cannon: an 'O' stretched to enclose it.
+    // Down to its last hit, it flickers.
+    void drawShield(Video& video) {
+        if (mShield <= 0) return;
+        if (mShield == 1 && (mAnim & 4) != 0) return;
+        video.tint(color_cyan);
+        video.blitScaled(AssetIds::PLAYER_SHIELD, mPos.x - 8, mPos.y + 4, 3.6, 2.3);
+    }
+
+    int    mLives = 3;
+    int    mRespawn = 0;
+    bool   mWantsFire = false;
+    Weapon mWeapon = WEAPON_SINGLE;
+    int    mWeaponFrames = 0;    // frames left on a timed weapon, 0 = untimed
+    int    mShield = 0;          // bomb hits the shield can still take
+    int    mAnim = 0;            // frame counter, for the shield's flicker
 };
 
 // ---------------------------------------------------------------------------
-// Bullet: the player's shot and the aliens' bombs. A plain value -- the
-// bombs live directly in a std::vector<Bullet>.
+// Bullet: the player's shots and the aliens' bombs. A plain value -- both
+// live directly in std::vector<Bullet>s.
+//
+// Every Bullet carries some ENERGY: the number of targets it can destroy
+// before it is spent. An ordinary shot has 1. A MEGA shot has
+// MEGA_SHOT_ENERGY (6) and keeps flying through each alien it destroys --
+// enough for a whole column of five with one hit left over for whatever
+// is above them, the saucer included. It is also drawn as a thick,
+// shimmering bolt and has a wider hitbox.
 // ---------------------------------------------------------------------------
 class Bullet : public Entity {
 public:
-    Bullet(const Vec2& at, const Vec2& velocity, int spriteId)
+    Bullet(const Vec2& at, const Vec2& velocity, int spriteId, bool mega = false)
         : Entity(at.x, at.y, SPRITE_W, SPRITE_H), mVel(velocity.x, velocity.y),
-          mSprite(spriteId) {}
+          mSprite(spriteId), mMega(mega), mEnergy(mega ? MEGA_SHOT_ENERGY : 1) {}
 
-    // '|' is a ~2 px stroke and 'v' a small chevron inside the 10x20 cell
+    bool mega() const { return mMega; }
+
+    // One target destroyed. Returns true if the bullet is now spent.
+    bool spend() {
+        --mEnergy;
+        return mEnergy <= 0;
+    }
+
+    // '|' is a ~2 px stroke and 'v' a small chevron inside the 10x20 cell;
+    // the mega bolt is MEGA_SHOT_WIDTH wide, centered on the same cell
     Rect bounds() const {
+        if (mMega)
+            return Rect(mPos.x + SPRITE_W / 2 - MEGA_SHOT_WIDTH / 2, mPos.y + BULLET_HIT_INSET_Y,
+                        MEGA_SHOT_WIDTH, SPRITE_H - 2 * BULLET_HIT_INSET_Y);
         return Rect(mPos.x + BULLET_HIT_INSET_X, mPos.y + BULLET_HIT_INSET_Y,
                     SPRITE_W - 2 * BULLET_HIT_INSET_X, SPRITE_H - 2 * BULLET_HIT_INSET_Y);
     }
 
     void update() {
+        ++mTimer;       // a Bullet never dies slowly: mTimer is free to count frames
         mPos += mVel;
-        if (mPos.y < -SPRITE_H || mPos.y > PLAYFIELD_H) mState = STATE_DEAD;
+        if (mPos.y < -SPRITE_H || mPos.y > PLAYFIELD_H ||
+            mPos.x < -SPRITE_W || mPos.x > PLAYFIELD_W) mState = STATE_DEAD;
     }
 
     void draw(Video& video) {
-        video.tint(color_white);
-        video.blit(mSprite, mPos.x, mPos.y);
+        if (!mMega) {
+            video.tint(color_white);
+            video.blit(mSprite, mPos.x, mPos.y);
+            return;
+        }
+        // The mega bolt: the same '!' three times over, each stretched
+        // about its own middle -- a wide dim halo, a mid glow, and a
+        // bright core whose colour changes every other frame.
+        int center = mPos.x + SPRITE_W / 2;
+        video.tint(color_blue);
+        video.blitScaled(mSprite, center - 30, mPos.y - 12, 6.0, 2.2);
+        video.tint(color_cyan);
+        video.blitScaled(mSprite, center - 20, mPos.y - 8, 4.0, 1.9);
+        int phase = (mTimer / 2) & 3;
+        video.tint(phase == 0 ? color_white : phase == 1 ? color_yellow
+                 : phase == 2 ? color_white : color_magenta);
+        video.blitScaled(mSprite, center - 10, mPos.y - 4, 2.0, 1.6);
     }
 
 private:
     Vec2 mVel;
     int  mSprite;
+    bool mMega;
+    int  mEnergy;
+};
+
+// ---------------------------------------------------------------------------
+// PowerUp: a capsule that falls from a destroyed alien or saucer. Catch it
+// with the cannon to use it; it is lost if it reaches the ground.
+//
+//     D  double shot        B  blast: the aliens' bottom row is destroyed
+//     T  triple shot        R  repair: every bunker back to full strength
+//     M  mega shot          S  shield: a bubble that absorbs bomb hits
+// ---------------------------------------------------------------------------
+enum PowerUpKind {
+    POWER_DOUBLE,
+    POWER_TRIPLE,
+    POWER_MEGA,
+    POWER_BLAST,
+    POWER_REPAIR,
+    POWER_SHIELD,
+    POWER_KINDS
+};
+
+const char POWERUP_LETTERS[POWER_KINDS] = { 'D', 'T', 'M', 'B', 'R', 'S' };
+const int  POWERUP_COLORS[POWER_KINDS]  = {
+    color_yellow, color_orange, color_magenta, color_red, color_green, color_cyan
+};
+
+class PowerUp : public Entity {
+public:
+    PowerUp(const Vec2& at, PowerUpKind kind)
+        : Entity(at.x, at.y, SPRITE_W, SPRITE_H), mKind(kind) {}
+
+    PowerUpKind kind() const { return mKind; }
+
+    void update() {
+        ++mTimer;
+        mPos.y += POWERUP_FALL_SPEED;
+        if (mPos.y > PLAYFIELD_H) mState = STATE_DEAD;
+    }
+
+    // its letter between a pair of brackets, flashing white
+    void draw(Video& video) {
+        bool flash = ((mTimer / 6) & 1) != 0;
+        video.tint(flash ? color_white : POWERUP_COLORS[mKind]);
+        video.blit('[', mPos.x - 7, mPos.y);
+        video.blit(']', mPos.x + 7, mPos.y);
+        video.tint(flash ? POWERUP_COLORS[mKind] : color_white);
+        video.blit(POWERUP_LETTERS[mKind], mPos.x, mPos.y);
+    }
+
+private:
+    PowerUpKind mKind;
 };
 
 // ---------------------------------------------------------------------------

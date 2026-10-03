@@ -28,12 +28,13 @@ enum PauseRow {
 class Game {
 public:
     Game() {
-        mBombs.reserve(BOMB_CAPACITY);   // it never holds more: see updateBombs
+        // none of these ever holds more, so none ever has to grow
+        mBombs.reserve(BOMB_CAPACITY);
+        mShots.reserve(3);
+        mPowerUps.reserve(POWERUP_CAPACITY);
         mSfx.init();
         resetPlayer();
     }
-
-    ~Game() { delete mPlayerBullet; }
 
     void runFrame(const Input& in) {
         updateMusic();
@@ -60,8 +61,9 @@ public:
             mSwarm.draw(video);
             mSaucer.draw(video);
             for (Bunker& bunker : mBunkers) bunker.draw(video);
-            if (mPlayerBullet) mPlayerBullet->draw(video);
+            for (Bullet& shot : mShots) shot.draw(video);
             for (Bullet& bomb : mBombs) bomb.draw(video);
+            for (PowerUp& capsule : mPowerUps) capsule.draw(video);
             drawHUD(video);
         }
         if (mPaused) drawPauseOverlay(video);   // on top of the frozen scene
@@ -105,10 +107,23 @@ private:
         return 3;
     }
     // hit points a bomb takes off each bunker cell it touches (a cell has 4)
-    int shieldDamage() const {
+    int bunkerDamage() const {
         if (mDifficulty == DIFF_EASY)   return 1;
         if (mDifficulty == DIFF_MEDIUM) return 2;
         return 4;
+    }
+    // how long a weapon power-up lasts, in frames: no limit on easy (0),
+    // 60 seconds on medium, 30 on hard
+    int weaponFrames() const {
+        if (mDifficulty == DIFF_EASY)   return 0;
+        if (mDifficulty == DIFF_MEDIUM) return 60 * 60;
+        return 30 * 60;
+    }
+    // bomb hits a shield power-up absorbs
+    int shieldHits() const {
+        if (mDifficulty == DIFF_EASY)   return 5;
+        if (mDifficulty == DIFF_MEDIUM) return 3;
+        return 1;
     }
 
     // ---- starting games and waves ------------------------------------------------
@@ -128,17 +143,32 @@ private:
         mSwarm.setDifficulty(mDifficulty);
         resetPlayer();
         mBombs.clear();
-        deleteBullet();
+        mShots.clear();
+        mPowerUps.clear();
+        mFireCooldown = 0;
         buildWave();
         mState = GAME_PLAYING;
+#ifdef SI_TEST_POWERUPS
+        // Test build (v32c++ -D SI_TEST_POWERUPS): one capsule of every
+        // kind falls onto the cannon, 150 frames apart, so each power-up
+        // can be seen without waiting on luck.
+        for (int kind = 0; kind < POWER_KINDS; ++kind) {
+            Vec2 above = mPlayer.muzzle() + Vec2(0, -60 - 150 * kind);
+            mPowerUps.push_back(PowerUp(above, (PowerUpKind)(POWER_KINDS - 1 - kind)));
+        }
+#endif
     }
 
     void buildWave() {
         // Every wave starts at the same height: difficulty comes from the
         // march and bomb cadence, not from where the formation begins.
         mSwarm.spawn(40);
-        // four 60 px bunkers across the 448 px field: x = 41, 143, 245, 347
-        // (41 px margins, 42 px gaps)
+        rebuildBunkers();
+    }
+
+    // four 60 px bunkers across the 448 px field: x = 41, 143, 245, 347
+    // (41 px margins, 42 px gaps), every cell back to full strength
+    void rebuildBunkers() {
         for (int i = 0; i < mBunkers.size(); ++i) mBunkers[i].rebuild(41 + i * 102);
     }
 
@@ -150,38 +180,58 @@ private:
         }
         mPlayer.handleInput(in);
 
-        updatePlayerBullet();
+        updateShots();
         mSwarm.update(mSfx);
         updateBombs();
         mSaucer.update();
         mPlayer.update();
         updateSaucerSound();
         checkCollisions();
+        updatePowerUps();
         awardExtraLife();
 
-        if (mPlayer.gameOver())                         mState = GAME_OVER;
-        else if (mSwarm.aliveCount() == 0)              mState = GAME_WAVE_CLEAR;
-        else if (mSwarm.reachedBottom(PLAYER_HOME_Y))   mState = GAME_OVER;
+        if (mPlayer.gameOver())                       mState = GAME_OVER;
+        else if (mSwarm.aliveCount() == 0)            mState = GAME_WAVE_CLEAR;
+        else if (mSwarm.reachedBottom(INVASION_Y))    mState = GAME_OVER;
     }
 
-    // The player has one shot on screen at a time: a Bullet on the heap,
-    // or nullptr.
-    void updatePlayerBullet() {
-        if (mPlayer.wantsFire() && mPlayerBullet == nullptr) {
-            mPlayerBullet = new Bullet(mPlayer.muzzle(), Vec2(0, -8),
-                                       AssetIds::PLAYER_BULLET);
-            mSfx.play(AssetIds::SOUND_SHOOT);
-        }
+    // The cannon fires when nothing it fired is still in flight -- one
+    // volley on screen at a time, whatever the weapon. A volley is one,
+    // two or three ordinary shots, or a single mega bolt (which also
+    // needs a moment to recharge after it is gone).
+    void updateShots() {
+        if (mFireCooldown > 0) --mFireCooldown;
+        if (mPlayer.wantsFire() && mShots.empty() && mFireCooldown == 0) fire();
         mPlayer.clearFire();
-        if (mPlayerBullet) {
-            mPlayerBullet->update();
-            if (mPlayerBullet->state() == STATE_DEAD) deleteBullet();
+        for (int i = 0; i < mShots.size(); ) {
+            mShots[i].update();
+            if (mShots[i].state() == STATE_DEAD) mShots.erase(mShots.begin() + i);
+            else ++i;
         }
     }
 
-    void deleteBullet() {
-        delete mPlayerBullet;
-        mPlayerBullet = nullptr;
+    void fire() {
+        Vec2 from = mPlayer.muzzle();
+        Vec2 up(0, -SHOT_SPEED);
+        switch (mPlayer.weapon()) {
+            case WEAPON_DOUBLE:
+                mShots.push_back(Bullet(from - Vec2(DOUBLE_SHOT_SPREAD, 0), up, AssetIds::PLAYER_BULLET));
+                mShots.push_back(Bullet(from + Vec2(DOUBLE_SHOT_SPREAD, 0), up, AssetIds::PLAYER_BULLET));
+                break;
+            case WEAPON_TRIPLE:
+                mShots.push_back(Bullet(from, up - Vec2(TRIPLE_SHOT_DRIFT, 0), AssetIds::PLAYER_BULLET));
+                mShots.push_back(Bullet(from, up,                              AssetIds::PLAYER_BULLET));
+                mShots.push_back(Bullet(from, up + Vec2(TRIPLE_SHOT_DRIFT, 0), AssetIds::PLAYER_BULLET));
+                break;
+            case WEAPON_MEGA:
+                mShots.push_back(Bullet(from, Vec2(0, -MEGA_SHOT_SPEED), AssetIds::PLAYER_BULLET, true));
+                mFireCooldown = MEGA_RECHARGE_FRAMES;
+                break;
+            default:
+                mShots.push_back(Bullet(from, up, AssetIds::PLAYER_BULLET));
+                break;
+        }
+        mSfx.play(AssetIds::SOUND_SHOOT);
     }
 
     // The aliens' bombs: Bullet values in a std::vector, at most
@@ -212,28 +262,12 @@ private:
 
     // ---- collisions -------------------------------------------------------------------
     void checkCollisions() {
-        // the player's shot: aliens first, then the saucer, then the bunkers
-        if (mPlayerBullet) {
-            Rect shot = mPlayerBullet->bounds();
-            Alien* a = mSwarm.hitTest(shot);
-            if (a) {
-                a->destroy(mSfx);
-                addScore(a->points());
-                deleteBullet();
-            } else if (mSaucer.flying() && mSaucer.collidesWith(shot)) {
-                addScore(mSaucer.scoreValue());
-                mSaucer.destroy(mSfx);
-                deleteBullet();
-            } else {
-                for (Bunker& bunker : mBunkers) {
-                    if (bunker.erode(shot, mSfx, 1)) {
-                        deleteBullet();
-                        break;
-                    }
-                }
-            }
+        // the cannon's shots: aliens first, then the saucer, then the bunkers
+        for (int i = 0; i < mShots.size(); ) {
+            if (shotHitSomething(mShots[i])) mShots.erase(mShots.begin() + i);
+            else ++i;
         }
-        // the bombs: the player first, then the bunkers
+        // the bombs: the cannon first, then the bunkers
         for (int i = 0; i < mBombs.size(); ) {
             bool gone = false;
             if (mPlayer.collidesWith(mBombs[i])) {
@@ -242,7 +276,7 @@ private:
             } else {
                 Rect bomb = mBombs[i].bounds();
                 for (Bunker& bunker : mBunkers) {
-                    if (bunker.erode(bomb, mSfx, shieldDamage())) {
+                    if (bunker.erode(bomb, mSfx, bunkerDamage())) {
                         gone = true;
                         break;
                     }
@@ -251,6 +285,63 @@ private:
             if (gone) mBombs.erase(mBombs.begin() + i);
             else ++i;
         }
+    }
+
+    // What one shot hit this frame. Returns true if the shot is used up.
+    // An ordinary shot is used up by the first thing it touches; a mega
+    // bolt spends one of its six hits per target and flies on, so it
+    // takes a whole column of aliens and can still reach the saucer.
+    bool shotHitSomething(Bullet& shot) {
+        Rect box = shot.bounds();
+        Alien* a = mSwarm.hitTest(box);
+        while (a) {
+            addScore(a->points());
+            a->destroy(mSfx);
+            if (g_rng.next(POWERUP_ODDS) == 0) dropPowerUp(Vec2(a->posX(), a->posY()));
+            if (shot.spend()) return true;
+            a = mSwarm.hitTest(box);     // two aliens under one wide bolt
+        }
+        if (mSaucer.flying() && mSaucer.collidesWith(box)) {
+            addScore(mSaucer.scoreValue());
+            mSaucer.destroy(mSfx);
+            // the saucer always leaves a capsule behind
+            dropPowerUp(Vec2(mSaucer.posX() + SAUCER_WIDTH / 2 - SPRITE_W / 2, mSaucer.posY()));
+            if (shot.spend()) return true;
+        }
+        // Bunkers stop an ordinary shot. A mega bolt burns straight
+        // through, destroying the cells in its way, at no cost to itself.
+        for (Bunker& bunker : mBunkers) {
+            if (bunker.erode(box, mSfx, shot.mega() ? BUNKER_CELL_HP : 1) && !shot.mega()) return true;
+        }
+        return false;
+    }
+
+    // ---- power-ups ------------------------------------------------------------------------
+    void dropPowerUp(const Vec2& at) {
+        if (mPowerUps.size() >= POWERUP_CAPACITY) return;
+        mPowerUps.push_back(PowerUp(at, (PowerUpKind)g_rng.next(POWER_KINDS)));
+    }
+
+    void updatePowerUps() {
+        for (int i = 0; i < mPowerUps.size(); ) {
+            mPowerUps[i].update();
+            bool caught = mPlayer.alive() && mPlayer.collidesWith(mPowerUps[i]);
+            if (caught) collect(mPowerUps[i].kind());
+            if (caught || mPowerUps[i].state() == STATE_DEAD) mPowerUps.erase(mPowerUps.begin() + i);
+            else ++i;
+        }
+    }
+
+    void collect(PowerUpKind kind) {
+        switch (kind) {
+            case POWER_DOUBLE: mPlayer.giveWeapon(WEAPON_DOUBLE, weaponFrames()); break;
+            case POWER_TRIPLE: mPlayer.giveWeapon(WEAPON_TRIPLE, weaponFrames()); break;
+            case POWER_MEGA:   mPlayer.giveWeapon(WEAPON_MEGA,   weaponFrames()); break;
+            case POWER_BLAST:  addScore(mSwarm.destroyBottomRow(mSfx));           break;
+            case POWER_REPAIR: rebuildBunkers();                                  break;
+            default:           mPlayer.giveShield(shieldHits());                  break;
+        }
+        mSfx.play(AssetIds::SOUND_EXTRA_LIFE);
     }
 
     // ---- pause menu ----------------------------------------------------------------------
@@ -389,6 +480,19 @@ private:
         drawNumber(video, mScore,   8,   2);
         drawNumber(video, mHiScore, 88,  2);
         drawNumber(video, mWave,    200, 2);
+        // top right: the weapon in hand (with its seconds left, if it is
+        // timed) and the shield's remaining hits
+        Weapon weapon = mPlayer.weapon();
+        if (weapon != WEAPON_SINGLE) {
+            drawText(video, weapon == WEAPON_DOUBLE ? "DOUBLE"
+                          : weapon == WEAPON_TRIPLE ? "TRIPLE" : "MEGA", 250, 2);
+            if (mPlayer.weaponSecondsLeft() > 0)
+                drawNumber(video, mPlayer.weaponSecondsLeft(), 320, 2);
+        }
+        if (mPlayer.shield() > 0) {
+            drawText(video, "SHIELD", 360, 2);
+            drawNumber(video, mPlayer.shield(), 430, 2);
+        }
         video.tint(color_green);   // spare cannons, bottom left
         for (int i = 0; i < mPlayer.lives() - 1; ++i)
             video.blit2(AssetIds::PLAYER_SHIP_TURRET, AssetIds::PLAYER_SHIP_BASE,
@@ -400,9 +504,11 @@ private:
     Swarm   mSwarm;
     Saucer  mSaucer;
     Sound   mSfx;
-    Bullet* mPlayerBullet = nullptr;               // the one shot in flight, if any
-    std::vector<Bullet> mBombs;                    // alien bombs in flight
+    std::vector<Bullet>  mShots;                   // the cannon's volley in flight
+    std::vector<Bullet>  mBombs;                   // alien bombs in flight
+    std::vector<PowerUp> mPowerUps;                // capsules falling
     std::array<Bunker, BUNKER_COUNT> mBunkers;
+    int mFireCooldown = 0;                         // frames until the mega shot recharges
 
     GameState      mState = GAME_TITLE;
     GameDifficulty mDifficulty = DIFF_MEDIUM;

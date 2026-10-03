@@ -117,6 +117,22 @@ public:
         return nullptr;
     }
 
+    // The blast power-up: destroy every living alien in the lowest row
+    // that still has any. Returns the points for all of them.
+    int destroyBottomRow(Sound& sfx) {
+        for (int r = SWARM_ROWS - 1; r >= 0; --r) {
+            int points = 0;
+            for (int c = 0; c < SWARM_COLS; ++c) {
+                Alien* a = mGrid[r][c];
+                if (!a || !a->alive()) continue;
+                points += a->points();
+                a->destroy(sfx);
+            }
+            if (points > 0) return points;
+        }
+        return 0;
+    }
+
 private:
     Alien* lowestInColumn(int c) {
         for (int r = SWARM_ROWS - 1; r >= 0; --r) {

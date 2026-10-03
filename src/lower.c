@@ -5249,6 +5249,12 @@ static AstNode *tern_break_unless(AstNode *cond, int line) {
 
 /* Declares a fresh temporary (in `out`) and returns its name. */
 static char *tern_declare(TernCtx *cx, AstList *out, AstNode *type, AstNode *init, int line) {
+    /* The temporary is assigned to after it is declared, so it cannot be
+     * const, whatever the expression it stands in for is: a ternary whose
+     * first branch read a `const int` table gave `const int tmp;` and
+     * then `tmp = ...`, which Vircon32 C rejects. Only the top-level
+     * const goes; `const char *` (pointer to const) stays as it is. */
+    while (type != NULL && type->kind == AST_CONST_TYPE && init == NULL) type = type->a;
     char *name = tern_tmp_name(cx);
     AstNode *decl = ast_new(AST_VAR_DECL, line);
     decl->str1 = name;
@@ -5624,7 +5630,13 @@ static int check_no_ternaries(AstNode *n) {
     }
     errors += check_no_ternaries(n->a);
     errors += check_no_ternaries(n->b);
-    errors += check_no_ternaries(n->c);
+    /* A function's `c` is its member-initializer list. By now every entry
+     * has been turned into a statement at the top of the body (where any
+     * `?:` in it was lowered like the rest); the list itself is a spent
+     * copy, never emitted, and still holds the original expression --
+     * `: mEnergy(mega ? 6 : 1)` was reported here as a `?:` "outside a
+     * function body". */
+    if (n->kind != AST_FUNC_DEF) errors += check_no_ternaries(n->c);
     errors += check_no_ternaries(n->d);
     for (int i = 0; i < n->list.count; i++) errors += check_no_ternaries(n->list.items[i]);
     return errors;

@@ -6,7 +6,8 @@
 //  id is simply the character it shows (texture -1 has one region per
 //  character code). Nothing here is a custom texture.
 //
-//   '^' '_'   player cannon: turret glyph superimposed on the base glyph
+//   '^' '_'   player cannon: turret glyph superimposed on the base glyph,
+//             drawn at twice the size (the spare-life icons stay 1x)
 //   '!'       player shot
 //   'W' 'w'   top-row alien (squid), frames 0 and 1
 //   'X' 'x'   middle-row alien (crab)
@@ -15,6 +16,7 @@
 //   0x11..0x14  bunker cell, 1..4 hit points left (lightest..solid)
 //   'v' '|'   alien bombs (squiggle, plumb)
 //   the mystery saucer is assembled from 'O', 'o' and '|' -- see Saucer
+//   'D' 'T' 'M' 'B' 'R' 'S'  falling power-up capsules -- see PowerUp
 //   '0'..'9', 'A'..'Z'  score and text
 //
 //  SOUNDS are cartridge sound ids. The #sound hints in space_invaders.cpp
@@ -44,7 +46,8 @@ namespace AssetIds {
         SAUCER_DOME            = 'o',   // stretched, centered on top of it
         SAUCER_LIGHT           = '|',   // rim lights sliding round the hull
         ALIEN_BULLET_SQUIGGLE  = 'v',
-        ALIEN_BULLET_PLUMB     = '|'
+        ALIEN_BULLET_PLUMB     = '|',
+        PLAYER_SHIELD          = 'O'    // stretched into a bubble round the cannon
     };
 
     enum Sounds {
@@ -72,23 +75,44 @@ enum GameConsts {
     PLAYFIELD_W              = 448,  // 448 * 45/32 = 630 of the 640 px used
     PLAYFIELD_H              = 256,
 
-    PLAYER_WIDTH             = SPRITE_W,
-    PLAYER_HEIGHT            = SPRITE_H,
+    // The cannon is drawn at twice glyph size: a 20 x 40 cell whose
+    // bottom edge is the bottom of the playfield.
+    PLAYER_SCALE             = 2,
+    PLAYER_WIDTH             = SPRITE_W * PLAYER_SCALE,
+    PLAYER_HEIGHT            = SPRITE_H * PLAYER_SCALE,
     PLAYER_SPEED             = 2,
     PLAYER_RESPAWN_FRAMES    = 90,
     PLAYER_DEATH_FRAMES      = 40,
-    PLAYER_HOME_Y            = 232,
+    PLAYER_HOME_Y            = PLAYFIELD_H - PLAYER_HEIGHT,
+    INVASION_Y               = 232,  // aliens reaching this line end the game
 
-    // The visible glyphs are much smaller than their 10x20 cells, so the
-    // thin ones get an inset hitbox (Player::bounds, Bullet::bounds);
-    // full-cell boxes made bombs "hit" while still 10-30 px away.
-    PLAYER_HIT_INSET_Y       = 6,
+    // The visible glyphs are much smaller than their cells, so the thin
+    // ones get an inset hitbox (Player::bounds, Bullet::bounds); full-cell
+    // boxes made bombs "hit" while still 10-30 px away. The cannon's
+    // turret+base band is roughly rows 12..28 of its 40-row cell.
+    PLAYER_HIT_INSET_X       = 2,
+    PLAYER_HIT_TOP           = 12,
+    PLAYER_HIT_HEIGHT        = 16,
     BULLET_HIT_INSET_X       = 3,
     BULLET_HIT_INSET_Y       = 5,
 
     // how far the '^' turret drops toward the '_' base when the two are
-    // superimposed (they sit in different parts of the font cell)
+    // superimposed (they sit in different parts of the font cell), in
+    // glyph pixels: doubled for the 2x cannon
     PLAYER_TURRET_DROP       = 9,
+
+    // Weapons and power-ups
+    SHOT_SPEED               = 8,    // px per frame, upward
+    MEGA_SHOT_SPEED          = 6,
+    MEGA_SHOT_ENERGY         = 6,    // targets it destroys before it is spent:
+                                     // a full column of 5, and one to spare
+    MEGA_SHOT_WIDTH          = 20,   // its hitbox: one alien column wide
+    MEGA_RECHARGE_FRAMES     = 60,   // wait after a mega shot before the next
+    DOUBLE_SHOT_SPREAD       = 6,    // each of the two shots, px from center
+    TRIPLE_SHOT_DRIFT        = 2,    // the outer two shots' sideways px per frame
+    POWERUP_FALL_SPEED       = 1,
+    POWERUP_CAPACITY         = 4,    // most capsules falling at once
+    POWERUP_ODDS             = 10,   // one alien in this many drops a capsule
 
     ALIEN_WIDTH              = SPRITE_W,
     ALIEN_HEIGHT             = SPRITE_H,

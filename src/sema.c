@@ -1984,11 +1984,26 @@ static int min_required_args(const AstNode *func) {
     return n;
 }
 
+static int g_enum_promotes = 0; /* see type_matches_param */
+
 static int type_matches_param(const AstNode *param_type, const AstNode *arg_type) {
     if (types_equal(param_type, arg_type)) return 1;
     const AstNode *p = param_type;
     while (p != NULL && p->kind == AST_CONST_TYPE) p = p->a;
     p = resolve_typedef_chain(p);
+    /* An enum value converts to int (C++'s integral promotion): a named
+     * constant passed where an int is wanted -- `Vec2(SHOT_SPREAD, 0)`
+     * against `Vec2(int, int)` -- matched nothing, because the
+     * argument's type is the enum, not int. Only bit when the callee
+     * was overloaded: a single candidate is accepted on argument count
+     * alone. Applied only on overload resolution's SECOND pass
+     * (g_enum_promotes), once nothing matched exactly: with f(Button)
+     * and f(int) both declared, an enum argument must pick the first,
+     * not be ambiguous between the two. */
+    if (g_enum_promotes && p != NULL && p->kind == AST_IDENT && strcmp(p->str1, "int") == 0 &&
+        sema_is_enum_type(arg_type)) {
+        return 1;
+    }
     if (p != NULL && p->kind == AST_REFERENCE_TYPE) {
         /* A plain value (or another reference to the same thing) binds
          * to a (const) reference parameter -- check the referent's type,
@@ -2150,6 +2165,8 @@ static void resolve_overload_generic(AstNode *site, const char *name, AstNode **
              * #define constants and C API call results as arguments. */
             AstNode *typed_match = NULL;
             int typed_match_count = 0;
+            for (int pass = 0; pass < 2 && typed_match_count == 0; pass++) {
+            g_enum_promotes = pass;   /* exact types first, then enum -> int */
             for (int i = 0; i < count; i++) {
                 if (!(arg_count <= candidates[i]->list.count &&
                       arg_count >= min_required_args(candidates[i]))) continue;
@@ -2164,6 +2181,8 @@ static void resolve_overload_generic(AstNode *site, const char *name, AstNode **
                     typed_match_count++;
                 }
             }
+            }
+            g_enum_promotes = 0;
             if (typed_match_count == 1) {
                 arity_match = typed_match;
                 arity_match_count = 1;
@@ -2190,6 +2209,8 @@ static void resolve_overload_generic(AstNode *site, const char *name, AstNode **
 
     AstNode *match = NULL;
     int match_count = 0;
+    for (int pass = 0; pass < 2 && match_count == 0; pass++) {
+    g_enum_promotes = pass;   /* exact types first, then enum -> int */
     for (int i = 0; i < count; i++) {
         AstNode *cand = candidates[i];
         /* Same widened-arity-range check as the single-candidate branch
@@ -2210,6 +2231,8 @@ static void resolve_overload_generic(AstNode *site, const char *name, AstNode **
         }
         if (ok) { match = cand; match_count++; }
     }
+    }
+    g_enum_promotes = 0;
 
     if (match_count == 1) {
         CallResolution *cr = calloc(1, sizeof(CallResolution));
