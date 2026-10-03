@@ -5,9 +5,9 @@
 //  transpiler knows: each distinct T/N pair becomes one ordinary class
 //  (array_int_3, array_Enemy_4, ...), generated from the text in
 //  src/generic.c and then treated like any hand-written class.
-//   1. element types: int, float, a struct, a pointer, another std::array
-//      (a class with a constructor is accepted with a warning: elements
-//      are not constructed yet);
+//   1. element types: int, float, a struct, a pointer, a class with a
+//      constructor and destructor (every element is constructed and
+//      destroyed), another std::array;
 //   2. the length as a literal, a #define, and an enum constant;
 //   3. operator[], at, front, back, size, empty, fill, data, begin/end;
 //   4. aggregate initialization (`= {1, 2, 3}`), local and global;
@@ -22,6 +22,15 @@
 enum Limits { MAX_SHOTS = 6 };
 
 struct Enemy { int x; int y; int hp; };
+
+int g_live = 0;
+
+class Counter {
+public:
+    int value;
+    Counter()  { value = 3; g_live++; }
+    ~Counter() { g_live--; }
+};
 
 class Wave {
 public:
@@ -59,7 +68,7 @@ int main() {
     // ints: aggregate init, operator[], at, front/back, fill
     std::array<int, 3> a = {1, 2, 3};
     std::array<int, 3> b;
-    b.fill(7);
+    b.fill(7);                 // a literal bound to fill's `const int &`
     b[1] = a[2] + 1;
     a.at(0) += 10;
     if (sum(a) != 16) errors++;
@@ -104,6 +113,14 @@ int main() {
     ptrs[1] = &w.slots[0];
     ptrs[1]->hp = 9;
     if (w.slots.front().hp != 9 || ptrs[0]->hp != 5) errors++;
+
+    // a class with a constructor and destructor: every element is
+    // constructed, and destroyed when the array goes out of scope
+    {
+        std::array<Counter, 3> counters;
+        if (g_live != 3 || counters[0].value != 3 || counters[2].value != 3) errors++;
+    }
+    if (g_live != 0) errors++;
 
     // an array of arrays
     std::array<std::array<int, 3>, 2> grid;

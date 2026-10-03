@@ -7555,9 +7555,10 @@ the parts that are about C++ semantics rather than output dialect.
 
 ### Still open
 
-- Member ARRAYS of objects (`Part parts[4];` inside a class) are neither
-  constructed nor destroyed by the injected code; multi-dimensional array
-  locals are constructed but not destroyed.
+- Multi-dimensional array locals are constructed but not destroyed.
+  (Member arrays of objects, `Part parts[4];` inside a class, were also
+  listed here as neither constructed nor destroyed; one-dimensional ones
+  now are, element by element -- see tests/105sample.cpp.)
 - A class whose base has only constructors that take arguments gets no
   implicit constructor (C++ would reject using it; here it is silently
   left unconstructed).

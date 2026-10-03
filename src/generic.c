@@ -47,7 +47,7 @@ static const char *const ARRAY_TEMPLATE =
     "    @T@ *data() { return m_data; }\n"
     "    @T@ *begin() { return m_data; }\n"
     "    @T@ *end() { return m_data + @N@; }\n"
-    "    void fill(@T@ value) {\n"
+    "    void fill(const @T@ &value) {\n"
     "        for (int i = 0; i < @N@; i++) m_data[i] = value;\n"
     "    }\n"
     "};\n";
@@ -57,8 +57,6 @@ typedef struct Instance {
     char *elem_text; /* Enemy */
     char *len_text;  /* 8 */
     int emitted;     /* already parsed and spliced */
-    const char *file; /* where it was first named, for diagnostics */
-    int line;
     struct Instance *next;
 } Instance;
 
@@ -148,8 +146,6 @@ AstNode *generic_array_type(AstNode *elem, int len_value, const char *len_name, 
         inst->name = strdup(mangle.s);
         inst->elem_text = strdup(text.s);
         inst->len_text = strdup(len_text);
-        inst->file = g_current_filename;
-        inst->line = line;
         if (g_instances_tail != NULL) g_instances_tail->next = inst;
         else                          g_instances = inst;
         g_instances_tail = inst;
@@ -197,47 +193,6 @@ static void list_insert(AstList *list, int at, AstNode *node) {
     ast_list_append(list, node); /* grows the list by one */
     for (int i = list->count - 1; i > at; i--) list->items[i] = list->items[i - 1];
     list->items[at] = node;
-}
-
-/* Finds the class called `name` at any namespace depth. */
-static const AstNode *find_class(const AstList *decls, const char *name) {
-    for (int i = 0; i < decls->count; i++) {
-        const AstNode *n = decls->items[i];
-        if (n == NULL) continue;
-        if (n->kind == AST_CLASS_DECL && n->str1 != NULL && strcmp(n->str1, name) == 0) return n;
-        if (n->kind == AST_NAMESPACE_DECL) {
-            const AstNode *found = find_class(&n->list, name);
-            if (found != NULL) return found;
-        }
-    }
-    return NULL;
-}
-
-/* The elements live in a member array, and this project does not yet
- * run constructors or destructors for class-typed member ARRAYS (see
- * phase 9a's note in lower.c: "no member arrays, either side"). Say so
- * rather than leave the elements silently unconstructed. */
-static void warn_if_elements_need_construction(const AstNode *program, const Instance *inst) {
-    const char *last = strrchr(inst->elem_text, ':');
-    const AstNode *c = find_class(&program->list, last != NULL ? last + 1 : inst->elem_text);
-    if (c == NULL) return;
-    const char *what = NULL;
-    for (int i = 0; i < c->list.count && what == NULL; i++) {
-        const AstNode *m = c->list.items[i];
-        if (m == NULL || (m->kind != AST_FUNC_DECL && m->kind != AST_FUNC_DEF) || m->str1 == NULL) continue;
-        if (strcmp(m->str1, c->str1) == 0) what = "constructor";
-        else if (m->str1[0] == '~')        what = "destructor";
-        else if (m->ival)                  what = "virtual functions";
-    }
-    if (what == NULL) return;
-    fprintf(stderr,
-        "%s:%d: warning: std::array<%s, %s>: %s has a %s, but the elements of a\n"
-        "      std::array are not constructed or destroyed yet (they start out uninitialized,\n"
-        "      like the fields of a plain struct). Initialize each element by hand, or hold\n"
-        "      pointers instead: std::array<%s *, %s>.\n",
-        inst->file, inst->line, inst->elem_text, inst->len_text, c->str1,
-        strcmp(what, "virtual functions") == 0 ? "vtable (virtual functions)" : what,
-        inst->elem_text, inst->len_text);
 }
 
 static int is_instance_name(const char *name) {
@@ -325,7 +280,6 @@ int generic_instantiate_pending(void) {
                 }
             }
             if (end >= 0) {
-                if (strchr(i->elem_text, '*') == NULL) warn_if_elements_need_construction(program, i);
                 int start = end;
                 while (start > 0 && generated->list.items[start - 1] != NULL &&
                        generated->list.items[start - 1]->kind != AST_CLASS_DECL) start--;

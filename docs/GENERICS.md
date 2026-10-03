@@ -26,13 +26,15 @@ for (int i = 0; i < enemies.size(); i++) ...
 | `front()`, `back()` | return `T &` |
 | `size()`, `max_size()`, `empty()` | `int` / `bool` |
 | `data()`, `begin()`, `end()` | plain `T *` |
-| `fill(value)` | takes `T` by value (see "Known gaps") |
+| `fill(value)` | takes `const T &` |
 | `= {1, 2, 3}` | aggregate initialization, local or global |
 | `b = a` | whole-array copy (plain struct assignment) |
 
 Element types: `int`, `float`, `bool`, `char`, any struct/class/union/enum
 name (qualified or not), a pointer to any of those, or another
-`std::array`. The length is an integer literal, a `#define`d constant, or
+`std::array`. Elements of a class type are constructed when the array is
+and destroyed when it is (`tests/105sample.cpp` covers the member-array
+machinery this relies on). The length is an integer literal, a `#define`d constant, or
 a named constant such as an enum constant.
 
 `using namespace std;` is accepted and allows the bare `array<T, N>`
@@ -80,19 +82,17 @@ no `T *&` declarator.
 
 ## Known gaps
 
-- **Element construction.** The elements live in a member array, and
-  class-typed member arrays are not constructed or destroyed yet (the
-  same is true of a hand-written `Counter items[3];` member). An element
-  type with a constructor, destructor or virtual functions gets a
-  warning. Use plain structs, or hold pointers.
 - **Every access is a function call.** `a[i]` calls
   `array_T_N__op_index__int`. Lowering `a[i]` straight to
   `a.m_data[i]`, and `size()` to a constant, is planned and matters for
   CPU-bound loops.
-- **Binding a temporary to a `const T &` parameter** (`f(7)` where `f`
-  takes `const int &`) emits `(&7)`. This is a general, older gap; it is
-  why `fill` takes its argument by value. It needs fixing before
-  `vector::push_back(5)` can work.
+- **Unnamed class objects.** `f(7)` into a `const int &` parameter now
+  gets a temporary (`tests/106sample.cpp`), but `Enemy(1, 2, 3)` written
+  as an expression does not parse at all, so `fill(Enemy(1, 2, 3))` is
+  out: build the object in a named variable first.
+- **Multi-dimensional member arrays of class objects** (`Counter
+  grid[2][2];` as a member) are still not constructed. A
+  `std::array` of `std::array` is fine: each level is its own class.
 - **Named lengths are compared by name.** `std::array<int, MAX>` and
   `std::array<int, 8>` are different types even when `MAX` is 8. A
   `#define` is not affected (it is expanded before parsing).

@@ -1249,6 +1249,97 @@ static int loop_stmt_has_indirect_hazard(AstNode *stmt)
     return 0;
 }
 
+/* ---- temporaries for reference parameters ------------------------------
+ *
+ * `fill(7)` where the parameter is `const int &value`: a reference needs
+ * something to point AT, and a literal (or `a + b`, or the result of a
+ * call) has no address -- the generated C used to be `fill((&7))`. C++
+ * creates an unnamed temporary; so does this:
+ *
+ *     int __v32_ref_tmp0;                       // top of the function
+ *     ...
+ *     fill((__v32_ref_tmp0 = 7, &__v32_ref_tmp0));
+ *
+ * The comma form is valid standard C as it stands; for Vircon32, which
+ * has no comma operator, phase 10 turns it into statements.
+ *
+ * Scalars and pointers only. A class-typed temporary would need its
+ * constructor and destructor run, and a struct returned by value already
+ * gets its own temporary from the by-value ABI phase.
+ */
+static AstList g_ref_temps;          /* declarations owed to the current function */
+static int g_ref_temp_counter = 0;
+
+static const AstNode *reference_referent(const AstNode *ref_type) {
+    const AstNode *t = ref_type->a;
+    while (t != NULL && t->kind == AST_CONST_TYPE) t = t->a;
+    return t;
+}
+
+static int needs_reference_temporary(const AstNode *arg, const AstNode *param_type) {
+    const AstNode *referent = reference_referent(param_type);
+    if (referent == NULL || referent->kind == AST_ARRAY_TYPE) return 0;
+    const AstNode *resolved = resolve_typedef_chain(referent);
+    if (resolved != NULL && resolved->kind != AST_POINTER_TYPE && type_to_class(resolved) != NULL) return 0;
+    if (referent->kind != AST_POINTER_TYPE && type_to_class(referent) != NULL) return 0;
+    switch (arg->kind) {
+        case AST_INT_LIT: case AST_FLOAT_LIT: case AST_CHAR_LIT: case AST_BOOL_LIT:
+        case AST_NULL_LIT: case AST_STRING_LIT: case AST_SIZEOF: case AST_CAST:
+        case AST_TERNARY:
+            return 1;
+        case AST_BINOP:
+            return 1; /* arithmetic, comparison: always a value */
+        case AST_UNOP:
+            /* `*p` is an lvalue; `&x`, `-x`, `!x` are values */
+            return arg->str1 == NULL || strcmp(arg->str1, "deref") != 0;
+        case AST_CALL: {
+            const CallResolution *cr = (const CallResolution *)arg->sema_info;
+            if (cr == NULL || cr->resolved_target == NULL) return 0;
+            const AstNode *rt = cr->resolved_target->type;
+            if (rt == NULL || rt->kind == AST_REFERENCE_TYPE) return 0;
+            return rt->kind == AST_POINTER_TYPE || type_to_class(rt) == NULL;
+        }
+        default:
+            return 0; /* identifiers, members, subscripts: real lvalues */
+    }
+}
+
+static AstNode *bind_reference_temporary(AstNode *arg, AstNode *param_type) {
+    char name[64];
+    snprintf(name, sizeof name, "__v32_ref_tmp%d", g_ref_temp_counter++);
+    AstNode *decl = ast_new(AST_VAR_DECL, arg->line);
+    decl->str1 = strdup(name);
+    decl->type = (AstNode *)reference_referent(param_type); /* shared, like every type node */
+    ast_list_append(&g_ref_temps, decl);
+
+    AstNode *assign = ast_new(AST_ASSIGN, arg->line);
+    assign->str1 = strdup("=");
+    assign->a = ast_ident(name, arg->line);
+    assign->b = arg;
+    AstNode *addr = ast_new(AST_UNOP, arg->line);
+    addr->str1 = strdup("addr");
+    addr->a = ast_ident(name, arg->line);
+    AstNode *comma = ast_new(AST_BINOP, arg->line);
+    comma->str1 = strdup(",");
+    comma->a = assign;
+    comma->b = addr;
+    lower_note(arg->line, "a temporary (%s) holds the value bound to a reference parameter", name);
+    return comma;
+}
+
+/* Declares, at the top of `func`'s body, every temporary its call sites
+ * asked for. */
+static void flush_reference_temporaries(AstNode *func) {
+    if (g_ref_temps.count > 0 && func->a != NULL && func->a->kind == AST_BLOCK) {
+        AstList body = ast_list_new();
+        for (int i = 0; i < g_ref_temps.count; i++) ast_list_append(&body, g_ref_temps.items[i]);
+        for (int i = 0; i < func->a->list.count; i++) ast_list_append(&body, func->a->list.items[i]);
+        func->a->list = body;
+    }
+    g_ref_temps = ast_list_new();
+    g_ref_temp_counter = 0;
+}
+
 static void finalize_call(AstNode *call, AstNode *class_decl, LocalVarType *locals) {
     CallResolution *cr = (CallResolution *)call->sema_info;
     if (cr == NULL || cr->resolved_target == NULL) {
@@ -1320,7 +1411,10 @@ static void finalize_call(AstNode *call, AstNode *class_decl, LocalVarType *loca
                 declared params -- shouldn't happen for a resolved call,
                 but fail closed (stop) rather than read out of bounds */
             AstNode *param = target->list.items[param_idx];
-            if (param->type != NULL && param->type->kind == AST_REFERENCE_TYPE) {
+            if (param->type != NULL && param->type->kind == AST_REFERENCE_TYPE &&
+                needs_reference_temporary(call->list.items[i], param->type)) {
+                call->list.items[i] = bind_reference_temporary(call->list.items[i], param->type);
+            } else if (param->type != NULL && param->type->kind == AST_REFERENCE_TYPE) {
                 AstNode *arg_static_type = infer_expr_type(call->list.items[i], class_decl, locals);
                 call->list.items[i] = address_of_if_needed(call->list.items[i], class_decl, locals);
                 call->list.items[i] = cast_ref_arg_if_needed(call->list.items[i], arg_static_type, param->type);
@@ -2312,6 +2406,7 @@ static void finalize_calls_in_method(AstNode *method, AstNode *class_decl) {
     g_v32_temp_counter = 0;                        /* NEW: phase 3c */
     LocalVarType *locals = seed_locals_from_params(method);
     finalize_calls_stmt(&method->a, class_decl, &locals);
+    flush_reference_temporaries(method);
     if (method->type != NULL && method->type->kind == AST_REFERENCE_TYPE) {
         LocalVarType *ret_locals = seed_locals_from_params(method);
         inject_reference_return_address_stmt(&method->a, class_decl, &ret_locals);
@@ -2363,6 +2458,7 @@ static void finalize_calls_free_functions(AstList *decls) {
             LocalVarType *locals = seed_locals_from_params(n);
             g_v32_temp_counter = 0;                        /* NEW: phase 3c */
             finalize_calls_stmt(&n->a, NULL, &locals);
+            flush_reference_temporaries(n);
             if (n->type != NULL && n->type->kind == AST_REFERENCE_TYPE) {
                 /* Same reference-return handling as
                  * finalize_calls_in_method just above -- a free function
@@ -3531,14 +3627,104 @@ static void inject_ctor_calls_free_functions(AstList *decls) {
  *   - Prototype-only member constructors are skipped (no body -- the
  *     emitted call would reference a C function never defined).
  */
-static AstNode *build_member_ctor_stmt(AstNode *field, int line) {
-    /* receiver: &this->member */
-    AstNode *member_ref = ast_new(AST_MEMBER, line);
-    member_ref->str1 = strdup("->");
-    member_ref->str2 = strdup(field->str1);
-    member_ref->a = ast_ident("this", line);
+/* The class of a one-dimensional member array's elements
+ * (`Counter items[3];`), or NULL. */
+static AstNode *member_array_elem_class(const AstNode *type) {
+    while (type != NULL && type->kind == AST_CONST_TYPE) type = type->a;
+    if (type == NULL || type->kind != AST_ARRAY_TYPE) return NULL;
+    const AstNode *elem = type->a;
+    while (elem != NULL && elem->kind == AST_CONST_TYPE) elem = elem->a;
+    if (elem == NULL || (elem->kind != AST_IDENT && elem->kind != AST_QUALIFIED_ID)) return NULL;
+    return type_to_class(elem);
+}
 
-    AstNode *var_class = type_to_class(field->type);
+/* `this->member`, or `this->member[index_name]` for an array member. */
+static AstNode *member_object_ref(const AstNode *field, const char *index_name, int line) {
+    AstNode *ref = ast_new(AST_MEMBER, line);
+    ref->str1 = strdup("->");
+    ref->str2 = strdup(field->str1);
+    ref->a = ast_ident("this", line);
+    if (index_name == NULL) return ref;
+    AstNode *sub = ast_new(AST_SUBSCRIPT, line);
+    sub->a = ref;
+    sub->b = ast_ident(index_name, line);
+    return sub;
+}
+
+/* The array's length as an expression: what the source wrote if it was
+ * not a plain literal (a named constant), else the number. */
+static AstNode *array_length_expr(const AstNode *array_type, int line) {
+    while (array_type != NULL && array_type->kind == AST_CONST_TYPE) array_type = array_type->a;
+    if (array_type->b != NULL) return array_type->b;
+    AstNode *lit = ast_new(AST_INT_LIT, line);
+    lit->ival = array_type->ival;
+    return lit;
+}
+
+/* Wraps `body_stmt` (which uses `index_name`) in a loop over a member
+ * array: forwards for construction, backwards for destruction. */
+static AstNode *member_array_loop(const AstNode *array_type, const char *index_name,
+                                  AstNode *body_stmt, int backwards, int line) {
+    AstNode *idx_decl = ast_new(AST_VAR_DECL, line);
+    idx_decl->str1 = strdup(index_name);
+    idx_decl->type = ast_ident("int", line);
+    AstNode *cond = ast_new(AST_BINOP, line);
+    cond->a = ast_ident(index_name, line);
+    AstNode *step = ast_new(AST_UNOP, line);
+    step->a = ast_ident(index_name, line);
+    AstNode *zero = ast_new(AST_INT_LIT, line);
+    zero->ival = 0;
+    if (!backwards) {
+        idx_decl->a = zero;
+        cond->str1 = strdup("<");
+        cond->b = array_length_expr(array_type, line);
+        step->str1 = strdup("post++");
+    } else {
+        AstNode *one = ast_new(AST_INT_LIT, line);
+        one->ival = 1;
+        AstNode *last = ast_new(AST_BINOP, line);
+        last->str1 = strdup("-");
+        last->a = array_length_expr(array_type, line);
+        last->b = one;
+        idx_decl->a = last;
+        cond->str1 = strdup(">=");
+        cond->b = zero;
+        step->str1 = strdup("post--");
+    }
+    AstNode *body = ast_new(AST_BLOCK, line);
+    ast_list_append(&body->list, body_stmt);
+    AstNode *loop = ast_new(AST_FOR, line);
+    loop->a = idx_decl;
+    loop->b = cond;
+    loop->c = step;
+    loop->d = body;
+    return loop;
+}
+
+static int g_member_array_loop_counter = 0;
+
+static AstNode *build_object_ctor_stmt(AstNode *member_ref, AstNode *var_class, int line);
+
+/* A by-value member, or (new) a member ARRAY of class objects, which
+ * gets one constructor call per element:
+ *   for (int __v32_mctor_iN = 0; __v32_mctor_iN < LEN; __v32_mctor_iN++)
+ *       Counter__Counter__void(&this->items[__v32_mctor_iN]);
+ * Member arrays used to be skipped outright, leaving every element
+ * unconstructed (no constructor body run, no vtable pointer set). */
+static AstNode *build_member_ctor_stmt(AstNode *field, int line) {
+    AstNode *elem_class = member_array_elem_class(field->type);
+    if (elem_class != NULL) {
+        char idx[64];
+        snprintf(idx, sizeof idx, "__v32_mctor_i%d", g_member_array_loop_counter);
+        AstNode *one = build_object_ctor_stmt(member_object_ref(field, idx, line), elem_class, line);
+        if (one == NULL) return NULL;
+        g_member_array_loop_counter++;
+        return member_array_loop(field->type, idx, one, 0, line);
+    }
+    return build_object_ctor_stmt(member_object_ref(field, NULL, line), type_to_class(field->type), line);
+}
+
+static AstNode *build_object_ctor_stmt(AstNode *member_ref, AstNode *var_class, int line) {
     AstNode *ctor = find_zero_arg_constructor(var_class);
 
     if (ctor != NULL) {
@@ -3630,8 +3816,9 @@ static void inject_member_ctor_calls_classes(AstList *decls) {
                         if (field->type == NULL) continue;
                         if (field->type->kind == AST_POINTER_TYPE) continue;
                         if (field->type->kind == AST_REFERENCE_TYPE) continue;
-                        if (field->type->kind == AST_ARRAY_TYPE) continue;
-                        AstNode *var_class = type_to_class(field->type);
+                        AstNode *var_class = (field->type->kind == AST_ARRAY_TYPE)
+                                           ? member_array_elem_class(field->type)
+                                           : type_to_class(field->type);
                         if (var_class == NULL) continue;         /* not a class */
                         if (var_class == n) continue;            /* self-recursion */
                         if (member_is_explicitly_initialized(m, field->str1)) continue;
@@ -5452,7 +5639,8 @@ static void v32_compat_free_functions(AstList *decls) {
  *
  * Runs after phase 9, which destroys the body's own locals at each
  * return, so those still happen first. By-value members only, matching
- * what constructor injection constructs (no member arrays, either side).
+ * what constructor injection constructs, plus one-dimensional member
+ * arrays of class objects (element by element, last first).
  */
 static int stmt_has_return(const AstNode *n) {
     if (n == NULL) return 0;
@@ -5511,7 +5699,23 @@ static void chain_destructors_classes(AstList *decls) {
         for (int f = layout->data_members.count - 1; f >= 0; f--) {
             AstNode *field = layout->data_members.items[f];
             if (field->type == NULL || field->type->kind == AST_POINTER_TYPE ||
-                field->type->kind == AST_REFERENCE_TYPE || field->type->kind == AST_ARRAY_TYPE) continue;
+                field->type->kind == AST_REFERENCE_TYPE) continue;
+            /* A member array of class objects is destroyed element by
+             * element, last first -- the mirror of build_member_ctor_stmt. */
+            AstNode *aclass = member_array_elem_class(field->type);
+            if (aclass != NULL) {
+                AstNode *adtor = (aclass != n) ? find_destructor_with_body(aclass) : NULL;
+                if (adtor == NULL) continue;
+                char idx[64];
+                snprintf(idx, sizeof idx, "__v32_mdtor_i%d", g_member_array_loop_counter++);
+                AstNode *eaddr = ast_new(AST_UNOP, line);
+                eaddr->str1 = strdup("addr");
+                eaddr->a = member_object_ref(field, idx, line);
+                ast_list_append(&chain, member_array_loop(field->type, idx,
+                                    dtor_call_on(adtor, eaddr, line), 1, line));
+                continue;
+            }
+            if (field->type->kind == AST_ARRAY_TYPE) continue;
             AstNode *mclass = type_to_class(field->type);
             if (mclass == NULL || mclass == n) continue;
             AstNode *mdtor = find_destructor_with_body(mclass);

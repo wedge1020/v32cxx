@@ -182,12 +182,15 @@ class per element type and length (`array_Enemy_8`), with the usual
 members (`operator[]`, `at`, `front`, `back`, `size`, `fill`, `data`,
 `begin`/`end`) and aggregate initialization. `#include <array>` switches
 it on. See [`docs/GENERICS.md`](docs/GENERICS.md) for what is supported,
-how it works and the known gaps (element constructors are not run yet;
-every access is still a function call). References used as values
-(`a = a + 1` on an `int &a`, `v[0] = 5` through an `int &operator[]`,
-`int &r = n;`) are lowered correctly as part of the same work —
-`tests/103sample.cpp` and `tests/104sample.cpp` check both on the real
-console.
+how it works and the known gaps (every access is still a function
+call). Three general fixes came with it, each with its own self-checking
+test: references used as values (`a = a + 1` on an `int &a`, `v[0] = 5`
+through an `int &operator[]`, `int &r = n;` — `tests/103sample.cpp`);
+member arrays of class objects (`Counter items[3];` inside a class) are
+now constructed and destroyed element by element
+(`tests/105sample.cpp`); and a value bound to a reference parameter
+(`twice(21)` into `const int &`) gets a temporary instead of `(&21)`
+(`tests/106sample.cpp`).
 
 **Lowering** — transforming the semantically-checked program into
 something code generation can work from directly — runs through eleven

@@ -554,11 +554,14 @@ static int class_has_virtuals(const ClassList *all, const AstNode *c) {
     return 0;
 }
 
-/* The class of a by-value member (not a pointer, reference or array --
- * the same members constructor injection handles), or NULL. */
+/* The class of a by-value member, or of the elements of a one-dimensional
+ * member ARRAY (`Counter items[3];`) -- the same members constructor
+ * injection handles -- or NULL. Not a pointer or reference. */
 static AstNode *member_value_class(const ClassList *all, const AstNode *m) {
     if (m == NULL || m->kind != AST_VAR_DECL || m->type == NULL) return NULL;
     const AstNode *t = m->type;
+    while (t != NULL && t->kind == AST_CONST_TYPE) t = t->a;
+    if (t != NULL && t->kind == AST_ARRAY_TYPE) t = t->a;
     while (t != NULL && t->kind == AST_CONST_TYPE) t = t->a;
     if (t == NULL || t->kind != AST_IDENT) return NULL;
     return class_named(all, t->str1);

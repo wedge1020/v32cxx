@@ -236,7 +236,12 @@ static void print_type(FILE *out, const AstNode *type) {
              * typedef name (none of the three lookups match) stays
              * bare either way, in both targets. */
             if (g_target == TARGET_STANDARD) {
-                if (type_to_class(type) != NULL) {
+                /* The name must BE the class's, not a typedef that leads
+                 * to one: type_to_class follows typedefs, and `typedef
+                 * Enemy *EP;` used as `EP p;` was printed `struct EP p;`. */
+                AstNode *named_class = type_to_class(type);
+                if (named_class != NULL && named_class->str1 != NULL &&
+                    strcmp(named_class->str1, type->str1) == 0) {
                     fprintf(out, "struct %s", type->str1);
                     break;
                 }
