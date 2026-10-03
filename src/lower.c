@@ -1342,6 +1342,7 @@ static int needs_reference_temporary(const AstNode *arg, const AstNode *param_ty
         case AST_INT_LIT: case AST_FLOAT_LIT: case AST_CHAR_LIT: case AST_BOOL_LIT:
         case AST_NULL_LIT: case AST_STRING_LIT: case AST_SIZEOF: case AST_CAST:
         case AST_TERNARY:
+        case AST_NEW:   /* `bombs.push_back(new Bullet(x, y));` */
             return 1;
         case AST_BINOP:
             return 1; /* arithmetic, comparison: always a value */
@@ -1372,6 +1373,11 @@ static AstNode *bind_reference_temporary(AstNode *arg, AstNode *param_type) {
     assign->str1 = strdup("=");
     assign->a = ast_ident(name, arg->line);
     assign->b = arg;
+    if (decl->type->kind == AST_POINTER_TYPE && arg->kind == AST_INT_LIT && arg->ival == 0) {
+        /* `slots.fill(0);` into a pointer element: Vircon32 C wants NULL,
+         * not 0, for a pointer (the same rewrite a plain `p = 0;` gets). */
+        assign->b = ast_new(AST_NULL_LIT, arg->line);
+    }
     if (decl->type->kind == AST_POINTER_TYPE && arg->kind != AST_NULL_LIT && arg->kind != AST_INT_LIT) {
         /* A pointer temporary (`shapes.push_back(&square)` into a
          * `Shape *const &`): Vircon32 C wants the derived-to-base

@@ -166,6 +166,8 @@ typedef struct Instance {
     int emitted;     /* already parsed and spliced */
     int is_vector;
     AstNode *elem_type; /* the element type as parsed */
+    char *ns_open;      /* "namespace si { " for each enclosing namespace, or "" */
+    int ns_depth;
     int line;        /* where it was first named, for diagnostics */
     const char *file;
     struct Instance *next;
@@ -252,6 +254,25 @@ static AstNode *instance_type(int is_vector, AstNode *elem, const char *len_text
         inst->len_text = strdup(len_text != NULL ? len_text : "");
         inst->is_vector = is_vector;
         inst->elem_type = elem;
+        /* The namespaces the type was named in, outermost first: the
+         * class has to be generated INSIDE them, or an element type
+         * declared there (`Bullet` in `namespace si`) means nothing. */
+        {
+            const char *names[16];
+            int depth = 0;
+            for (Scope *sc = g_symtab->current; sc != NULL && depth < 16; sc = sc->parent) {
+                if (sc->owner_name != NULL && !sc->is_class_scope) names[depth++] = sc->owner_name;
+            }
+            Str open = {0};
+            str_add(&open, "");
+            for (int k = depth - 1; k >= 0; k--) {
+                str_add(&open, "namespace ");
+                str_add(&open, names[k]);
+                str_add(&open, " { ");
+            }
+            inst->ns_open = open.s;
+            inst->ns_depth = depth;
+        }
         inst->line = line;
         inst->file = g_current_filename;
         if (g_instances_tail != NULL) g_instances_tail->next = inst;
@@ -312,6 +333,7 @@ static void replace_elem_typedef(AstNode *n, const char *alias, const AstNode *e
 static void write_instance(FILE *out, const Instance *inst) {
     /* See replace_elem_typedef, above. */
     char *elem = strdup(inst->elem_text);
+    fprintf(out, "%s\n", inst->ns_open);
     if (strchr(inst->elem_text, '*') != NULL) {
         free(elem);
         elem = malloc(strlen(inst->name) + 6);
@@ -324,6 +346,7 @@ static void write_instance(FILE *out, const Instance *inst) {
         else if (strncmp(p, "@N@", 3) == 0)    { fputs(inst->len_text, out);  p += 3; }
         else                                   { fputc(*p, out);              p++;    }
     }
+    for (int k = 0; k < inst->ns_depth; k++) fputs("}\n", out);
     free(elem);
 }
 
@@ -456,6 +479,34 @@ static void wrap_array_initializers(AstNode *n) {
     for (int i = 0; i < n->list.count; i++) wrap_array_initializers(n->list.items[i]);
 }
 
+/* The generated class, wherever the namespaces around it put it. */
+static AstNode *find_generated_class(const AstList *decls, const char *name) {
+    for (int k = 0; k < decls->count; k++) {
+        AstNode *d = decls->items[k];
+        if (d == NULL) continue;
+        if (d->kind == AST_CLASS_DECL && d->str1 != NULL && strcmp(d->str1, name) == 0) return d;
+        if (d->kind == AST_NAMESPACE_DECL) {
+            AstNode *found = find_generated_class(&d->list, name);
+            if (found != NULL) return found;
+        }
+    }
+    return NULL;
+}
+
+/* Inserts `decl` just ahead of the first declaration that names it. When
+ * that declaration is a namespace, the search continues inside it, so
+ * the class lands next to its first use, in the same namespace. */
+static void place_before_first_use(AstList *decls, const char *name, AstNode *decl) {
+    for (int k = 0; k < decls->count; k++) {
+        AstNode *d = decls->items[k];
+        if (d == NULL || !mentions(d, name)) continue;
+        if (d->kind == AST_NAMESPACE_DECL) place_before_first_use(&d->list, name, decl);
+        else list_insert(decls, k, decl);
+        return;
+    }
+    list_insert(decls, decls->count, decl);
+}
+
 int generic_instantiate_pending(void) {
     AstNode *program = g_program;
     const char *saved_file = g_current_filename;
@@ -497,36 +548,16 @@ int generic_instantiate_pending(void) {
         AstNode *generated = g_program;
         for (Instance *i = first; i != NULL; i = i->next) {
             if (i->emitted) { if (i == last) break; continue; }
-            /* This instance's declarations: everything in the generated
-             * program up to and including its class (a typedef for a
-             * pointer element type comes first). */
-            int end = -1;
-            for (int k = 0; k < generated->list.count; k++) {
-                AstNode *d = generated->list.items[k];
-                if (d != NULL && d->kind == AST_CLASS_DECL && d->str1 != NULL && strcmp(d->str1, i->name) == 0) {
-                    end = k;
-                    break;
-                }
-            }
-            if (end >= 0) {
+            AstNode *decl = find_generated_class(&generated->list, i->name);
+            if (decl != NULL) {
                 if (i->is_vector && strchr(i->elem_text, '*') == NULL)
                     warn_if_elements_have_destructor(&program->list, i);
-                int start = end;
-                while (start > 0 && generated->list.items[start - 1] != NULL &&
-                       generated->list.items[start - 1]->kind != AST_CLASS_DECL) start--;
-                int at = program->list.count;
-                for (int k = 0; k < program->list.count; k++) {
-                    if (mentions(program->list.items[k], i->name)) { at = k; break; }
-                }
                 if (strchr(i->elem_text, '*') != NULL) {
                     char alias[256];
                     snprintf(alias, sizeof alias, "%s_elem", i->name);
-                    replace_elem_typedef(generated->list.items[end], alias, i->elem_type);
-                    start = end; /* the typedef is not spliced in */
+                    replace_elem_typedef(decl, alias, i->elem_type);
                 }
-                for (int k = start; k <= end; k++) {
-                    list_insert(&program->list, at++, generated->list.items[k]);
-                }
+                place_before_first_use(&program->list, i->name, decl);
             }
             i->emitted = 1;
             if (i == last) break;

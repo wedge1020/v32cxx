@@ -160,6 +160,11 @@ reading the generated C next to the class it came from.
    inserts each class just ahead of the first top-level declaration that
    uses it.
 
+A container named inside a namespace (`std::vector<Bullet *>` inside
+`namespace si`, where `Bullet` is declared) is generated inside that same
+namespace, so the element type means what it meant where it was written
+(`tests/111sample.cpp`).
+
 From there on nothing knows the class was generated. To see exactly what
 a program got, read `ARRAY_TEMPLATE` and `VECTOR_TEMPLATE` in `src/generic.c`, or look at the
 `array_*` structs and functions in the generated C.
@@ -184,6 +189,14 @@ generated C.
   compiler stops with "cannot emit memory placement when an expression
   has none" on the direct form. This applies to any program, not only to
   `data()[i]`.
+
+## In a real program
+
+`demos/cxx/space_invaders` uses both: the alien bombs are a
+`std::vector<Bullet*>` (it used to carry its own `BombList` class for
+this) and the bunkers a `std::array<Bunker*, BUNKER_COUNT>`, with
+range-based `for` for drawing and cleanup and index loops where bombs
+are erased along the way.
 
 ## Known gaps
 

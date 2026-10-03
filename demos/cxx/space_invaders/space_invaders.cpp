@@ -4,6 +4,9 @@
 #include "misc.h"   // rand()/srand() (hardware RNG), malloc/free
 #include "time.h"   // end_frame()
 
+#include <array>    // std::array<T, N>  -- v32c++'s own built-in generics:
+#include <vector>   // std::vector<T>       one plain class per element type
+
 #title "[v32cxx] C++/OOP Space Invaders"
 #version 1.0
 
@@ -33,16 +36,20 @@
 // ============================================================================
 //  SPACE INVADERS - portable object-oriented C++ skeleton
 //
-//  Freestanding: NO standard library headers are used. Everything needed
-//  beyond core C++ (random numbers, containers) is implemented here.
+//  Freestanding: no standard library is linked. Random numbers are
+//  implemented here; the two containers (std::vector for the alien
+//  bombs, std::array for the bunkers) are v32c++'s built-in generics --
+//  <vector> and <array> are not real headers, they switch on a fixed
+//  form the transpiler expands into one ordinary class per element type
+//  (vector_Bullet_ptr, array_Bunker_ptr_BUNKER_COUNT). Range-based for
+//  works over both.
 //  Written to the v32c++ subset: no templates, no static members, no
 //  'explicit', no in-class default member initializers, no class-nested
-//  enums, no 'unsigned', no ternaries, and NO bare constructor-call /
-//  functional-cast expressions ("Vec2(x, y)"). Only `new T(args)` may
-//  construct with arguments in an expression; everywhere else uses local
-//  declarations or int arguments. Default parameter values ARE now used
-//  (v32c++ implements them: fill_default_args splices cloned defaults
-//  into calls that omit trailing arguments).
+//  enums, no 'unsigned', no ternaries. Unnamed objects ("Vec2(x, y)" as
+//  an expression) ARE now used, in Vec2's own operators. Default
+//  parameter values are used too (v32c++ implements them:
+//  fill_default_args splices cloned defaults into calls that omit
+//  trailing arguments).
 //
 //  Vec2 is deliberately a ONE-WORD type (a single int packing x/y as two
 //  16-bit halves): the Vircon32 C compiler only accepts parameters and
@@ -303,14 +310,8 @@ public:
     void setX(int px) { mV = (mV & 0xFFFF) | ((px & 0xFFFF) << 16); }
     void setY(int py) { mV = (mV & (0xFFFF << 16)) | (py & 0xFFFF); }
 
-    Vec2  operator+(const Vec2& o) const {
-        Vec2 r(x() + o.x(), y() + o.y());
-        return r;
-    }
-    Vec2  operator-(const Vec2& o) const {
-        Vec2 r(x() - o.x(), y() - o.y());
-        return r;
-    }
+    Vec2  operator+(const Vec2& o) const { return Vec2(x() + o.x(), y() + o.y()); }
+    Vec2  operator-(const Vec2& o) const { return Vec2(x() - o.x(), y() - o.y()); }
     Vec2& operator+=(const Vec2& o) {
         setX(x() + o.x());
         setY(y() + o.y());
@@ -321,10 +322,7 @@ public:
         setY(y() - o.y());
         return *this;
     }
-    Vec2  operator*(int s) const {
-        Vec2 r(x() * s, y() * s);
-        return r;
-    }
+    Vec2  operator*(int s) const { return Vec2(x() * s, y() * s); }
     bool  operator==(const Vec2& o) const { return mV == o.mV; }
     bool  operator!=(const Vec2& o) const { return mV != o.mV; }
 
@@ -357,10 +355,10 @@ enum EntityState {
 };
 
 // ---------------------------------------------------------------------------
-// BombList: minimal freestanding replacement for std::vector<Bullet*>.
-// NOTE: intentionally NOT a template -- the target compiler has no template
-// support, so this is a concrete class. Defined in si_game.h, AFTER Bullet's
-// full definition: the v32c++ grammar has no class forward declarations.
+// Containers: std::vector<Bullet*> and std::array<Bunker*, BUNKER_COUNT>,
+// both members of Game (si_game.h). Not templates -- the transpiler writes
+// one concrete class for each, placed just ahead of Game, after Bullet's
+// and Bunker's full definitions.
 // ---------------------------------------------------------------------------
 
 // Shared RNG (namespace-level global: the subset has no static data members)
@@ -1021,45 +1019,10 @@ enum GameDifficulty {
 };
 
 // ---------------------------------------------------------------------------
-// BombList: minimal freestanding replacement for std::vector<Bullet*>.
-// Lives here (after Bullet's full definition) because the v32c++ grammar
-// has no class forward declarations.
+// The alien bombs live in a std::vector<Bullet*> (Game::mBombs, below).
+// This used to be BombList, a hand-written fixed-capacity stand-in for
+// exactly that; BOMB_CAPACITY is still the most that are ever in flight.
 // ---------------------------------------------------------------------------
-class BombList {
-public:
-    BombList() : mSize(0) {
-        for (int i = 0; i < BOMB_CAPACITY; ++i) mItems[i] = 0;
-    }
-
-    int  size() const   { return mSize; }
-    bool empty() const  { return mSize == 0; }
-    bool full() const   { return mSize >= BOMB_CAPACITY; }
-
-    // NOTE: returns Bullet* by value, not Bullet*& -- the grammar's
-    // pointer_opt allows a single '*' or '&', not both stacked. All uses
-    // are reads, so by-value loses nothing.
-    Bullet* operator[](int i) { return mItems[i]; }
-
-    void push(Bullet* v) {
-        if (mSize < BOMB_CAPACITY) {
-            mItems[mSize] = v;
-            ++mSize;
-        }
-    }
-
-    // erase slot i; caller deletes the pointed-to Bullet first
-    void eraseAt(int i) {
-        for (int j = i + 1; j < mSize; ++j) mItems[j - 1] = mItems[j];
-        --mSize;
-        mItems[mSize] = 0;
-    }
-
-    void clear() { mSize = 0; }
-
-private:
-    Bullet* mItems[8];   // BOMB_CAPACITY: dims must be INT_LITERALs
-    int     mSize;
-};
 
 // ---------------------------------------------------------------------------
 // The Swarm: grid of Aliens with marching logic (a friend of Game)
@@ -1397,10 +1360,10 @@ public:
         mPlayer = new Player();   // default parameter values fill px/py
         mSwarm  = new Swarm();
         mSaucer = new Saucer();
-        mBombs  = new BombList();
+        mBombs.reserve(BOMB_CAPACITY);   // never grows past this: see updateBombs
         mSfx.init();   // saucer warble loops until stopped
         mPlayer->reset(PLAYFIELD_W / 2 - PLAYER_WIDTH / 2, PLAYER_HOME_Y);
-        for (int i = 0; i < BUNKER_COUNT; ++i) mBunkers[i] = 0;
+        mBunkers.fill(0);
         // title screen active: game starts on START (titleFrame).
         // (The old TEMP DEBUG autostart was removed with the headless
         // v32sim testing era -- re-add startNewGame() here for headless
@@ -1409,9 +1372,8 @@ public:
 
     ~Game() {
         delete mPlayerBullet;
-        for (int i = 0; i < mBombs->size(); ++i) delete (*mBombs)[i];
-        for (int i = 0; i < BUNKER_COUNT; ++i) delete mBunkers[i];
-        delete mBombs;
+        for (Bullet* bomb : mBombs) delete bomb;
+        for (Bunker* bunker : mBunkers) delete bunker;
         delete mSaucer;
         delete mSwarm;
         delete mPlayer;
@@ -1440,10 +1402,10 @@ public:
             mPlayer->draw(video);
             mSwarm->draw(video);
             mSaucer->draw(video);
-            for (int i = 0; i < BUNKER_COUNT; ++i)
-                if (mBunkers[i]) mBunkers[i]->draw(video);
+            for (Bunker* bunker : mBunkers)
+                if (bunker) bunker->draw(video);
             if (mPlayerBullet) mPlayerBullet->draw(video);
-            for (int i = 0; i < mBombs->size(); ++i) (*mBombs)[i]->draw(video);
+            for (Bullet* bomb : mBombs) bomb->draw(video);
             drawHUD(video);
         }
         // pause menu draws ON TOP of the frozen scene
@@ -1539,8 +1501,8 @@ private:
         mSaucerSfxChannel = -1;
         mSwarm->setDifficulty(mDifficulty);
         mPlayer->reset(PLAYFIELD_W / 2 - PLAYER_WIDTH / 2, PLAYER_HOME_Y);
-        for (int i = 0; i < mBombs->size(); ++i) delete (*mBombs)[i];
-        mBombs->clear();
+        for (Bullet* bomb : mBombs) delete bomb;
+        mBombs.clear();
         delete mPlayerBullet;
         mPlayerBullet = 0;
         buildWave();
@@ -1607,7 +1569,7 @@ private:
 
     void updateBombs() {
         --mBombCooldown;
-        if (mBombCooldown <= 0 && !mBombs->full()) {
+        if (mBombCooldown <= 0 && mBombs.size() < BOMB_CAPACITY) {
             Alien* shooter = mSwarm->randomShooter();
             if (shooter) {
                 int sprite;
@@ -1617,7 +1579,7 @@ private:
                 int vy = 1 + mWave / 3;
                 int cap = bombFallSpeed();
                 if (vy > cap) vy = cap;
-                mBombs->push(new Bullet(
+                mBombs.push_back(new Bullet(
                     shooter->posX() + ALIEN_WIDTH / 2 - SPRITE_W / 2,
                     shooter->posY() + ALIEN_HEIGHT,
                     0, vy, sprite));
@@ -1629,17 +1591,19 @@ private:
             if (mDifficulty == DIFF_MEDIUM) jitter = 55;
             mBombCooldown = bombCooldownBase() + g_rng.next(jitter);
         }
-        for (int i = 0; i < mBombs->size();) {
-            // KEPT UNHOISTED ON PURPOSE: the result of operator[] (a call)
-            // used directly as a virtual-call receiver. This was the
-            // trigger of the wild-jump HLT (~frame 160, first bomb
-            // delete). v32c++ now auto-hoists these in its lowering
-            // (phase 3c, the Vircon32 C arg-staging workaround), so this
-            // loop doubles as a live regression test for that fix.
-            (*mBombs)[i]->update();
-            if ((*mBombs)[i]->state() == STATE_DEAD) {
-                delete (*mBombs)[i];
-                mBombs->eraseAt(i);
+        for (int i = 0; i < mBombs.size();) {
+            // An index loop, not a range-based for: bombs are erased
+            // while walking the list. mBombs[i] is used directly as a
+            // virtual-call receiver ON PURPOSE. With BombList its
+            // operator[] was a call, and a call's result as a receiver
+            // was the trigger of the wild-jump HLT (~frame 160, first
+            // bomb delete) that v32c++'s receiver hoisting (phase 3c)
+            // fixed. With std::vector, v32c++ writes mBombs[i] in place
+            // as mBombs.m_data[i], and hoists that the same way.
+            mBombs[i]->update();
+            if (mBombs[i]->state() == STATE_DEAD) {
+                delete mBombs[i];
+                mBombs.erase(mBombs.begin() + i);
             } else {
                 ++i;
             }
@@ -1670,24 +1634,24 @@ private:
                     }
             }
         }
-        // bombs vs player / bunkers (KEPT UNHOISTED on purpose -- same
-        // live-regression reasoning as updateBombs above)
-        for (int i = 0; i < mBombs->size();) {
+        // bombs vs player / bunkers (an index loop for the same reason
+        // as updateBombs above: bombs are erased along the way)
+        for (int i = 0; i < mBombs.size();) {
             bool gone = false;
-            if (mPlayer->collidesWith(*(*mBombs)[i])) {
+            if (mPlayer->collidesWith(*mBombs[i])) {
                 mPlayer->hit(mSfx);
                 gone = true;
             } else {
                 for (int k = 0; k < BUNKER_COUNT && !gone; ++k) {
                     if (mBunkers[k]) {
                         Rect bb;
-                        (*mBombs)[i]->getBounds(bb);   // virtual: inset box
+                        mBombs[i]->getBounds(bb);   // virtual: inset box
                         if (mBunkers[k]->erode(bb, mSfx, shieldDamage()))
                             gone = true;
                     }
                 }
             }
-            if (gone) { delete (*mBombs)[i]; mBombs->eraseAt(i); }
+            if (gone) { delete mBombs[i]; mBombs.erase(mBombs.begin() + i); }
             else      { ++i; }
         }
     }
@@ -1866,8 +1830,8 @@ private:
     Swarm*    mSwarm;       //   class-typed members -- see constructor
     Saucer*   mSaucer;
     Bullet*   mPlayerBullet;
-    BombList* mBombs;   // concrete fixed-capacity list, no templates
-    Bunker*   mBunkers[4];   // BUNKER_COUNT: dims must be INT_LITERALs
+    std::vector<Bullet*> mBombs;                   // alien bombs in flight
+    std::array<Bunker*, BUNKER_COUNT> mBunkers;    // 0 until buildWave()
     Sound     mSfx;
     int       mScore;
     int       mHiScore;
