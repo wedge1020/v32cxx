@@ -142,7 +142,7 @@ ALNUM   [A-Za-z0-9_]
      * g_preprocessor_lines -- a recognized cart hint is translated into
      * a `#define`, not passed through verbatim; only a genuinely
      * unrecognized `#`-line falls through to that. */
-^"#texture"[ \t]+[A-Za-z_][A-Za-z0-9_]*[ \t]+\"[^"\n]*\"[^\n]* {
+^[ \t]*"#texture"[ \t]+[A-Za-z_][A-Za-z0-9_]*[ \t]+\"[^"\n]*\"[^\n]* {
     char name[128] = {0};
     char filename[256] = {0};
     if (sscanf(yytext, "#texture %127s \"%255[^\"]\"", name, filename) == 2) {
@@ -150,7 +150,7 @@ ALNUM   [A-Za-z0-9_]
     }
 }
 
-^"#sound"[ \t]+[A-Za-z_][A-Za-z0-9_]*[ \t]+\"[^"\n]*\"[^\n]* {
+^[ \t]*"#sound"[ \t]+[A-Za-z_][A-Za-z0-9_]*[ \t]+\"[^"\n]*\"[^\n]* {
     char name[128] = {0};
     char filename[256] = {0};
     if (sscanf(yytext, "#sound %127s \"%255[^\"]\"", name, filename) == 2) {
@@ -167,7 +167,7 @@ ALNUM   [A-Za-z0-9_]
      * one #title/#version simply keeps the last one seen, the same
      * "last write wins" behavior v32lua's own title/version hints have
      * (they just overwrite the same fixed-size buffer each time). */
-^"#title"[ \t]+\"[^"\n]*\"[^\n]* {
+^[ \t]*"#title"[ \t]+\"[^"\n]*\"[^\n]* {
     char title[256] = {0};
     if (sscanf(yytext, "#title \"%255[^\"]\"", title) == 1) {
         free(g_cart_title);
@@ -175,7 +175,7 @@ ALNUM   [A-Za-z0-9_]
     }
 }
 
-^"#version"[ \t]+[^ \t\n]+[^\n]* {
+^[ \t]*"#version"[ \t]+[^ \t\n]+[^\n]* {
     char version[64] = {0};
     if (sscanf(yytext, "#version %63s", version) == 1) {
         free(g_cart_version);
@@ -192,7 +192,7 @@ ALNUM   [A-Za-z0-9_]
      * is already counted as N. g_current_filename is re-pointed at
      * an interned copy (see prescan_intern_filename) so the storage
      * stays valid for the rest of the run. */
-^"#"[ \t]+{DIGIT}+[ \t]+\"[^\"]*\"[ \t]*\n  {
+^[ \t]*"#"[ \t]+{DIGIT}+[ \t]+\"[^\"]*\"[ \t]*\n  {
     int line_no;
     char fname[512];
     if (sscanf(yytext, "# %d \"%511[^\"]\"", &line_no, fname) == 2) {
@@ -201,7 +201,7 @@ ALNUM   [A-Za-z0-9_]
     }
 }
 
-^"#"[^\n]*                     {
+^[ \t]*"#"[^\n]*                     {
     /* Preprocessor pass-through -- see this file's own header comment
      * and driver.h's PreprocessorLines for the full reasoning. Grows
      * g_preprocessor_lines by one and stores this line's text verbatim,

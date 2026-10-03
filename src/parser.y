@@ -161,6 +161,57 @@ static void parse_record_enum_values(const AstList *enumerators) {
         next = v + 1;
     }
 }
+
+/* ---- tag typedefs (`typedef struct Actor Actor;` and friends) ----------
+ *
+ * C needs `typedef struct Actor Actor;` to use the bare name; C++ (and so
+ * this transpiler -- the lexer already classifies every class/union/enum
+ * tag as TYPE_NAME) does not. So the C idioms are accepted and desugared
+ * right here in the parser, leaving sema/lower/codegen untouched:
+ *
+ *   typedef struct Actor Actor;        -> nothing (the tag IS the name);
+ *                                         registers Actor as a type name
+ *                                         if the definition comes later
+ *   struct Actor;                      -> nothing (codegen already forward-
+ *                                         declares every class it defines)
+ *   typedef struct Tag { ... } Name;   -> struct Tag {...}; typedef Tag Name;
+ *   typedef struct Tag { ... } Tag;    -> struct Tag {...};
+ *   typedef struct { ... } Name;       -> struct Name {...};
+ *   (same for union and enum)
+ *
+ * "Nothing" and "two declarations" are both expressed as an
+ * AST_VAR_DECL_GROUP -- ast_list_append_flatten splices a group's entries
+ * into the surrounding list, so an empty group vanishes and a two-entry
+ * group lands as two ordinary top-level declarations. */
+static AstNode *decl_group_new(int line) {
+    return ast_new(AST_VAR_DECL_GROUP, line);
+}
+
+/* Make `name` lex as TYPE_NAME from here on, unless it already does. */
+static void declare_type_name(const char *name, SymbolKind kind) {
+    Symbol *s = symtab_lookup(g_symtab, name);
+    if (s != NULL && (s->kind == SYM_CLASS || s->kind == SYM_UNION ||
+                      s->kind == SYM_ENUM  || s->kind == SYM_TYPEDEF)) return;
+    symtab_insert(g_symtab, g_symtab->current, name, kind);
+}
+
+/* `typedef <tag definition> [*|&] name` -> the definition itself, plus a
+ * typedef unless `name` is just the tag again. */
+static AstNode *tag_typedef_group(AstNode *decl, int ptr, const char *name, int line) {
+    AstNode *g = decl_group_new(line);
+    ast_list_append(&g->list, decl);
+    if (ptr != 0 || strcmp(decl->str1, name) != 0) {
+        AstNode *t = ast_ident(decl->str1, line);
+        AstNode *td = ast_new(AST_TYPEDEF_DECL, line);
+        td->str1 = strdup(name);
+        td->type = (ptr == 1) ? ast_wrap_pointer(t, line)
+                 : (ptr == 2) ? ast_wrap_reference(t, line)
+                 : t;
+        symtab_insert(g_symtab, g_symtab->current, name, SYM_TYPEDEF);
+        ast_list_append(&g->list, td);
+    }
+    return g;
+}
 %}
 
 %glr-parser
@@ -206,7 +257,39 @@ static void parse_record_enum_values(const AstList *enumerators) {
  * and confirm the actual concrete input you care about still parses
  * correctly before trusting the new number.
  */
-%expect 27
+%expect 39
+/* Bumped from 27 to 39 -- twelve new shift/reduce conflicts, all from
+ * type_spec's three elaborated-type-specifier alternatives (`struct X`,
+ * `class X`, `union X`, `enum X` usable wherever a type is: `struct
+ * Actor a;`, `struct Actor* find( enum Dir d )`, `typedef struct Actor
+ * Hero;`). Verified by an actual bison run and by reading the
+ * counterexamples, not by the total alone. No new KIND of conflict:
+ *
+ *   12 = 4 tokens x 3 states. CLASS, STRUCT, ENUM and UNION can now begin
+ *        a type_spec, so each joins the eight tokens (IDENTIFIER,
+ *        TYPE_NAME, int/float/void/bool/char, const) that already had the
+ *        opt_virtual conflict -- "reduce an empty opt_virtual (this is a
+ *        func_header) or shift (this is a var_decl / out_of_line_def /
+ *        class_decl ...)" -- in each of the three states where a
+ *        declaration can start: top level, namespace body, class body.
+ *        Those states go from 8 conflicts each to 12.
+ *
+ * (A thirteenth showed up with the first draft of this change -- after
+ * `friend class`, shift IDENTIFIER for `friend class X;` or reduce CLASS
+ * toward a friend function returning the elaborated `class X` -- and was
+ * removed rather than counted: see the FRIEND rule in `member`.)
+ *
+ * These are settled by the GLR fork a token or two later -- the '(' of a
+ * function either follows the declarator name or it doesn't -- exactly
+ * as the existing eight-token family is; the whole pre-existing test
+ * suite still transpiles, compiles and runs identically, and sample 99
+ * exercises the new forms through the real Vircon32 compiler.
+ *
+ * The tag-typedef work that came with it (name_tok instead of IDENTIFIER
+ * as a class/union/enum/typedef name, forward declarations, `typedef
+ * struct {...} Name;` -- see the prologue note and tag_typedef_decl)
+ * adds NO conflicts, but only because the anonymous-struct form shares
+ * class_decl's own body states through class_body; see that rule. */
 /* Bumped from 25 to 27 -- two NEW shift/reduce conflicts, for var_decl's
  * new direct-initialization-with-constructor-args alternative
  * (`type_spec IDENTIFIER '(' arg_list ')'`, added alongside
@@ -352,14 +435,14 @@ static void parse_record_enum_values(const AstList *enumerators) {
 %token ASM VOLATILE NATIVE
 
 %type <node> program top_decl namespace_decl class_decl member
-%type <node> func_decl func_def func_header var_decl typedef_decl out_of_line_def native_decl
+%type <node> func_decl func_def func_header var_decl typedef_decl tag_typedef_decl out_of_line_def native_decl
 %type <node> enum_decl enumerator union_decl func_ptr_param_type
 %type <node> opt_member_init_list member_init
 %type <node> block stmt for_init opt_initializer opt_array_initializer
 %type <node> expr expr_opt unary_expr postfix_expr primary_expr
 %type <node> qualified_id_expr qualified_type type_spec param opt_base
 
-%type <list> top_decl_list member_list stmt_list
+%type <list> top_decl_list class_body member_list stmt_list
 %type <list> param_list opt_param_list arg_list opt_arg_list qname_prefix
 %type <list> member_init_list
 %type <node> array_dim comma_expr comma_expr_opt
@@ -416,6 +499,21 @@ top_decl:
     | func_decl ';'      { $$ = $1; }
     | var_decl ';'       { $$ = $1; }
     | typedef_decl ';'   { $$ = $1; }
+    | tag_typedef_decl ';' { $$ = $1; }
+    | class_or_struct_kw name_tok ';'
+        {
+            /* Forward declaration, `struct Actor;` -- only has to make
+             * the name usable as a type before its definition. Emits
+             * nothing: emit_forward_declarations already writes
+             * `struct X;` for every class this file defines. */
+            declare_type_name($2, SYM_CLASS);
+            $$ = decl_group_new(@1.first_line);
+        }
+    | UNION name_tok ';'
+        {
+            declare_type_name($2, SYM_UNION);
+            $$ = decl_group_new(@1.first_line);
+        }
     | native_decl ';'    { $$ = $1; }
     | out_of_line_def    { $$ = $1; }
     ;
@@ -491,7 +589,7 @@ namespace_decl:
 /* ---- classes -------------------------------------------------------- */
 
 class_decl:
-    class_or_struct_kw IDENTIFIER opt_base
+    class_or_struct_kw name_tok opt_base
         {
             /* Register the class *before* the body is scanned, so that
              * self-referential members (`Node *next;`) and constructor/
@@ -524,7 +622,7 @@ class_decl:
             Symbol *injected = symtab_insert(g_symtab, g_symtab->current, $2, SYM_CLASS);
             injected->inner_scope = g_symtab->current;
         }
-    '{' member_list '}'
+    class_body
         {
             symtab_pop_scope(g_symtab);
             $$ = ast_new(AST_CLASS_DECL, @1.first_line);
@@ -535,7 +633,7 @@ class_decl:
              * NULL (no base at all), but ACC_PUBLIC is a harmless inert
              * default for that case rather than leaving it uninitialized. */
             $$->access = $3 ? $3->access : ACC_PUBLIC;
-            $$->list = $6;
+            $$->list = $5;
             $$->ival = $1; /* is_struct -- see class_or_struct_kw below and
                 AST_CLASS_DECL's own doc comment in ast.h for what this
                 controls (only the default member-access level; every
@@ -543,6 +641,16 @@ class_decl:
                 identically either way) */
             g_current_class_sym = NULL;
         }
+    ;
+
+/* One shared nonterminal for the braces-and-members part, so a named
+ * class_decl and tag_typedef_decl's anonymous `typedef struct { ... } X;`
+ * run through the SAME parser states -- as two separate inline
+ * `'{' member_list '}'` sequences, bison builds a second copy of the
+ * member-list state and with it a second copy of that state's 12
+ * (benign, opt_virtual) shift/reduce conflicts. */
+class_body:
+    '{' member_list '}'    { $$ = $2; }
     ;
 
 /* Distinguishes `class` from `struct` at the very first token of
@@ -595,10 +703,19 @@ member:
     | func_decl ';'   { $$ = $1; }
     | func_def        { $$ = $1; }
     | var_decl ';'     { $$ = $1; }
-    | FRIEND CLASS IDENTIFIER ';'
+    | FRIEND class_or_struct_kw name_tok ';'
         {
-            /* `friend class X;` -- plain IDENTIFIER, deliberately NOT
-             * TYPE_NAME: X is very commonly a class this file hasn't
+            /* `friend class X;` / `friend struct X;`. name_tok since X
+             * may or may not be a known type yet (a forward declaration
+             * `class X;`, or X's own definition earlier in the file,
+             * makes it a TYPE_NAME); class_or_struct_kw rather than a
+             * literal CLASS so this rule and type_spec's elaborated
+             * `class X` agree on the first reduction and the choice
+             * between them is left to the ';' -- which removes the
+             * shift/reduce conflict a literal `FRIEND CLASS IDENTIFIER`
+             * has against type_spec. The original note follows.
+             *
+             * X is very commonly a class this file hasn't
              * DEFINED yet at this point in the source (the classic
              * mutually-friending pair, each one naming the other before
              * either body has been fully parsed), so it can't possibly
@@ -1077,6 +1194,9 @@ type_spec:
     | BOOL_KW       { $$ = ast_ident("bool", @1.first_line); }
     | CHAR_KW       { $$ = ast_ident("char", @1.first_line); }
     | TYPE_NAME     { $$ = ast_ident($1, @1.first_line); }
+    | class_or_struct_kw name_tok  { $$ = ast_ident($2, @2.first_line); }
+    | UNION name_tok               { $$ = ast_ident($2, @2.first_line); }
+    | ENUM name_tok                { $$ = ast_ident($2, @2.first_line); }
     | qualified_type { $$ = $1; }
     | CONST type_spec
         {
@@ -1456,6 +1576,12 @@ func_ptr_param_type:
                : ($2 == 2) ? ast_wrap_reference($1, @1.first_line)
                : $1;
         }
+    | type_spec pointer_opt name_tok
+        {
+            $$ = ($2 == 1) ? ast_wrap_pointer($1, @1.first_line)
+               : ($2 == 2) ? ast_wrap_reference($1, @1.first_line)
+               : $1;
+        }
     ;
 
 func_ptr_param_list:
@@ -1587,15 +1713,78 @@ opt_initializer:
     | '=' expr        { $$ = $2; }
     ;
 
-typedef_decl:
-    TYPEDEF type_spec pointer_opt IDENTIFIER
+/* `typedef` wrapped around a struct/union/enum DEFINITION -- see the
+ * tag-typedef note in the prologue for the desugaring. Top-level/
+ * namespace-level only (reachable from top_decl, not from stmt), the same
+ * boundary class_decl/union_decl/enum_decl themselves have. */
+tag_typedef_decl:
+      TYPEDEF class_decl pointer_opt name_tok
+        { $$ = tag_typedef_group($2, $3, $4, @4.first_line); }
+    | TYPEDEF union_decl pointer_opt name_tok
+        { $$ = tag_typedef_group($2, $3, $4, @4.first_line); }
+    | TYPEDEF enum_decl pointer_opt name_tok
+        { $$ = tag_typedef_group($2, $3, $4, @4.first_line); }
+    | TYPEDEF class_or_struct_kw
         {
-            symtab_insert(g_symtab, g_symtab->current, $4, SYM_TYPEDEF);
-            $$ = ast_new(AST_TYPEDEF_DECL, @4.first_line);
-            $$->str1 = strdup($4);
-            $$->type = ($3 == 1) ? ast_wrap_pointer($2, @2.first_line)
-                     : ($3 == 2) ? ast_wrap_reference($2, @2.first_line)
-                     : $2;
+            /* Anonymous: the typedef name (not seen yet) becomes the
+             * struct's own name. Nothing inside the body can mention a
+             * name it doesn't have, so a placeholder scope owner is
+             * enough while the members are parsed. */
+            g_current_class_sym = NULL;
+            symtab_push_scope(g_symtab, "__anonymous", 1);
+        }
+      class_body name_tok
+        {
+            Scope *body = g_symtab->current;
+            symtab_pop_scope(g_symtab);
+            Symbol *sym = symtab_insert(g_symtab, g_symtab->current, $5, SYM_CLASS);
+            sym->inner_scope = body;
+            $$ = ast_new(AST_CLASS_DECL, @1.first_line);
+            $$->str1 = strdup($5);
+            $$->str2 = NULL;
+            $$->access = ACC_PUBLIC;
+            $$->list = $4;
+            $$->ival = $2;
+        }
+    | TYPEDEF UNION '{' union_member_list '}' name_tok
+        {
+            symtab_insert(g_symtab, g_symtab->current, $6, SYM_UNION);
+            $$ = ast_new(AST_UNION_DECL, @1.first_line);
+            $$->str1 = strdup($6);
+            $$->list = $4;
+        }
+    | TYPEDEF ENUM '{' enumerator_list '}' name_tok
+        {
+            parse_record_enum_values(&$4);
+            symtab_insert(g_symtab, g_symtab->current, $6, SYM_ENUM);
+            $$ = ast_new(AST_ENUM_DECL, @1.first_line);
+            $$->str1 = strdup($6);
+            $$->list = $4;
+        }
+    ;
+
+typedef_decl:
+    TYPEDEF type_spec pointer_opt name_tok
+        {
+            /* name_tok, not IDENTIFIER: in `typedef struct Actor Actor;`
+             * written after the struct's definition, the second Actor
+             * already lexes as TYPE_NAME. */
+            if ($3 == 0 && $2->kind == AST_IDENT && strcmp($2->str1, $4) == 0) {
+                /* `typedef struct Actor Actor;` (or union/enum): the tag
+                 * already is the type name here, so there is nothing to
+                 * emit -- a `typedef Actor Actor;` in the output would
+                 * only be a redefinition. See the tag-typedef note in the
+                 * prologue. */
+                declare_type_name($4, SYM_TYPEDEF);
+                $$ = decl_group_new(@4.first_line);
+            } else {
+                symtab_insert(g_symtab, g_symtab->current, $4, SYM_TYPEDEF);
+                $$ = ast_new(AST_TYPEDEF_DECL, @4.first_line);
+                $$->str1 = strdup($4);
+                $$->type = ($3 == 1) ? ast_wrap_pointer($2, @2.first_line)
+                         : ($3 == 2) ? ast_wrap_reference($2, @2.first_line)
+                         : $2;
+            }
         }
     | TYPEDEF type_spec pointer_opt '(' '*' IDENTIFIER ')' '(' opt_func_ptr_param_list ')'
         {
@@ -1660,7 +1849,7 @@ typedef_decl:
  * requirement a mid-rule action would exist to satisfy here.
  */
 enum_decl:
-    ENUM IDENTIFIER '{' enumerator_list '}'
+    ENUM name_tok '{' enumerator_list '}'
         {
             parse_record_enum_values(&$4);
             symtab_insert(g_symtab, g_symtab->current, $2, SYM_ENUM);
@@ -1706,7 +1895,7 @@ enumerator:
  * invalid octal digit in a numeric literal).
  */
 union_decl:
-    UNION IDENTIFIER '{' union_member_list '}'
+    UNION name_tok '{' union_member_list '}'
         {
             symtab_insert(g_symtab, g_symtab->current, $2, SYM_UNION);
             $$ = ast_new(AST_UNION_DECL, @1.first_line);
@@ -1846,7 +2035,7 @@ stmt:
             $$->str1 = strdup($1);
             $$->a = $3;
         }
-	| ASM '{' asm_string_list '}'
+    | ASM '{' asm_string_list '}'
         {
             /* Vircon32 C's own native form -- pure pass-through. */
             $$ = ast_new(AST_ASM, @1.first_line);
@@ -1883,7 +2072,7 @@ stmt:
             $$->list = $4;
             $$->ival = 1;
         }
-	| ASM '(' asm_string_list ':' /* deliberately incomplete */
+    | ASM '(' asm_string_list ':' /* deliberately incomplete */
         {
             yyerror("extended asm with operand constraints is not "
                     "supported: Vircon32 C uses '{param}' interpolation "

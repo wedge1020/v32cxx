@@ -26,7 +26,7 @@
  * config.h, not here -- this file is identity, that one is configuration.
  */
 
-#define  VERSION  "20261002-dev"
+#define  VERSION  "20261003-dev"
 #define  AUTHOR   "Matthew Haas"
 #define  URL      "https://github.com/wedge1020/v32cxx"
 
