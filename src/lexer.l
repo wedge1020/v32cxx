@@ -258,7 +258,13 @@ ALNUM   [A-Za-z0-9_]
 "asm"        { g_last_ident_sym = NULL; return ASM; }
 "__asm"      { g_last_ident_sym = NULL; return ASM; }
 "__asm__"    { g_last_ident_sym = NULL; return ASM; }
-"volatile"         { g_last_ident_sym = NULL; return VOLATILE; }
+    /* `volatile` is a token only where the grammar uses it -- gcc-style
+     * `asm volatile ( ... )` / `volatile asm ( ... )`. As a type qualifier
+     * (`volatile int ticks;`) it is accepted and dropped: nothing in a
+     * single-threaded Vircon32 cart changes a variable behind the
+     * compiler's back, and Vircon32 C has no such keyword. */
+"volatile"/[ \t\r\n]*("("|"asm"|"__asm")  { g_last_ident_sym = NULL; return VOLATILE; }
+"volatile"         { g_last_ident_sym = NULL; }
 "__volatile__"     { g_last_ident_sym = NULL; return VOLATILE; }
 "switch"     { g_last_ident_sym = NULL; return SWITCH; }
 "case"       { g_last_ident_sym = NULL; return CASE; }
@@ -287,10 +293,61 @@ ALNUM   [A-Za-z0-9_]
     /* `inline` and `register` are pure hints in a single translation unit
      * (v32c++ always transpiles one): accepted and dropped, so code
      * written with them -- headers especially -- doesn't need editing.
-     * `static`/`extern` are NOT: a static local keeps its value between
-     * calls, which dropping the word would silently break. */
+     * `static`/`extern` need more care (a static local keeps its value
+     * between calls) -- see their own rules just below. */
 "inline"     { g_last_ident_sym = NULL; }
 "register"   { g_last_ident_sym = NULL; }
+
+    /* `extern` is dropped too: with one translation unit, an `extern int
+     * x;` IS the variable unless the file also defines it, and
+     * merge_tentative_globals (ast.c) folds the two declarations into
+     * one in that case. An extern function declaration is just a
+     * prototype. */
+"extern"     { g_last_ident_sym = NULL; }
+
+    /* `static` depends on where it stands, which the scope stack knows:
+     *   - at file or namespace scope it only limits linkage, and there is
+     *     nothing to link against: dropped;
+     *   - inside a function body it changes the variable's LIFETIME, so
+     *     it reaches the grammar (stmt: STATIC var_decl) and the variable
+     *     is hoisted to file scope by hoist_static_locals (ast.c);
+     *   - inside a class body it would declare a static member, which
+     *     this project doesn't have. */
+"static"     {
+    g_last_ident_sym = NULL;
+    Scope *sc = g_symtab->current;
+    if (sc->is_class_scope) {
+        fprintf(stderr, "%s:%d: error: static class members are not supported\n",
+                g_current_filename, g_lex_lineno);
+        g_parse_errors++;
+    } else if (sc->parent != NULL && sc->owner_name == NULL) {
+        return STATIC;
+    }
+}
+
+    /* C's other integer spellings -- unsigned / signed / short / long, in
+     * any combination, optionally followed by int or char (`unsigned
+     * int`, `long long`, `signed short int`, `unsigned char`). Vircon32
+     * has exactly one integer type, a signed 32-bit word, so they are all
+     * `int` here. That is exact for signed/short/long as long as values
+     * stay in range; for `unsigned` it changes what >>, /, % and
+     * comparisons do with values above INT_MAX, hence the warning. The
+     * trailing context keeps `long longer` from swallowing half an
+     * identifier. */
+("unsigned"|"signed"|"short"|"long")([ \t]+("unsigned"|"signed"|"short"|"long"|"int"|"char"))*/[^A-Za-z0-9_]  {
+    g_last_ident_sym = NULL;
+    if (strstr(yytext, "unsigned") != NULL) {
+        static int warned = 0;
+        if (!warned) {
+            fprintf(stderr, "%s:%d: warning: `unsigned` is treated as plain int "
+                    "(Vircon32 has only a signed 32-bit integer): >>, /, %% and "
+                    "comparisons behave as signed (reported once)\n",
+                    g_current_filename, g_lex_lineno);
+            warned = 1;
+        }
+    }
+    return INT_KW;
+}
 
 "::"  {
     /* Arm (or clear) the qualifier context for the *next* token, using
@@ -322,6 +379,7 @@ ALNUM   [A-Za-z0-9_]
 "&="    { g_last_ident_sym = NULL; return ANDEQ; }
 "|="    { g_last_ident_sym = NULL; return OREQ; }
 "^="    { g_last_ident_sym = NULL; return XOREQ; }
+"%="    { g_last_ident_sym = NULL; return MODEQ; }
 
 {ALPHA}{ALNUM}*  {
     /* The core of the lexer hack: classify this identifier by consulting
@@ -425,7 +483,8 @@ ALNUM   [A-Za-z0-9_]
      * avoids rejecting otherwise-valid code over a distinction that
      * has no effect either way. */
     g_last_ident_sym = NULL;
-    yylval.lit.ival = LIT_SIGN * atoi(yytext);
+    yylval.lit.ival = LIT_SIGN * (int)strtoul(yytext, NULL, 10); /* strtoul, not
+        atoi: 4000000000u must wrap to its 32-bit pattern, not saturate */
     yylval.lit.macro = take_lit_macro();
     return INT_LITERAL;
 }

@@ -842,6 +842,10 @@ struct AstNode {
     AstNode *a, *b, *c, *d;
     AstList list;
 
+    /* AST_VAR_DECL only: 1 for a `static` LOCAL, between the parse and
+     * hoist_static_locals (ast.c), which moves it to file scope. */
+    int is_static_local;
+
     /*
      * Opaque annotation slot for later compiler passes (semantic
      * analysis, lowering, ...) to attach computed, pass-specific
@@ -921,5 +925,9 @@ void ast_dump(const AstNode *node, int indent);
  * (\x followed by any number of hex digits, as in C; the value is kept to
  * one byte). An unknown escape yields the character itself. */
 int ast_decode_escape(const char **p);
+
+/* Post-parse, pre-sema rewrites for C storage classes -- see ast.c. */
+void hoist_static_locals(AstList *decls);
+void merge_tentative_globals(AstList *decls);
 
 #endif /* AST_H */

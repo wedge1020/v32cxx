@@ -393,6 +393,13 @@ int  main (int  argc, char **argv)
     if (rc == 0 && g_parse_errors > 0) rc = 1; /* messages already printed */
 
     if (rc == 0 && g_program != NULL) {
+        /* C storage classes, resolved before anything else looks at the
+         * tree: static locals become file-scope variables, and repeated
+         * file-scope declarations of one variable (extern + definition)
+         * become one. */
+        hoist_static_locals(&g_program->list);
+        merge_tentative_globals(&g_program->list);
+
         if (verbosity >= 3) {
             printf("---- parse OK: AST for %s ----\n", g_current_filename);
             ast_dump(g_program, 0);

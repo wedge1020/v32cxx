@@ -44,223 +44,105 @@ Note: `__V32CXX__` is predefined in the prescan (`macro.h`, `is_builtin`),
 so the active branch is `"V32C++ REGRESSION CART"`, expanded inline at its
 use site.
 
-### Gap #2 — elaborated type specifiers (CONFIRMED, source worked around)
+### Gap #2 — elaborated type specifiers (FIXED in parser.y)
 
 **Second transpile attempt died with:**
 `spyvsspy.c:169: error: syntax error, unexpected STRUCT`
 
-**Root cause:** `typedef struct Actor Actor;`. `typedef_decl` only accepts a
-`type_spec` after TYPEDEF — and the STRUCT/UNION/ENUM keywords are not in
-`type_spec`'s first set (only `int/float/void/bool/char`, a TYPE_NAME, a
-qualified name, or `const`). The same holds for *any* declaration position:
-`struct Actor x;` as a local/parameter/global also fails ("unexpected
-STRUCT"), and `union ShadeWord u;` fails as "unexpected UNION". The tag
-keywords only work at the *top-level declaration* position
-(`top_decl: class_decl ';' | enum_decl ';' | union_decl ';'`).
+**Root cause:** `typedef struct Actor Actor;` — `struct`/`union`/`enum`
+could not start a type anywhere but a top-level definition.
 
-**Workaround in this source:** the typedefs were deleted, and
-`union ShadeWord u;` in `dim_color` became `ShadeWord u;`. Both are safe
-because `class_decl`/`union_decl` register the tag in the symbol table
-(SYM_CLASS/SYM_UNION) and the lexer hack classifies those names as
-TYPE_NAME — the bare tag name works everywhere the elaborated form doesn't.
-Probe: `gap_probes.cpp -DGAP_ELABORATED`.
+**Fix:** `type_spec` takes `struct X` / `class X` / `union X` / `enum X`,
+and the tag-typedef idioms are desugared in the parser: `typedef struct
+Actor Actor;` (before or after the definition) emits nothing, `struct
+Actor;` forward declarations are accepted, and `typedef struct [Tag] {
+... } Name;` works for struct, union and enum. `%expect` went 27 → 39;
+the twelve new conflicts are the existing `opt_virtual` family reached
+through four more leading tokens (see the comment at `%expect`).
+The cart has its typedefs and `union ShadeWord u;` back.
+Regression test: `tests/99sample.cpp`.
 
-**Transpiler-side fix — concrete parser.y placement:**
-
-1. `type_spec` is the rule listing `INT_KW | FLOAT_KW | VOID_KW | BOOL_KW
-   | CHAR_KW | TYPE_NAME | qualified_type | CONST type_spec`. Add three
-   alternatives (put them next to the TYPE_NAME one):
-
-   ```
-   | class_or_struct_kw name_tok  { $ = ast_ident($2, @2.first_line); }
-   | UNION name_tok               { $ = ast_ident($2, @2.first_line); }
-   | ENUM name_tok                { $ = ast_ident($2, @2.first_line); }
-   ```
-
-   Use the existing `name_tok` (`IDENTIFIER | TYPE_NAME`), **not** bare
-   IDENTIFIER: elaborated specifiers are most used when the tag is
-   *already registered* (`struct Actor x;` after the struct is defined),
-   and the lexer hack then hands the tag back as TYPE_NAME — a bare
-   IDENTIFIER alternative would fail on exactly the common case. The
-   action copies the TYPE_NAME alternative verbatim (an `ast_ident` from
-   the tag), so sema/codegen see the same AST the bare-name spelling
-   already produces — the known-good path.
-
-2. That one change fixes `typedef struct X Y;` **for free**: typedef_decl's
-   plain alternative is `TYPEDEF type_spec pointer_opt IDENTIFIER`, and
-   the new type_spec alternative slots into position 2. The separate
-   `TYPEDEF class_or_struct_kw ...` typedef_decl alternative is NOT
-   needed — skip it.
-
-3. Follow-on for the canonical same-name idiom `typedef struct Actor
-   Actor;`: the ALIAS `Actor` is already SYM_CLASS, so the lexer returns
-   TYPE_NAME there too and $4 (IDENTIFIER) rejects it — "unexpected
-   TYPE_NAME". If the same-name idiom should parse, widen typedef_decl's
-   plain alternative to `TYPEDEF type_spec pointer_opt name_tok`.
-   Distinct-alias forms (`typedef struct Point2 Point2Alias;`) work with
-   step 1 alone.
-
-4. Re-run bison: `%expect 27` will hard-error until updated. STRUCT+CLASS
-   (`class_or_struct_kw`), UNION and ENUM are **four new leading tokens**
-   for type_spec, and this grammar's documented pattern is one new
-   out_of_line_def-vs-func_def shift/reduce conflict per leading token
-   per declaration-start context (the `const` bump was exactly +3 for one
-   token). Also expect a new class_decl-vs-var_decl fork at `struct Tag`
-   (lookahead `{`/`:` → class_decl; IDENTIFIER/`*`/`=`/`;` → declaration),
-   decided by a single token of lookahead. Read every counterexample with
-   `bison -Wcounterexamples` before accepting the new number — the file's
-   own postmortem insists on that drill.
-
-### Gap #3 — named parameters in function-pointer types (CONFIRMED, source worked around)
+### Gap #3 — named parameters in function-pointer types (FIXED in parser.y)
 
 **Third transpile attempt died with:**
 `spyvsspy.c:172: error: syntax error, unexpected IDENTIFIER, expecting ')'`
 
-**Root cause:** `typedef void (*ActorFn)( Actor* a );` — the parameter
-*name* inside a function-pointer type's parameter list (reported line
-drifted ~25; the real line is the ActorFn typedef). `func_ptr_param_type`
-is exactly `type_spec pointer_opt`, so after `Actor*` the only legal
-tokens are `,` and `)`; `a` is neither. FrameFn's `()` was already fine.
+**Root cause:** `typedef void (*ActorFn)( Actor* a );` —
+`func_ptr_param_type` took bare types only. C and C++ allow (and
+discard) a name in any function declarator.
 
-The grammar's own comment calls this deliberate — "a function-pointer
-TYPE's own parameter list carries bare TYPES only, matching real C++
-exactly (`int (*)(int, float)`, never `int (*)(int x, float y)`)" — but
-that rationale is mistaken: real C **and** C++ allow a parameter name in
-any function declarator, function-pointer typedefs included; the name is
-parsed and discarded (`typedef void (*Fn)(int x);` is valid, portable
-C). So this is a true coverage gap, not a correctly-drawn scope boundary.
+**Fix:** `func_ptr_param_type: type_spec pointer_opt name_tok`. The cart
+has the named parameter back.
 
-**Workaround in this source:** `typedef void (*ActorFn)( Actor* );` —
-name dropped. Probe: `gap_probes.cpp -DGAP_FP_PARAM_NAME` (probes both
-declarator spellings through the same `opt_func_ptr_param_list`).
+### Gap #4 — arrays as operands (FIXED in lower.c, phase 11)
 
-**Transpiler-side fix — one alternative in `func_ptr_param_type`**
-(the rule sitting just above `func_ptr_param_list`, at the end of the
-function-pointer section):
-
-```
-func_ptr_param_type:
-      type_spec pointer_opt                 { ...existing action... }
-    | type_spec pointer_opt name_tok        { ...identical wrap action;
-                                               the name is parsed and
-                                               DISCARDED, exactly as real
-                                               C's declarator grammar
-                                               treats it... }
-    ;
-```
-
-No new conflict risk: inside an fp parameter list the only tokens that can
-follow a complete type are `,` and `)`, so an IDENTIFIER/TYPE_NAME there
-can only be a discarded name — nothing else in the grammar competes for
-it. Use `name_tok` rather than IDENTIFIER for the same lexer-hack reason
-as in gap #2's fix (a parameter named after a registered type tokenizes
-as TYPE_NAME). All three fp typedef alternatives and both fp var_decl
-declarator spellings route through the same `opt_func_ptr_param_list`,
-so this single change covers every spelling. And update the rule's
-comment: "matching real C++ exactly" is the part that's wrong.
-
-### Gap #4 — pointer arithmetic reaches Vircon32 C verbatim (CONFIRMED, source UNTOUCHED)
-
-**First downstream compile (the v32c++ transpile itself now succeeds)
-died with:**
+**First downstream compile died with:**
 
 ```
 obj/spyvsspy.c:414:31: error: invalid operands for addition
 obj/spyvsspy.c:414:17: error: types are not compatible: cannot assign int to struct Actor*
 obj/spyvsspy.c:431:50: error: invalid operands for subtraction
-obj/spyvsspy.c:611:31: error: invalid operands for addition
-obj/spyvsspy.c:611:17: error: types are not compatible: cannot assign int to struct Actor*
-obj/spyvsspy.c:1129:31: error: invalid operands for addition
-obj/spyvsspy.c:1129:17: error: types are not compatible: cannot assign int to struct Actor*
 ```
 
-**Root cause:** valid C that v32c++ parses and emits verbatim, but
-Vircon32 C rejects. Its pointer support accepts `++p`, `p != q` and
-`p->m`, but NOT `p + i` / `i + p` ("invalid operands for addition") and
-NOT `p - q` ("invalid operands for subtraction"). The cart's four sites:
-`Actor* end = g_actors + MAX_ACTORS;` in spawn_actor, update_bullet and
-play_frame (each `+` yields two errors — the invalid addition, then its
-int result assigned to `Actor*`), and `(int)( it - g_actors )` in
-spawn_actor. This is the SILENT-LEAK class: transpile succeeds, the
-generated C looks plausible, only the downstream compiler catches it.
-No entry in docs/VIRCON32_QUIRKS.md yet — this needs a new one
-("Vircon32 C has no pointer arithmetic; ++/-- and comparisons only").
+**Root cause — not what it first looked like.** This was filed as
+"Vircon32 C has no pointer arithmetic". Probing the real compiler one
+construct at a time says otherwise: `p + 2`, `2 + p`, `p - 1`, `p += 2`,
+`q - p` and `&p[ n ]` all compile. What it refuses is an ARRAY as an
+operand: an array only decays to a pointer in a plain assignment,
+initializer or argument, so `g_actors + MAX_ACTORS`, `it - g_actors`,
+`p == g_actors`, `(int)g_actors` and `*g_actors` are all errors.
 
-**Source stays as-is** — per the coverage-cart policy, the pointer
-iteration is the point. Probe: `gap_probes.cpp -DGAP_PTR_ARITH`.
+**Fix:** in Vircon32 mode an array-typed operand of `+ - == != < > <=
+>=`, of a cast, or of unary `*` is emitted as `&arr[0]`:
+`Actor * end = ((&g_actors[0]) + MAX_ACTORS);`. `sizeof arr` is left
+alone. docs/VIRCON32_QUIRKS.md #22; `tests/100sample.cpp`.
 
-**Transpiler-side fix:** a Vircon32-mode lowering pass in lower.c (same
-"genuine AST-level rewrite, not a printing choice" reasoning as the
-ternary phase), gated `g_target == TARGET_VIRCON32`:
-
-- `p + i` / `i + p` / `p - i` (T* p) → `&p[ i ]` / `&p[ -i ]` — the C
-  identity `&p[i] ≡ p + i` — IF Vircon32 C accepts subscripting a
-  POINTER lvalue (the cart only proves it for arrays);
-- `p - q` → `((int)p - (int)q) / (int)sizeof(T)` — IF pointer↔int casts
-  and runtime `sizeof` work (Vircon32 C spelling: bare tag, `sizeof(S)`);
-- both primitives need one two-minute hand probe against `compile`
-  before choosing the shape:
-
-```c
-/* ptr_probe.c -- hand-feed to the Vircon32 C compiler */
-struct S { int x; int y; };
-struct S g_pool[ 8 ];
-
-void main( void )
-{
-    struct S* p = g_pool;
-    struct S* q;
-    int d = 2;
-
-    q = &p[ 2 ];                          /* A: subscript on pointer */
-    q = &p[ d ];                          /* B: same, variable index */
-    d = ( (int)q - (int)g_pool ) / (int)sizeof( S );   /* C: casts+sizeof */
-    d = q - g_pool;                       /* D: ptr - ptr (expect reject) */
-    q = p + 2;                            /* E: ptr + int (expect reject) */
-}
-```
-
-- same family to cover in the same pass: `p += i` / `p -= i` (nobody
-  used them in the cart yet, but they will leak identically);
-- if NEITHER primitive exists, the fallback is index-rewriting (keep an
-  array base + integer index instead of pointer locals) — much more
-  invasive; decide only after the probe results.
-
-### Gap #5 — ternary temps vs Vircon32 C's const strictness (CONFIRMED, source UNTOUCHED)
+### Gap #5 — const strictness (FIXED in lower.c, phase 11)
 
 **Same downstream compile died with:**
 
 ```
 obj/spyvsspy.c:238:31: error: cannot assign const int to int: discards const qualifier
-obj/spyvsspy.c:244:35: error: cannot assign const int to int: discards const qualifier
-obj/spyvsspy.c:248:35: error: cannot assign const int to int: discards const qualifier
 ```
 
-**Root cause:** `clampi` — `inline int clampi( const int v, const int lo,
-const int hi )` returns a ternary CHAIN. The direct-return position
-avoids a temp, but the NESTED ternary in the else branch forces the
-hoist path: the lowering declares `int __v32_tern_tmpN;` and assigns
-`lo` / `hi` / `v` (const-qualified parameters) into it. Real C allows
-by-value scalar copies from const lvalues; Vircon32 C is stricter and
-rejects the const discard. Only clampi is hit — every other ternary in
-the cart reads plain params (max2 etc.) and passes. Another new
-quirks-doc entry: "Vircon32 C rejects `int t = c;` from a const scalar
-(`discards const qualifier`), which real C permits".
+**Root cause — wider than the ternary temps.** Vircon32 C rejects a
+const value in ANY plain assignment (`n = c;`), call argument
+(`f( c )`), `return c;`, and under unary minus (`n = -c;`), and the same
+for anything read through a pointer-to-const (`n = cp->x;`). Only
+initializers, compound assignments and binary expressions are exempt.
+`clampi` hit it through the ternary temps; user-written `n = lo;` would
+have died the same way.
 
-**Source stays as-is.** Probe: `gap_probes.cpp -DGAP_CONST_TERNARY`.
+**Fix:** at those three read positions a const scalar or pointer gets a
+cast to its own unqualified type (`__v32_ret_tmp0 = ((int)lo);`); a
+const struct is read as `*((S *)&expr)`. The phase runs after ternary
+lowering, so synthesized temporaries are covered. Real qualifier
+discards on pointers are still left for the compiler to reject.
+docs/VIRCON32_QUIRKS.md #23; `tests/100sample.cpp`.
 
-**Transpiler-side fix:** in lower.c's ternary machinery, when a
-synthesized assignment's RHS is a const-qualified scalar lvalue (a
-local/param whose type is a bare `AST_CONST_TYPE`), wrap it in an
-explicit cast to its own unqualified type — the rewrite emits
-`tmp = (int)lo;`. A cast yields an rvalue, discarding const by design;
-codegen-wise a no-op. Narrower alternative considered and rejected:
-stripping const from emitted parameter types in Vircon32 mode would
-change every generated signature and still leave user-written
-`int x = lo;` to die downstream. The cast fix is local to synthesized
-code; it can generalize into a full "const-strictness" pass over user
-assignments later if wanted, but the ternary temps alone unblock the
-cart.
+### Gaps closed from `gap_probes.cpp` (20261003)
+
+Every probe now transpiles and compiles under the real Vircon32 C
+compiler except the two listed last. Details in docs/VIRCON32_QUIRKS.md
+#24; all of these are exercised at run time by `tests/100sample.cpp`.
+
+| Probe | Outcome |
+|---|---|
+| STATIC | file-scope `static` dropped; static LOCALS hoisted to uniquely named globals |
+| EXTERN | dropped; `extern int x;` + `int x = 5;` merge into one definition |
+| VOLATILE | dropped (still a token in `asm volatile`) |
+| UNSIGNED | `signed`/`short`/`long`/`unsigned` (+`int`/`char`) are `int`; `unsigned` warns once |
+| CONST_PTR | `T* const p` emitted as `T* p` |
+| COMMA_RETURN | `return a += 1, a + b;` parses; lowered like any comma operator |
+| MULTIDECL_ARRAY | `int a, b[ 4 ];` and `int b[ 4 ], a;` |
+| STRUCT_INIT / NESTED_INIT | braced initializers nest to any depth, for structs and arrays |
+| UNSAVED_ARRAY | `int t[] = { ... };` sized from the initializer |
+| MODASSIGN | `%=` |
+| NULL_INIT | `NULL` is predefined (it is a Vircon32 C keyword), so `#ifndef NULL` fallbacks no longer leak a `#define NULL 0` into the output |
+| FP_PARAM_NAME | also needed `fn = 0;` / `fn != 0` → `NULL` for function pointers |
+| VOID_PARAM, ARRAY_PARAM, TERNARY_ARG, TERNARY_MEMBER, COMMA_ARG, STRUCT_ASSIGN, CHAR, BITNOT | already worked; the table at the bottom of `gap_probes.cpp` was out of date |
+| BITFIELD | still an error, now a clear one ("bit-fields are not supported") |
+| STRUCT_RETURN | still unsupported: v32c++ warns, Vircon32 C rejects ("functions cannot return values of size > 1"). `make_point` used to sit in the always-on stub section, so every probe failed downstream; it now lives inside this probe |
 
 ### Not a gap — the fn_check declarator was invalid C (FIXED in source)
 
@@ -280,18 +162,13 @@ pointer, which the old `( int )` form never did). Optional transpiler
 nicety, not a gap: v32c++'s own sema could flag incompatible
 function-pointer assignments earlier than the downstream compiler does.
 
-### Revert queue (apply when the parser fixes for gaps #2/#3 land)
+### Revert queue — done
 
-Per the new policy — the cart demonstrates the transpiler, it doesn't
-concede to it — these workaround removals go back to idiomatic C as soon
-as the parser-side fixes are in:
-
-1. Restore `typedef struct Actor Actor;` and
-   `typedef struct GameState GameState;` (replacing the gap-#2 comment
-   block before the ActorFn typedefs).
-2. `dim_color`: `ShadeWord u;` → `union ShadeWord u;`.
-3. ActorFn: restore the named parameter —
-   `typedef void (*ActorFn)( Actor* a );`.
+The three workarounds are gone: `typedef struct Actor Actor;` and
+`typedef struct GameState GameState;` are back, `dim_color` declares
+`union ShadeWord u;`, and `ActorFn` names its parameter. `spyvsspy.c`
+transpiles, compiles with no errors or warnings, assembles, packs and
+runs on the headless console.
 
 ---
 
@@ -395,10 +272,10 @@ material.
 
 | Feature | Where in `spyvsspy.c` |
 |---|---|
-| Bare structs — tag names become TYPE_NAME via the lexer hack (no `typedef struct` needed, and `typedef struct X Y;` is Gap #2) | `Actor`, `GameState` used as bare names everywhere |
+| Structs with the C tag typedefs (`typedef struct Actor Actor;`) | `Actor`, `GameState` |
 | Enum, explicit **and** auto values | `enum ActorKind`, `enum GamePhase` |
-| Union with array member | `union ShadeWord` (in `dim_color`) |
-| Function-pointer typedefs, standard spelling | `ActorFn`, `FrameFn` |
+| Union with array member; elaborated `union ShadeWord u;` local | `union ShadeWord` (in `dim_color`) |
+| Function-pointer typedefs, standard spelling, named parameter | `ActorFn`, `FrameFn` |
 | Function-pointer local, **Vircon32 spelling** `void (int)*` | `fn_check` in `boot_game` |
 | Arrays, standard spelling | `g_pattern_bits`, `digits[12]`, `buf[16]`, `msg_white[16]`, … |
 | Arrays, **Vircon32 spelling** `int[N] name` | `g_pattern_speed` |

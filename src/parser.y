@@ -212,6 +212,48 @@ static AstNode *tag_typedef_group(AstNode *decl, int ptr, const char *name, int 
     }
     return g;
 }
+
+/* `T name[] = { ... }`: take the first dimension from the initializer. */
+static void size_unsized_array(AstList dims, const AstNode *init, int line) {
+    if (dims.count == 0 || dims.items[0]->ival >= 0) return;
+    if (init != NULL && init->kind == AST_INIT_LIST && init->list.count > 0) {
+        dims.items[0]->ival = init->list.count;
+    } else {
+        fprintf(stderr, "%s:%d: error: an array declared with empty brackets "
+                "needs an initializer to take its size from\n",
+                g_current_filename, line);
+        g_parse_errors++;
+        dims.items[0]->ival = 1;
+    }
+}
+
+/* Turns `first` plus the carriers more_plain_declarators collected into
+ * the declaration(s) of one statement: `first` alone, or an
+ * AST_VAR_DECL_GROUP. Each carrier holds its own pointer flag (ival),
+ * array dimensions (list, empty for a plain declarator) and initializer
+ * (a); the base type is shared. */
+static AstNode *finish_declarators(AstNode *first, AstNode *base, AstList more, int line) {
+    if (more.count == 0) return first;
+    AstNode *group = ast_new(AST_VAR_DECL_GROUP, line);
+    ast_list_append(&group->list, first);
+    for (int i = 0; i < more.count; i++) {
+        AstNode *spec = more.items[i];
+        symtab_insert(g_symtab, g_symtab->current, spec->str1, SYM_VAR);
+        AstNode *resolved = ast_new(AST_VAR_DECL, spec->line);
+        resolved->str1 = spec->str1;
+        AstNode *t = (spec->ival == 1) ? ast_wrap_pointer(base, line)
+                   : (spec->ival == 2) ? ast_wrap_reference(base, line)
+                   : base;
+        if (spec->list.count > 0) {
+            size_unsized_array(spec->list, spec->a, spec->line);
+            t = ast_wrap_array_dims(t, spec->list, line);
+        }
+        resolved->type = t;
+        resolved->a = spec->a;
+        ast_list_append(&group->list, resolved);
+    }
+    return group;
+}
 %}
 
 %glr-parser
@@ -433,13 +475,16 @@ static AstNode *tag_typedef_group(AstNode *decl, int ptr, const char *name, int 
 %token PLUSEQ MINUSEQ STAREQ SLASHEQ INC DEC
 %token SHL SHR ANDEQ OREQ XOREQ SHLEQ SHREQ
 %token ASM VOLATILE NATIVE
+%token MODEQ STATIC
 
 %type <node> program top_decl namespace_decl class_decl member
+%type <node> braced_init init_item
+%type <list> init_items
 %type <node> func_decl func_def func_header var_decl typedef_decl tag_typedef_decl out_of_line_def native_decl
 %type <node> enum_decl enumerator union_decl func_ptr_param_type
 %type <node> opt_member_init_list member_init
 %type <node> block stmt for_init opt_initializer opt_array_initializer
-%type <node> expr expr_opt unary_expr postfix_expr primary_expr
+%type <node> expr unary_expr postfix_expr primary_expr
 %type <node> qualified_id_expr qualified_type type_spec param opt_base
 
 %type <list> top_decl_list class_body member_list stmt_list
@@ -455,7 +500,7 @@ static AstNode *tag_typedef_group(AstNode *decl, int ptr, const char *name, int 
 %type <access> access_spec
 %type <ival> pointer_opt opt_virtual opt_const class_or_struct_kw cpp_cast_kw
 
-%right '=' PLUSEQ MINUSEQ STAREQ SLASHEQ ANDEQ OREQ XOREQ SHLEQ SHREQ
+%right '=' PLUSEQ MINUSEQ STAREQ SLASHEQ MODEQ ANDEQ OREQ XOREQ SHLEQ SHREQ
 %right '?'
 %left OROR
 %left ANDAND
@@ -703,6 +748,18 @@ member:
     | func_decl ';'   { $$ = $1; }
     | func_def        { $$ = $1; }
     | var_decl ';'     { $$ = $1; }
+    | var_decl ':' expr ';'
+        {
+            /* A bit-field. Recognised only to say so plainly: Vircon32 C
+             * has none, and silently widening `int level : 6;` to a full
+             * word would change both the struct's layout and what happens
+             * when a value doesn't fit. */
+            fprintf(stderr, "%s:%d: error: bit-fields are not supported (Vircon32 C "
+                    "has none) -- declare the member as a plain int and mask it "
+                    "where it is written\n", g_current_filename, @2.first_line);
+            g_parse_errors++;
+            $$ = $1;
+        }
     | FRIEND class_or_struct_kw name_tok ';'
         {
             /* `friend class X;` / `friend struct X;`. name_tok since X
@@ -1183,6 +1240,13 @@ pointer_opt:
       /* empty */  { $$ = 0; }
     | '*'          { $$ = 1; }
     | '&'          { $$ = 2; }
+    | '*' CONST    { $$ = 1; /* `T* const p` -- a const POINTER (as opposed
+                                to pointer-to-const, `const T*`). Accepted
+                                and emitted as a plain `T*`: the qualifier
+                                only forbids reseating p, which nothing in
+                                this project enforces for any const, and
+                                keeping it would only feed Vircon32 C's
+                                const strictness (lower.c, phase 11). */ }
     ;
 
 /* ---- types ------------------------------------------------------------ */
@@ -1307,33 +1371,7 @@ var_decl:
                         : $1;
             first->a = $4;
 
-            if ($5.count == 0) {
-                /* The overwhelmingly common case -- no comma continuation
-                 * at all -- produces EXACTLY the same single AST_VAR_DECL
-                 * this production always has, so every existing caller
-                 * (top_decl, member, stmt, for_init, union_member_list)
-                 * sees zero change in shape for the case it already
-                 * handles; only a NEW comma continuation ever produces
-                 * the new AST_VAR_DECL_GROUP node below. */
-                $$ = first;
-            } else {
-                $$ = ast_new(AST_VAR_DECL_GROUP, @1.first_line);
-                ast_list_append(&$$->list, first);
-                for (int i = 0; i < $5.count; i++) {
-                    AstNode *spec = $5.items[i]; /* unresolved carrier --
-                        see more_plain_declarators's own comment */
-                    symtab_insert(g_symtab, g_symtab->current, spec->str1, SYM_VAR);
-                    AstNode *resolved = ast_new(AST_VAR_DECL, spec->line);
-                    resolved->str1 = spec->str1; /* ownership transferred
-                        (not re-strdup'd) -- spec itself is a throwaway
-                        carrier, never referenced again after this loop */
-                    resolved->type = (spec->ival == 1) ? ast_wrap_pointer($1, @1.first_line)
-                                   : (spec->ival == 2) ? ast_wrap_reference($1, @1.first_line)
-                                   : $1;
-                    resolved->a = spec->a;
-                    ast_list_append(&$$->list, resolved);
-                }
-            }
+            $$ = finish_declarators(first, $1, $5, @1.first_line);
         }
     | type_spec IDENTIFIER '(' arg_list ')'
         {
@@ -1395,7 +1433,7 @@ var_decl:
             direct_init->list = $4;
             $$->a = direct_init;
         }
-    | type_spec pointer_opt IDENTIFIER array_bracket_list opt_array_initializer
+    | type_spec pointer_opt IDENTIFIER array_bracket_list opt_array_initializer more_plain_declarators
         {
             /* Standard C/C++ array declarator: length AFTER the name --
              * `int scores[8];`, or multi-dimensional (`int grid[8][4];`,
@@ -1405,13 +1443,16 @@ var_decl:
              * correct nesting gets built regardless of dimension
              * count), optionally `= {1, 2, 3};` alongside it. */
             symtab_insert(g_symtab, g_symtab->current, $3, SYM_VAR);
-            $$ = ast_new(AST_VAR_DECL, @3.first_line);
-            $$->str1 = strdup($3);
+            AstNode *first = ast_new(AST_VAR_DECL, @3.first_line);
+            first->str1 = strdup($3);
             AstNode *base = ($2 == 1) ? ast_wrap_pointer($1, @1.first_line)
                           : ($2 == 2) ? ast_wrap_reference($1, @1.first_line)
                           : $1;
-            $$->type = ast_wrap_array_dims(base, $4, @1.first_line);
-            $$->a = $5;
+            size_unsized_array($4, $5, @3.first_line);
+            first->type = ast_wrap_array_dims(base, $4, @1.first_line);
+            first->a = $5;
+            /* `int b[ 4 ], a;` -- further declarators after an array one */
+            $$ = finish_declarators(first, $1, $6, @1.first_line);
         }
     | type_spec array_bracket_list IDENTIFIER opt_array_initializer
         {
@@ -1435,6 +1476,7 @@ var_decl:
             symtab_insert(g_symtab, g_symtab->current, $3, SYM_VAR);
             $$ = ast_new(AST_VAR_DECL, @3.first_line);
             $$->str1 = strdup($3);
+            size_unsized_array($2, $4, @3.first_line);
             $$->type = ast_wrap_array_dims($1, $2, @1.first_line);
             $$->a = $4;
         }
@@ -1559,6 +1601,19 @@ more_plain_declarators:
             spec->a = $5;
             ast_list_append(&$$, spec);
         }
+    | more_plain_declarators ',' pointer_opt IDENTIFIER array_bracket_list opt_array_initializer
+        {
+            /* `int a, b[ 4 ];` -- an ARRAY declarator among the others.
+             * Same carrier as the plain one, with its dimensions parked
+             * in `list` for finish_declarators to wrap around the base. */
+            $$ = $1;
+            AstNode *spec = ast_new(AST_VAR_DECL, @4.first_line);
+            spec->str1 = strdup($4);
+            spec->ival = $3;
+            spec->list = $5;
+            spec->a = $6;
+            ast_list_append(&$$, spec);
+        }
     ;
 
 /* ---- function-pointer parameter-type lists -----------------------------
@@ -1634,6 +1689,16 @@ array_bracket_list:
             $$ = ast_list_new();
             ast_list_append(&$$, $2);
         }
+    | '[' ']'
+        {
+            /* `int t[] = { 10, 20, 30 };` -- length left for the
+             * initializer to decide; ival -1 until size_unsized_array
+             * fills it in (Vircon32 C itself has no `int[] t`). */
+            AstNode *dim = ast_new(AST_INT_LIT, @1.first_line);
+            dim->ival = -1;
+            $$ = ast_list_new();
+            ast_list_append(&$$, dim);
+        }
     | array_bracket_list '[' array_dim ']'
         {
             $$ = $1;
@@ -1673,20 +1738,33 @@ array_dim:
         }
     ;
 
+/* A braced initializer, nested to any depth: `{ 1, 2 }`, `{ {1,2}, {3,4} }`,
+ * `{ { 1, 2 }, 3 }`, with an optional trailing comma. One AST_INIT_LIST per
+ * brace pair. Vircon32 C takes the same positional form for arrays, structs
+ * and any nesting of the two (confirmed against the real compiler), so the
+ * list is printed back exactly as written. */
+braced_init:
+      '{' '}'
+        { $$ = ast_new(AST_INIT_LIST, @1.first_line); }
+    | '{' init_items '}'
+        { $$ = ast_new(AST_INIT_LIST, @1.first_line); $$->list = $2; }
+    | '{' init_items ',' '}'
+        { $$ = ast_new(AST_INIT_LIST, @1.first_line); $$->list = $2; }
+    ;
+
+init_items:
+      init_item                  { $$ = ast_list_new(); ast_list_append(&$$, $1); }
+    | init_items ',' init_item   { $$ = $1; ast_list_append(&$$, $3); }
+    ;
+
+init_item:
+      expr          { $$ = $1; }
+    | braced_init   { $$ = $1; }
+    ;
+
 opt_array_initializer:
       /* empty */                     { $$ = NULL; }
-    | '=' '{' opt_arg_list '}'         {
-            /* `= {1, 2, 3}` (or `= {}`, an empty list -- accepted
-             * syntactically, same reasoning as opt_arg_list's own empty
-             * case for an ordinary call). No length-checking against the
-             * array's own declared size happens anywhere yet (neither
-             * "too many initializers" nor padding a short list with
-             * zeros) -- sema.c doesn't currently look at this node at
-             * all beyond ordinary expression recursion. A real,
-             * documented gap, not silently handled. */
-            $$ = ast_new(AST_INIT_LIST, @1.first_line);
-            $$->list = $3;
-        }
+    | '=' braced_init         { $$ = $2; }
     | '=' string_seq
         {
             /* `int msg[8] = "Hello";` -- a string literal as an array
@@ -1711,6 +1789,8 @@ opt_array_initializer:
 opt_initializer:
       /* empty */    { $$ = NULL; }
     | '=' expr        { $$ = $2; }
+    | '=' braced_init { $$ = $2; /* `Point2 p = { 1, 2 };` -- a struct
+                                    (or any aggregate) initialized positionally */ }
     ;
 
 /* `typedef` wrapped around a struct/union/enum DEFINITION -- see the
@@ -1994,8 +2074,25 @@ stmt:
                 $$ = wrapper;
             }
         }
-    | RETURN expr_opt ';'
+    | STATIC var_decl ';'
         {
+            /* A static LOCAL: one object for the whole program, visible
+             * only in this block. Marked here and moved to file scope
+             * under a unique name by hoist_static_locals (ast.c), right
+             * after the parse. File-scope `static` never reaches the
+             * grammar (the lexer drops it there -- see lexer.l). */
+            $$ = $2;
+            if ($$->kind == AST_VAR_DECL_GROUP) {
+                for (int i = 0; i < $$->list.count; i++) $$->list.items[i]->is_static_local = 1;
+            } else {
+                $$->is_static_local = 1;
+            }
+        }
+    | RETURN comma_expr_opt ';'
+        {
+            /* comma_expr_opt, not expr_opt: `return a += 1, a + b;` is
+             * the comma operator, which lower.c's phase 10 turns into
+             * statements for Vircon32 like any other. */
             $$ = ast_new(AST_RETURN, @1.first_line);
             $$->a = $2;
         }
@@ -2106,11 +2203,6 @@ for_init:
             $$ = ast_new(AST_EXPR_STMT, @1.first_line);
             $$->a = $1;
         }
-    ;
-
-expr_opt:
-      /* empty */  { $$ = NULL; }
-    | expr          { $$ = $1; }
     ;
 
 /* The COMMA OPERATOR -- `a, b` evaluates a, then b, and is b. Only where
@@ -2466,6 +2558,8 @@ expr:
         { $$ = ast_new(AST_ASSIGN, @1.first_line); $$->str1 = strdup("&="); $$->a = $1; $$->b = $3; }
     | expr OREQ expr
         { $$ = ast_new(AST_ASSIGN, @1.first_line); $$->str1 = strdup("|="); $$->a = $1; $$->b = $3; }
+    | expr MODEQ expr
+        { $$ = ast_new(AST_ASSIGN, @1.first_line); $$->str1 = strdup("%="); $$->a = $1; $$->b = $3; }
     | expr XOREQ expr
         { $$ = ast_new(AST_ASSIGN, @1.first_line); $$->str1 = strdup("^="); $$->a = $1; $$->b = $3; }
     | expr SHLEQ expr

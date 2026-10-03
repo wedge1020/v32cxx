@@ -259,7 +259,20 @@ static void ensure_builtins(void) {
     m->file = "<built-in>";
     m->is_builtin = 1;
     table_add(m);
-    g_builtin_count = 1;
+    /* NULL is a keyword of Vircon32 C, not a macro from some header, so
+     * portable C's `#ifndef NULL / #define NULL 0 / #endif` would otherwise
+     * take its fallback -- and that #define, passed through to the
+     * output, turns every NULL in the generated C (the runtime helpers'
+     * included) into an int 0 the real compiler refuses to compare with a
+     * pointer. Predefined as itself: `#ifndef NULL` is false, and a use
+     * of NULL expands to NULL. */
+    m = calloc(1, sizeof(Macro));
+    m->name = strdup("NULL");
+    m->body = strdup("NULL");
+    m->file = "<built-in>";
+    m->is_builtin = 1;
+    table_add(m);
+    g_builtin_count = 2;
 }
 
 Macro *macro_lookup(const char *name) {

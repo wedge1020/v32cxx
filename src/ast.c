@@ -321,3 +321,153 @@ int ast_decode_escape(const char **p) {
         default:  return (unsigned char)*s;   /* \\ \' \" \? and unknown */
     }
 }
+
+/* ---- post-parse rewrites for C storage classes -------------------------
+ *
+ * Both run from main.c right after a successful parse, before sema, so
+ * every later phase only ever sees ordinary globals.
+ */
+
+/* Replaces every use of the variable `old_name` under `n` with `new_name`,
+ * honouring shadowing: a nested block that declares its own `old_name`
+ * keeps it from that declaration on. Returns 1 if `n` itself was such a
+ * shadowing declaration (the caller stops renaming the rest of its block). */
+static int rename_var_uses(AstNode *n, const char *old_name, const char *new_name);
+
+static void rename_in_list(AstList *list, int from, const char *old_name, const char *new_name) {
+    for (int i = from; i < list->count; i++) {
+        if (rename_var_uses(list->items[i], old_name, new_name)) break;
+    }
+}
+
+static int rename_var_uses(AstNode *n, const char *old_name, const char *new_name) {
+    if (n == NULL) return 0;
+    switch (n->kind) {
+        case AST_IDENT:
+            if (n->str1 != NULL && strcmp(n->str1, old_name) == 0) {
+                n->str1 = strdup(new_name);
+            }
+            return 0;
+        case AST_VAR_DECL:
+            rename_var_uses(n->a, old_name, new_name);
+            return n->str1 != NULL && strcmp(n->str1, old_name) == 0;
+        case AST_BLOCK:
+        case AST_SWITCH:
+            if (n->kind == AST_SWITCH) rename_var_uses(n->a, old_name, new_name);
+            rename_in_list(&n->list, 0, old_name, new_name);
+            return 0;
+        case AST_FOR:
+            /* `for (int x = ...; ...)` shadows for the whole statement */
+            if (rename_var_uses(n->a, old_name, new_name)) return 0;
+            rename_var_uses(n->b, old_name, new_name);
+            rename_var_uses(n->c, old_name, new_name);
+            rename_var_uses(n->d, old_name, new_name);
+            return 0;
+        case AST_MEMBER:
+        case AST_CAST:
+        case AST_SIZEOF:
+            /* never `type`, and never str2 (a member's own name) */
+            rename_var_uses(n->a, old_name, new_name);
+            return 0;
+        default:
+            rename_var_uses(n->a, old_name, new_name);
+            rename_var_uses(n->b, old_name, new_name);
+            rename_var_uses(n->c, old_name, new_name);
+            rename_var_uses(n->d, old_name, new_name);
+            for (int i = 0; i < n->list.count; i++) {
+                rename_var_uses(n->list.items[i], old_name, new_name);
+            }
+            return 0;
+    }
+}
+
+static int g_static_local_counter = 0;
+
+/* Finds the `static` locals under statement `n` (which belongs to function
+ * `func_name`), renames each to a program-unique global name, and moves
+ * its declaration to `hoisted`. */
+static void hoist_statics_in(AstNode *n, const char *func_name, AstList *hoisted) {
+    if (n == NULL) return;
+    if (n->kind == AST_BLOCK || n->kind == AST_SWITCH) {
+        AstList kept = ast_list_new();
+        for (int i = 0; i < n->list.count; i++) {
+            AstNode *st = n->list.items[i];
+            if (st != NULL && st->kind == AST_VAR_DECL && st->is_static_local) {
+                char buf[256];
+                snprintf(buf, sizeof buf, "__static%d_%s_%s",
+                         g_static_local_counter++, func_name, st->str1);
+                /* the initializer is evaluated once, at file scope: it
+                 * cannot see the local's own name, so no rename there */
+                rename_in_list(&n->list, i + 1, st->str1, buf);
+                st->str1 = strdup(buf);
+                st->is_static_local = 0;
+                ast_list_append(hoisted, st);
+            } else {
+                hoist_statics_in(st, func_name, hoisted);
+                ast_list_append(&kept, st);
+            }
+        }
+        n->list = kept;
+        return;
+    }
+    switch (n->kind) {
+        case AST_IF:    hoist_statics_in(n->b, func_name, hoisted);
+                        hoist_statics_in(n->c, func_name, hoisted); break;
+        case AST_WHILE: hoist_statics_in(n->b, func_name, hoisted); break;
+        case AST_FOR:   hoist_statics_in(n->d, func_name, hoisted); break;
+        case AST_LABEL: hoist_statics_in(n->a, func_name, hoisted); break;
+        default: break;
+    }
+}
+
+/* `static` locals -> uniquely named file-scope variables, declared just
+ * ahead of the function that owns them (or of its class). Vircon32 C has
+ * no `static`; a global has the same lifetime, and the generated name
+ * keeps it as private as the local was. */
+void hoist_static_locals(AstList *decls) {
+    AstList out = ast_list_new();
+    for (int i = 0; i < decls->count; i++) {
+        AstNode *n = decls->items[i];
+        AstList hoisted = ast_list_new();
+        if (n->kind == AST_FUNC_DEF) {
+            hoist_statics_in(n->a, n->str1 ? n->str1 : "fn", &hoisted);
+        } else if (n->kind == AST_CLASS_DECL) {
+            for (int j = 0; j < n->list.count; j++) {
+                AstNode *m = n->list.items[j];
+                if (m != NULL && m->kind == AST_FUNC_DEF) {
+                    hoist_statics_in(m->a, m->str1 ? m->str1 : n->str1, &hoisted);
+                }
+            }
+        } else if (n->kind == AST_NAMESPACE_DECL) {
+            hoist_static_locals(&n->list);
+        }
+        for (int j = 0; j < hoisted.count; j++) ast_list_append(&out, hoisted.items[j]);
+        ast_list_append(&out, n);
+    }
+    *decls = out;
+}
+
+/* C lets a file-scope variable be declared more than once -- `extern int
+ * x;` ahead of `int x = 5;`, or a plain tentative `int x;` repeated --
+ * and it is still one object. Vircon32 C wants exactly one definition,
+ * so keep one declaration per name: the one with an initializer if there
+ * is one, otherwise the first. */
+void merge_tentative_globals(AstList *decls) {
+    AstList out = ast_list_new();
+    for (int i = 0; i < decls->count; i++) {
+        AstNode *n = decls->items[i];
+        if (n->kind == AST_NAMESPACE_DECL) merge_tentative_globals(&n->list);
+        if (n->kind == AST_VAR_DECL && n->str1 != NULL) {
+            int drop = 0;
+            for (int j = 0; j < decls->count && !drop; j++) {
+                AstNode *o = decls->items[j];
+                if (j == i || o->kind != AST_VAR_DECL || o->str1 == NULL ||
+                    strcmp(o->str1, n->str1) != 0) continue;
+                if (n->a == NULL && (o->a != NULL || j < i)) drop = 1;
+            }
+            if (drop) continue;
+        }
+        ast_list_append(&out, n);
+    }
+    *decls = out;
+}

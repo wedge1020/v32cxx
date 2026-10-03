@@ -44,15 +44,6 @@ struct Point2
     int y;
 };
 
-Point2 make_point( int x, int y )
-{
-    Point2 p;
-    p.x = x;
-    p.y = y;
-    return p;                          /* by-value struct return: SUPPORTED
-                                           (one-word members travel fine) */
-}
-
 /* ------------------------------------------------------------------------ *
  * GAP_STATIC : storage-class `static` on file-scope variables and functions.
  *              Vircon32 C has no linker visibility model for it, and the
@@ -292,6 +283,21 @@ void probe_struct_assign( int x, int y )
  *                     common in real headers.
  * ------------------------------------------------------------------------ */
 #ifdef GAP_STRUCT_RETURN
+Point2 make_point( int x, int y )
+{
+    Point2 p;
+    p.x = x;
+    p.y = y;
+    return p;                          /* by-value struct return: Point2 is
+                                           TWO words, and Vircon32 C only
+                                           returns one ("functions cannot
+                                           return values of size > 1").
+                                           v32c++ warns about it. This
+                                           lived in the always-on stub
+                                           section, where it made every
+                                           probe fail downstream. */
+}
+
 Point2 probe_struct_return( int x, int y )
 {
     return make_point( x, y );          /* RVO? there is none in Vircon32 C */
@@ -487,45 +493,23 @@ void probe_null_init()
 #endif
 
 /* =============================================================================
- * EXPECTED-RESULT TABLE (kept in the file on purpose: it is the checklist)
+ * RESULT TABLE -- as of 20261003, each probe transpiled and then compiled
+ * with the real Vircon32 C compiler (v26.04.24)
  * -----------------------------------------------------------------------------
- *   GAP_STATIC        parse error expected (keyword rejected at file scope)
- *   GAP_EXTERN        parse error expected (single-TU target)
- *   GAP_VOLATILE      parse error expected
- *   GAP_UNSIGNED      parse error expected (keyword set unsupported)
- *   GAP_BITFIELD      parse error expected
- *   GAP_CONST_PTR     parse error expected (declarator grammar)
- *   GAP_VOID_PARAM    parse error expected (only bare `()` accepted)
- *   GAP_ARRAY_PARAM   parse error expected
- *   GAP_TERNARY_ARG   LEAK RISK: parses; ternary expected verbatim in output
- *   GAP_TERNARY_MEMBER LEAK RISK: same
- *   GAP_COMMA_ARG     LEAK RISK: same
- *   GAP_COMMA_RETURN  LEAK RISK: same
- *   GAP_MULTIDECL_ARRAY parse error expected
- *   GAP_STRUCT_INIT   parse error expected
- *   GAP_STRUCT_ASSIGN leak risk: member-wise rewrite or verbatim leak?
- *   GAP_STRUCT_RETURN leak risk: one-word ABI cannot carry it as written
- *   GAP_CHAR          parse error expected (type keyword unsupported)
- *   GAP_UNSAVED_ARRAY parse error expected
- *   GAP_NESTED_INIT   parse error expected (or one-level flatten?)
- *   GAP_BITNOT        parse error expected
- *   GAP_MODASSIGN     parse error expected
- *   GAP_NULL_INIT     watch item: nullptr claimed OK, NULL maybe not
- *   GAP_ELABORATED    CONFIRMED (bug #2 of the spyvsspy cart): typedef
- *                     struct X Y; / struct X v; both die on STRUCT --
- *                     bare tag names work via the lexer hack instead
- *   GAP_FP_PARAM_NAME CONFIRMED (bug #3 of the spyvsspy cart): a NAMED
- *                     parameter in an fp type's param list dies on the
- *                     name; real C/C++ allows it (discarded). Both fp
- *                     declarator spellings probed at once
- *   GAP_PTR_ARITH    CONFIRMED (bug #4 of the spyvsspy cart): p+i / i+p /
- *                     p-i / p-q parse and pass through verbatim, then
- *                     Vircon32 C rejects + and - on pointers downstream
- *                     (it does take ++p, p != q, p->m). Silent leak;
- *                     needs a lower.c Vircon32-mode pass
- *   GAP_CONST_TERNARY CONFIRMED (bug #5 of the spyvsspy cart): the ternary
- *                     rewrite's temp assignments take const-qualified
- *                     branch operands, which Vircon32 C refuses (real C
- *                     allows the by-value copy); unqualify-cast fix
- *                     proposed in the README field report
+ *   CLOSED (transpiles, compiles; run-time checked in tests/100sample.cpp):
+ *     GAP_STATIC  GAP_EXTERN  GAP_VOLATILE  GAP_UNSIGNED  GAP_CONST_PTR
+ *     GAP_COMMA_RETURN  GAP_MULTIDECL_ARRAY  GAP_STRUCT_INIT
+ *     GAP_UNSAVED_ARRAY  GAP_NESTED_INIT  GAP_MODASSIGN  GAP_NULL_INIT
+ *     GAP_ELABORATED  GAP_FP_PARAM_NAME  GAP_PTR_ARITH  GAP_CONST_TERNARY
+ *   WAS NEVER A GAP (this table used to expect a failure):
+ *     GAP_VOID_PARAM  GAP_ARRAY_PARAM  GAP_TERNARY_ARG  GAP_TERNARY_MEMBER
+ *     GAP_COMMA_ARG  GAP_STRUCT_ASSIGN  GAP_CHAR  GAP_BITNOT
+ *   STILL OPEN:
+ *     GAP_BITFIELD      hard error, by choice: "bit-fields are not supported"
+ *     GAP_STRUCT_RETURN v32c++ warns; Vircon32 C rejects ("functions cannot
+ *                       return values of size > 1"). Needs a hidden
+ *                       out-pointer rewrite to close.
+ *   Notes: GAP_UNSIGNED prints one warning (unsigned is treated as int).
+ *   What each fix does: demos/c/spyvsspy/README.md and
+ *   docs/VIRCON32_QUIRKS.md #22-#24.
  * ========================================================================== */

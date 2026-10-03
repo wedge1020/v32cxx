@@ -1576,7 +1576,9 @@ static int type_is_plain_pointer(const AstNode *type) {
 static void rewrite_zero_to_null(AstNode **rhs_slot, const AstNode *target_type) {
     if (rhs_slot == NULL || *rhs_slot == NULL) return;
     if (!is_int_zero_literal(*rhs_slot)) return;
-    if (!type_is_plain_pointer(target_type)) return;
+    if (!type_is_plain_pointer(target_type) && !type_is_func_ptr(target_type)) return;
+        /* function pointers too: `fn = 0;` / `fn != 0` are just as
+         * rejected ("cannot assign int to ... void(int*)*") */
     lower_note((*rhs_slot)->line,
         "rewrote a literal 0 to NULL in a pointer context -- Vircon32 "
         "rejects a bare int 0 assigned to or compared with a pointer, "
@@ -1800,9 +1802,9 @@ static void finalize_calls_expr(AstNode **slot, AstNode *class_decl, LocalVarTyp
                 (strcmp(n->str1, "==") == 0 || strcmp(n->str1, "!=") == 0)) {
                 AstNode *a_type = infer_expr_type(n->a, class_decl, locals);
                 AstNode *b_type = infer_expr_type(n->b, class_decl, locals);
-                if (type_is_plain_pointer(a_type)) {
+                if (type_is_plain_pointer(a_type) || type_is_func_ptr(a_type)) {
                     rewrite_zero_to_null(&n->b, a_type);
-                } else if (type_is_plain_pointer(b_type)) {
+                } else if (type_is_plain_pointer(b_type) || type_is_func_ptr(b_type)) {
                     rewrite_zero_to_null(&n->a, b_type);
                 }
             }
@@ -5102,6 +5104,323 @@ static void check_word_sizes_free_functions(AstList *decls) {
     }
 }
 
+/* ---- phase 11: Vircon32 C value-compatibility fixes (--target=vircon32 only)
+ *
+ * Two places where Vircon32 C is stricter than standard C about VALID C,
+ * both found by running a plain-C program (demos/c/spyvsspy) through the
+ * real compiler and both confirmed one construct at a time against it
+ * (docs/VIRCON32_QUIRKS.md has the probe results):
+ *
+ * 1. Arrays only decay to a pointer in a plain assignment, initializer or
+ *    call argument. As an operand they stay arrays and are rejected:
+ *        g_actors + MAX_ACTORS      "invalid operands for addition"
+ *        it - g_actors              "invalid operands for subtraction"
+ *        p == g_actors              "invalid operands for equality comparison"
+ *        (int)g_actors              "cannot convert expression type"
+ *        *g_actors                  "dereference can only be applied to pointers"
+ *    Pointer arithmetic itself is fine (`p + 2`, `q - p`, `p += n`), so the
+ *    fix is just to spell the decay out: an array-typed operand of + - and
+ *    the comparisons, of a cast, or of unary `*` becomes `&arr[0]`.
+ *
+ * 2. `const` sticks to a VALUE that is merely read. Copying a const scalar
+ *    is legal C (the copy isn't const), but Vircon32 reports "cannot assign
+ *    const int to int: discards const qualifier" for
+ *        n = c;      f( c );      return c;      n = -c;      n = cp->x;
+ *    -- though not for an initializer (`int n = c;`) or once the value has
+ *    been through a binary operator (`n = c + 1`). A cast to the value's
+ *    own unqualified type makes it an rvalue and is accepted, so that is
+ *    what gets inserted at exactly those three read positions (assignment
+ *    right-hand side, call argument, return value). A const STRUCT can't
+ *    be cast by value; it is read through a de-const'ed pointer instead,
+ *    `*((S *)&expr)`.
+ *    Writes to const objects and genuine qualifier discards on POINTERS
+ *    (`S *q = cp;` with `const S *cp`) are untouched -- those are real
+ *    errors and stay the downstream compiler's to report.
+ *
+ * Runs last, after ternary lowering, so the temporaries that phase
+ * introduces (`__v32_tern_tmpN = lo;` with a const `lo`) are covered too.
+ * This supersedes, without replacing, strip_const_member_read's earlier
+ * and narrower member/subscript-only version of fix 2: anything that one
+ * already wrapped is an AST_CAST by now and is left alone here.
+ */
+static const AstNode *v32_strip_const(const AstNode *t) {
+    t = resolve_typedef_chain(t);
+    while (t != NULL && t->kind == AST_CONST_TYPE) t = resolve_typedef_chain(t->a);
+    return t;
+}
+
+static int v32_type_is_const(const AstNode *t) {
+    t = resolve_typedef_chain(t);
+    return t != NULL && t->kind == AST_CONST_TYPE;
+}
+
+static int v32_expr_is_array(const AstNode *e, AstNode *cls, LocalVarType *locals) {
+    if (e == NULL) return 0;
+    if (e->kind != AST_IDENT && e->kind != AST_MEMBER && e->kind != AST_SUBSCRIPT) return 0;
+    const AstNode *t = v32_strip_const(infer_expr_type(e, cls, locals));
+    return t != NULL && t->kind == AST_ARRAY_TYPE;
+}
+
+/* `arr` -> `&arr[0]` */
+static void v32_decay_array(AstNode **slot, AstNode *cls, LocalVarType *locals) {
+    AstNode *e = *slot;
+    if (!v32_expr_is_array(e, cls, locals)) return;
+    AstNode *zero = ast_new(AST_INT_LIT, e->line);
+    zero->ival = 0;
+    AstNode *sub = ast_new(AST_SUBSCRIPT, e->line);
+    sub->a = e;
+    sub->b = zero;
+    AstNode *addr = ast_new(AST_UNOP, e->line);
+    addr->str1 = strdup("addr");
+    addr->a = sub;
+    *slot = addr;
+    lower_note(e->line, "spelled out an array-to-pointer decay as &array[0] "
+        "-- Vircon32 C only decays an array in a plain assignment, "
+        "initializer or argument, not as an operand");
+}
+
+/* Is `e` an lvalue whose VALUE is const-qualified -- declared const, or
+ * reached through a const object / pointer-to-const? */
+static int v32_lvalue_is_const(const AstNode *e, AstNode *cls, LocalVarType *locals) {
+    if (e == NULL) return 0;
+    switch (e->kind) {
+        case AST_IDENT: {
+            const AstNode *t = resolve_typedef_chain(infer_expr_type(e, cls, locals));
+            if (t == NULL) return 0;
+            if (t->kind == AST_CONST_TYPE) return 1;
+            return t->kind == AST_ARRAY_TYPE && v32_type_is_const(t->a);
+        }
+        case AST_MEMBER: {
+            if (v32_type_is_const(infer_expr_type(e, cls, locals))) return 1;
+            const AstNode *ot = resolve_typedef_chain(infer_expr_type(e->a, cls, locals));
+            if (ot == NULL) return 0;
+            if (ot->kind == AST_POINTER_TYPE) return v32_type_is_const(ot->a);
+            return v32_lvalue_is_const(e->a, cls, locals);
+        }
+        case AST_SUBSCRIPT: {
+            const AstNode *bt = resolve_typedef_chain(infer_expr_type(e->a, cls, locals));
+            if (bt == NULL) return 0;
+            if (bt->kind == AST_CONST_TYPE) bt = resolve_typedef_chain(bt->a);
+            if (bt == NULL) return 0;
+            if (bt->kind == AST_POINTER_TYPE) return v32_type_is_const(bt->a);
+            if (bt->kind == AST_ARRAY_TYPE)
+                return v32_type_is_const(bt->a) || v32_lvalue_is_const(e->a, cls, locals);
+            return 0;
+        }
+        case AST_UNOP:
+            if (e->str1 != NULL && strcmp(e->str1, "deref") == 0) {
+                const AstNode *pt = v32_strip_const(infer_expr_type(e->a, cls, locals));
+                return pt != NULL && pt->kind == AST_POINTER_TYPE && v32_type_is_const(pt->a);
+            }
+            return 0;
+        default:
+            return 0;
+    }
+}
+
+static int v32_is_builtin_scalar(const AstNode *t) {
+    return t != NULL && t->kind == AST_IDENT && t->str1 != NULL &&
+           (strcmp(t->str1, "int") == 0 || strcmp(t->str1, "float") == 0 ||
+            strcmp(t->str1, "bool") == 0 || strcmp(t->str1, "char") == 0);
+}
+
+/* A value read at an assignment RHS / argument / return position. */
+static void v32_unconst_read(AstNode **slot, AstNode *cls, LocalVarType *locals) {
+    AstNode *e = *slot;
+    if (e == NULL) return;
+    /* `-c` and `~c` keep c's const as far as Vircon32 is concerned. */
+    const AstNode *core = e;
+    while (core->kind == AST_UNOP && core->str1 != NULL && core->a != NULL &&
+           (strcmp(core->str1, "neg") == 0 || strcmp(core->str1, "~") == 0)) {
+        core = core->a;
+    }
+    if (!v32_lvalue_is_const(core, cls, locals)) return;
+    AstNode *vt = (AstNode *)v32_strip_const(infer_expr_type(e, cls, locals));
+    if (vt == NULL) return;
+    if (v32_is_builtin_scalar(vt) ||
+        (vt->kind == AST_POINTER_TYPE && vt->a != NULL &&
+         (vt->a->kind == AST_IDENT || vt->a->kind == AST_CONST_TYPE || vt->a->kind == AST_POINTER_TYPE)) ||
+        sema_is_enum_type(vt)) {
+        AstNode *cast = ast_new(AST_CAST, e->line);
+        cast->type = vt;
+        cast->a = e;
+        *slot = cast;
+        lower_note(e->line, "inserted a cast around a read of a const value "
+            "-- Vircon32 C rejects copying a const-qualified value into a "
+            "plain one (\"discards const qualifier\"), which standard C allows");
+    } else if (core == e && vt->kind == AST_IDENT && type_to_class(vt) != NULL) {
+        /* const struct, copied by value: *((S *)&expr) */
+        AstNode *addr = ast_new(AST_UNOP, e->line);
+        addr->str1 = strdup("addr");
+        addr->a = e;
+        AstNode *cast = ast_new(AST_CAST, e->line);
+        cast->type = ast_wrap_pointer(ast_ident(vt->str1, e->line), e->line);
+        cast->a = addr;
+        AstNode *deref = ast_new(AST_UNOP, e->line);
+        deref->str1 = strdup("deref");
+        deref->a = cast;
+        *slot = deref;
+        lower_note(e->line, "read a const struct through a (%s *) cast -- "
+            "Vircon32 C rejects copying a const struct into a plain one", vt->str1);
+    }
+}
+
+static int v32_op_decays(const char *op) {
+    return op != NULL && (strcmp(op, "+") == 0 || strcmp(op, "-") == 0 ||
+        strcmp(op, "==") == 0 || strcmp(op, "!=") == 0 ||
+        strcmp(op, "<") == 0 || strcmp(op, ">") == 0 ||
+        strcmp(op, "<=") == 0 || strcmp(op, ">=") == 0);
+}
+
+static void v32_compat_expr(AstNode **slot, AstNode *cls, LocalVarType *locals) {
+    AstNode *n = *slot;
+    if (n == NULL) return;
+    switch (n->kind) {
+        case AST_BINOP:
+            v32_compat_expr(&n->a, cls, locals);
+            v32_compat_expr(&n->b, cls, locals);
+            if (v32_op_decays(n->str1)) {
+                v32_decay_array(&n->a, cls, locals);
+                v32_decay_array(&n->b, cls, locals);
+            }
+            break;
+        case AST_ASSIGN:
+            v32_compat_expr(&n->a, cls, locals);
+            v32_compat_expr(&n->b, cls, locals);
+            if (n->str1 != NULL && strcmp(n->str1, "=") == 0) {
+                v32_unconst_read(&n->b, cls, locals);
+            }
+            break;
+        case AST_SUBSCRIPT:
+            v32_compat_expr(&n->a, cls, locals);
+            v32_compat_expr(&n->b, cls, locals);
+            break;
+        case AST_UNOP:
+            v32_compat_expr(&n->a, cls, locals);
+            if (n->str1 != NULL && strcmp(n->str1, "deref") == 0) {
+                v32_decay_array(&n->a, cls, locals);
+            }
+            break;
+        case AST_CAST:
+            v32_compat_expr(&n->a, cls, locals);
+            v32_decay_array(&n->a, cls, locals);
+            break;
+        case AST_MEMBER:
+            v32_compat_expr(&n->a, cls, locals);
+            break;
+        case AST_CALL:
+            v32_compat_expr(&n->a, cls, locals);
+            for (int i = 0; i < n->list.count; i++) {
+                v32_compat_expr(&n->list.items[i], cls, locals);
+                v32_unconst_read(&n->list.items[i], cls, locals);
+            }
+            break;
+        case AST_INIT_LIST:
+        case AST_DIRECT_INIT:
+            for (int i = 0; i < n->list.count; i++) {
+                v32_compat_expr(&n->list.items[i], cls, locals);
+            }
+            break;
+        default:
+            /* literals, identifiers, and AST_SIZEOF -- whose operand is
+             * never evaluated, and where `sizeof arr` must NOT decay */
+            break;
+    }
+}
+
+static void v32_compat_stmt(AstNode **slot, AstNode *cls, LocalVarType **locals) {
+    AstNode *n = *slot;
+    if (n == NULL) return;
+    switch (n->kind) {
+        case AST_BLOCK: {
+            LocalVarType *outer = *locals; /* a block's locals end with it */
+            for (int i = 0; i < n->list.count; i++) {
+                v32_compat_stmt(&n->list.items[i], cls, locals);
+            }
+            *locals = outer;
+            break;
+        }
+        case AST_IF:
+            v32_compat_expr(&n->a, cls, *locals);
+            v32_compat_stmt(&n->b, cls, locals);
+            v32_compat_stmt(&n->c, cls, locals);
+            break;
+        case AST_WHILE:
+            v32_compat_expr(&n->a, cls, *locals);
+            v32_compat_stmt(&n->b, cls, locals);
+            break;
+        case AST_FOR: {
+            LocalVarType *outer = *locals;
+            v32_compat_stmt(&n->a, cls, locals);
+            v32_compat_expr(&n->b, cls, *locals);
+            v32_compat_expr(&n->c, cls, *locals);
+            v32_compat_stmt(&n->d, cls, locals);
+            *locals = outer;
+            break;
+        }
+        case AST_SWITCH:
+            v32_compat_expr(&n->a, cls, *locals);
+            for (int i = 0; i < n->list.count; i++) {
+                v32_compat_stmt(&n->list.items[i], cls, locals);
+            }
+            break;
+        case AST_LABEL:
+            v32_compat_stmt(&n->a, cls, locals);
+            break;
+        case AST_RETURN:
+            v32_compat_expr(&n->a, cls, *locals);
+            v32_unconst_read(&n->a, cls, *locals);
+            break;
+        case AST_EXPR_STMT:
+            v32_compat_expr(&n->a, cls, *locals);
+            break;
+        case AST_VAR_DECL: {
+            v32_compat_expr(&n->a, cls, *locals);
+            LocalVarType *lv = calloc(1, sizeof(LocalVarType));
+            lv->name = n->str1;
+            lv->type = n->type;
+            lv->next = *locals;
+            *locals = lv;
+            break;
+        }
+        default:
+            break;
+    }
+}
+
+static void v32_compat_in_method(AstNode *method, AstNode *class_decl) {
+    if (method->kind != AST_FUNC_DEF) return;
+    LocalVarType *locals = seed_locals_from_params(method);
+    v32_compat_stmt(&method->a, class_decl, &locals);
+}
+
+static void v32_compat_classes(AstList *decls) {
+    for (int i = 0; i < decls->count; i++) {
+        AstNode *n = decls->items[i];
+        if (n->kind == AST_CLASS_DECL) {
+            ClassLayout *layout = (ClassLayout *)n->sema_info;
+            if (layout != NULL) {
+                for (int j = 0; j < layout->methods.count; j++) {
+                    v32_compat_in_method(layout->methods.items[j], n);
+                }
+            }
+        } else if (n->kind == AST_NAMESPACE_DECL) {
+            v32_compat_classes(&n->list);
+        }
+    }
+}
+
+static void v32_compat_free_functions(AstList *decls) {
+    for (int i = 0; i < decls->count; i++) {
+        AstNode *n = decls->items[i];
+        if (n->kind == AST_NAMESPACE_DECL) {
+            v32_compat_free_functions(&n->list);
+        } else if (n->kind == AST_FUNC_DEF && n->b == NULL) {
+            v32_compat_in_method(n, NULL);
+        }
+    }
+}
+
 int lower_run(AstNode *program) {
     lower_notes_reset(); /* always start this run's log empty -- see
         lower_notes_print's own doc comment */
@@ -5160,6 +5479,8 @@ int lower_run(AstNode *program) {
         rewrite_ternary_free_functions(&program->list);
         int errors = check_no_ternaries(program);
         if (errors > 0) return errors;
+        v32_compat_classes(&program->list);           /* phase 11 */
+        v32_compat_free_functions(&program->list);
     }
     return 0;
 }

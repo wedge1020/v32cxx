@@ -179,30 +179,18 @@ struct GameState
     float world_y;
 };
 
-/* [FOUND GAP #2] `typedef struct Actor Actor;` does NOT parse -- that was
- * the "syntax error, unexpected STRUCT" failure. typedef_decl only accepts
- * a type_spec (int/float/void/bool/char/TYPE_NAME/qualified/const) after
- * TYPEDEF, and the struct/union/enum KEYWORDS are not in type_spec's first
- * set. Elaborated type specifiers are a gap everywhere, not just in
- * typedefs: `struct Actor x;` as a declaration fails the same way. The
- * typedefs are unnecessary anyway: class_decl/union_decl register the tag
- * in the symbol table, and the lexer hack classifies SYM_CLASS/SYM_UNION/
- * SYM_ENUM/SYM_TYPEDEF names as TYPE_NAME, so the bare names Actor and
- * GameState (and ShadeWord below) are already usable as types. */
+/* [COV] the canonical C tag typedefs, written AFTER the definitions (the
+ * second `Actor` already lexes as a type name by then). In C these are
+ * what make the bare names usable; v32c++ emits nothing for them, since
+ * Vircon32 C spells the type by its bare tag anyway. (Was gap #2.) */
+typedef struct Actor Actor;
+typedef struct GameState GameState;
 
-/* [COV] function-pointer typedefs in the STANDARD-C declarator spelling;
- * the generated C must come out in Vircon32's reversed form regardless.
- *
- * [FOUND GAP #3] the original `typedef void (*ActorFn)( Actor* a );`
- * -- parameter NAMED -- died with "syntax error, unexpected IDENTIFIER,
- * expecting ')'". func_ptr_param_type accepts only bare types
- * (`type_spec pointer_opt`), so after `Actor*` the only legal tokens are
- * ',' and ')'. The grammar comment calls that deliberate and claims it
- * "matches real C++ exactly" -- but real C/C++ allows a parameter name
- * in ANY function declarator, including fp typedefs (it is parsed and
- * discarded), so this is a true coverage gap, not a scope boundary.
- * Workaround: drop the name. Probe: -DGAP_FP_PARAM_NAME. */
-typedef void (*ActorFn)( Actor* );
+/* [COV] function-pointer typedefs in the STANDARD-C declarator spelling,
+ * one with a NAMED parameter (parsed and discarded, as in any C function
+ * declarator -- was gap #3); the generated C must come out in Vircon32's
+ * reversed form regardless. */
+typedef void (*ActorFn)( Actor* a );
 typedef void (*FrameFn)();
 
 /* ----------------------------------------------------------------------------
@@ -276,9 +264,7 @@ int max2( int a, int b )
 /* [COV] union member access + array subscripting on a union member + shifts */
 int dim_color( int color, int shift )
 {
-    ShadeWord u;      /* [GAP #2] bare tag name: `union ShadeWord u;`
-                         would fail -- the UNION keyword cannot start a
-                         local var_decl, only a top-level union_decl */
+    union ShadeWord u;   /* [COV] elaborated type specifier on a local (was gap #2) */
     int c;
     u.word = color;
     for( c = 0; c < 3; ++c )

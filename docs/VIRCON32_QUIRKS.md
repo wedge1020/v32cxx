@@ -699,6 +699,9 @@ would make this much easier to spot than the parser error.
   self-checking samples rely on this: `test_errors` is a global the
   program writes. (Assigning a `const T*` to a plain `T*` is a different
   matter and may still be rejected.)
+- **Narrower than it looked (20261003)**: that test read the const in an
+  INITIALIZER, which is the one position where it works. `x = K;`,
+  `f( K )` and `return K;` are all rejected -- see #23.
 
 ---
 
@@ -715,6 +718,88 @@ would make this much easier to spot than the parser error.
 - Related: `for (int i = 0, j = 5; ...)` (two declarations, not the comma
   operator) becomes a block holding the declarations, around a loop with
   an empty init clause -- the same scope, plain C either way.
+
+---
+
+## 22. An array is only a pointer in an assignment, initializer or argument
+
+- **Standard C**: an array decays to a pointer to its first element almost
+  everywhere, so `arr + n`, `p - arr`, `p == arr`, `*arr` and `(int)arr`
+  are all pointer expressions.
+- **Vircon32 C**: decays only in `p = arr;`, `T* p = arr;` and `f( arr )`.
+  As an OPERAND the array stays an array:
+  `g_actors + MAX_ACTORS` -> "invalid operands for addition" (followed by
+  "cannot assign int to struct Actor*"), `it - g_actors` -> "invalid
+  operands for subtraction", `p == arr` -> "invalid operands for equality
+  comparison", `(int)arr` -> "cannot convert expression type from struct
+  S[8] to int", `*arr` -> "dereference can only be applied to pointers".
+- **Not the quirk it first looked like**: pointer arithmetic itself works.
+  `p + 2`, `2 + p`, `p - 1`, `p += 2`, `q - p`, `p < q`, `&p[ n ]` all
+  compile, for `int*` and struct pointers alike. Only the array operand
+  is the problem (found by demos/c/spyvsspy, whose `Actor* end = g_actors
+  + MAX_ACTORS;` was first read as "no pointer arithmetic").
+- **For Vircon32 mode**: **LOWERED** (lower.c phase 11). An array-typed
+  operand of `+ - == != < > <= >=`, of a cast, or of unary `*` is
+  rewritten to `&arr[0]`. `sizeof arr` is left alone. Checked at run time
+  by `tests/100sample.cpp`.
+
+---
+
+## 23. `const` follows a value that is merely read
+
+- **Standard C**: copying a const object yields a plain value; `const`
+  only restricts writing to the object itself.
+- **Vircon32 C**: "cannot assign const int to int: discards const
+  qualifier" for a const value in an assignment (`n = c;`), as a call
+  argument (`f( c )`), in a `return c;`, and under unary minus
+  (`n = -c;`). The same for anything read THROUGH const: `n = cp->x;`,
+  `n = cip[ 1 ];`, `n = *cip;`, `s = *cp;` (a whole struct). All scalar
+  types, and pointers stored in a const struct.
+- Accepted as-is: an initializer (`int n = c;`, `{ c, c }`), a compound
+  assignment (`n += c;`), any binary expression (`n = c + 1`, `c * c`), a
+  condition (`if( c )`), an index (`a[ c ]`), and conversion to another
+  type (`float f = c;`).
+- An explicit cast to the value's own type is accepted everywhere:
+  `n = (int)c;`, `q = (S*)cp->next;`.
+- **For Vircon32 mode**: **LOWERED** (lower.c phase 11, which runs after
+  the ternary rewrite so its temporaries are covered). At an assignment's
+  right-hand side, a call argument and a return value, a const scalar or
+  pointer read is wrapped in a cast to its own unqualified type; a const
+  struct is read as `*((S *)&expr)`. A genuine discard on a POINTER
+  (`S* q = cp;` with `const S* cp`) is left for the compiler to reject.
+  `strip_const_member_read` (phase 3) is the older, member-only version
+  of the same fix and still runs. `tests/100sample.cpp`.
+
+---
+
+## 24. No `static`, `extern`, `volatile`, `unsigned`/`signed`/`short`/`long`
+
+- **Vircon32 C**: none of these keywords exist ("identifier "static" has
+  not been declared"); an `extern int x;` with no definition is "declared
+  but not fully defined". There is one integer type.
+- **For Vircon32 mode** (all in the lexer plus two post-parse rewrites in
+  ast.c, so nothing later sees them):
+  - file-scope `static` and every `extern`, `volatile`: dropped. Two
+    file-scope declarations of one variable (`extern int x;` ... `int x =
+    5;`) are merged into one;
+  - a `static` LOCAL becomes a file-scope variable named
+    `__static<N>_<function>_<name>`, declared ahead of its function, with
+    every use renamed (shadowing respected);
+  - `static` in a class body is still an error (no static members);
+  - `signed`, `short`, `long`, `long long` and their `int`/`char`
+    combinations are `int`. So is `unsigned`, with a warning (once per
+    run): values above INT_MAX, and `>>`, `/`, `%`, comparisons on them,
+    behave as signed. `4000000000u` keeps its 32-bit pattern.
+- Also accepted now, passed straight through (Vircon32 C has them):
+  `%=`, struct and nested braced initializers, `int a, b[ 4 ];`. `int
+  t[] = { ... }` gets its length from the initializer (Vircon32 C has no
+  `int[] t`), and `T* const p` is emitted as `T* p`.
+- `NULL` is a KEYWORD of Vircon32 C, so `#ifndef NULL / #define NULL 0`
+  used to take its fallback and poison the output; `NULL` is now
+  predefined for `#ifdef` purposes. `fn = 0;` / `fn != 0` on a function
+  pointer get the same 0 -> NULL rewrite data pointers already had.
+- Still rejected, with a message: bit-fields. Still only warned about:
+  returning or passing a multi-word struct by value (#11).
 
 ---
 

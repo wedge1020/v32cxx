@@ -191,6 +191,7 @@ test: all | $(OUT_DIR)
 	    V32CXX_SDK_INCLUDE=tools/vircon32/bin/include $(BIN) -vvv -o out/98program.c tests/98sample.cpp 1> out/98sample.txt 2>&1; \
 	else echo "skipping sample 98: needs the SDK headers (run tools/vircon32/build-tools.sh)"; fi
 	$(BIN)  -vvv    -o out/99program.c tests/99sample.cpp 1> out/99sample.txt 2>&1
+	$(BIN)  -vvv    -o out/100program.c tests/100sample.cpp 1> out/100sample.txt 2>&1
 # `-vvv` (this project's own verbosity flag, a later round -- see
 # main.c) is passed to every sample specifically so `make test`'s own
 # output still captures the full AST/semantic-analysis/lowering dumps
@@ -321,7 +322,7 @@ archive: clean
 # ships empty demo folders.
 
 clean:
-	rm -f $(BIN_DIR)/* $(OBJ_DIR)/* $(SRC_DIR)/parser.output $(OUT_DIR)/* put/*
+	rm -f $(BIN_DIR)/* $(OBJ_DIR)/* $(SRC_DIR)/parser.output $(OUT_DIR)/* put/* *.txt *.zip
 	$(MAKE) -C demos clean
 	#rm -f $(SRC_DIR)/parser.c $(SRC_DIR)/lexer.c $(INC_DIR)/parser.h
 # Removing the bison/flex-generated files here (not just objects/binary) is
