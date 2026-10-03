@@ -46,6 +46,7 @@
 #include <string.h>
 #include "driver.h"
 #include "parser.h"
+#include "generic.h"
 #include "prescan.h" /* line-marker consumption -- see the new rule below */
 
 /* Suppresses a warning in flex's OWN generated scanning machinery
@@ -380,6 +381,38 @@ ALNUM   [A-Za-z0-9_]
 "|="    { g_last_ident_sym = NULL; return OREQ; }
 "^="    { g_last_ident_sym = NULL; return XOREQ; }
 "%="    { g_last_ident_sym = NULL; return MODEQ; }
+
+"std"[ \t]*"::"[ \t]*"array"  {
+    /* std::array<T, N> -- the transpiler's own generic (generic.h). Only
+     * the type-argument list after it is special; see type_spec. */
+    g_last_ident_sym = NULL;
+    return STD_ARRAY;
+}
+
+"using"[ \t]+"namespace"[ \t]+"std"[ \t]*";"  {
+    /* Lets `array<T, N>` be written without the std:: prefix. Nothing
+     * else lives in std here, so the directive has no other effect. */
+    g_last_ident_sym = NULL;
+    g_using_std = 1;
+}
+
+"array"/[ \t]*"<"  {
+    /* A bare `array<`: the generic, but only after `#include <array>`
+     * and `using namespace std;`, and only if the program has not
+     * declared something of its own called `array` (`array < n` on a
+     * variable stays a comparison). */
+    Symbol *sym = symtab_lookup_qualified(g_symtab, yytext);
+    if (sym == NULL && g_generic_array_enabled && g_using_std) {
+        g_last_ident_sym = NULL;
+        return STD_ARRAY;
+    }
+    yylval.str = strdup(yytext);
+    g_last_ident_sym = sym;
+    if (sym != NULL && (sym->kind == SYM_CLASS || sym->kind == SYM_TYPEDEF || sym->kind == SYM_ENUM || sym->kind == SYM_UNION)) {
+        return TYPE_NAME;
+    }
+    return IDENTIFIER;
+}
 
 {ALPHA}{ALNUM}*  {
     /* The core of the lexer hack: classify this identifier by consulting

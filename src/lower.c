@@ -675,7 +675,16 @@ static AstNode *strip_const_member_read(AstNode *expr, AstNode *class_decl, Loca
  * deliberately unwraps pointer/value distinctions away for CLASS-
  * resolution purposes and so can't answer this question at all) --
  * exposed from sema.c specifically for this. */
+static int is_deref_unop(const AstNode *n);
+
 static AstNode *address_of_if_needed(AstNode *obj_expr, AstNode *class_decl, LocalVarType *locals) {
+    if (is_deref_unop(obj_expr)) {
+        /* `&*p` is just `p`. This is what a reference-returning call
+         * looks like once its dereference has been inserted
+         * (`grid[1].fill(2)`: the receiver is `*op_index(...)`), and
+         * equally a user-written `(*p).method()`. */
+        return obj_expr->a;
+    }
     AstNode *t = infer_expr_type(obj_expr, class_decl, locals);
     if (t == NULL || t->kind == AST_POINTER_TYPE || t->kind == AST_REFERENCE_TYPE) {
         /* AST_REFERENCE_TYPE here (not just AST_POINTER_TYPE) is a real,
@@ -711,6 +720,12 @@ static AstNode *address_of_if_needed(AstNode *obj_expr, AstNode *class_decl, Loc
          * produce a double pointer, a strictly worse outcome than
          * leaving the original (already-known) bug in place for
          * whatever rare case reaches this branch. */
+        if (t != NULL && t->kind == AST_REFERENCE_TYPE && obj_expr->kind == AST_IDENT) {
+            /* This reference identifier is wanted as the POINTER it
+             * lowers to -- tell phase 5 not to dereference it (see
+             * ref_as_ptr in ast.h). */
+            obj_expr->ref_as_ptr = 1;
+        }
         return obj_expr;
     }
     AstNode *addr = ast_new(AST_UNOP, obj_expr->line);
@@ -1441,6 +1456,28 @@ static void finalize_call(AstNode *call, AstNode *class_decl, LocalVarType *loca
  * when sema_run() reported any errors).
  */
 
+/* Wraps the call in *slot in a dereference when its resolved target
+ * returns a C++ reference (a pointer, once lowered): a reference return
+ * acts like the referent itself. Shared by ordinary calls and by
+ * overloaded-operator calls -- the latter never got this before, so
+ * `v[0] = 5` through an `int &operator[]` assigned to the returned
+ * POINTER instead of through it. */
+static void deref_reference_return(AstNode **slot) {
+    AstNode *n = *slot;
+    CallResolution *cr = (CallResolution *)n->sema_info;
+    if (cr == NULL || cr->resolved_target == NULL) return;
+    AstNode *target = cr->resolved_target;
+    if (target->type == NULL || target->type->kind != AST_REFERENCE_TYPE) return;
+    AstNode *deref = ast_new(AST_UNOP, n->line);
+    deref->str1 = strdup("deref");
+    deref->a = n;
+    *slot = deref;
+}
+
+static int is_deref_unop(const AstNode *n) {
+    return n != NULL && n->kind == AST_UNOP && n->str1 != NULL && strcmp(n->str1, "deref") == 0;
+}
+
 static void rewrite_operator_use(AstNode **slot, AstNode *lhs_or_operand, AstNode *rhs_or_null,
                                   AstNode *class_decl, LocalVarType *locals) {
     AstNode *n = *slot;
@@ -1474,6 +1511,7 @@ static void rewrite_operator_use(AstNode **slot, AstNode *lhs_or_operand, AstNod
         safe and avoids a pointless duplicate allocation */
     *slot = call;
     finalize_call(call, class_decl, locals);
+    deref_reference_return(slot);
 }
 
 /* is_bare_free_function_ref currently begins by checking the
@@ -1770,19 +1808,10 @@ static void finalize_calls_expr(AstNode **slot, AstNode *class_decl, LocalVarTyp
              * (see its own comment for why this phase has to run before
              * phase 5, not after).
              *
-             * SCOPE LIMITATION: this always inserts the deref, with no
-             * check for whether the call's result is itself flowing into
-             * a reference-typed local (`int &r = obj.getRef();`, which
-             * would want to keep the pointer, not dereference it) --
-             * reference-typed LOCALS are their own separate, already-
-             * incomplete area of this project (their own initializers
-             * don't get address-of treatment either; see
-             * fix_reference_access_stmt's AST_VAR_DECL case, which only
-             * fixes up `.`/`->` access, never initialization), and no
-             * test anywhere in this project currently combines the two.
-             * Left as a known, honestly-stated limitation rather than
-             * guessed at, matching this project's established practice
-             * everywhere else in this file. */
+             * A reference-typed local bound to such a call
+             * (`int &r = obj.getRef();`) wants the pointer back, not
+             * the value: finalize_calls_stmt's AST_VAR_DECL case strips
+             * this dereference again for exactly that declaration. */
             CallResolution *cr = (CallResolution *)n->sema_info;
             if (cr != NULL && cr->resolved_target != NULL) {
                 AstNode *target = cr->resolved_target;
@@ -2111,6 +2140,13 @@ static void finalize_calls_stmt(AstNode **slot, AstNode *class_decl, LocalVarTyp
             break;
         case AST_EXPR_STMT:
             finalize_calls_expr(&n->a, class_decl, *locals);
+            /* A reference-returning call used purely as a statement
+             * (`a += b;` through `T &operator+=`, `obj.chain();`): drop
+             * the dereference, which would only load a value nobody
+             * reads. */
+            if (is_deref_unop(n->a) && n->a->a != NULL && n->a->a->kind == AST_CALL) {
+                n->a = n->a->a;
+            }
             break;
         case AST_VAR_DECL: {
             /* `Callback cb = doubleIt;` needs the same implicit `&`
@@ -2145,6 +2181,17 @@ static void finalize_calls_stmt(AstNode **slot, AstNode *class_decl, LocalVarTyp
              * (AST_REFERENCE_TYPE is not AST_POINTER_TYPE at this point
              * in the pipeline, and phase 5 relabels those later). */
             rewrite_zero_to_null(&n->a, n->type);
+            /* A reference-typed local binds to its initializer's ADDRESS
+             * (`int &r = n;` -> `int *r = &n;`). An initializer that is
+             * already a dereference -- a reference-returning call, or a
+             * user-written `*p` -- binds to the pointer underneath. */
+            if (n->type != NULL && n->type->kind == AST_REFERENCE_TYPE && n->a != NULL) {
+                if (is_deref_unop(n->a)) {
+                    n->a = n->a->a;
+                } else {
+                    n->a = address_of_if_needed(n->a, class_decl, *locals);
+                }
+            }
 
             LocalVarType *lv = calloc(1, sizeof(LocalVarType)); /* calloc: zero-inits was_reference too */
             lv->name = n->str1;
@@ -2380,15 +2427,33 @@ static void fix_reference_access_expr(AstNode **slot, LocalVarType *locals) {
     AstNode *n = *slot;
     if (n == NULL) return;
     switch (n->kind) {
+        case AST_IDENT: {
+            /* A reference identifier used as a VALUE (`a = a + 1`,
+             * `dst = src`, `int b = a`) means the referent: once the
+             * reference is a pointer, that is `(*a)`. The uses that want
+             * the pointer itself were flagged by address_of_if_needed
+             * (ref_as_ptr); member access is handled by AST_MEMBER below. */
+            if (n->str1 != NULL && !n->ref_as_ptr) {
+                LocalVarType *lv = find_local(locals, n->str1);
+                if (lv != NULL && lv->was_reference) {
+                    AstNode *deref = ast_new(AST_UNOP, n->line);
+                    deref->str1 = strdup("deref");
+                    deref->a = n;
+                    *slot = deref;
+                }
+            }
+            break;
+        }
         case AST_MEMBER: {
-            fix_reference_access_expr(&n->a, locals);
-            if (n->str1 != NULL && strcmp(n->str1, ".") == 0 && n->a->kind == AST_IDENT) {
+            if (n->str1 != NULL && strcmp(n->str1, ".") == 0 && n->a != NULL && n->a->kind == AST_IDENT) {
                 LocalVarType *lv = find_local(locals, n->a->str1);
                 if (lv != NULL && lv->was_reference) {
                     free(n->str1);
                     n->str1 = strdup("->");
+                    break; /* `r.x` -> `r->x`: the identifier stays a pointer */
                 }
             }
+            fix_reference_access_expr(&n->a, locals);
             break;
         }
         case AST_CALL:

@@ -851,6 +851,15 @@ struct AstNode {
      * and must be rewritten exactly once). */
     int v32_abi_done;
 
+    /* AST_IDENT only: set by lower.c's address_of_if_needed on a bare
+     * reference-typed parameter/local that is being used AS the pointer
+     * it lowers to (forwarded to another reference parameter, returned
+     * from a reference-returning function, used as a method receiver,
+     * bound to another reference local). Phase 5 (fix_references)
+     * dereferences every OTHER use of a reference identifier, so this
+     * flag is how it tells the two apart. */
+    int ref_as_ptr;
+
     /*
      * Opaque annotation slot for later compiler passes (semantic
      * analysis, lowering, ...) to attach computed, pass-specific

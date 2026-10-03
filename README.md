@@ -176,6 +176,19 @@ entry #11 for the full reasoning and stated scope gaps (an array- or
 nested-struct-typed field can still under-count; unions aren't checked
 at all).
 
+**`std::array<T, N>`** is available as a transpiler-level generic: not
+a template, but a fixed form the transpiler expands into one ordinary
+class per element type and length (`array_Enemy_8`), with the usual
+members (`operator[]`, `at`, `front`, `back`, `size`, `fill`, `data`,
+`begin`/`end`) and aggregate initialization. `#include <array>` switches
+it on. See [`docs/GENERICS.md`](docs/GENERICS.md) for what is supported,
+how it works and the known gaps (element constructors are not run yet;
+every access is still a function call). References used as values
+(`a = a + 1` on an `int &a`, `v[0] = 5` through an `int &operator[]`,
+`int &r = n;`) are lowered correctly as part of the same work —
+`tests/103sample.cpp` and `tests/104sample.cpp` check both on the real
+console.
+
 **Lowering** — transforming the semantically-checked program into
 something code generation can work from directly — runs through eleven
 phases: struct field layout (with correct vtable-pointer placement
@@ -1110,6 +1123,8 @@ src/            implementation (.c, plus the flex/bison sources)
   cartxml.c     Vircon32 cart-packing XML generation
   pathutil.c    shared filename-extension-swapping helper
   debugmap.c    C-line/C++-line debug map (-g) tracking and output
+  generic.c     std::array<T, N>: the class text and its instantiation
+                (see docs/GENERICS.md)
   prescan.c     the C++-side preprocessor: include resolution,
                 #define/#undef, #if/#ifdef, line markers
   macro.c       macro table, expander and #if expression evaluator

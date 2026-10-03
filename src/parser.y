@@ -47,6 +47,7 @@
 #include "ast.h"
 #include "symtab.h"
 #include "driver.h"
+#include "generic.h"
 
 /* Expand a string literal's stored inner text (quotes already stripped
  * by lexer.l's STRING_LITERAL rule; escape sequences still raw
@@ -299,7 +300,13 @@ static AstNode *finish_declarators(AstNode *first, AstNode *base, AstList more, 
  * and confirm the actual concrete input you care about still parses
  * correctly before trusting the new number.
  */
-%expect 39
+%expect 42
+/* Bumped from 39 to 42 -- three new shift/reduce conflicts, all on the
+ * STD_ARRAY token (std::array<T, N>, see type_spec): it is one more
+ * token a type can START with, so it joins the same opt_virtual/
+ * func_header-vs-out_of_line_def family described above (one conflict
+ * per place a declaration can start: top level, namespace body, class
+ * body). */
 /* Bumped from 27 to 39 -- twelve new shift/reduce conflicts, all from
  * type_spec's three elaborated-type-specifier alternatives (`struct X`,
  * `class X`, `union X`, `enum X` usable wherever a type is: `struct
@@ -476,6 +483,7 @@ static AstNode *finish_declarators(AstNode *first, AstNode *base, AstList more, 
 %token SHL SHR ANDEQ OREQ XOREQ SHLEQ SHREQ
 %token ASM VOLATILE NATIVE
 %token MODEQ STATIC
+%token STD_ARRAY
 
 %type <node> program top_decl namespace_decl class_decl member
 %type <node> braced_init init_item
@@ -1293,6 +1301,37 @@ type_spec:
     | UNION name_tok               { $$ = ast_ident($2, @2.first_line); }
     | ENUM name_tok                { $$ = ast_ident($2, @2.first_line); }
     | qualified_type { $$ = $1; }
+    | STD_ARRAY '<' type_spec pointer_opt ',' INT_LITERAL '>'
+        {
+            /* std::array<T, N> -- NOT template syntax. Like the four
+             * cast keywords further down, this is one fixed form that
+             * only exists right after the STD_ARRAY token, so '<' and
+             * '>' here never compete with the comparison operators.
+             * The type it produces is an ordinary class, written out
+             * by generic.c; see generic.h. */
+            if ($4 == 2) {
+                yyerror("std::array cannot hold references");
+                g_parse_errors++;
+                YYERROR;
+            }
+            AstNode *elem = ($4 == 1) ? ast_wrap_pointer($3, @3.first_line) : $3;
+            $$ = generic_array_type(elem, $6.ival, NULL, @1.first_line);
+            if ($$ == NULL) YYERROR;
+        }
+    | STD_ARRAY '<' type_spec pointer_opt ',' IDENTIFIER '>'
+        {
+            /* The length as a named constant (an enum constant or a
+             * `const int`). A #define'd length arrives as INT_LITERAL
+             * above, already expanded by the pre-scan. */
+            if ($4 == 2) {
+                yyerror("std::array cannot hold references");
+                g_parse_errors++;
+                YYERROR;
+            }
+            AstNode *elem = ($4 == 1) ? ast_wrap_pointer($3, @3.first_line) : $3;
+            $$ = generic_array_type(elem, 0, $6, @1.first_line);
+            if ($$ == NULL) YYERROR;
+        }
     | CONST type_spec
         {
             /* `const T` -- a single new leading token (CONST) for

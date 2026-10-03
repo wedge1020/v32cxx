@@ -4,6 +4,7 @@
 #include <errno.h>
 #include <unistd.h> /* access() */
 #include "prescan.h"
+#include "generic.h"
 #include "macro.h"
 
 /* ---- tiny growable path-set --------------------------------------------
@@ -682,7 +683,18 @@ static int expand_file_mode(const char *path, FILE *out,
         else if (strcmp(word, "include") == 0) {
             int angle;
             char *target = include_target(rest, &angle);
-            if (target != NULL && is_expanded_extension(target) && harvest) {
+            if (target != NULL && angle && strcmp(target, "array") == 0) {
+                /* `#include <array>`: there is no such file. It switches
+                 * on the transpiler's own std::array (see generic.h) and
+                 * must never reach the generated C. */
+                g_generic_array_enabled = 1;
+                emit_marker(out, lineno + nphys, path);
+                free(target);
+                free(word);
+                free(line);
+                continue;
+            }
+            else if (target != NULL && is_expanded_extension(target) && harvest) {
                 /* a .hpp included from a pass-through .h: not ours to read */
                 free(target);
             }

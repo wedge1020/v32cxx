@@ -1404,6 +1404,20 @@ static void print_expr(FILE *out, const AstNode *e) {
             print_unop(out, e);
             break;
         case AST_SUBSCRIPT:
+            if (e->a != NULL && e->a->kind == AST_CALL) {
+                /* `f()[i]` -- subscripting a call's result directly. The
+                 * real Vircon32 C compiler dies on it when a member
+                 * access follows (`f()[3].x`: "cannot emit memory
+                 * placement when an expression has none"), so it is
+                 * written the long way, `(*(f() + i))`, which it accepts
+                 * and which means the same thing in standard C. */
+                fprintf(out, "(*(");
+                print_expr(out, e->a);
+                fprintf(out, " + ");
+                print_expr(out, e->b);
+                fprintf(out, "))");
+                break;
+            }
             print_expr(out, e->a);
             fprintf(out, "[");
             print_expr(out, e->b);

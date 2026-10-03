@@ -14,6 +14,7 @@
 #include "cartxml.h"
 #include "debugmap.h"
 #include "prescan.h"
+#include "generic.h"
 
 #define  MAX_INCLUDE_DIRS V32CXX_MAX_INCLUDE_DIRS
 
@@ -398,6 +399,10 @@ int  main (int  argc, char **argv)
     if (verbosity >= 1) printf("stage 1: running lexer/parser\n");
     int rc = yyparse();
     if (rc == 0 && g_parse_errors > 0) rc = 1; /* messages already printed */
+
+    /* std::array<T, N> classes the program named: generated, parsed and
+     * spliced in before anything else looks at the AST (generic.h). */
+    if (rc == 0 && g_program != NULL && generic_instantiate_pending() != 0) rc = 1;
 
     if (rc == 0 && g_program != NULL) {
         /* C storage classes, resolved before anything else looks at the

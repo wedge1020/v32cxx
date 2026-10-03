@@ -80,7 +80,7 @@ $(BIN_DIR)/v32c++: $(OBJ_DIR)/parser.o   $(OBJ_DIR)/lexer.o   \
                    $(OBJ_DIR)/ast.o      $(OBJ_DIR)/symtab.o  \
 				   $(OBJ_DIR)/prescan.o  $(OBJ_DIR)/sema.o    \
                    $(OBJ_DIR)/lower.o    $(OBJ_DIR)/codegen.o \
-				   $(OBJ_DIR)/pathutil.o $(OBJ_DIR)/cartxml.o \
+				   $(OBJ_DIR)/pathutil.o $(OBJ_DIR)/generic.o $(OBJ_DIR)/cartxml.o \
 				   $(OBJ_DIR)/debugmap.o $(OBJ_DIR)/macro.o    \
 				   $(OBJ_DIR)/main.o | $(BIN_DIR)
 	$(CC) $(CFLAGS) -o $@ $^
@@ -194,6 +194,8 @@ test: all | $(OUT_DIR)
 	$(BIN)  -vvv    -o out/100program.c tests/100sample.cpp 1> out/100sample.txt 2>&1
 	$(BIN)  -vvv    -o out/101program.c tests/101sample.cpp 1> out/101sample.txt 2>&1
 	$(BIN)  -vvv    -o out/102program.c tests/102sample.cpp 1> out/102sample.txt 2>&1
+	$(BIN)  -vvv    -o out/103program.c tests/103sample.cpp 1> out/103sample.txt 2>&1
+	$(BIN)  -vvv    -o out/104program.c tests/104sample.cpp 1> out/104sample.txt 2>&1
 # `-vvv` (this project's own verbosity flag, a later round -- see
 # main.c) is passed to every sample specifically so `make test`'s own
 # output still captures the full AST/semantic-analysis/lowering dumps
