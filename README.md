@@ -176,21 +176,31 @@ entry #11 for the full reasoning and stated scope gaps (an array- or
 nested-struct-typed field can still under-count; unions aren't checked
 at all).
 
-**`std::array<T, N>`** is available as a transpiler-level generic: not
-a template, but a fixed form the transpiler expands into one ordinary
-class per element type and length (`array_Enemy_8`), with the usual
-members (`operator[]`, `at`, `front`, `back`, `size`, `fill`, `data`,
-`begin`/`end`) and aggregate initialization. `#include <array>` switches
-it on. See [`docs/GENERICS.md`](docs/GENERICS.md) for what is supported,
-how it works and the known gaps (every access is still a function
-call). Three general fixes came with it, each with its own self-checking
-test: references used as values (`a = a + 1` on an `int &a`, `v[0] = 5`
-through an `int &operator[]`, `int &r = n;` — `tests/103sample.cpp`);
-member arrays of class objects (`Counter items[3];` inside a class) are
-now constructed and destroyed element by element
-(`tests/105sample.cpp`); and a value bound to a reference parameter
-(`twice(21)` into `const int &`) gets a temporary instead of `(&21)`
-(`tests/106sample.cpp`).
+**`std::array<T, N>` and `std::vector<T>`** are available as
+transpiler-level generics: not templates, but two fixed forms the
+transpiler expands into one ordinary class per element type
+(`array_Enemy_8`, `vector_Enemy`), with the usual members and
+STL-compatible spelling. `#include <array>` / `#include <vector>` switch
+them on. See [`docs/GENERICS.md`](docs/GENERICS.md) for what is
+supported, how it works and the known gaps (a vector treats its elements
+as raw memory; every access is still a function call). Several general
+fixes came with them, each with its own self-checking test:
+
+- references used as values (`a = a + 1` on an `int &a`, `v[0] = 5`
+  through an `int &operator[]`, `int &r = n;`) — `tests/103sample.cpp`;
+- member arrays of class objects (`Counter items[3];` inside a class)
+  are constructed and destroyed element by element —
+  `tests/105sample.cpp`;
+- a value bound to a reference parameter (`twice(21)` into
+  `const int &`) gets a temporary instead of `(&21)` —
+  `tests/106sample.cpp`;
+- unnamed objects, `Enemy(1, 2, 3)` as an expression
+  (`v.push_back(Enemy(1, 2, 3));`, `return Vec(x, y);`), and
+  function-style casts through a typedef name — `tests/107sample.cpp`;
+- file-scope objects of class type are constructed at the top of
+  `main()`, in declaration order — `tests/109sample.cpp`;
+- a pointer reached through a typedef (`typedef Shape *ShapeP;`) is
+  treated as a pointer when used as a method receiver.
 
 **Lowering** — transforming the semantically-checked program into
 something code generation can work from directly — runs through eleven
@@ -1126,7 +1136,8 @@ src/            implementation (.c, plus the flex/bison sources)
   cartxml.c     Vircon32 cart-packing XML generation
   pathutil.c    shared filename-extension-swapping helper
   debugmap.c    C-line/C++-line debug map (-g) tracking and output
-  generic.c     std::array<T, N>: the class text and its instantiation
+  generic.c     std::array<T, N> and std::vector<T>: the class text and
+                its instantiation
                 (see docs/GENERICS.md)
   prescan.c     the C++-side preprocessor: include resolution,
                 #define/#undef, #if/#ifdef, line markers

@@ -404,6 +404,10 @@ int  main (int  argc, char **argv)
      * spliced in before anything else looks at the AST (generic.h). */
     if (rc == 0 && g_program != NULL && generic_instantiate_pending() != 0) rc = 1;
 
+    /* `Enemy(1, 2, 3)` as an expression: each becomes a named local
+     * before anything else looks at the AST (ast.c). */
+    if (rc == 0 && g_program != NULL && desugar_unnamed_objects(&g_program->list) != 0) rc = 1;
+
     if (rc == 0 && g_program != NULL) {
         /* C storage classes, resolved before anything else looks at the
          * tree: static locals become file-scope variables, and repeated

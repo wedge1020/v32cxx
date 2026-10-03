@@ -694,6 +694,15 @@ static int expand_file_mode(const char *path, FILE *out,
                 free(line);
                 continue;
             }
+            else if (target != NULL && angle && strcmp(target, "vector") == 0) {
+                /* `#include <vector>`: the same, for std::vector. */
+                g_generic_vector_enabled = 1;
+                emit_marker(out, lineno + nphys, path);
+                free(target);
+                free(word);
+                free(line);
+                continue;
+            }
             else if (target != NULL && is_expanded_extension(target) && harvest) {
                 /* a .hpp included from a pass-through .h: not ours to read */
                 free(target);

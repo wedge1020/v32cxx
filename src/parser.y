@@ -300,7 +300,15 @@ static AstNode *finish_declarators(AstNode *first, AstNode *base, AstList more, 
  * and confirm the actual concrete input you care about still parses
  * correctly before trusting the new number.
  */
-%expect 42
+%expect 46
+/* 43 -> 46: STD_VECTOR, three more of the STD_ARRAY kind (below). */
+/* Bumped from 42 to 43 -- one new shift/reduce conflict, from
+ * primary_expr's `TYPE_NAME '(' args ')'` (an unnamed object,
+ * `Enemy(1, 2, 3)`): at the start of a statement, TYPE_NAME followed by
+ * '(' is either that (shift) or the return type of a Vircon32-style
+ * function-pointer declaration, `int(int)* fp;` (reduce to type_spec).
+ * GLR follows both; what is inside the parentheses -- values or types --
+ * decides, and one of the two always dies there. */
 /* Bumped from 39 to 42 -- three new shift/reduce conflicts, all on the
  * STD_ARRAY token (std::array<T, N>, see type_spec): it is one more
  * token a type can START with, so it joins the same opt_virtual/
@@ -483,7 +491,7 @@ static AstNode *finish_declarators(AstNode *first, AstNode *base, AstList more, 
 %token SHL SHR ANDEQ OREQ XOREQ SHLEQ SHREQ
 %token ASM VOLATILE NATIVE
 %token MODEQ STATIC
-%token STD_ARRAY
+%token STD_ARRAY STD_VECTOR
 
 %type <node> program top_decl namespace_decl class_decl member
 %type <node> braced_init init_item
@@ -1316,6 +1324,19 @@ type_spec:
             }
             AstNode *elem = ($4 == 1) ? ast_wrap_pointer($3, @3.first_line) : $3;
             $$ = generic_array_type(elem, $6.ival, NULL, @1.first_line);
+            if ($$ == NULL) YYERROR;
+        }
+    | STD_VECTOR '<' type_spec pointer_opt '>'
+        {
+            /* std::vector<T> -- same fixed form as std::array, one
+             * argument. */
+            if ($4 == 2) {
+                yyerror("std::vector cannot hold references");
+                g_parse_errors++;
+                YYERROR;
+            }
+            AstNode *elem = ($4 == 1) ? ast_wrap_pointer($3, @3.first_line) : $3;
+            $$ = generic_vector_type(elem, @1.first_line);
             if ($$ == NULL) YYERROR;
         }
     | STD_ARRAY '<' type_spec pointer_opt ',' IDENTIFIER '>'
@@ -2355,6 +2376,20 @@ primary_expr:
     | THIS                        { $$ = ast_new(AST_THIS, @1.first_line); }
     | qualified_id_expr             { $$ = $1; }
     | '(' comma_expr ')'              { $$ = $2; }
+    | TYPE_NAME '(' opt_arg_list ')'
+        {
+            /* `Enemy(1, 2, 3)` as an EXPRESSION -- an unnamed object
+             * (`v.push_back(Enemy(1, 2, 3));`, `return Vec(x, y);`) or,
+             * for a typedef/enum name, a function-style cast
+             * (`Fixed(3)`). Parsed into a marker node (AST_DIRECT_INIT
+             * with str1 = the type's name) that never reaches sema:
+             * desugar_unnamed_objects (ast.c) turns each one into an
+             * ordinary named local, declared just ahead of the
+             * statement that uses it, or into an AST_CAST. */
+            $$ = ast_new(AST_DIRECT_INIT, @1.first_line);
+            $$->str1 = strdup($1);
+            $$->list = $3;
+        }
     ;
 
 postfix_expr:

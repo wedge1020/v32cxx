@@ -3529,7 +3529,9 @@ Fixed both: `sema.c` gained `check_globals` (walks every top-level
 `print_var_decl_inline` directly -- the C syntax for a global
 declaration is identical to a local one), placed after `emit_classes`
 so a class-typed global's own struct definition would already exist
-(class-typed globals still aren't fully supported -- no constructor
+(UPDATE: top-level globals are now constructed at the start of main(),
+see tests/109sample.cpp and lower.c's phase 7b. At the time of writing:
+class-typed globals still aren't fully supported -- no constructor
 gets invoked for one, the same gap class-typed member fields have --
 but at least the DECLARATION itself is no longer silently dropped).
 Re-ran the original failing test after the fix: `counter` now emits

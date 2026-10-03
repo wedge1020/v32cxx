@@ -677,7 +677,40 @@ static AstNode *strip_const_member_read(AstNode *expr, AstNode *class_decl, Loca
  * exposed from sema.c specifically for this. */
 static int is_deref_unop(const AstNode *n);
 
+static int needs_reference_temporary(const AstNode *arg, const AstNode *param_type);
+static AstNode *bind_reference_temporary(AstNode *arg, AstNode *param_type);
+
+/* address_of_if_needed serves two callers with slightly different needs:
+ *   - a method's RECEIVER wants a pointer to the object, so an expression
+ *     that already is a pointer is left alone (g_ref_binding_type NULL);
+ *   - BINDING A REFERENCE (an argument, a `return`, a reference local)
+ *     wants the address of whatever the expression names -- including
+ *     when that is itself a pointer and the reference is to a pointer
+ *     (`Shape *&`, which std::vector<Shape *> produces). The caller sets
+ *     g_ref_binding_type to the reference type being bound for the
+ *     duration of the call. */
+static const AstNode *g_ref_binding_type = NULL;
+
+static int reference_to_pointer(const AstNode *ref_type) {
+    if (ref_type == NULL || ref_type->kind != AST_REFERENCE_TYPE) return 0;
+    const AstNode *t = ref_type->a;
+    while (t != NULL && t->kind == AST_CONST_TYPE) t = t->a;
+    t = resolve_typedef_chain(t);
+    return t != NULL && t->kind == AST_POINTER_TYPE;
+}
+
 static AstNode *address_of_if_needed(AstNode *obj_expr, AstNode *class_decl, LocalVarType *locals) {
+    int binding_pointer_ref = reference_to_pointer(g_ref_binding_type);
+    if (g_ref_binding_type == NULL) {
+        /* Receiver: a pointer reached through a typedef (`typedef Shape
+         * *ShapeP; ShapeP p; p->area();`) is a pointer all the same -- it
+         * was being given a `&`, as if `p` were the object. Checked
+         * before the dereference shortcut below, which would otherwise
+         * strip the `*` from `(*call)->area()` where the call returns a
+         * reference to such a pointer. */
+        const AstNode *t0 = resolve_typedef_chain(infer_expr_type(obj_expr, class_decl, locals));
+        if (t0 != NULL && t0->kind == AST_POINTER_TYPE) return obj_expr;
+    }
     if (is_deref_unop(obj_expr)) {
         /* `&*p` is just `p`. This is what a reference-returning call
          * looks like once its dereference has been inserted
@@ -686,7 +719,7 @@ static AstNode *address_of_if_needed(AstNode *obj_expr, AstNode *class_decl, Loc
         return obj_expr->a;
     }
     AstNode *t = infer_expr_type(obj_expr, class_decl, locals);
-    if (t == NULL || t->kind == AST_POINTER_TYPE || t->kind == AST_REFERENCE_TYPE) {
+    if (t == NULL || (t->kind == AST_POINTER_TYPE && !binding_pointer_ref) || t->kind == AST_REFERENCE_TYPE) {
         /* AST_REFERENCE_TYPE here (not just AST_POINTER_TYPE) is a real,
          * separate fix, not part of the original pointer check: this
          * whole phase (3/4) deliberately runs BEFORE phase 5 relabels
@@ -876,8 +909,14 @@ static void fixup_ctor_reference_args(AstList *args, AstNode *ctor, AstNode *cla
             follows */
         AstNode *param = ctor->list.items[param_idx];
         if (param->type != NULL && param->type->kind == AST_REFERENCE_TYPE) {
+            if (needs_reference_temporary(args->items[i], param->type)) {
+                args->items[i] = bind_reference_temporary(args->items[i], param->type);
+                continue;
+            }
             AstNode *arg_static_type = infer_expr_type(args->items[i], class_decl, locals);
+            g_ref_binding_type = param->type;
             args->items[i] = address_of_if_needed(args->items[i], class_decl, locals);
+            g_ref_binding_type = NULL;
             args->items[i] = cast_ref_arg_if_needed(args->items[i], arg_static_type, param->type);
         } else if (param->type != NULL && param->type->kind == AST_POINTER_TYPE) {
             /* Same plain-pointer-parameter gap finalize_call's own
@@ -1089,6 +1128,9 @@ static AstNode *build_hoisted_temp_decl(AstNode *expr, const char *name,
      * mutated in place (see clone_default_expr's own comment in ast.c) --
      * no copy needed, unlike what the original patch draft assumed. */
     decl->type = infer_expr_type(expr, class_decl, locals);
+    if (decl->type == NULL && expr->kind == AST_CAST) decl->type = expr->type;
+    if (decl->type == NULL) return NULL; /* type unknown: the caller leaves
+        the expression where it is rather than declare an untyped temporary */
     decl->str1 = strdup(name);
     decl->a = expr;
     return decl;
@@ -1149,9 +1191,11 @@ static void hoist_hazards_in_expr(AstNode *expr, AstNode *stmt, AstList *block_l
                     char name[32];
                     snprintf(name, sizeof name, "v32_temp_%d", g_v32_temp_counter++);
                     AstNode *decl = build_hoisted_temp_decl(recv, name, class_decl, locals);
-                    replace_node_identity(stmt, recv, name, expr->line);
-                    ast_list_insert_at(block_list, base_index + *inserted, decl);
-                    (*inserted)++;
+                    if (decl != NULL) {
+                        replace_node_identity(stmt, recv, name, expr->line);
+                        ast_list_insert_at(block_list, base_index + *inserted, decl);
+                        (*inserted)++;
+                    }
                 }
             }
             for (int i = 0; i < expr->list.count; i++) {
@@ -1163,9 +1207,11 @@ static void hoist_hazards_in_expr(AstNode *expr, AstNode *stmt, AstList *block_l
                         char name[32];
                         snprintf(name, sizeof name, "v32_temp_%d", g_v32_temp_counter++);
                         AstNode *decl = build_hoisted_temp_decl(arg, name, class_decl, locals);
-                        replace_node_identity(stmt, arg, name, expr->line);
-                        ast_list_insert_at(block_list, base_index + *inserted, decl);
-                        (*inserted)++;
+                        if (decl != NULL) {
+                            replace_node_identity(stmt, arg, name, expr->line);
+                            ast_list_insert_at(block_list, base_index + *inserted, decl);
+                            (*inserted)++;
+                        }
                     }
                 }
             }
@@ -1281,7 +1327,6 @@ static int needs_reference_temporary(const AstNode *arg, const AstNode *param_ty
     if (referent == NULL || referent->kind == AST_ARRAY_TYPE) return 0;
     const AstNode *resolved = resolve_typedef_chain(referent);
     if (resolved != NULL && resolved->kind != AST_POINTER_TYPE && type_to_class(resolved) != NULL) return 0;
-    if (referent->kind != AST_POINTER_TYPE && type_to_class(referent) != NULL) return 0;
     switch (arg->kind) {
         case AST_INT_LIT: case AST_FLOAT_LIT: case AST_CHAR_LIT: case AST_BOOL_LIT:
         case AST_NULL_LIT: case AST_STRING_LIT: case AST_SIZEOF: case AST_CAST:
@@ -1316,6 +1361,16 @@ static AstNode *bind_reference_temporary(AstNode *arg, AstNode *param_type) {
     assign->str1 = strdup("=");
     assign->a = ast_ident(name, arg->line);
     assign->b = arg;
+    if (decl->type->kind == AST_POINTER_TYPE && arg->kind != AST_NULL_LIT && arg->kind != AST_INT_LIT) {
+        /* A pointer temporary (`shapes.push_back(&square)` into a
+         * `Shape *const &`): Vircon32 C wants the derived-to-base
+         * conversion spelled out, so the value is cast to the
+         * temporary's own type. */
+        AstNode *cast = ast_new(AST_CAST, arg->line);
+        cast->type = decl->type;
+        cast->a = arg;
+        assign->b = cast;
+    }
     AstNode *addr = ast_new(AST_UNOP, arg->line);
     addr->str1 = strdup("addr");
     addr->a = ast_ident(name, arg->line);
@@ -1416,7 +1471,9 @@ static void finalize_call(AstNode *call, AstNode *class_decl, LocalVarType *loca
                 call->list.items[i] = bind_reference_temporary(call->list.items[i], param->type);
             } else if (param->type != NULL && param->type->kind == AST_REFERENCE_TYPE) {
                 AstNode *arg_static_type = infer_expr_type(call->list.items[i], class_decl, locals);
+                g_ref_binding_type = param->type;
                 call->list.items[i] = address_of_if_needed(call->list.items[i], class_decl, locals);
+                g_ref_binding_type = NULL;
                 call->list.items[i] = cast_ref_arg_if_needed(call->list.items[i], arg_static_type, param->type);
             } else if (param->type != NULL && param->type->kind == AST_POINTER_TYPE) {
                 /* A plain (non-reference) pointer parameter -- see
@@ -2283,7 +2340,9 @@ static void finalize_calls_stmt(AstNode **slot, AstNode *class_decl, LocalVarTyp
                 if (is_deref_unop(n->a)) {
                     n->a = n->a->a;
                 } else {
+                    g_ref_binding_type = n->type;
                     n->a = address_of_if_needed(n->a, class_decl, *locals);
+                    g_ref_binding_type = NULL;
                 }
             }
 
@@ -2346,6 +2405,8 @@ static LocalVarType *seed_locals_from_params(AstNode *func) {
  * can be reasoned about (and tested) entirely on its own, without
  * depending on finalize_calls_stmt happening to run first in the same
  * call. */
+static const AstNode *g_ref_return_type = NULL; /* the enclosing function's `T &` */
+
 static void inject_reference_return_address_stmt(AstNode **slot, AstNode *class_decl, LocalVarType **locals) {
     AstNode *n = *slot;
     if (n == NULL) return;
@@ -2380,7 +2441,9 @@ static void inject_reference_return_address_stmt(AstNode **slot, AstNode *class_
             break;
         case AST_RETURN:
             if (n->a != NULL) {
+                g_ref_binding_type = g_ref_return_type;
                 n->a = address_of_if_needed(n->a, class_decl, *locals);
+                g_ref_binding_type = NULL;
             }
             break;
         case AST_VAR_DECL: {
@@ -2409,6 +2472,7 @@ static void finalize_calls_in_method(AstNode *method, AstNode *class_decl) {
     flush_reference_temporaries(method);
     if (method->type != NULL && method->type->kind == AST_REFERENCE_TYPE) {
         LocalVarType *ret_locals = seed_locals_from_params(method);
+        g_ref_return_type = method->type;
         inject_reference_return_address_stmt(&method->a, class_decl, &ret_locals);
     }
 }
@@ -2464,6 +2528,7 @@ static void finalize_calls_free_functions(AstList *decls) {
                  * finalize_calls_in_method just above -- a free function
                  * can return T& just as much as a method can. */
                 LocalVarType *ret_locals = seed_locals_from_params(n);
+                g_ref_return_type = n->type;
                 inject_reference_return_address_stmt(&n->a, NULL, &ret_locals);
             }
         }
@@ -3540,6 +3605,54 @@ static void inject_ctor_calls_stmt(AstNode **slot, AstNode *class_decl, LocalVar
         default:
             break;
     }
+}
+
+/* ---- phase 7b: constructing file-scope objects ---------------------------
+ *
+ * `Random g_rng;` or `std::vector<Enemy> g_enemies;` at file scope: C has
+ * nowhere to run a constructor for a global, and a global's memory was
+ * observed NOT to start out zeroed under the emulator (a file-scope
+ * vector's data pointer was non-null before anything touched it), so
+ * such an object started life as whatever was in RAM. C++ constructs
+ * every global before main() begins; this
+ * does the same by running the block-level injection above over the
+ * file-scope declarations and moving the calls it produces to the top
+ * of main(), in declaration order.
+ *
+ * Covers what the local case covers: a default constructor, constructor
+ * arguments (`Enemy g_boss(1, 2);`), arrays, and vtable-only classes.
+ * Top-level declarations only (not ones inside a namespace), and only
+ * when this file defines main(). Destructors of globals are not run:
+ * the program ends when main() does.
+ */
+static void construct_globals_in_main(AstNode *program) {
+    AstNode *main_func = NULL;
+    AstNode *scratch = ast_new(AST_BLOCK, 0);
+    for (int i = 0; i < program->list.count; i++) {
+        AstNode *n = program->list.items[i];
+        if (n == NULL) continue;
+        if (n->kind == AST_FUNC_DEF && n->b == NULL && n->str1 != NULL &&
+            strcmp(n->str1, "main") == 0) main_func = n;
+        if (n->kind == AST_VAR_DECL && n->type != NULL) ast_list_append(&scratch->list, n);
+    }
+    if (main_func == NULL || main_func->a == NULL || main_func->a->kind != AST_BLOCK) return;
+
+    LocalVarType *locals = NULL;
+    int counter = 1000; /* index-variable numbers well clear of main()'s own */
+    inject_ctor_calls_block(scratch, NULL, &locals, &counter);
+
+    AstList body = ast_list_new();
+    int added = 0;
+    for (int i = 0; i < scratch->list.count; i++) {
+        AstNode *st = scratch->list.items[i];
+        if (st == NULL || st->kind == AST_VAR_DECL) continue; /* the declaration itself stays at file scope */
+        ast_list_append(&body, st);
+        added++;
+    }
+    if (added == 0) return;
+    for (int i = 0; i < main_func->a->list.count; i++) ast_list_append(&body, main_func->a->list.items[i]);
+    main_func->a->list = body;
+    lower_note(main_func->line, "main() now begins by constructing %d file-scope object(s)", added);
 }
 
 static void inject_ctor_calls_classes(AstList *decls) {
@@ -6396,6 +6509,7 @@ int lower_run(AstNode *program) {
     new_delete_rewrite_free_functions(&program->list);
     inject_ctor_calls_classes(&program->list);        /* phase 7 */
     inject_ctor_calls_free_functions(&program->list);
+    construct_globals_in_main(program);               /* phase 7b */
     destruct_scope_classes(&program->list);           /* phase 9 */
     destruct_scope_free_functions(&program->list);
     chain_destructors_classes(&program->list);        /* phase 9a */

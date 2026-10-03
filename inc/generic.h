@@ -4,8 +4,8 @@
 #include "ast.h"
 
 /*
- * Transpiler-level generics: `std::array<T, N>` (and, later,
- * `std::vector<T>`) without templates.
+ * Transpiler-level generics: `std::array<T, N>` and `std::vector<T>`
+ * without templates.
  *
  * This project does not do templates. What it does instead is what
  * cfront-era C++ did with <generic.h>: for each distinct `array<T, N>`
@@ -29,7 +29,8 @@
  *     program just ahead of the first declaration that uses each one.
  */
 
-extern int g_generic_array_enabled; /* `#include <array>` was seen */
+extern int g_generic_array_enabled;  /* `#include <array>` was seen */
+extern int g_generic_vector_enabled; /* `#include <vector>` was seen */
 extern int g_using_std;             /* `using namespace std;` was seen */
 
 /* `elem` is the element type as parsed; the length is either a literal
@@ -37,6 +38,9 @@ extern int g_using_std;             /* `using namespace std;` was seen */
  * constant or `const int`, printed by name). Returns the type node to
  * use in place of `array<T, N>`, or NULL after reporting an error. */
 AstNode *generic_array_type(AstNode *elem, int len_value, const char *len_name, int line);
+
+/* The same for `std::vector<T>`. */
+AstNode *generic_vector_type(AstNode *elem, int line);
 
 /* Parses and splices every queued instantiation into g_program.
  * Returns 0 on success, nonzero if the generated source failed to

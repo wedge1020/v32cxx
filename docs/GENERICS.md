@@ -1,9 +1,8 @@
-# Transpiler-level generics: `std::array<T, N>`
+# Transpiler-level generics: `std::array<T, N>` and `std::vector<T>`
 
 v32c++ does not do templates. What it offers instead is a small set of
-*built-in* generic containers with STL-compatible spelling, starting with
-`std::array<T, N>`. `std::vector<T>` is planned next and will reuse the
-same machinery.
+*built-in* generic containers with STL-compatible spelling:
+`std::array<T, N>` and `std::vector<T>`. Both use the same machinery.
 
 The technique is the one C++ itself used before templates existed
 (cfront's `<generic.h>`): for every distinct `array<T, N>` a program
@@ -40,12 +39,61 @@ a named constant such as an enum constant.
 `using namespace std;` is accepted and allows the bare `array<T, N>`
 spelling. A program's own variable called `array` is unaffected.
 
+## `std::vector<T>`
+
+```cpp
+#include <vector>
+
+std::vector<Enemy> enemies;               // becomes:  vector_Enemy enemies;
+enemies.push_back(Enemy(120, 40, 3));
+for (int i = 0; i < enemies.size(); ) {
+    if (enemies[i].dead()) enemies.erase(enemies.begin() + i);
+    else i++;
+}
+```
+
+| Member | Notes |
+| --- | --- |
+| `push_back(value)`, `pop_back()` | capacity doubles (4, 8, 16, ...) |
+| `size()`, `capacity()`, `empty()` | `int` / `bool` |
+| `operator[]`, `at(i)`, `front()`, `back()` | return `T &`; no bounds check |
+| `data()`, `begin()`, `end()` | plain `T *` |
+| `reserve(n)`, `clear()` | `clear` keeps the storage |
+| `resize(n)`, `resize(n, value)` | new elements zero-filled / copies of `value` |
+| `erase(pos)`, `insert(pos, value)` | `pos` is a `T *`: `v.begin() + i` |
+| `a = b` | copies the elements |
+
+Things to know (tests/108sample.cpp exercises all of it):
+
+- **Elements are raw memory.** The vector copies elements in with plain
+  assignment and never runs an element's constructor or destructor.
+  Numbers, pointers, plain structs, and classes whose constructor only
+  fills in fields all behave as expected, virtual functions included.
+  A class with a *destructor* gets a warning: the vector will not call
+  it. Hold pointers (`std::vector<Enemy *>`) for such classes.
+- **Copies other than `a = b` are rejected.** `std::vector<T> b = a;`,
+  passing one by value and returning one by value are errors: without
+  copy constructors, each would leave two vectors owning one buffer.
+  Pass `std::vector<T> &`.
+- **Storage is `malloc()`/`free()`** from Vircon32's `misc.h`. There are
+  no exceptions, so running out of memory is not reported. Call
+  `reserve` up front when the size is known: growing copies every
+  element.
+- **A reference into a vector dies when it grows**, exactly as in C++:
+  `Enemy &e = v[0]; v.push_back(x);` leaves `e` dangling.
+- **`std::vector<std::vector<int> >`** needs the space between the two
+  `>` (`>>` is the shift operator here), and its inner vectors are raw
+  memory like any other element: not constructed.
+- A file-scope `std::vector` works: globals are now constructed at the
+  top of `main()` (tests/109sample.cpp).
+
 ## How it works
 
 1. **`src/prescan.c`** consumes `#include <array>` (no such file exists,
    and the line must not reach the generated C) and switches the feature
    on.
-2. **`src/lexer.l`** returns one token, `STD_ARRAY`, for `std::array`.
+2. **`src/lexer.l`** returns one token, `STD_ARRAY`, for `std::array`
+   (`STD_VECTOR` for `std::vector`).
 3. **`src/parser.y`** has one extra `type_spec` alternative,
    `STD_ARRAY '<' type ',' length '>'`. Like the four cast keywords, it
    is a fixed form, not a general `name<args>` rule, so `<` and `>` never
@@ -58,13 +106,15 @@ spelling. A program's own variable called `array` is unaffected.
    uses it.
 
 From there on nothing knows the class was generated. To see exactly what
-a program got, read `ARRAY_TEMPLATE` in `src/generic.c`, or look at the
+a program got, read `ARRAY_TEMPLATE` and `VECTOR_TEMPLATE` in `src/generic.c`, or look at the
 `array_*` structs and functions in the generated C.
 
 Names: `array_<T>_<N>`, with `::` and `*` spelled `_` and `_ptr`
-(`std::array<Enemy *, 2>` is `array_Enemy_ptr_2`). A pointer element type
-also gets a typedef, `array_Enemy_ptr_2_elem`, because this grammar has
-no `T *&` declarator.
+(`std::array<Enemy *, 2>` is `array_Enemy_ptr_2`; `std::vector<int>` is
+`vector_int`). For a pointer element type the generated text uses a
+typedef name, because this grammar has no `T *&` declarator; once parsed,
+the typedef is replaced by the real pointer type and never reaches the
+generated C.
 
 ## Vircon32-specific details
 
@@ -86,14 +136,11 @@ no `T *&` declarator.
   `array_T_N__op_index__int`. Lowering `a[i]` straight to
   `a.m_data[i]`, and `size()` to a constant, is planned and matters for
   CPU-bound loops.
-- **Unnamed class objects.** `f(7)` into a `const int &` parameter now
-  gets a temporary (`tests/106sample.cpp`), but `Enemy(1, 2, 3)` written
-  as an expression does not parse at all, so `fill(Enemy(1, 2, 3))` is
-  out: build the object in a named variable first.
 - **Multi-dimensional member arrays of class objects** (`Counter
   grid[2][2];` as a member) are still not constructed. A
   `std::array` of `std::array` is fine: each level is its own class.
 - **Named lengths are compared by name.** `std::array<int, MAX>` and
   `std::array<int, 8>` are different types even when `MAX` is 8. A
   `#define` is not affected (it is expanded before parsing).
-- No range-based `for`, no `auto`, no `std::array<T, N>::iterator`.
+- No range-based `for`, no `auto`, no `::iterator` type names (iterators
+  are `T *`).

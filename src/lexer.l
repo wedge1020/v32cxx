@@ -389,6 +389,27 @@ ALNUM   [A-Za-z0-9_]
     return STD_ARRAY;
 }
 
+"std"[ \t]*"::"[ \t]*"vector"  {
+    /* std::vector<T> -- see STD_ARRAY just above. */
+    g_last_ident_sym = NULL;
+    return STD_VECTOR;
+}
+
+"vector"/[ \t]*"<"  {
+    /* A bare `vector<`: same conditions as a bare `array<` below. */
+    Symbol *sym = symtab_lookup_qualified(g_symtab, yytext);
+    if (sym == NULL && g_generic_vector_enabled && g_using_std) {
+        g_last_ident_sym = NULL;
+        return STD_VECTOR;
+    }
+    yylval.str = strdup(yytext);
+    g_last_ident_sym = sym;
+    if (sym != NULL && (sym->kind == SYM_CLASS || sym->kind == SYM_TYPEDEF || sym->kind == SYM_ENUM || sym->kind == SYM_UNION)) {
+        return TYPE_NAME;
+    }
+    return IDENTIFIER;
+}
+
 "using"[ \t]+"namespace"[ \t]+"std"[ \t]*";"  {
     /* Lets `array<T, N>` be written without the std:: prefix. Nothing
      * else lives in std here, so the directive has no other effect. */

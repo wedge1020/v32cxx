@@ -1668,6 +1668,17 @@ AstNode *infer_expr_type(const AstNode *expr, AstNode *current_class, LocalVarTy
              * static type from its operand's. */
             if (expr->str1 != NULL && strcmp(expr->str1, "deref") == 0) {
                 const AstNode *operand_type = infer_expr_type(expr->a, current_class, locals);
+                /* A reference-returning call wrapped in the dereference
+                 * lower.c inserts for it (`*op_index(...)`): the result
+                 * is the referent. Without this the type was "unknown",
+                 * and a virtual call through it (`shapes[i]->area()`
+                 * with `Shape *&operator[]`) could not find its vtable. */
+                if (operand_type != NULL && operand_type->kind == AST_REFERENCE_TYPE &&
+                    expr->a != NULL && expr->a->kind == AST_CALL) {
+                    return operand_type->a;
+                }
+                if (operand_type != NULL && operand_type->kind == AST_REFERENCE_TYPE) operand_type = operand_type->a;
+                operand_type = resolve_typedef_chain(operand_type); /* `ShapeP p; *p` */
                 return (operand_type != NULL && operand_type->kind == AST_POINTER_TYPE)
                        ? operand_type->a : NULL;
             }
@@ -3051,6 +3062,11 @@ static void check_globals(AstList *decls) {
         if (n->kind == AST_VAR_DECL) {
             check_native_pointer_only(n->type, n->line);
             LocalVarType *locals = NULL;
+            /* `Counter g_big(40);` at file scope: give the marker its
+             * class (as check_node's AST_VAR_DECL case does for a local)
+             * so the constructor call is resolved -- lower.c's phase 7b
+             * needs that to construct the global at the top of main(). */
+            if (n->a != NULL && n->a->kind == AST_DIRECT_INIT) n->a->type = n->type;
             check_node(n->a, NULL, &locals);
         } else if (n->kind == AST_NAMESPACE_DECL) {
             const char *saved = g_lookup_ns;

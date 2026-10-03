@@ -943,6 +943,12 @@ int ast_decode_escape(const char **p);
 /* Post-parse, pre-sema rewrites for C storage classes -- see ast.c. */
 void hoist_static_locals(AstList *decls);
 void merge_tentative_globals(AstList *decls);
+/* Rewrites every unnamed object expression (`Enemy(1, 2, 3)`, parsed as
+ * an AST_DIRECT_INIT marker with str1 set) into a named local declared
+ * ahead of the statement that uses it -- see the doc comment in ast.c.
+ * Returns the number of errors reported. */
+int desugar_unnamed_objects(AstList *decls);
+
 void synthesize_implicit_members(AstList *decls);
 
 #endif /* AST_H */

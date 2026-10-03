@@ -618,3 +618,251 @@ void synthesize_implicit_members(AstList *decls) {
     }
     free(all.items);
 }
+
+/* ---- unnamed objects: `Enemy(1, 2, 3)` as an expression ------------------
+ *
+ * C++ lets a class name be used like a function to build an object with
+ * no name: `v.push_back(Enemy(1, 2, 3));`, `return Vec(x, y);`. Nothing
+ * downstream knows about objects without names, and nothing needs to:
+ * this pass, run right after parsing, gives each one a name and declares
+ * it as an ordinary local just ahead of the statement that uses it.
+ *
+ *     v.push_back(Enemy(1, 2, 3));        {
+ *                                             Enemy __v32_obj0(1, 2, 3);
+ *                                             v.push_back(__v32_obj0);
+ *                                         }
+ *
+ * From there on it IS a local: its constructor is resolved and called,
+ * it is passed by address to a reference parameter, and its destructor
+ * runs when the block closes -- all by the code that already does those
+ * things. The block is what gives it a temporary's lifetime (the end of
+ * the statement). Three statements are handled differently:
+ *
+ *   - `Enemy e = Enemy(1, 2, 3);` becomes `Enemy e(1, 2, 3);` -- no
+ *     second object at all, which is also what a C++ compiler does;
+ *   - any other declaration keeps its place in the block, with the
+ *     unnamed object declared before it (wrapping it in a block of its
+ *     own would end the declared variable's life too);
+ *   - a loop's condition or step is evaluated many times, and a
+ *     declaration ahead of the loop would run once: reported as an error.
+ *
+ * One known difference from C++: in `a && f(Enemy(1))` the object is
+ * built even when `a` is false.
+ *
+ * A typedef or enum name used the same way is a cast (`Fixed(3)` is
+ * `(Fixed)3`) and is rewritten as one.
+ */
+static int g_obj_counter = 0;
+static int g_obj_errors = 0;
+
+static int is_unnamed_object(const AstNode *n) {
+    return n != NULL && n->kind == AST_DIRECT_INIT && n->str1 != NULL;
+}
+
+static int contains_unnamed_object(const AstNode *n) {
+    if (n == NULL) return 0;
+    if (is_unnamed_object(n)) return 1;
+    if (contains_unnamed_object(n->a) || contains_unnamed_object(n->b) ||
+        contains_unnamed_object(n->c) || contains_unnamed_object(n->d)) return 1;
+    for (int i = 0; i < n->list.count; i++)
+        if (contains_unnamed_object(n->list.items[i])) return 1;
+    return 0;
+}
+
+static void obj_error(const AstNode *n, const char *why) {
+    fprintf(stderr, "%s:%d: error: %s\n", n->file != NULL ? n->file : "?", n->line, why);
+    g_obj_errors++;
+}
+
+/* `Enemy(args)` -> the initializer of a declaration: NULL for no
+ * arguments (default construction), else a plain AST_DIRECT_INIT. */
+static AstNode *object_initializer(AstNode *obj) {
+    if (obj->list.count == 0) return NULL;
+    AstNode *init = ast_new(AST_DIRECT_INIT, obj->line);
+    init->file = obj->file;
+    init->list = obj->list;
+    return init;
+}
+
+/* Replaces every unnamed object under *slot (an expression), innermost
+ * first, appending one declaration per object to `prefix`. */
+static void lift_objects_expr(AstNode **slot, const ClassList *all, AstList *prefix) {
+    AstNode *n = *slot;
+    if (n == NULL) return;
+    lift_objects_expr(&n->a, all, prefix);
+    lift_objects_expr(&n->b, all, prefix);
+    lift_objects_expr(&n->c, all, prefix);
+    lift_objects_expr(&n->d, all, prefix);
+    for (int i = 0; i < n->list.count; i++) lift_objects_expr(&n->list.items[i], all, prefix);
+    if (!is_unnamed_object(n)) return;
+
+    if (class_named(all, n->str1) == NULL) {
+        /* a typedef, enum or union name: a function-style cast */
+        if (n->list.count != 1) {
+            obj_error(n, "a function-style cast takes exactly one value");
+            return;
+        }
+        AstNode *cast = ast_new(AST_CAST, n->line);
+        cast->file = n->file;
+        cast->type = ast_ident(n->str1, n->line);
+        cast->a = n->list.items[0];
+        *slot = cast;
+        return;
+    }
+    char name[64];
+    snprintf(name, sizeof name, "__v32_obj%d", g_obj_counter++);
+    AstNode *decl = ast_new(AST_VAR_DECL, n->line);
+    decl->file = n->file;
+    decl->str1 = strdup(name);
+    decl->type = ast_ident(n->str1, n->line);
+    decl->a = object_initializer(n);
+    ast_list_append(prefix, decl);
+    AstNode *use = ast_ident(name, n->line);
+    use->file = n->file;
+    *slot = use;
+}
+
+/* `T x = T(args);` -> `T x(args);` */
+static void elide_copy_from_object(AstNode *decl, const ClassList *all, AstList *prefix) {
+    if (decl->kind != AST_VAR_DECL || !is_unnamed_object(decl->a)) return;
+    const AstNode *t = decl->type;
+    while (t != NULL && t->kind == AST_CONST_TYPE) t = t->a;
+    if (t == NULL || t->kind != AST_IDENT || strcmp(t->str1, decl->a->str1) != 0) return;
+    if (class_named(all, decl->a->str1) == NULL) return;
+    AstNode *obj = decl->a;
+    for (int i = 0; i < obj->list.count; i++) lift_objects_expr(&obj->list.items[i], all, prefix);
+    decl->a = object_initializer(obj);
+}
+
+static void lift_objects_decl(AstNode *n, const ClassList *all, AstList *prefix) {
+    if (n->kind == AST_VAR_DECL_GROUP) {
+        for (int i = 0; i < n->list.count; i++) lift_objects_decl(n->list.items[i], all, prefix);
+        return;
+    }
+    elide_copy_from_object(n, all, prefix);
+    lift_objects_expr(&n->a, all, prefix);
+}
+
+static void desugar_objects_slot(AstNode **slot, const ClassList *all);
+
+/* Handles the statement *slot; returns in `prefix` the declarations that
+ * must come immediately before it. Nested statements are finished here. */
+static void desugar_objects_stmt(AstNode **slot, const ClassList *all, AstList *prefix) {
+    AstNode *n = *slot;
+    if (n == NULL) return;
+    switch (n->kind) {
+        case AST_BLOCK:
+        case AST_SWITCH: {
+            if (n->kind == AST_SWITCH) lift_objects_expr(&n->a, all, prefix);
+            AstList out = ast_list_new();
+            for (int i = 0; i < n->list.count; i++) {
+                AstNode *item = n->list.items[i];
+                AstList before = ast_list_new();
+                desugar_objects_stmt(&item, all, &before);
+                if (before.count > 0 && item != NULL &&
+                    item->kind != AST_VAR_DECL && item->kind != AST_VAR_DECL_GROUP) {
+                    AstNode *wrap = ast_new(AST_BLOCK, item->line);
+                    wrap->file = item->file;
+                    wrap->list = before;
+                    ast_list_append(&wrap->list, item);
+                    ast_list_append(&out, wrap);
+                } else {
+                    for (int k = 0; k < before.count; k++) ast_list_append(&out, before.items[k]);
+                    ast_list_append(&out, item);
+                }
+            }
+            n->list = out;
+            break;
+        }
+        case AST_IF:
+            lift_objects_expr(&n->a, all, prefix);
+            desugar_objects_slot(&n->b, all);
+            desugar_objects_slot(&n->c, all);
+            break;
+        case AST_WHILE:
+            if (contains_unnamed_object(n->a))
+                obj_error(n, "an unnamed object in a loop condition is not supported "
+                             "(it would have to be rebuilt on every pass): declare it as a variable");
+            desugar_objects_slot(&n->b, all);
+            break;
+        case AST_FOR:
+            if (n->a != NULL) {
+                if (n->a->kind == AST_VAR_DECL || n->a->kind == AST_VAR_DECL_GROUP) lift_objects_decl(n->a, all, prefix);
+                else lift_objects_expr(&n->a->a, all, prefix);
+            }
+            if (contains_unnamed_object(n->b) || contains_unnamed_object(n->c))
+                obj_error(n, "an unnamed object in a loop condition or step is not supported "
+                             "(it would have to be rebuilt on every pass): declare it as a variable");
+            desugar_objects_slot(&n->d, all);
+            break;
+        case AST_LABEL:
+            desugar_objects_slot(&n->a, all);
+            break;
+        case AST_VAR_DECL:
+        case AST_VAR_DECL_GROUP:
+            lift_objects_decl(n, all, prefix);
+            break;
+        case AST_RETURN:
+        case AST_EXPR_STMT:
+            lift_objects_expr(&n->a, all, prefix);
+            break;
+        default:
+            break;
+    }
+}
+
+/* A statement that is NOT an item of a block's list (an `if` branch, a
+ * loop body): anything it needs declared goes into a block around it. */
+static void desugar_objects_slot(AstNode **slot, const ClassList *all) {
+    if (*slot == NULL) return;
+    AstList before = ast_list_new();
+    desugar_objects_stmt(slot, all, &before);
+    if (before.count == 0) return;
+    AstNode *wrap = ast_new(AST_BLOCK, (*slot)->line);
+    wrap->file = (*slot)->file;
+    wrap->list = before;
+    ast_list_append(&wrap->list, *slot);
+    *slot = wrap;
+}
+
+static void report_leftover_objects(const AstNode *n) {
+    if (n == NULL) return;
+    if (is_unnamed_object(n)) {
+        obj_error(n, "an unnamed object can't be used here (a default argument, a member "
+                     "initializer or a file-scope initializer): declare it as a variable");
+        return;
+    }
+    report_leftover_objects(n->a);
+    report_leftover_objects(n->b);
+    report_leftover_objects(n->c);
+    report_leftover_objects(n->d);
+    for (int i = 0; i < n->list.count; i++) report_leftover_objects(n->list.items[i]);
+}
+
+static void desugar_objects_decls(AstList *decls, const ClassList *all) {
+    for (int i = 0; i < decls->count; i++) {
+        AstNode *n = decls->items[i];
+        if (n == NULL) continue;
+        int errors_before = g_obj_errors;
+        if (n->kind == AST_NAMESPACE_DECL || n->kind == AST_CLASS_DECL) {
+            desugar_objects_decls(&n->list, all);
+        } else if (n->kind == AST_FUNC_DEF) {
+            g_obj_counter = 0;
+            desugar_objects_slot(&n->a, all);
+        } else if (n->kind == AST_VAR_DECL || n->kind == AST_VAR_DECL_GROUP) {
+            /* file scope: only the `T g = T(args);` form has anywhere to go */
+            AstList none = ast_list_new();
+            if (n->kind == AST_VAR_DECL) elide_copy_from_object(n, all, &none);
+        }
+        if (g_obj_errors == errors_before) report_leftover_objects(n);
+    }
+}
+
+int desugar_unnamed_objects(AstList *decls) {
+    ClassList all = { NULL, 0, 0 };
+    collect_classes(decls, &all);
+    g_obj_errors = 0;
+    desugar_objects_decls(decls, &all);
+    free(all.items);
+    return g_obj_errors;
+}
