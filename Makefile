@@ -324,7 +324,7 @@ archive: clean
 # ships empty demo folders.
 
 clean:
-	rm -f $(BIN_DIR)/* $(OBJ_DIR)/* $(SRC_DIR)/parser.output $(OUT_DIR)/* put/*
+	rm -f $(BIN_DIR)/* $(OBJ_DIR)/* $(SRC_DIR)/parser.output $(OUT_DIR)/* put/* *.txt *.zip
 	$(MAKE) -C demos clean
 	#rm -f $(SRC_DIR)/parser.c $(SRC_DIR)/lexer.c $(INC_DIR)/parser.h
 # Removing the bison/flex-generated files here (not just objects/binary) is
