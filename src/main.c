@@ -27,6 +27,7 @@ const char *g_current_filename = "<stdin>";
 PreprocessorLines g_preprocessor_lines = {NULL, 0, 0};
 int g_uses_new_or_delete = 0;
 CodegenTarget g_target = TARGET_VIRCON32;
+int g_reject_bit_fields = 0;   /* --reject-bit-fields */
 CartResourceList g_cart_textures = {NULL, 0, 0};
 CartResourceList g_cart_sounds = {NULL, 0, 0};
 char *g_cart_title = NULL;
@@ -35,7 +36,7 @@ char *g_cart_version = NULL;
 extern FILE *yyin;
 
 static void print_usage(const char *prog_name) {
-    fprintf(stderr, "usage: %s [-o output.c] [-c] [-v[v[v]]] [-I dir] [-D name[=value]] [-U name] [-x] [-b] [-g] [--target=vircon32|standard] [--version] <input.cpp>\n", prog_name);
+    fprintf(stderr, "usage: %s [-o output.c] [-c] [-v[v[v]]] [-I dir] [-D name[=value]] [-U name] [-x] [-b] [-g] [--target=vircon32|standard] [--reject-bit-fields] [--version] <input.cpp>\n", prog_name);
     fprintf(stderr, "  -o output.c   write generated Vircon32 C to this file (default:\n"
                      "                <input> with its extension replaced by .c)\n");
     fprintf(stderr,  "  -c            transpile without requiring a `main` to exist --\n"
@@ -228,6 +229,7 @@ int  main (int  argc, char **argv)
         { "no-xml",  no_argument,       0, 'x' },
         { "include", required_argument, 0, 'I' },
         { "target",  required_argument, 0, 'T' },
+        { "reject-bit-fields", no_argument, 0, 'B' },
         { 0,         0,                 0, 0   }
     };
 
@@ -298,6 +300,11 @@ int  main (int  argc, char **argv)
                                      "(expected vircon32, v32, standard, or std) ----\n", optarg);
                     return 1;
                 }
+                break;
+            case 'B':
+                /* --reject-bit-fields: a bit-field is a hard error
+                 * instead of a warning plus a full-word member. */
+                g_reject_bit_fields = 1;
                 break;
             case 'V':
                 print_version();

@@ -16,6 +16,8 @@
 //   6. declarators: `int a, b[4];`, `int t[] = {...};`;
 //   7. braced initializers for structs, nested arrays, arrays of structs;
 //   8. 0 / NULL with function pointers, `#ifndef NULL` fallback.
+//   9. bit-fields, accepted as full-word members (with a warning; an error
+//      under --reject-bit-fields).
 //  Self-checking: test_errors must end at 0.
 // *****************************************************************************
 
@@ -90,6 +92,15 @@ int copy_x( const Vec* v ) { Vec local; local = *v; return local.x; }
 // --- 5 ------------------------------------------------------------------
 int bump_and_add( int a, int b ) { return a += 1, a + b; }
 int add3( int v ) { return v + 3; }
+
+// --- 9: bit-fields ------------------------------------------------------
+struct Packed
+{
+    int flag  : 1;
+    int level : 6;
+    int spare : 9;
+    int plain;
+};
 
 // --- 1: arrays as operands ----------------------------------------------
 int  g_nums[ 8 ];
@@ -181,6 +192,11 @@ void main( void )
     if( fn != 0 ) e++;
     fn = add3;
     if( fn == 0 || fn( 4 ) != 7 || np != 0 ) e++;
+
+    // 9
+    Packed pk;
+    pk.flag = 1; pk.level = 33; pk.spare = 0; pk.plain = 5;
+    if( pk.flag + pk.level + pk.plain != 39 || sizeof( Packed ) != 4 ) e++;
 
     test_errors = e;
 }

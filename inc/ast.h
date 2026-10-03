@@ -846,6 +846,11 @@ struct AstNode {
      * hoist_static_locals (ast.c), which moves it to file scope. */
     int is_static_local;
 
+    /* Set by lower.c's by-value-struct ABI phase on a function, call or
+     * function-pointer type it has already rewritten (nodes are shared,
+     * and must be rewritten exactly once). */
+    int v32_abi_done;
+
     /*
      * Opaque annotation slot for later compiler passes (semantic
      * analysis, lowering, ...) to attach computed, pass-specific

@@ -377,7 +377,34 @@ important default to protect.
 
 ---
 
-## 11. Parameters and return values must be exactly one word -- no by-value structs/unions/arrays larger than that
+## 11. Parameters and return values must be exactly one word -- no by-value structs/unions/arrays larger than that -- LOWERED for structs
+
+- **Update (20261003)**: no longer a warning for structs and classes.
+  Confirmed against the real compiler ("functions cannot return values
+  of size > 1", "functions cannot pass arguments of size > 1"), and
+  **rewritten** in Vircon32 mode by lower.c phase 9b:
+  - a function returning a multi-word struct becomes `void` and takes a
+    hidden `T *__v32_ret` (right after `this` in a method); `return E;`
+    becomes `*__v32_ret = E; return;`
+  - a multi-word struct parameter becomes `const T *__v32_byval_name`,
+    and the callee starts with `T name = *__v32_byval_name;`, so it still
+    has its own copy to modify;
+  - at the call, `T c = f(a);` -> `T c; f(&c, &a);`, `c = f(a);` ->
+    `f(&c, &a);`, `return f(a);` -> `f(__v32_ret, &a); return;`. Anywhere
+    else the result goes into a temporary declared at the top of the
+    function, spliced in as `(f(&tmp, &a), tmp)` and then flattened by
+    the comma lowering (#21), which keeps loop conditions and && / ||
+    right;
+  - function-pointer types (typedefs, variables, members, parameters,
+    vtable slots) are rewritten the same way. Mangled names don't change.
+  - A ONE-word struct still travels natively, but `one(42).v` is not
+    accepted downstream ("cannot emit memory placement when an expression
+    has none"); the result is parked in a temporary first.
+  Cost: one struct copy per by-value parameter per call, and one for a
+  result that isn't written straight into its destination. Not covered:
+  unions. `tests/101sample.cpp` checks all of it at run time. The text
+  below is the original entry.
+
 
 - **Vircon32 requires**: a function's own parameters and return value
   must each be exactly one word in size. A struct, union, or array
@@ -798,8 +825,14 @@ would make this much easier to spot than the parser error.
   used to take its fallback and poison the output; `NULL` is now
   predefined for `#ifdef` purposes. `fn = 0;` / `fn != 0` on a function
   pointer get the same 0 -> NULL rewrite data pointers already had.
-- Still rejected, with a message: bit-fields. Still only warned about:
-  returning or passing a multi-word struct by value (#11).
+- **Bit-fields** (`int level : 6;`): Vircon32 C has none. Accepted with a
+  warning and stored as an ordinary full-word member, the width ignored
+  -- the struct is larger and unpacked, and an out-of-range value is not
+  truncated. `--reject-bit-fields` turns that into an error. Unnamed and
+  zero-width bit-fields are not parsed.
+- A bare function name passed as an ARGUMENT (`apply( add, a, b )`) now
+  gets the `&` Vircon32 C requires, as assignments and initializers
+  already did.
 
 ---
 

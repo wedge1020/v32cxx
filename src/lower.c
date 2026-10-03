@@ -639,6 +639,9 @@ static AstNode *strip_const_member_read(AstNode *expr, AstNode *class_decl, Loca
      * declared type was already unqualified. */
     if (read_type->kind == AST_CONST_TYPE) read_type = read_type->a;
     if (read_type == NULL) return expr;
+    /* A struct can't be cast by value (`(Vec)this->pos` is not C);
+     * phase 11 reads a const struct through a pointer cast instead. */
+    if (type_to_class(read_type) != NULL) return expr;
     AstNode *cast = ast_new(AST_CAST, expr->line);
     cast->type = read_type; /* reused by reference, not deep-copied --
         same convention as every other cast built in this file */
@@ -1695,6 +1698,17 @@ static void finalize_calls_expr(AstNode **slot, AstNode *class_decl, LocalVarTyp
             break;
         case AST_CALL: {
             finalize_calls_expr(&n->a, class_decl, locals);
+            /* A function passed as a callback: `apply( add, a, b )`. Same
+             * `&` the assignment and initializer paths already insert --
+             * Vircon32 C does not turn a bare function name into a
+             * pointer ("cannot assign void(...) to ... void(...)*"). Done
+             * before the arguments are finalized, while the name is
+             * still the one the user wrote. */
+            for (int i = 0; i < n->list.count; i++) {
+                if (is_bare_free_function_ref(n->list.items[i], locals)) {
+                    wrap_addr_of(&n->list.items[i]);
+                }
+            }
             for (int i = 0; i < n->list.count; i++) {
                 finalize_calls_expr(&n->list.items[i], class_decl, locals);
             }
@@ -4979,131 +4993,6 @@ static void rewrite_ternary_free_functions(AstList *decls) {
     }
 }
 
-/* ---- word-size check for parameters and return values (vircon32 mode only) ---
- *
- * Matthew's own confirmation of the real Vircon32 C compiler's own
- * limitation: a function's parameters and return value must each be
- * EXACTLY one word (32 bits). No by-value struct, union, or array
- * larger than that is accepted at all -- a pointer must be used
- * instead. Vircon32's own primitive types make the size computation
- * genuinely simple, not something needing careful arithmetic: `int`,
- * `float`, and every pointer are already exactly one word, and even
- * `char`/`short`/`double`/etc (recent-compiler aliases, per Matthew)
- * are "mere syntactic sugar" over the same 4-byte word underneath --
- * so EVERY field, of ANY of this project's supported primitive
- * types, is exactly one word, with no per-type size table to build or
- * get wrong. A class/struct's own total size in words is therefore
- * just its StructLayout's own field count (compute_struct_layouts,
- * just above -- data members plus a vtable pointer, if any, each
- * counted once, each exactly one word).
- *
- * SCOPE, stated plainly: only catches a BARE (not pointer, not
- * reference -- const-qualified still counts, since `const Shape` is
- * still passed/returned by value) class or struct type whose own
- * StructLayout has more than one field. This is a LOWER BOUND, not an
- * exact byte count -- an array-typed or nested-struct-typed DATA
- * MEMBER only ever contributes ONE to its own StructLayout's field
- * count here, even though it may itself be multiple words wide, so a
- * struct with exactly one such field could still under-count as
- * "one word" when it's actually more. This is the same conservative
- * direction as every other best-effort check in this project: better
- * to miss a genuine violation than to warn on code that's actually
- * fine. Unions are deliberately NOT checked here at all -- a union's
- * own members overlap rather than stack, so an ordinary union of
- * simple primitive members is already exactly one word by
- * construction, regardless of how many members it has; only a union
- * containing an array or nested-struct member large enough to itself
- * exceed one word would violate this, a narrower case not worth this
- * round's own scope.
- *
- * Vircon32 mode only (checked at each call site below, not gated
- * once at the top of this section) -- standard C has no such
- * restriction at all, matching this project's own established
- * "vircon32 mode is the one needing the extra treatment" shape for
- * every other entry in docs/VIRCON32_QUIRKS.md.
- */
-
-static AstNode *bare_class_type(const AstNode *type) {
-    /* Unwraps ONLY a const qualifier, never a pointer or reference --
-     * this function exists specifically to identify a BY-VALUE class/
-     * struct type, so a pointer or reference to one (already exactly
-     * one word, matching every other Vircon32-safe value) must NOT
-     * match here. Returns the class's own AST_CLASS_DECL, or NULL if
-     * `type` isn't a bare class/struct reference at all (a primitive,
-     * a pointer, a reference, or an unresolvable name). */
-    while (type != NULL && type->kind == AST_CONST_TYPE) {
-        type = type->a;
-    }
-    if (type == NULL || (type->kind != AST_IDENT && type->kind != AST_QUALIFIED_ID)) {
-        return NULL;
-    }
-    return type_to_class(type);
-}
-
-static void warn_if_multiword_by_value(const AstNode *type, int line, const char *context) {
-    if (g_target != TARGET_VIRCON32) return;
-    AstNode *class_decl = bare_class_type(type);
-    if (class_decl == NULL) return;
-    StructLayout *layout = (StructLayout *)class_decl->lower_info;
-    if (layout != NULL && layout->count > 1) {
-        sema_warning(line,
-                     "'%s' has type '%s', a %d-word struct/class passed or "
-                     "returned BY VALUE -- the real Vircon32 C compiler only "
-                     "supports parameters and return values that are exactly "
-                     "one word (int, float, or a pointer); pass or return a "
-                     "pointer to '%s' instead",
-                     context, class_decl->str1, layout->count, class_decl->str1);
-    }
-}
-
-static void check_word_size_in_func(AstNode *func) {
-    /* By-value NATIVE params/returns are not checked here: sema.c's
-     * check_native_signature already rejected them (as errors, once per
-     * function) before lowering ever runs. A native type has no
-     * StructLayout, so bare_class_type() below returns NULL for it and
-     * this word-size warning correctly stays silent. */
-    warn_if_multiword_by_value(func->type, func->line, "return value");
-    for (int i = 0; i < func->list.count; i++) {
-        AstNode *param = func->list.items[i];
-        warn_if_multiword_by_value(param->type, param->line, param->str1);
-    }
-}
-
-static void check_word_sizes_classes(AstList *decls) {
-    for (int i = 0; i < decls->count; i++) {
-        AstNode *n = decls->items[i];
-        if (n->kind == AST_CLASS_DECL) {
-            ClassLayout *layout = (ClassLayout *)n->sema_info;
-            if (layout != NULL) {
-                for (int j = 0; j < layout->methods.count; j++) {
-                    check_word_size_in_func(layout->methods.items[j]);
-                }
-            }
-        } else if (n->kind == AST_NAMESPACE_DECL) {
-            check_word_sizes_classes(&n->list);
-        }
-    }
-}
-
-static void check_word_sizes_free_functions(AstList *decls) {
-    for (int i = 0; i < decls->count; i++) {
-        AstNode *n = decls->items[i];
-        if (n->kind == AST_NAMESPACE_DECL) {
-            check_word_sizes_free_functions(&n->list);
-        } else if (n->kind == AST_FUNC_DEF && n->b == NULL) {
-            /* Same "free function, not an out-of-line method
-             * definition" test access_check_free_functions (sema.c)
-             * already uses -- an out-of-line method's own n->b holds
-             * its Class:: qualifier; a free function's is always
-             * NULL. Out-of-line methods are already covered via
-             * check_word_sizes_classes's own walk of layout->methods,
-             * which already includes them -- this avoids checking the
-             * same function's own signature twice. */
-            check_word_size_in_func(n);
-        }
-    }
-}
-
 /* ---- phase 11: Vircon32 C value-compatibility fixes (--target=vircon32 only)
  *
  * Two places where Vircon32 C is stricter than standard C about VALID C,
@@ -5421,18 +5310,611 @@ static void v32_compat_free_functions(AstList *decls) {
     }
 }
 
+/* ---- phase 9b: by-value structs across calls (--target=vircon32 only) ----
+ *
+ * Vircon32 C moves exactly one word per parameter and per return value:
+ * "functions cannot return values of size > 1" / "functions cannot pass
+ * arguments of size > 1". C and C++ have no such limit, so a struct (or
+ * class) of more than one word that is returned or passed BY VALUE is
+ * rewritten to travel by address, the way most native ABIs do it anyway:
+ *
+ *   Vec make( int x, int y )            void make( Vec *__v32_ret, int x, int y )
+ *   { ... return v; }                   { ... *__v32_ret = v; return; }
+ *
+ *   Vec add( Vec a, Vec b )             void add( Vec *__v32_ret,
+ *   { ... }                                       const Vec *__v32_byval_a,
+ *                                                 const Vec *__v32_byval_b )
+ *                                       { Vec a = *__v32_byval_a;
+ *                                         Vec b = *__v32_byval_b; ... }
+ *
+ *   Vec c = add( a, b );                Vec c;  add( &c, &a, &b );
+ *   c = add( a, b );                    add( &c, &a, &b );
+ *   n = make( 1, 2 ).x + 1;             n = ( make( &tmp, 1, 2 ), tmp ).x + 1;
+ *   return make( x, y );                make( __v32_ret, x, y ); return;
+ *
+ * The hidden result pointer goes right after `this` in a method. The
+ * callee copies each by-value parameter on entry, so it still owns a
+ * private copy it may modify, and the caller passes plain addresses. A
+ * result used inside a larger expression lands in a temporary declared at
+ * the top of the function and is spliced in with a comma operator, which
+ * phase 10 (run next) turns into statements with C's evaluation order
+ * intact -- loop conditions and the right side of && / || included.
+ *
+ * Runs after constructor/destructor injection (phases 7 and 9), so the
+ * temporaries are plain storage: nothing constructs or destructs them.
+ * Mangled names come from sema and do not change. Function-pointer types
+ * are rewritten the same way, so callbacks and vtable slots agree with
+ * the functions stored in them.
+ *
+ * Two passes over the whole program, in this order:
+ *   1. every function BODY (call sites and returns), while every
+ *      signature still says what the source said -- that is how a call is
+ *      recognised as returning a struct;
+ *   2. every SIGNATURE and function-pointer type.
+ *
+ * Not covered: unions (no layout is computed for them here), and a
+ * struct-returning call in a file-scope initializer, which no C allows.
+ */
+static int abi_type_words(const AstNode *type) {
+    type = resolve_typedef_chain(type);
+    while (type != NULL && type->kind == AST_CONST_TYPE) type = resolve_typedef_chain(type->a);
+    if (type == NULL) return 1;
+    if (type->kind == AST_ARRAY_TYPE) return type->ival * abi_type_words(type->a);
+    if (type->kind != AST_IDENT && type->kind != AST_QUALIFIED_ID) return 1;
+    AstNode *cls = type_to_class(type);
+    if (cls == NULL) return 1;
+    StructLayout *layout = (StructLayout *)cls->lower_info;
+    if (layout == NULL) return 1;
+    int words = 0;
+    for (int i = 0; i < layout->count; i++) {
+        words += (layout->fields[i].kind == FIELD_DATA_MEMBER)
+               ? abi_type_words(layout->fields[i].type) : 1;
+    }
+    return words;
+}
+
+/* The class of a struct too big to travel by value, or NULL. */
+static AstNode *abi_big_struct(const AstNode *type) {
+    const AstNode *t = resolve_typedef_chain(type);
+    while (t != NULL && t->kind == AST_CONST_TYPE) t = resolve_typedef_chain(t->a);
+    if (t == NULL || (t->kind != AST_IDENT && t->kind != AST_QUALIFIED_ID)) return NULL;
+    AstNode *cls = type_to_class(t);
+    if (cls == NULL) return NULL;
+    return abi_type_words(t) > 1 ? cls : NULL;
+}
+
+typedef struct AbiCtx {
+    AstNode *cls;            /* enclosing class, or NULL */
+    AstNode *func;           /* the function being rewritten */
+    AstNode *ret_class;      /* non-NULL if `func` itself returns a big struct */
+    AstList temps;           /* result temporaries to declare at the top */
+    int next_tmp;
+} AbiCtx;
+
+static AstNode *abi_addr(AstNode *e) {
+    AstNode *addr = ast_new(AST_UNOP, e->line);
+    addr->str1 = strdup("addr");
+    addr->a = e;
+    return addr;
+}
+
+/* What a call returns and takes, from its resolved target or, for a call
+ * through a function pointer, from the pointer's type. Returns 0 if
+ * neither is known. `params` items are AST_PARAM nodes (target) or bare
+ * types (function-pointer type); *has_this says whether params[0] is the
+ * receiver. */
+static int abi_call_signature(AstNode *call, AbiCtx *cx, LocalVarType *locals,
+                              const AstNode **ret, const AstList **params,
+                              int *params_are_types, int *has_this) {
+    CallResolution *cr = (CallResolution *)call->sema_info;
+    if (cr != NULL && cr->resolved_target != NULL) {
+        AstNode *t = cr->resolved_target;
+        *ret = t->type;
+        *params = &t->list;
+        *params_are_types = 0;
+        *has_this = (t->list.count > 0 && t->list.items[0]->str1 != NULL &&
+                     strcmp(t->list.items[0]->str1, "this") == 0);
+        return 1;
+    }
+    const AstNode *ft = resolve_typedef_chain(infer_expr_type(call->a, cx->cls, locals));
+    if (ft != NULL && ft->kind == AST_FUNC_PTR_TYPE) {
+        *ret = ft->type;
+        *params = &ft->list;
+        *params_are_types = 1;
+        *has_this = 0;
+        return 1;
+    }
+    return 0;
+}
+
+static void abi_expr(AstNode **slot, AbiCtx *cx, LocalVarType **locals);
+
+/* Rewrites the ARGUMENTS of `call` (nested calls first, then big structs
+ * passed by value -> their address) and reports whether the call itself
+ * returns a big struct. Does not touch how the result is used. */
+static AstNode *abi_prepare_call(AstNode *call, AbiCtx *cx, LocalVarType **locals, int *hidden_index) {
+    const AstNode *ret = NULL;
+    const AstList *params = NULL;
+    int are_types = 0, has_this = 0;
+    int known = abi_call_signature(call, cx, *locals, &ret, &params, &are_types, &has_this);
+    abi_expr(&call->a, cx, locals);
+    /* a method call that phase 3 did not expand keeps its receiver in the
+     * callee expression; the argument list then lines up with the
+     * parameters after `this` */
+    int offset = 0;
+    if (known && params->count == call->list.count + 1 && has_this) offset = 1;
+    for (int i = 0; i < call->list.count; i++) {
+        abi_expr(&call->list.items[i], cx, locals);
+        if (!known || i + offset >= params->count) continue;
+        const AstNode *p = params->items[i + offset];
+        const AstNode *ptype = are_types ? p : p->type;
+        if (abi_big_struct(ptype) != NULL) {
+            call->list.items[i] = abi_addr(call->list.items[i]);
+        }
+    }
+    *hidden_index = (has_this && offset == 0) ? 1 : 0;
+    if (*hidden_index > call->list.count) *hidden_index = call->list.count;
+    return known ? abi_big_struct(ret) : NULL;
+}
+
+static void abi_insert_arg(AstNode *call, int index, AstNode *arg) {
+    AstList out = ast_list_new();
+    for (int i = 0; i < index; i++) ast_list_append(&out, call->list.items[i]);
+    ast_list_append(&out, arg);
+    for (int i = index; i < call->list.count; i++) ast_list_append(&out, call->list.items[i]);
+    call->list = out;
+}
+
+static int abi_is_call(const AstNode *e) {
+    return e != NULL && e->kind == AST_CALL && !e->v32_abi_done;
+}
+
+/* `call`, a not-yet-rewritten call: if it returns a big struct, make it
+ * store its result through `dest` (a pointer expression) and return 1.
+ * Otherwise only its arguments are rewritten. */
+static int abi_call_into(AstNode *call, AstNode *dest, AbiCtx *cx, LocalVarType **locals) {
+    int index = 0;
+    AstNode *cls = abi_prepare_call(call, cx, locals, &index);
+    call->v32_abi_done = 1;
+    if (cls == NULL) return 0;
+    abi_insert_arg(call, index, dest);
+    return 1;
+}
+
+static void abi_expr(AstNode **slot, AbiCtx *cx, LocalVarType **locals) {
+    AstNode *n = *slot;
+    if (n == NULL) return;
+    switch (n->kind) {
+        case AST_CALL: {
+            if (n->v32_abi_done) return;
+            int index = 0;
+            AstNode *cls = abi_prepare_call(n, cx, locals, &index);
+            n->v32_abi_done = 1;
+            if (cls == NULL) return;
+            /* result needed as a value: ( call( &tmp, ... ), tmp ) */
+            char name[64];
+            snprintf(name, sizeof name, "__v32_sret_tmp%d", cx->next_tmp++);
+            AstNode *decl = ast_new(AST_VAR_DECL, n->line);
+            decl->str1 = strdup(name);
+            decl->type = ast_ident(cls->str1, n->line);
+            ast_list_append(&cx->temps, decl);
+            LocalVarType *lv = calloc(1, sizeof(LocalVarType));
+            lv->name = decl->str1;
+            lv->type = decl->type;
+            lv->next = *locals;
+            *locals = lv;
+            abi_insert_arg(n, index, abi_addr(ast_ident(name, n->line)));
+            AstNode *comma = ast_new(AST_BINOP, n->line);
+            comma->str1 = strdup(",");
+            comma->a = n;
+            comma->b = ast_ident(name, n->line);
+            *slot = comma;
+            lower_note(n->line, "struct '%s' returned by value: the call writes "
+                "into %s through a hidden pointer (Vircon32 C returns one word)",
+                cls->str1, name);
+            return;
+        }
+        case AST_SIZEOF:
+            return; /* unevaluated */
+        case AST_BINOP:
+        case AST_ASSIGN:
+        case AST_SUBSCRIPT:
+            abi_expr(&n->a, cx, locals);
+            abi_expr(&n->b, cx, locals);
+            return;
+        case AST_TERNARY:
+            abi_expr(&n->a, cx, locals);
+            abi_expr(&n->b, cx, locals);
+            abi_expr(&n->c, cx, locals);
+            return;
+        case AST_UNOP:
+        case AST_CAST:
+            abi_expr(&n->a, cx, locals);
+            return;
+        case AST_MEMBER: {
+            abi_expr(&n->a, cx, locals);
+            /* `one( 42 ).v` -- a ONE-word struct is returned natively, but
+             * Vircon32 C cannot select a member of a call's result
+             * ("cannot emit memory placement when an expression has
+             * none"): park it in a temporary first. */
+            AstNode *call = n->a;
+            if (call == NULL || call->kind != AST_CALL) return;
+            if (n->str1 != NULL && strcmp(n->str1, ".") != 0) return;
+            const AstNode *rt = resolve_typedef_chain(infer_expr_type(call, cx->cls, *locals));
+            while (rt != NULL && rt->kind == AST_CONST_TYPE) rt = resolve_typedef_chain(rt->a);
+            if (rt == NULL || rt->kind == AST_POINTER_TYPE || type_to_class(rt) == NULL) return;
+            AstNode *cls = type_to_class(rt);
+            char name[64];
+            snprintf(name, sizeof name, "__v32_sret_tmp%d", cx->next_tmp++);
+            AstNode *decl = ast_new(AST_VAR_DECL, n->line);
+            decl->str1 = strdup(name);
+            decl->type = ast_ident(cls->str1, n->line);
+            ast_list_append(&cx->temps, decl);
+            LocalVarType *lv = calloc(1, sizeof(LocalVarType));
+            lv->name = decl->str1;
+            lv->type = decl->type;
+            lv->next = *locals;
+            *locals = lv;
+            AstNode *assign = ast_new(AST_ASSIGN, n->line);
+            assign->str1 = strdup("=");
+            assign->a = ast_ident(name, n->line);
+            assign->b = call;
+            AstNode *comma = ast_new(AST_BINOP, n->line);
+            comma->str1 = strdup(",");
+            comma->a = assign;
+            comma->b = ast_ident(name, n->line);
+            n->a = comma;
+            return;
+        }
+        case AST_INIT_LIST:
+        case AST_DIRECT_INIT:
+            for (int i = 0; i < n->list.count; i++) abi_expr(&n->list.items[i], cx, locals);
+            return;
+        default:
+            return;
+    }
+}
+
+static AstNode *abi_expr_stmt(AstNode *e) {
+    AstNode *st = ast_new(AST_EXPR_STMT, e->line);
+    st->a = e;
+    return st;
+}
+
+static void abi_stmt(AstNode **slot, AbiCtx *cx, LocalVarType **locals);
+
+static void abi_stmt_list(AstList *list, AbiCtx *cx, LocalVarType **locals) {
+    AstList out = ast_list_new();
+    for (int i = 0; i < list->count; i++) {
+        AstNode *st = list->items[i];
+        if (st != NULL && st->kind == AST_VAR_DECL && abi_is_call(st->a) &&
+            st->type != NULL && st->type->kind != AST_ARRAY_TYPE) {
+            /* `Vec c = add( a, b );` -> `Vec c; add( &c, ... );` */
+            LocalVarType *lv = calloc(1, sizeof(LocalVarType));
+            lv->name = st->str1;
+            lv->type = st->type;
+            AstNode *dest = abi_addr(ast_ident(st->str1, st->line));
+            AstNode *cls = abi_big_struct(st->type);
+            if (cls != NULL && resolve_typedef_chain(st->type)->kind == AST_CONST_TYPE) {
+                /* a const local still has to be written once */
+                AstNode *cast = ast_new(AST_CAST, st->line);
+                cast->type = ast_wrap_pointer(ast_ident(cls->str1, st->line), st->line);
+                cast->a = dest;
+                dest = cast;
+            }
+            AstNode *call = st->a;
+            /* the variable is not in scope inside its own initializer */
+            if (cls != NULL && abi_call_into(call, dest, cx, locals)) {
+                st->a = NULL;
+                ast_list_append(&out, st);
+                ast_list_append(&out, abi_expr_stmt(call));
+            } else {
+                ast_list_append(&out, st);
+            }
+            lv->next = *locals;
+            *locals = lv;
+            continue;
+        }
+        if (cx->ret_class != NULL && st != NULL && st->kind == AST_VAR_DECL &&
+            st->a != NULL && strncmp(st->str1, "__v32_ret_tmp", 13) == 0 &&
+            i + 1 < list->count && list->items[i + 1] != NULL &&
+            list->items[i + 1]->kind == AST_RETURN && list->items[i + 1]->a != NULL &&
+            list->items[i + 1]->a->kind == AST_IDENT &&
+            strcmp(list->items[i + 1]->a->str1, st->str1) == 0) {
+            /* phase 9's `T tmp = E; return tmp;` with nothing to destroy
+             * in between: return E directly and save a struct copy */
+            list->items[i + 1]->a = st->a;
+            continue;
+        }
+        abi_stmt(&list->items[i], cx, locals);
+        ast_list_append(&out, list->items[i]);
+    }
+    *list = out;
+}
+
+static void abi_stmt(AstNode **slot, AbiCtx *cx, LocalVarType **locals) {
+    AstNode *n = *slot;
+    if (n == NULL) return;
+    switch (n->kind) {
+        case AST_BLOCK: {
+            LocalVarType *outer = *locals;
+            abi_stmt_list(&n->list, cx, locals);
+            *locals = outer;
+            break;
+        }
+        case AST_SWITCH:
+            abi_expr(&n->a, cx, locals);
+            abi_stmt_list(&n->list, cx, locals);
+            break;
+        case AST_IF:
+            abi_expr(&n->a, cx, locals);
+            abi_stmt(&n->b, cx, locals);
+            abi_stmt(&n->c, cx, locals);
+            break;
+        case AST_WHILE:
+            abi_expr(&n->a, cx, locals);
+            abi_stmt(&n->b, cx, locals);
+            break;
+        case AST_FOR: {
+            LocalVarType *outer = *locals;
+            abi_stmt(&n->a, cx, locals);
+            abi_expr(&n->b, cx, locals);
+            abi_expr(&n->c, cx, locals);
+            abi_stmt(&n->d, cx, locals);
+            *locals = outer;
+            break;
+        }
+        case AST_LABEL:
+            abi_stmt(&n->a, cx, locals);
+            break;
+        case AST_VAR_DECL: {
+            abi_expr(&n->a, cx, locals);
+            LocalVarType *lv = calloc(1, sizeof(LocalVarType));
+            lv->name = n->str1;
+            lv->type = n->type;
+            lv->next = *locals;
+            *locals = lv;
+            break;
+        }
+        case AST_EXPR_STMT: {
+            AstNode *e = n->a;
+            if (e != NULL && e->kind == AST_ASSIGN && e->str1 != NULL &&
+                strcmp(e->str1, "=") == 0 && abi_is_call(e->b)) {
+                /* `c = add( a, b );` -> `add( &c, ... );` */
+                abi_expr(&e->a, cx, locals);
+                AstNode *call = e->b;
+                if (abi_call_into(call, abi_addr(e->a), cx, locals)) n->a = call;
+                break;
+            }
+            abi_expr(&n->a, cx, locals);
+            /* a struct result nobody uses: keep the call, drop the read */
+            if (n->a != NULL && n->a->kind == AST_BINOP && n->a->str1 != NULL &&
+                strcmp(n->a->str1, ",") == 0 && n->a->a != NULL &&
+                n->a->a->kind == AST_CALL && n->a->a->v32_abi_done &&
+                n->a->b != NULL && n->a->b->kind == AST_IDENT &&
+                strncmp(n->a->b->str1, "__v32_sret_tmp", 14) == 0) {
+                n->a = n->a->a;
+            }
+            break;
+        }
+        case AST_RETURN: {
+            if (cx->ret_class == NULL || n->a == NULL) {
+                abi_expr(&n->a, cx, locals);
+                break;
+            }
+            /* `return E;` in a struct-returning function */
+            AstNode *block = ast_new(AST_BLOCK, n->line);
+            AstNode *ret_ptr = ast_ident("__v32_ret", n->line);
+            AstNode *value = n->a;
+            if (abi_is_call(value) && abi_call_into(value, ret_ptr, cx, locals)) {
+                ast_list_append(&block->list, abi_expr_stmt(value));
+            } else {
+                abi_expr(&value, cx, locals);
+                AstNode *deref = ast_new(AST_UNOP, n->line);
+                deref->str1 = strdup("deref");
+                deref->a = ret_ptr;
+                AstNode *assign = ast_new(AST_ASSIGN, n->line);
+                assign->str1 = strdup("=");
+                assign->a = deref;
+                assign->b = value;
+                ast_list_append(&block->list, abi_expr_stmt(assign));
+            }
+            n->a = NULL;
+            ast_list_append(&block->list, n);
+            *slot = block;
+            break;
+        }
+        default:
+            break;
+    }
+}
+
+/* Pass 1 for one function: call sites and returns in its body. */
+static void abi_rewrite_body(AstNode *func, AstNode *class_decl) {
+    if (func->kind != AST_FUNC_DEF || func->a == NULL || func->v32_abi_done) return;
+    func->v32_abi_done = 1;
+    AbiCtx cx;
+    cx.cls = class_decl;
+    cx.func = func;
+    cx.ret_class = abi_big_struct(func->type);
+    cx.temps = ast_list_new();
+    cx.next_tmp = 0;
+    LocalVarType *locals = seed_locals_from_params(func);
+    /* __v32_ret is only a parameter after pass 2; phase 10/11 will see it
+     * as one. Here nothing needs its type. */
+    abi_stmt(&func->a, &cx, &locals);
+    if (cx.temps.count > 0 && func->a->kind == AST_BLOCK) {
+        AstList out = ast_list_new();
+        for (int i = 0; i < cx.temps.count; i++) ast_list_append(&out, cx.temps.items[i]);
+        for (int i = 0; i < func->a->list.count; i++) ast_list_append(&out, func->a->list.items[i]);
+        func->a->list = out;
+    }
+}
+
+/* Pass 2 helpers. */
+static void abi_rewrite_types_in(AstNode *type);
+
+static void abi_rewrite_func_ptr_type(AstNode *ft) {
+    if (ft->v32_abi_done) return;
+    ft->v32_abi_done = 1;
+    AstList out = ast_list_new();
+    AstNode *ret_cls = abi_big_struct(ft->type);
+    if (ret_cls != NULL) {
+        ast_list_append(&out, ast_wrap_pointer(ast_ident(ret_cls->str1, ft->line), ft->line));
+        ft->type = ast_ident("void", ft->line);
+    } else {
+        abi_rewrite_types_in(ft->type);
+    }
+    for (int i = 0; i < ft->list.count; i++) {
+        AstNode *p = ft->list.items[i];
+        AstNode *cls = abi_big_struct(p);
+        if (cls != NULL) {
+            p = ast_wrap_pointer(ast_wrap_const(ast_ident(cls->str1, ft->line), ft->line), ft->line);
+        } else {
+            abi_rewrite_types_in(p);
+        }
+        ast_list_append(&out, p);
+    }
+    ft->list = out;
+}
+
+/* Finds function-pointer types inside `type` (behind pointers, arrays,
+ * const) and rewrites them. Never follows a typedef NAME: the typedef's
+ * own declaration is visited on its own. */
+static void abi_rewrite_types_in(AstNode *type) {
+    while (type != NULL) {
+        if (type->kind == AST_FUNC_PTR_TYPE) { abi_rewrite_func_ptr_type(type); return; }
+        if (type->kind == AST_POINTER_TYPE || type->kind == AST_REFERENCE_TYPE ||
+            type->kind == AST_CONST_TYPE || type->kind == AST_ARRAY_TYPE) {
+            type = type->a;
+        } else {
+            return;
+        }
+    }
+}
+
+static void abi_rewrite_local_types(AstNode *n) {
+    if (n == NULL) return;
+    switch (n->kind) {
+        case AST_VAR_DECL: abi_rewrite_types_in(n->type); break;
+        case AST_BLOCK:
+        case AST_SWITCH:
+            for (int i = 0; i < n->list.count; i++) abi_rewrite_local_types(n->list.items[i]);
+            break;
+        case AST_IF:    abi_rewrite_local_types(n->b); abi_rewrite_local_types(n->c); break;
+        case AST_WHILE: abi_rewrite_local_types(n->b); break;
+        case AST_FOR:   abi_rewrite_local_types(n->a); abi_rewrite_local_types(n->d); break;
+        case AST_LABEL: abi_rewrite_local_types(n->a); break;
+        default: break;
+    }
+}
+
+/* Pass 2 for one function declaration or definition: its signature. */
+static void abi_rewrite_signature(AstNode *func) {
+    if ((func->kind != AST_FUNC_DECL && func->kind != AST_FUNC_DEF) || func->v32_abi_done == 2) return;
+    func->v32_abi_done = 2;
+    int line = func->line;
+    AstList params = ast_list_new();
+    AstList copies = ast_list_new();
+    AstNode *ret_cls = abi_big_struct(func->type);
+    int has_this = (func->list.count > 0 && func->list.items[0]->str1 != NULL &&
+                    strcmp(func->list.items[0]->str1, "this") == 0);
+    for (int i = 0; i < func->list.count; i++) {
+        AstNode *p = func->list.items[i];
+        if (i == (has_this ? 1 : 0) && ret_cls != NULL) {
+            AstNode *rp = ast_new(AST_PARAM, line);
+            rp->str1 = strdup("__v32_ret");
+            rp->type = ast_wrap_pointer(ast_ident(ret_cls->str1, line), line);
+            ast_list_append(&params, rp);
+        }
+        AstNode *cls = abi_big_struct(p->type);
+        if (cls != NULL) {
+            const char *name = p->str1 != NULL ? p->str1 : "arg";
+            char hidden[256];
+            snprintf(hidden, sizeof hidden, "__v32_byval_%s", name);
+            if (func->kind == AST_FUNC_DEF && func->a != NULL && p->str1 != NULL) {
+                /* `Vec a = *__v32_byval_a;` -- the callee's own copy */
+                AstNode *deref = ast_new(AST_UNOP, line);
+                deref->str1 = strdup("deref");
+                deref->a = ast_ident(hidden, line);
+                AstNode *copy = ast_new(AST_VAR_DECL, p->line);
+                copy->str1 = p->str1;
+                copy->type = p->type;
+                copy->a = deref;
+                ast_list_append(&copies, copy);
+            }
+            p->str1 = strdup(hidden);
+            p->type = ast_wrap_pointer(ast_wrap_const(ast_ident(cls->str1, line), line), line);
+            p->a = NULL; /* a by-value struct default argument was already
+                            filled in at each call site */
+        } else {
+            abi_rewrite_types_in(p->type);
+        }
+        ast_list_append(&params, p);
+    }
+    if (ret_cls != NULL && func->list.count <= (has_this ? 1 : 0)) {
+        AstNode *rp = ast_new(AST_PARAM, line);
+        rp->str1 = strdup("__v32_ret");
+        rp->type = ast_wrap_pointer(ast_ident(ret_cls->str1, line), line);
+        ast_list_append(&params, rp);
+    }
+    func->list = params;
+    if (ret_cls != NULL) {
+        func->type = ast_ident("void", line);
+    } else {
+        abi_rewrite_types_in(func->type);
+    }
+    if (func->kind == AST_FUNC_DEF && func->a != NULL && func->a->kind == AST_BLOCK) {
+        if (copies.count > 0) {
+            for (int i = 0; i < func->a->list.count; i++) ast_list_append(&copies, func->a->list.items[i]);
+            func->a->list = copies;
+        }
+        abi_rewrite_local_types(func->a);
+    }
+}
+
+static void abi_walk(AstList *decls, int pass) {
+    for (int i = 0; i < decls->count; i++) {
+        AstNode *n = decls->items[i];
+        if (n == NULL) continue;
+        if (n->kind == AST_NAMESPACE_DECL) {
+            abi_walk(&n->list, pass);
+        } else if (n->kind == AST_CLASS_DECL) {
+            ClassLayout *layout = (ClassLayout *)n->sema_info;
+            if (layout != NULL) {
+                for (int j = 0; j < layout->methods.count; j++) {
+                    AstNode *m = layout->methods.items[j];
+                    if (pass == 1) abi_rewrite_body(m, n); else abi_rewrite_signature(m);
+                }
+            }
+            for (int j = 0; j < n->list.count; j++) {
+                AstNode *m = n->list.items[j];
+                if (m == NULL) continue;
+                if (pass == 2 && (m->kind == AST_FUNC_DECL || m->kind == AST_FUNC_DEF)) abi_rewrite_signature(m);
+                if (pass == 2 && m->kind == AST_VAR_DECL) abi_rewrite_types_in(m->type);
+            }
+        } else if (n->kind == AST_FUNC_DEF || n->kind == AST_FUNC_DECL) {
+            if (pass == 1) {
+                if (n->kind == AST_FUNC_DEF && n->b == NULL) abi_rewrite_body(n, NULL);
+            } else {
+                abi_rewrite_signature(n);
+            }
+        } else if (pass == 2 && (n->kind == AST_VAR_DECL || n->kind == AST_TYPEDEF_DECL)) {
+            abi_rewrite_types_in(n->type);
+        } else if (pass == 2 && n->kind == AST_UNION_DECL) {
+            for (int j = 0; j < n->list.count; j++)
+                if (n->list.items[j] != NULL) abi_rewrite_types_in(n->list.items[j]->type);
+        }
+    }
+}
+
 int lower_run(AstNode *program) {
     lower_notes_reset(); /* always start this run's log empty -- see
         lower_notes_print's own doc comment */
     compute_struct_layouts(&program->list);
-    check_word_sizes_classes(&program->list); /* reads StructLayout,
-        just computed -- must run after compute_struct_layouts, but
-        before anything mutates a parameter's or return type's own
-        AST_REFERENCE_TYPE (fix_references, phase 5) since a bare
-        class/struct check would otherwise need to account for that
-        mutation too; running this early, right after the layouts it
-        depends on exist, sidesteps the question entirely */
-    check_word_sizes_free_functions(&program->list);
+    /* (The by-value word-size check that used to run here is gone: a
+     * multi-word struct passed or returned by value is now rewritten by
+     * phase 9b instead of warned about.) */
     this_inject_classes(&program->list);
     inject_member_ctor_calls_classes(&program->list); /* phase 8-pre -- MUST run
         before phase 8: both prepend, and member construction has to end up
@@ -5475,6 +5957,8 @@ int lower_run(AstNode *program) {
          * written. See this phase's own doc comment (just above) for
          * the full reasoning and the real, stated scope boundary on
          * which ternary-containing statements this actually rewrites. */
+        abi_walk(&program->list, 1);                  /* phase 9b -- see its */
+        abi_walk(&program->list, 2);                  /* own doc comment     */
         rewrite_ternary_classes(&program->list);
         rewrite_ternary_free_functions(&program->list);
         int errors = check_no_ternaries(program);

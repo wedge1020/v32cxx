@@ -290,12 +290,8 @@ Point2 make_point( int x, int y )
     p.y = y;
     return p;                          /* by-value struct return: Point2 is
                                            TWO words, and Vircon32 C only
-                                           returns one ("functions cannot
-                                           return values of size > 1").
-                                           v32c++ warns about it. This
-                                           lived in the always-on stub
-                                           section, where it made every
-                                           probe fail downstream. */
+                                           returns one; v32c++ rewrites it
+                                           to a hidden result pointer */
 }
 
 Point2 probe_struct_return( int x, int y )
@@ -504,12 +500,14 @@ void probe_null_init()
  *   WAS NEVER A GAP (this table used to expect a failure):
  *     GAP_VOID_PARAM  GAP_ARRAY_PARAM  GAP_TERNARY_ARG  GAP_TERNARY_MEMBER
  *     GAP_COMMA_ARG  GAP_STRUCT_ASSIGN  GAP_CHAR  GAP_BITNOT
- *   STILL OPEN:
- *     GAP_BITFIELD      hard error, by choice: "bit-fields are not supported"
- *     GAP_STRUCT_RETURN v32c++ warns; Vircon32 C rejects ("functions cannot
- *                       return values of size > 1"). Needs a hidden
- *                       out-pointer rewrite to close.
- *   Notes: GAP_UNSIGNED prints one warning (unsigned is treated as int).
+ *   CLOSED LATER THE SAME DAY:
+ *     GAP_BITFIELD      accepted with a warning (each bit-field becomes a
+ *                       full-word member); --reject-bit-fields = hard error
+ *     GAP_STRUCT_RETURN multi-word structs returned/passed by value are
+ *                       rewritten to travel by address (lower.c phase 9b;
+ *                       tests/101sample.cpp)
+ *   Notes: GAP_UNSIGNED prints one warning (unsigned is treated as int),
+ *   GAP_BITFIELD one per bit-field.
  *   What each fix does: demos/c/spyvsspy/README.md and
  *   docs/VIRCON32_QUIRKS.md #22-#24.
  * ========================================================================== */

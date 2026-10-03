@@ -123,7 +123,7 @@ docs/VIRCON32_QUIRKS.md #23; `tests/100sample.cpp`.
 ### Gaps closed from `gap_probes.cpp` (20261003)
 
 Every probe now transpiles and compiles under the real Vircon32 C
-compiler except the two listed last. Details in docs/VIRCON32_QUIRKS.md
+compiler. Details in docs/VIRCON32_QUIRKS.md
 #24; all of these are exercised at run time by `tests/100sample.cpp`.
 
 | Probe | Outcome |
@@ -141,8 +141,8 @@ compiler except the two listed last. Details in docs/VIRCON32_QUIRKS.md
 | NULL_INIT | `NULL` is predefined (it is a Vircon32 C keyword), so `#ifndef NULL` fallbacks no longer leak a `#define NULL 0` into the output |
 | FP_PARAM_NAME | also needed `fn = 0;` / `fn != 0` → `NULL` for function pointers |
 | VOID_PARAM, ARRAY_PARAM, TERNARY_ARG, TERNARY_MEMBER, COMMA_ARG, STRUCT_ASSIGN, CHAR, BITNOT | already worked; the table at the bottom of `gap_probes.cpp` was out of date |
-| BITFIELD | still an error, now a clear one ("bit-fields are not supported") |
-| STRUCT_RETURN | still unsupported: v32c++ warns, Vircon32 C rejects ("functions cannot return values of size > 1"). `make_point` used to sit in the always-on stub section, so every probe failed downstream; it now lives inside this probe |
+| BITFIELD | accepted with a warning, stored as full-word members; `--reject-bit-fields` makes it an error |
+| STRUCT_RETURN | multi-word structs returned or passed by value are rewritten to travel by address (hidden result pointer, callee-side copy of parameters); docs/VIRCON32_QUIRKS.md #11, `tests/101sample.cpp` |
 
 ### Not a gap — the fn_check declarator was invalid C (FIXED in source)
 

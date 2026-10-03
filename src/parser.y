@@ -750,14 +750,45 @@ member:
     | var_decl ';'     { $$ = $1; }
     | var_decl ':' expr ';'
         {
-            /* A bit-field. Recognised only to say so plainly: Vircon32 C
-             * has none, and silently widening `int level : 6;` to a full
-             * word would change both the struct's layout and what happens
-             * when a value doesn't fit. */
-            fprintf(stderr, "%s:%d: error: bit-fields are not supported (Vircon32 C "
-                    "has none) -- declare the member as a plain int and mask it "
-                    "where it is written\n", g_current_filename, @2.first_line);
-            g_parse_errors++;
+            /* A bit-field, `int level : 6;`. Vircon32 C has none. By
+             * default the member is kept as an ordinary full-word one and
+             * the width is dropped, with a warning; --reject-bit-fields
+             * makes it an error instead, for code that depends on the
+             * packing or the wrap-around. The explanation is printed once
+             * per run, each further bit-field gets one line. */
+            static int explained = 0;
+            const char *name = ($1->kind == AST_VAR_DECL && $1->str1 != NULL) ? $1->str1 : "?";
+            int width = 0;
+            int have_width = ast_fold_int($3, parse_enum_value, &width);
+            if (g_reject_bit_fields) {
+                fprintf(stderr, "%s:%d: error: bit-field '%s' (--reject-bit-fields): "
+                        "Vircon32 C has no bit-fields -- declare the member as a "
+                        "plain int and mask it where it is written\n",
+                        g_current_filename, @2.first_line, name);
+                g_parse_errors++;
+            } else {
+                if (have_width)
+                    fprintf(stderr, "%s:%d: warning: bit-field '%s : %d' is stored as a "
+                            "full 32-bit member\n", g_current_filename, @2.first_line, name, width);
+                else
+                    fprintf(stderr, "%s:%d: warning: bit-field '%s' is stored as a "
+                            "full 32-bit member\n", g_current_filename, @2.first_line, name);
+                if (!explained) {
+                    explained = 1;
+                    fprintf(stderr,
+                        "    note: Vircon32 C has no bit-fields, so each one becomes an ordinary\n"
+                        "    member of its declared type and the width is ignored. What changes:\n"
+                        "      - size and layout: every bit-field takes a whole word, so the struct\n"
+                        "        is larger, sizeof differs, and it no longer matches a packed layout\n"
+                        "        (a file format, a hardware register, a union overlay);\n"
+                        "      - range: a value that does not fit the declared width is kept whole\n"
+                        "        instead of being truncated -- no wrap-around on overflow, and a\n"
+                        "        1-bit signed field holds 1, not -1;\n"
+                        "      - a zero-width or unnamed padding bit-field is not supported.\n"
+                        "    Code that only uses bit-fields as small flags and counters behaves the\n"
+                        "    same. Use --reject-bit-fields to make this an error. (Shown once.)\n");
+                }
+            }
             $$ = $1;
         }
     | FRIEND class_or_struct_kw name_tok ';'

@@ -102,6 +102,11 @@ typedef enum {
 
 extern CodegenTarget g_target;
 
+/* --reject-bit-fields. Default 0: a bit-field member (`int level : 6;`)
+ * is accepted as an ordinary full-word member, with a warning that says
+ * what that changes. 1: it is an error. Read by parser.y. */
+extern int g_reject_bit_fields;
+
 /*
  * Cart hints: `#texture NAME "file.png"` and `#sound NAME "file.wav"`,
  * recognized directly by the lexer (a targeted special-case, NOT the
