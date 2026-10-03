@@ -768,6 +768,48 @@ member:
             $$->access = $1;
         }
     | func_decl ';'   { $$ = $1; }
+    | func_decl '=' INT_LITERAL ';'
+        {
+            /* A pure virtual function, `virtual void draw(Video &v) = 0;`.
+             * The vtable needs SOMETHING in the slot, so the declaration
+             * becomes a definition with a do-nothing body (returning 0 /
+             * a null pointer where a value is expected) -- exactly what
+             * programs written for this transpiler used to spell out by
+             * hand. Not enforced: nothing stops an abstract class from
+             * being instantiated, and a derived class that forgets to
+             * override gets the do-nothing body. */
+            if ($3.ival != 0 || $1->ival != 1) {
+                yyerror("'= 0' is only valid on a virtual function (a pure virtual)");
+                g_parse_errors++;
+                YYERROR;
+            }
+            $$ = $1;
+            $$->kind = AST_FUNC_DEF;
+            $$->a = ast_new(AST_BLOCK, @1.first_line);
+            $$->a->list = ast_list_new();
+            AstNode *rt = $$->type;
+            while (rt != NULL && rt->kind == AST_CONST_TYPE) rt = rt->a;
+            AstNode *value = NULL;
+            if (rt != NULL && rt->kind == AST_POINTER_TYPE) {
+                value = ast_new(AST_NULL_LIT, @1.first_line);
+            } else if (rt != NULL && rt->kind == AST_IDENT && strcmp(rt->str1, "void") != 0) {
+                Symbol *sym = symtab_lookup(g_symtab, rt->str1);
+                AstNode *zero = ast_new(AST_INT_LIT, @1.first_line);
+                zero->ival = 0;
+                if (sym == NULL) {
+                    value = zero;                 /* int, float, bool, char */
+                } else if (sym->kind == SYM_ENUM) {
+                    value = ast_new(AST_CAST, @1.first_line);
+                    value->type = rt;
+                    value->a = zero;
+                }                                  /* a class: no value to make up */
+            }
+            if (value != NULL) {
+                AstNode *ret = ast_new(AST_RETURN, @1.first_line);
+                ret->a = value;
+                ast_list_append(&$$->a->list, ret);
+            }
+        }
     | func_def        { $$ = $1; }
     | var_decl ';'     { $$ = $1; }
     | var_decl ':' expr ';'

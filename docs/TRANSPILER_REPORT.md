@@ -64,3 +64,27 @@ These constructs transpile cleanly today and make a good regression suite:
 ## Test program location
 
 The Space Invaders program that exercised all of the above lives in the "Space Invaders (v32c++ subset)" canvas, split into banner-marked sections: `si_assets.h`, `si_core.h`, `si_platform.h`, `si_entities.h`, `si_game.h`, `si_main.cpp`.
+
+
+## Status, October 2026
+
+The game this report was written from (`demos/cxx/space_invaders`) has
+since been rewritten against the current transpiler, as a multi-file
+project. Where the numbered gaps above stand now:
+
+| #   | Gap                                              | Now                                                                 |
+| --- | ------------------------------------------------ | ------------------------------------------------------------------- |
+| 4   | Class-nested enums                               | Still open: the game's enums are namespace-level                    |
+| 5   | Pure virtual `= 0`                               | Supported (tests/112sample.cpp); the slot gets a do-nothing body    |
+| 6   | Class forward declarations                       | Supported                                                           |
+| 7   | `Bullet*&`                                       | Still not a declarator; `std::vector<Bullet*>` handles it internally |
+| 8   | In-class default member initializers             | Applied by every constructor (tests/112sample.cpp)                  |
+| 9   | Class-typed fields in constructor init lists     | Supported: `: mVel(vx, vy)` (tests/112sample.cpp)                   |
+| 10  | `Vec2(x, y)` as an expression                    | Supported (tests/107sample.cpp)                                     |
+| 11, 12 | Multi-word structs assigned, passed, returned | Rewritten to travel by hidden pointer; `Vec2` is two plain ints     |
+| 13  | Array dimensions must be literals                | Named constants and constant expressions work                       |
+
+Static members (#1) remain unsupported. Not in the original list, and
+closed along the way: file-scope objects are constructed at the start
+of `main()`; member arrays of objects are constructed and destroyed;
+a hand-written `BombList` is replaced by `std::vector`.

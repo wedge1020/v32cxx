@@ -943,6 +943,11 @@ int ast_decode_escape(const char **p);
 /* Post-parse, pre-sema rewrites for C storage classes -- see ast.c. */
 void hoist_static_locals(AstList *decls);
 void merge_tentative_globals(AstList *decls);
+/* In-class default member initializers (`int lives = 3;` inside a
+ * class): each becomes an assignment at the top of every constructor
+ * that does not initialize the member itself -- see ast.c. */
+void apply_default_member_initializers(AstList *decls);
+
 /* A deep copy of an EXPRESSION: every node and string is new; type nodes
  * and pass annotations (sema_info/lower_info) are shared, as they are
  * everywhere else. For the places that need the same expression twice

@@ -192,11 +192,12 @@ generated C.
 
 ## In a real program
 
-`demos/cxx/space_invaders` uses both: the alien bombs are a
-`std::vector<Bullet*>` (it used to carry its own `BombList` class for
-this) and the bunkers a `std::array<Bunker*, BUNKER_COUNT>`, with
-range-based `for` for drawing and cleanup and index loops where bombs
-are erased along the way.
+`demos/cxx/space_invaders` uses both, by value: the alien bombs are a
+`std::vector<Bullet>` filled with `mBombs.push_back(Bullet(...))` (it
+used to carry its own `BombList` class of pointers for this) and the
+bunkers a `std::array<Bunker, BUNKER_COUNT>`. Drawing and collision use
+range-based `for`; the loops that erase bombs along the way are index
+loops.
 
 ## Known gaps
 

@@ -882,3 +882,103 @@ AstNode *ast_clone_expr(const AstNode *n) {
     for (int i = 0; i < n->list.count; i++) ast_list_append(&c->list, ast_clone_expr(n->list.items[i]));
     return c;
 }
+
+/* ---- in-class default member initializers --------------------------------
+ *
+ *     class Player { int mLives = 3; bool mWantsFire = false; ... };
+ *
+ * These parsed (a member is a declaration like any other, initializer
+ * and all) and were then ignored: the generated struct has no place for
+ * an initial value, so mLives started as whatever was in memory. C++
+ * says each constructor initializes such a member with that value unless
+ * its own initializer list mentions the member. That is what this does,
+ * before sema: the value moves into an assignment at the top of every
+ * constructor of the class (in-class or defined outside it), and a class
+ * with no constructor at all gets one.
+ *
+ * Simple values only -- the initializer is an expression assigned with
+ * `=`; a brace list (an array member's `= {1, 2, 3}`) is left alone.
+ */
+static int ctor_initializes(const AstNode *ctor, const char *member) {
+    if (ctor->c == NULL) return 0;
+    for (int i = 0; i < ctor->c->list.count; i++)
+        if (strcmp(ctor->c->list.items[i]->str1, member) == 0) return 1;
+    return 0;
+}
+
+static void prepend_member_defaults(AstNode *ctor, const AstList *fields) {
+    if (ctor->a == NULL || ctor->a->kind != AST_BLOCK) return;
+    AstList body = ast_list_new();
+    for (int i = 0; i < fields->count; i++) {
+        AstNode *f = fields->items[i];
+        if (ctor_initializes(ctor, f->str1)) continue;
+        AstNode *assign = ast_new(AST_ASSIGN, f->line);
+        assign->file = f->file;
+        assign->str1 = strdup("=");
+        /* `this->member`, spelled out: a constructor parameter may have
+         * the member's name */
+        AstNode *field = ast_new(AST_MEMBER, f->line);
+        field->file = f->file;
+        field->str1 = strdup("->");
+        field->str2 = strdup(f->str1);
+        field->a = ast_new(AST_THIS, f->line);
+        assign->a = field;
+        assign->b = ast_clone_expr(f->a);
+        AstNode *st = ast_new(AST_EXPR_STMT, f->line);
+        st->file = f->file;
+        st->a = assign;
+        ast_list_append(&body, st);
+    }
+    for (int i = 0; i < ctor->a->list.count; i++) ast_list_append(&body, ctor->a->list.items[i]);
+    ctor->a->list = body;
+}
+
+/* Constructors of `cls` defined OUTSIDE the class body: `Player::Player() {...}`. */
+static void default_inits_out_of_line(AstList *decls, const AstNode *cls, const AstList *fields) {
+    for (int i = 0; i < decls->count; i++) {
+        AstNode *n = decls->items[i];
+        if (n == NULL) continue;
+        if (n->kind == AST_NAMESPACE_DECL) { default_inits_out_of_line(&n->list, cls, fields); continue; }
+        if (n->kind != AST_FUNC_DEF || n->b == NULL || n->str1 == NULL) continue;
+        if (strcmp(n->str1, cls->str1) != 0) continue;
+        const AstNode *q = n->b;   /* the qualifier: its last name is the class */
+        const char *owner = NULL;
+        if (q->kind == AST_IDENT) owner = q->str1;
+        else if (q->list.count > 0) owner = q->list.items[q->list.count - 1]->str1;
+        if (owner != NULL && strcmp(owner, cls->str1) == 0) prepend_member_defaults(n, fields);
+    }
+}
+
+void apply_default_member_initializers(AstList *decls) {
+    ClassList all = { NULL, 0, 0 };
+    collect_classes(decls, &all);
+    for (int i = 0; i < all.count; i++) {
+        AstNode *c = all.items[i];
+        AstList fields = ast_list_new();
+        for (int j = 0; j < c->list.count; j++) {
+            AstNode *m = c->list.items[j];
+            if (m == NULL || m->kind != AST_VAR_DECL || m->a == NULL) continue;
+            if (m->a->kind == AST_INIT_LIST || m->a->kind == AST_DIRECT_INIT) continue;
+            ast_list_append(&fields, m);
+        }
+        if (fields.count == 0) continue;
+        int declared = 0;
+        for (int j = 0; j < c->list.count; j++) {
+            AstNode *m = c->list.items[j];
+            if (!is_func(m) || strcmp(m->str1, c->str1) != 0) continue;
+            declared = 1;
+            if (m->kind == AST_FUNC_DEF) prepend_member_defaults(m, &fields);
+        }
+        default_inits_out_of_line(decls, c, &fields);
+        if (!declared) {
+            AstNode *pub = ast_new(AST_ACCESS_SPEC, c->line);
+            pub->access = ACC_PUBLIC;
+            ast_list_append(&c->list, pub);
+            AstNode *ctor = make_implicit_member(c, 0);
+            prepend_member_defaults(ctor, &fields);
+            ast_list_append(&c->list, ctor);
+        }
+        for (int j = 0; j < fields.count; j++) fields.items[j]->a = NULL;
+    }
+    free(all.items);
+}

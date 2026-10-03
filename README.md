@@ -204,6 +204,16 @@ fixes came with them, each with its own self-checking test:
   `main()`, in declaration order — `tests/109sample.cpp`;
 - a pointer reached through a typedef (`typedef Shape *ShapeP;`) is
   treated as a pointer when used as a method receiver.
+- pure virtual functions (`virtual void draw(Video &v) = 0;`),
+  member-initializer lists for members that are themselves objects
+  (`: mVel(vx, vy)`), and in-class default member initializers
+  (`int mLives = 3;`) -- `tests/112sample.cpp`. All three came out of
+  rewriting `demos/cxx/space_invaders`, which is now a multi-file
+  project using these and the containers above.
+
+`tools/vircon32/v32shot` (built by `build-tools.sh`) plays a cartridge
+headless from an input script and writes the screen at chosen frames as
+PPM images -- for seeing what a change looks like without a display.
 
 **Lowering** — transforming the semantically-checked program into
 something code generation can work from directly — runs through eleven
@@ -735,9 +745,13 @@ later.
   fixing the stack case didn't fix the heap one, since they're
   entirely different code paths with no shared machinery between them.
   See tests/78sample.cpp and docs/DESIGN_NOTES.md for the full story.
-- **An in-class default member initializer (`int size = 5;` written
-  directly on a class's own field declaration) is also SILENTLY
-  dropped, not rejected.** `class Shape { public: int size = 5; };`
+- **FIXED (tests/112sample.cpp) -- an in-class default member
+  initializer is now applied by every constructor that does not
+  initialize the member itself, and by an implicit constructor when the
+  class declares none.** What follows describes the old behaviour: an
+  in-class default member initializer (`int size = 5;` written
+  directly on a class's own field declaration) was SILENTLY
+  dropped, not rejected. `class Shape { public: int size = 5; };`
   parses without error, but confirmed directly by reading the generated
   C: the `= 5` simply never appears anywhere, and if the class has no
   other constructor, a `Shape` local is left with genuinely

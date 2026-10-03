@@ -2412,9 +2412,20 @@ static void resolve_member_init_list(AstNode *func, AstNode *current_class, Loca
             int is_bare_class_type = (resolved_type != NULL && resolved_type->kind == AST_IDENT
                                        && find_class(resolved_type->str1) != NULL);
             if (is_bare_class_type) {
-                sema_error(entry->line,
-                           "member initializers for class-typed fields aren't supported yet -- "
-                           "'%s' has a class type", entry->str1);
+                /* `: mVel(vx, vy)` -- a member that is itself an object:
+                 * its constructor is chosen from the arguments exactly as
+                 * the base class's is just above, and lower.c calls it on
+                 * `&this->member` in place of the default construction
+                 * the member would otherwise get. ival = 2 tells this
+                 * entry apart from the base-class one (both carry a
+                 * CallResolution). */
+                AstNode *member_class = find_class(resolved_type->str1);
+                AstNode **candidates = NULL;
+                int count = 0, cap = 0;
+                collect_method_candidates(member_class, member_class->str1, &candidates, &count, &cap);
+                resolve_overload_generic(entry, member_class->str1, candidates, count,
+                                          entry->list.items, entry->list.count, current_class, locals);
+                entry->ival = 2;
             } else if (entry->list.count != 1) {
                 sema_error(entry->line, "member initializer for '%s' takes exactly one argument",
                            entry->str1);

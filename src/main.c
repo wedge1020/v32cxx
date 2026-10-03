@@ -429,6 +429,7 @@ int  main (int  argc, char **argv)
         merge_tentative_globals(&g_program->list);
         /* implicit default constructors / destructors, written into the
          * classes that need one -- see ast.c */
+        apply_default_member_initializers(&g_program->list);
         synthesize_implicit_members(&g_program->list);
 
         if (verbosity >= 3) {

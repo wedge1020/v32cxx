@@ -2652,6 +2652,17 @@ static void finalize_calls_in_method(AstNode *method, AstNode *class_decl) {
     if (method->kind != AST_FUNC_DEF) return;
     g_v32_temp_counter = 0;                        /* NEW: phase 3c */
     LocalVarType *locals = seed_locals_from_params(method);
+    /* The arguments of a member-initializer list are expressions like
+     * any other (`: mCooldown(pickDelay())`, `: mPos(start.x, 0)`): their
+     * calls need finalizing too. They were skipped, so a call in one
+     * kept its unmangled source name. */
+    if (method->c != NULL) {
+        for (int i = 0; i < method->c->list.count; i++) {
+            AstNode *entry = method->c->list.items[i];
+            for (int j = 0; j < entry->list.count; j++)
+                finalize_calls_expr(&entry->list.items[j], class_decl, locals);
+        }
+    }
     finalize_calls_stmt(&method->a, class_decl, &locals);
     flush_reference_temporaries(method);
     if (method->type != NULL && method->type->kind == AST_REFERENCE_TYPE) {
@@ -4118,7 +4129,37 @@ static void inject_member_ctor_calls_classes(AstList *decls) {
                                            : type_to_class(field->type);
                         if (var_class == NULL) continue;         /* not a class */
                         if (var_class == n) continue;            /* self-recursion */
-                        if (member_is_explicitly_initialized(m, field->str1)) continue;
+                        if (member_is_explicitly_initialized(m, field->str1)) {
+                            /* `: mVel(vx, vy)` on a class-typed member:
+                             * call the constructor sema chose (ival 2,
+                             * see resolve_member_init_list) on
+                             * &this->member, where the default
+                             * construction would have gone. */
+                            AstNode *entry = NULL;
+                            for (int k = 0; k < m->c->list.count; k++) {
+                                if (strcmp(m->c->list.items[k]->str1, field->str1) == 0) entry = m->c->list.items[k];
+                            }
+                            CallResolution *ecr = (entry != NULL && entry->ival == 2)
+                                                ? (CallResolution *)entry->sema_info : NULL;
+                            if (ecr != NULL && ecr->resolved_target != NULL &&
+                                field->type->kind != AST_ARRAY_TYPE) {
+                                AstNode *ctor = ecr->resolved_target;
+                                FuncSemaInfo *cinfo = (FuncSemaInfo *)ctor->sema_info;
+                                AstList args = entry->list;
+                                fill_default_args(&args, ctor, 1);
+                                AstNode *addr = ast_new(AST_UNOP, m->line);
+                                addr->str1 = strdup("addr");
+                                addr->a = member_object_ref(field, NULL, m->line);
+                                AstNode *call = ast_new(AST_CALL, m->line);
+                                call->a = ast_ident(cinfo != NULL ? cinfo->mangled_name : ctor->str1, m->line);
+                                ast_list_append(&call->list, addr);
+                                for (int k = 0; k < args.count; k++) ast_list_append(&call->list, args.items[k]);
+                                AstNode *st = ast_new(AST_EXPR_STMT, m->line);
+                                st->a = call;
+                                ast_list_append(&injected, st);
+                            }
+                            continue;
+                        }
                         AstNode *stmt = build_member_ctor_stmt(field, m->line);
                         if (stmt != NULL) ast_list_append(&injected, stmt);
                     }
@@ -4395,7 +4436,7 @@ static void inject_base_ctor_calls_classes(AstList *decls) {
                     AstNode *base_entry = NULL;
                     if (m->c != NULL) {
                         for (int k = 0; k < m->c->list.count; k++) {
-                            if (m->c->list.items[k]->sema_info != NULL) {
+                            if (m->c->list.items[k]->sema_info != NULL && m->c->list.items[k]->ival != 2) {
                                 base_entry = m->c->list.items[k];
                                 break;
                             }
@@ -4967,6 +5008,8 @@ static void destruct_scope_free_functions(AstList *decls) {
  * a return value -- none of those are covered here, a real, documented
  * gap rather than something quietly assumed handled by this phase too.
  */
+static const AstNode *g_cast_return_type = NULL; /* the enclosing function's return type */
+
 static void insert_pointer_cast_stmt(AstNode **slot, AstNode *class_decl, LocalVarType **locals) {
     AstNode *n = *slot;
     if (n == NULL) return;
@@ -5030,6 +5073,23 @@ static void insert_pointer_cast_stmt(AstNode **slot, AstNode *class_decl, LocalV
             *locals = lv;
             break;
         }
+        case AST_RETURN: {
+            /* `Shape *self() { return this; }` inside Square: the same
+             * derived-to-base pointer conversion the declaration case
+             * above spells out, for a returned pointer. */
+            const AstNode *rt = g_cast_return_type;
+            if (n->a == NULL || rt == NULL || rt->kind != AST_POINTER_TYPE) break;
+            AstNode *declared_class = type_to_class(rt);
+            AstNode *value_type = infer_expr_type(n->a, class_decl, *locals);
+            if (declared_class == NULL || value_type == NULL || value_type->kind != AST_POINTER_TYPE) break;
+            AstNode *value_class = type_to_class(value_type);
+            if (value_class == NULL || value_class == declared_class) break;
+            AstNode *cast = ast_new(AST_CAST, n->a->line);
+            cast->type = ast_wrap_pointer(ast_ident(declared_class->str1, n->a->line), n->a->line);
+            cast->a = n->a;
+            n->a = cast;
+            break;
+        }
         default:
             break;
     }
@@ -5038,7 +5098,9 @@ static void insert_pointer_cast_stmt(AstNode **slot, AstNode *class_decl, LocalV
 static void insert_pointer_cast_in_method(AstNode *method, AstNode *class_decl) {
     if (method->kind != AST_FUNC_DEF) return;
     LocalVarType *locals = seed_locals_from_params(method);
+    g_cast_return_type = method->type;
     insert_pointer_cast_stmt(&method->a, class_decl, &locals);
+    g_cast_return_type = NULL;
 }
 
 static void insert_pointer_cast_classes(AstList *decls) {

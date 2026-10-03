@@ -1,6 +1,9 @@
 # --- Configuration ---
 DEMO          = space_invaders
-TRANSPILER    = v32c++
+# -I inc finds the game's own headers (inc/*.hpp), which $(DEMO).cpp pulls
+# into the one translation unit with #include lines.
+TRANSPILER    = v32c++ -I inc
+SOURCES       = $(DEMO).cpp $(wildcard inc/*.hpp)
 COMPILER      = compile
 ASSEMBLER     = assemble
 TEXTURE_TOOL  = png2vircon
@@ -29,14 +32,8 @@ prep:
 clang: obj/$(DEMO).c
 
 # Transpile C++ to C
-obj/$(DEMO).c: prep $(DEMO).cpp
+obj/$(DEMO).c: prep $(SOURCES)
 	$(TRANSPILER) $(DEBUG_FLAGS)    -o obj/$(DEMO).c  $(DEMO).cpp
-	#$(TRANSPILER) $(DEBUG_FLAGS) -c -o obj/assets.h   inc/assets.h
-	#$(TRANSPILER) $(DEBUG_FLAGS) -c -o obj/core.h     inc/core.h
-	#$(TRANSPILER) $(DEBUG_FLAGS) -c -o obj/entities.h inc/entities.h
-	#$(TRANSPILER) $(DEBUG_FLAGS) -c -o obj/game.h     inc/game.h
-	#$(TRANSPILER) $(DEBUG_FLAGS) -c -o obj/platform.h inc/platform.h
-	#$(TRANSPILER) $(DEBUG_FLAGS)    -o obj/$(DEMO).c  src/main.cpp
 
 # Compile C to Assembly
 asm: obj/$(DEMO).asm
