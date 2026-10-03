@@ -134,7 +134,7 @@ extern int yydebug;
 #if ! defined YYSTYPE && ! defined YYSTYPE_IS_DECLARED
 union YYSTYPE
 {
-#line 464 "src/parser.y"
+#line 470 "src/parser.y"
 
     AstNode *node;
     AstList list;

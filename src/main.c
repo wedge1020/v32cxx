@@ -37,9 +37,13 @@ char *g_cart_version = NULL;
 extern FILE *yyin;
 
 static void print_usage(const char *prog_name) {
-    fprintf(stderr, "usage: %s [-o output.c] [-c] [-v[v[v]]] [-I dir] [-D name[=value]] [-U name] [-x] [-b] [-g] [--target=vircon32|standard] [--reject-bit-fields] [--version] <input.cpp>\n", prog_name);
+    fprintf(stderr, "usage: %s [-o output.c] [-c] [-v[v[v]]] [-I dir] [-D name[=value]] [-U name] [-x] [-b] [-g] [--target=vircon32|standard] [--reject-bit-fields] [--no-inline-containers] [--version] <input.cpp>\n", prog_name);
     fprintf(stderr, "  -o output.c   write generated Vircon32 C to this file (default:\n"
                      "                <input> with its extension replaced by .c)\n");
+    fprintf(stderr,  "  --no-inline-containers\n"
+                     "                keep std::array/std::vector accessors (v[i],\n"
+                     "                v.size(), ...) as function calls instead of\n"
+                     "                writing them in place\n");
     fprintf(stderr,  "  -c            transpile without requiring a `main` to exist --\n"
                      "                like a real compiler's -c (\"compile only\"), for a\n"
                      "                library/module fragment rather than a complete,\n"
@@ -231,6 +235,7 @@ int  main (int  argc, char **argv)
         { "include", required_argument, 0, 'I' },
         { "target",  required_argument, 0, 'T' },
         { "reject-bit-fields", no_argument, 0, 'B' },
+        { "no-inline-containers", no_argument, 0, 'N' },
         { 0,         0,                 0, 0   }
     };
 
@@ -306,6 +311,13 @@ int  main (int  argc, char **argv)
                 /* --reject-bit-fields: a bit-field is a hard error
                  * instead of a warning plus a full-word member. */
                 g_reject_bit_fields = 1;
+                break;
+            case 'N':
+                /* --no-inline-containers: std::array/std::vector accessors
+                 * (v[i], v.size(), ...) stay real function calls instead
+                 * of being written in place -- for reading the generated
+                 * C next to the class it came from, or for comparing. */
+                g_no_inline_containers = 1;
                 break;
             case 'V':
                 print_version();

@@ -300,7 +300,13 @@ static AstNode *finish_declarators(AstNode *first, AstNode *base, AstList more, 
  * and confirm the actual concrete input you care about still parses
  * correctly before trusting the new number.
  */
-%expect 46
+%expect 47
+/* 46 -> 47: the range-based for. After `for (` and a type, an IDENTIFIER
+ * either follows an empty pointer_opt (reduce: `for (int x : v)`, and
+ * the ordinary `for (int i = 0; ...)`) or is shifted by a declarator
+ * form that takes the name straight after the type. Same fork a
+ * declaration statement already has; here it shows up as its own state
+ * because for_open is now a symbol of its own. */
 /* 43 -> 46: STD_VECTOR, three more of the STD_ARRAY kind (below). */
 /* Bumped from 42 to 43 -- one new shift/reduce conflict, from
  * primary_expr's `TYPE_NAME '(' args ')'` (an unnamed object,
@@ -2143,7 +2149,77 @@ stmt:
             $$->a = $3;
             $$->list = $6;
         }
-    | FOR '(' { symtab_push_scope(g_symtab, NULL, 0); } for_init ';' comma_expr_opt ';' comma_expr_opt ')' stmt
+    | for_open type_spec pointer_opt IDENTIFIER ':' expr ')' stmt
+        {
+            /* Range-based for: `for (Enemy &e : enemies) body`. Written
+             * out here, at parse time, as the loop it stands for --
+             *
+             *     for (Enemy *it = enemies.begin(); it != enemies.end(); ++it) {
+             *         Enemy &e = *it;
+             *         body
+             *     }
+             *
+             * -- so every later pass sees an ordinary for loop over
+             * pointers. Works for anything with begin()/end() returning
+             * `T *`: std::array, std::vector, or a class of your own.
+             * The element type must be written out (there is no `auto`),
+             * and a plain C array has no begin()/end() to call.
+             *
+             * Differences from C++: the range expression is evaluated
+             * once per begin() and once per end(), and end() is asked for
+             * again on every pass rather than once up front. */
+            symtab_pop_scope(g_symtab);
+            static int range_counter = 0;
+            char it_name[64];
+            snprintf(it_name, sizeof it_name, "__v32_it%d", range_counter++);
+            int line = @1.first_line;
+
+            AstNode *elem = $2;                      /* element type, const dropped */
+            while (elem->kind == AST_CONST_TYPE) elem = elem->a;
+            if ($3 == 1) elem = ast_wrap_pointer(elem, line);
+
+            AstNode *begin = ast_new(AST_MEMBER, line);
+            begin->str1 = strdup("."); begin->str2 = strdup("begin"); begin->a = $6;
+            AstNode *begin_call = ast_new(AST_CALL, line);
+            begin_call->a = begin; begin_call->list = ast_list_new();
+            AstNode *end = ast_new(AST_MEMBER, line);
+            end->str1 = strdup("."); end->str2 = strdup("end"); end->a = ast_clone_expr($6);
+            AstNode *end_call = ast_new(AST_CALL, line);
+            end_call->a = end; end_call->list = ast_list_new();
+
+            AstNode *it_decl = ast_new(AST_VAR_DECL, line);
+            it_decl->str1 = strdup(it_name);
+            it_decl->type = ast_wrap_pointer(elem, line);
+            it_decl->a = begin_call;
+
+            AstNode *cond = ast_new(AST_BINOP, line);
+            cond->str1 = strdup("!=");
+            cond->a = ast_ident(it_name, line);
+            cond->b = end_call;
+
+            AstNode *step = ast_new(AST_UNOP, line);
+            step->str1 = strdup("pre++");
+            step->a = ast_ident(it_name, line);
+
+            AstNode *deref = ast_new(AST_UNOP, line);
+            deref->str1 = strdup("deref");
+            deref->a = ast_ident(it_name, line);
+            AstNode *var = ast_new(AST_VAR_DECL, @4.first_line);
+            var->str1 = strdup($4);
+            var->type = ($3 == 1) ? ast_wrap_pointer($2, line)
+                      : ($3 == 2) ? ast_wrap_reference($2, line)
+                      : $2;
+            var->a = deref;
+
+            AstNode *body = ast_new(AST_BLOCK, line);
+            body->list = ast_list_new();
+            ast_list_append(&body->list, var);
+            ast_list_append(&body->list, $8);
+
+            $$ = ast_new(AST_FOR, line);
+            $$->a = it_decl; $$->b = cond; $$->c = step; $$->d = body;
+        }
+    | for_open for_init ';' comma_expr_opt ';' comma_expr_opt ')' stmt
         {
             /* Own scope so a loop-local `int i` in for_init doesn't leak
              * into the enclosing block/function (and so a second, later
@@ -2151,15 +2227,15 @@ stmt:
              * it in the symbol table). */
             symtab_pop_scope(g_symtab);
             $$ = ast_new(AST_FOR, @1.first_line);
-            $$->a = $4; $$->b = $6; $$->c = $8; $$->d = $10;
-            if ($4 != NULL && $4->kind == AST_VAR_DECL_GROUP) {
+            $$->a = $2; $$->b = $4; $$->c = $6; $$->d = $8;
+            if ($2 != NULL && $2->kind == AST_VAR_DECL_GROUP) {
                 /* `for (int i = 0, j = 5; ...)`: the declarations move
                  * into a block wrapped around the loop -- the same
                  * scope they had (nothing outside the loop sees them),
                  * and plain C in both output dialects. */
                 AstNode *wrapper = ast_new(AST_BLOCK, @1.first_line);
                 wrapper->list = ast_list_new();
-                ast_list_append_flatten(&wrapper->list, $4);
+                ast_list_append_flatten(&wrapper->list, $2);
                 $$->a = NULL;
                 ast_list_append(&wrapper->list, $$);
                 $$ = wrapper;
@@ -2279,6 +2355,12 @@ stmt:
         {
             $$ = ast_new(AST_EXPR_STMT, @1.first_line);
         }
+    ;
+
+/* `for (` -- shared by the classic and the range-based form, so the
+ * scope push is ONE mid-rule action rather than two competing ones. */
+for_open:
+    FOR '(' { symtab_push_scope(g_symtab, NULL, 0); }
     ;
 
 for_init:

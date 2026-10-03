@@ -943,6 +943,12 @@ int ast_decode_escape(const char **p);
 /* Post-parse, pre-sema rewrites for C storage classes -- see ast.c. */
 void hoist_static_locals(AstList *decls);
 void merge_tentative_globals(AstList *decls);
+/* A deep copy of an EXPRESSION: every node and string is new; type nodes
+ * and pass annotations (sema_info/lower_info) are shared, as they are
+ * everywhere else. For the places that need the same expression twice
+ * (range-based `for`, inlined container accessors). */
+AstNode *ast_clone_expr(const AstNode *n);
+
 /* Rewrites every unnamed object expression (`Enemy(1, 2, 3)`, parsed as
  * an AST_DIRECT_INIT marker with str1 set) into a named local declared
  * ahead of the statement that uses it -- see the doc comment in ast.c.

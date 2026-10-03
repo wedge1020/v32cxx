@@ -1409,8 +1409,10 @@ static void print_expr(FILE *out, const AstNode *e) {
             print_unop(out, e);
             break;
         case AST_SUBSCRIPT:
-            if (e->a != NULL && e->a->kind == AST_CALL) {
-                /* `f()[i]` -- subscripting a call's result directly. The
+            if (e->a != NULL && (e->a->kind == AST_CALL || e->a->kind == AST_CAST ||
+                                 e->a->kind == AST_BINOP || e->a->kind == AST_UNOP)) {
+                /* `f()[i]`, `(p + 1)[i]`, `(&a[0])[i]` -- subscripting a
+                 * computed pointer rather than a named one. The
                  * real Vircon32 C compiler dies on it when a member
                  * access follows (`f()[3].x`: "cannot emit memory
                  * placement when an expression has none"), so it is

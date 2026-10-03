@@ -352,6 +352,14 @@ static const Instance *find_instance(const char *name) {
     return NULL;
 }
 
+int g_no_inline_containers = 0;
+
+int generic_class_kind(const char *class_name) {
+    const Instance *i = (class_name != NULL) ? find_instance(class_name) : NULL;
+    if (i == NULL) return 0;
+    return i->is_vector ? 2 : 1;
+}
+
 static int is_instance_name(const char *name) {
     const Instance *i = find_instance(name);
     return i != NULL && !i->is_vector;

@@ -3,6 +3,7 @@
 #include <string.h>
 #include <stdarg.h>
 #include "lower.h"
+#include "generic.h"
 #include "sema.h"
 #include "driver.h" /* g_uses_new_or_delete -- see its own doc comment there */
 
@@ -1109,6 +1110,16 @@ static void replace_node_identity(AstNode *n, AstNode *target, const char *name,
     if (n == NULL) return;
     if (n->a == target) n->a = ast_ident(name, line);
     else replace_node_identity(n->a, target, name, line);
+    /* b, c and d too: the right side of an assignment or binary operator
+     * (`area += shapes[i]->area();`) was never searched, so the temporary
+     * was declared and then not used -- the receiver was still evaluated
+     * at each of its original places. */
+    if (n->b == target) n->b = ast_ident(name, line);
+    else replace_node_identity(n->b, target, name, line);
+    if (n->c == target) n->c = ast_ident(name, line);
+    else replace_node_identity(n->c, target, name, line);
+    if (n->d == target) n->d = ast_ident(name, line);
+    else replace_node_identity(n->d, target, name, line);
     for (int i = 0; i < n->list.count; i++) {
         if (n->list.items[i] == target) n->list.items[i] = ast_ident(name, line);
         else replace_node_identity(n->list.items[i], target, name, line);
@@ -1607,6 +1618,171 @@ static void finalize_call(AstNode *call, AstNode *class_decl, LocalVarType *loca
  * when sema_run() reported any errors).
  */
 
+/* ---- inlined container accessors ------------------------------------------
+ *
+ * `v[i]` on a std::vector or std::array resolves, like any overloaded
+ * operator, to a function call: vector_int__op_index__int(&v, i), then a
+ * dereference of the pointer it returns. Correct, and far too slow for
+ * the inner loop of a game on this console -- a call, a return and a
+ * temporary for every element touched. The transpiler wrote these
+ * classes itself (generic.c) and knows exactly what each accessor does,
+ * so it writes the body in place of the call:
+ *
+ *     v[i]  v.at(i)      v.m_data[i]
+ *     v.front()          v.m_data[0]
+ *     v.back()           v.m_data[v.m_size - 1]      (array: m_data[N - 1])
+ *     v.size()           v.m_size                    (array: N)
+ *     v.capacity()       v.m_capacity
+ *     v.empty()          (v.m_size == 0)             (array: false)
+ *     v.data() v.begin() v.m_data
+ *     v.end()            (v.m_data + v.m_size)       (array: &m_data[N])
+ *
+ * Everything that changes the container (push_back, erase, resize, ...)
+ * stays a call. An accessor that would have to mention the container
+ * twice, or drop it, is only inlined when the container expression has
+ * no call in it (`makeList().back()` keeps its call, so makeList() still
+ * runs exactly once). --no-inline-containers turns all of this off.
+ *
+ * Runs on a call finalize_call has already put in its final shape:
+ * callee = the mangled name, first argument = the receiver's address.
+ * Returns 1 if *slot was replaced. For the reference-returning accessors
+ * the replacement IS the element, so the caller must not add the
+ * dereference a reference return otherwise gets.
+ */
+static AstNode *array_length_expr(const AstNode *array_type, int line);
+
+static AstNode *container_field(AstNode *recv_ptr, const char *field, int line) {
+    AstNode *m = ast_new(AST_MEMBER, line);
+    m->str2 = strdup(field);
+    if (recv_ptr->kind == AST_UNOP && recv_ptr->str1 != NULL && strcmp(recv_ptr->str1, "addr") == 0) {
+        m->str1 = strdup(".");          /* (&v)->m_size  is  v.m_size */
+        m->a = recv_ptr->a;
+    } else {
+        m->str1 = strdup("->");
+        m->a = recv_ptr;
+    }
+    return m;
+}
+
+static AstNode *container_int(int value, int line) {
+    AstNode *lit = ast_new(AST_INT_LIT, line);
+    lit->ival = value;
+    return lit;
+}
+
+static AstNode *container_index(AstNode *array, AstNode *index, int line) {
+    AstNode *sub = ast_new(AST_SUBSCRIPT, line);
+    sub->a = array;
+    sub->b = index;
+    return sub;
+}
+
+static AstNode *container_binop(const char *op, AstNode *a, AstNode *b, int line) {
+    AstNode *n = ast_new(AST_BINOP, line);
+    n->str1 = strdup(op);
+    n->a = a;
+    n->b = b;
+    return n;
+}
+
+static int inline_container_accessor(AstNode **slot, const AstNode *class_decl) {
+    AstNode *call = *slot;
+    /* Not inside the generated classes themselves: their own methods
+     * are the reference the inlined forms are copied from, and a
+     * `max_size() { return size(); }` reduced to `return 8;` would no
+     * longer use `this` (an "unused argument" warning per method from
+     * the Vircon32 C compiler). */
+    if (class_decl != NULL && generic_class_kind(class_decl->str1) != 0) return 0;
+    if (g_no_inline_containers || call == NULL || call->kind != AST_CALL) return 0;
+    CallResolution *cr = (CallResolution *)call->sema_info;
+    if (cr == NULL || cr->resolved_target == NULL) return 0;
+    AstNode *target = cr->resolved_target;
+    if (target->ival == 1 || call->a == NULL || call->a->kind != AST_IDENT || call->list.count < 1) return 0;
+
+    /* which class is this a method of?  "<class>__<method>__<params>" */
+    FuncSemaInfo *info = (FuncSemaInfo *)target->sema_info;
+    if (info == NULL || info->mangled_name == NULL || target->str1 == NULL) return 0;
+    const char *sep = strstr(info->mangled_name, "__");
+    if (sep == NULL) return 0;
+    char class_name[256];
+    size_t len = (size_t)(sep - info->mangled_name);
+    if (len == 0 || len >= sizeof class_name) return 0;
+    memcpy(class_name, info->mangled_name, len);
+    class_name[len] = '\0';
+    int kind = generic_class_kind(class_name);
+    if (kind == 0) return 0;
+    int is_vector = (kind == 2);
+
+    const char *name = target->str1;
+    int nargs = call->list.count - 1;
+    int line = call->line;
+    AstNode *recv = call->list.items[0];
+    int simple = !expr_contains_call(recv);
+
+    /* a std::array's length, as written in its m_data declaration */
+    AstNode *length = NULL;
+    if (!is_vector) {
+        AstNode *ident = ast_ident(class_name, line);
+        AstNode *cls = type_to_class(ident);
+        ClassLayout *layout = (cls != NULL) ? (ClassLayout *)cls->sema_info : NULL;
+        if (layout == NULL) return 0;
+        for (int i = 0; i < layout->data_members.count; i++) {
+            AstNode *f = layout->data_members.items[i];
+            if (strcmp(f->str1, "m_data") == 0 && f->type != NULL && f->type->kind == AST_ARRAY_TYPE)
+                length = ast_clone_expr(array_length_expr(f->type, line));
+        }
+        if (length == NULL) return 0;
+    }
+
+    AstNode *out = NULL;
+    if ((strcmp(name, "operator[]") == 0 || strcmp(name, "at") == 0) && nargs == 1) {
+        out = container_index(container_field(recv, "m_data", line), call->list.items[1], line);
+    } else if (nargs != 0) {
+        return 0;
+    } else if (strcmp(name, "front") == 0) {
+        out = container_index(container_field(recv, "m_data", line), container_int(0, line), line);
+    } else if (strcmp(name, "capacity") == 0 && is_vector) {
+        out = container_field(recv, "m_capacity", line);
+    } else if ((strcmp(name, "data") == 0 || strcmp(name, "begin") == 0) && is_vector) {
+        out = container_field(recv, "m_data", line);
+    } else if (strcmp(name, "size") == 0 && is_vector) {
+        out = container_field(recv, "m_size", line);
+    } else if (strcmp(name, "empty") == 0 && is_vector) {
+        out = container_binop("==", container_field(recv, "m_size", line), container_int(0, line), line);
+    } else if (!simple) {
+        return 0; /* everything below mentions the container twice, or not at all */
+    } else if (strcmp(name, "back") == 0 && is_vector) {
+        AstNode *last = container_binop("-", container_field(ast_clone_expr(recv), "m_size", line),
+                                        container_int(1, line), line);
+        out = container_index(container_field(recv, "m_data", line), last, line);
+    } else if (strcmp(name, "end") == 0 && is_vector) {
+        out = container_binop("+", container_field(recv, "m_data", line),
+                              container_field(ast_clone_expr(recv), "m_size", line), line);
+    } else if (is_vector) {
+        return 0;
+    } else if (strcmp(name, "size") == 0 || strcmp(name, "max_size") == 0) {
+        out = length;
+    } else if (strcmp(name, "empty") == 0) {
+        out = ast_new(AST_BOOL_LIT, line);
+        out->ival = 0;
+    } else if (strcmp(name, "back") == 0) {
+        out = container_index(container_field(recv, "m_data", line),
+                              container_binop("-", length, container_int(1, line), line), line);
+    } else if (strcmp(name, "data") == 0 || strcmp(name, "begin") == 0) {
+        out = container_field(recv, "m_data", line); /* the array itself: it decays to `T *` */
+    } else if (strcmp(name, "end") == 0) {
+        AstNode *addr = ast_new(AST_UNOP, line);
+        addr->str1 = strdup("addr");
+        addr->a = container_index(container_field(recv, "m_data", line), length, line);
+        out = addr;
+    } else {
+        return 0;
+    }
+    out->file = call->file;
+    *slot = out;
+    return 1;
+}
+
 /* Wraps the call in *slot in a dereference when its resolved target
  * returns a C++ reference (a pointer, once lowered): a reference return
  * acts like the referent itself. Shared by ordinary calls and by
@@ -1662,6 +1838,7 @@ static void rewrite_operator_use(AstNode **slot, AstNode *lhs_or_operand, AstNod
         safe and avoids a pointless duplicate allocation */
     *slot = call;
     finalize_call(call, class_decl, locals);
+    if (inline_container_accessor(slot, class_decl)) return;
     deref_reference_return(slot);
 }
 
@@ -1963,6 +2140,7 @@ static void finalize_calls_expr(AstNode **slot, AstNode *class_decl, LocalVarTyp
              * (`int &r = obj.getRef();`) wants the pointer back, not
              * the value: finalize_calls_stmt's AST_VAR_DECL case strips
              * this dereference again for exactly that declaration. */
+            if (inline_container_accessor(slot, class_decl)) break;
             CallResolution *cr = (CallResolution *)n->sema_info;
             if (cr != NULL && cr->resolved_target != NULL) {
                 AstNode *target = cr->resolved_target;

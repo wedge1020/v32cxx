@@ -87,6 +87,61 @@ Things to know (tests/108sample.cpp exercises all of it):
 - A file-scope `std::vector` works: globals are now constructed at the
   top of `main()` (tests/109sample.cpp).
 
+## Range-based `for`
+
+```cpp
+for (Enemy &e : enemies) e.x += e.speed;      // changes land in the vector
+for (int n : scores) total += n;              // a copy of each element
+for (Shape *s : shapes) s->draw();            // pointer elements
+```
+
+Written out at parse time as the pointer loop it stands for:
+
+```cpp
+for (Enemy *it = enemies.begin(); it != enemies.end(); ++it) {
+    Enemy &e = *it;
+    e.x += e.speed;
+}
+```
+
+It works over anything with `begin()` and `end()` returning `T *`:
+`std::array`, `std::vector`, or a class of your own. `break` and
+`continue` behave as usual. The element type must be written out (there
+is no `auto`), and a plain C array has no `begin()`/`end()` to call, so
+it cannot be the range. Unlike C++, `end()` is asked for on every pass,
+and the range expression is evaluated once for `begin()` and once per
+`end()`: use a variable, not a function call, as the range.
+`tests/110sample.cpp` covers it.
+
+## Accessors are written in place
+
+`v[i]` resolves to a function call like any overloaded operator. On this
+console that costs a call, a return and a dereference per element, so
+for the generated classes the transpiler writes the accessor's body
+where the call would be:
+
+| Source | Generated C (vector) | (array) |
+| --- | --- | --- |
+| `v[i]`, `v.at(i)` | `v.m_data[i]` | same |
+| `v.front()` | `v.m_data[0]` | same |
+| `v.back()` | `v.m_data[v.m_size - 1]` | `v.m_data[N - 1]` |
+| `v.size()` | `v.m_size` | `N` |
+| `v.capacity()` | `v.m_capacity` | |
+| `v.empty()` | `(v.m_size == 0)` | `false` |
+| `v.data()`, `v.begin()` | `v.m_data` | same |
+| `v.end()` | `(v.m_data + v.m_size)` | `&v.m_data[N]` |
+
+Everything that changes the container (`push_back`, `erase`, `resize`,
+...) stays a call. Measured on the emulator, a loop summing a
+1000-element vector 300 times with `v[i]` and `v.size()` took about 19
+frames of CPU time written in place, against about 61 as calls.
+
+An accessor that would mention the container twice, or not at all, is
+only written in place when the container expression contains no call:
+`makeList().back()` keeps its call, so `makeList()` still runs once.
+`--no-inline-containers` turns the whole thing off, which is useful for
+reading the generated C next to the class it came from.
+
 ## How it works
 
 1. **`src/prescan.c`** consumes `#include <array>` (no such file exists,
@@ -132,15 +187,11 @@ generated C.
 
 ## Known gaps
 
-- **Every access is a function call.** `a[i]` calls
-  `array_T_N__op_index__int`. Lowering `a[i]` straight to
-  `a.m_data[i]`, and `size()` to a constant, is planned and matters for
-  CPU-bound loops.
 - **Multi-dimensional member arrays of class objects** (`Counter
   grid[2][2];` as a member) are still not constructed. A
   `std::array` of `std::array` is fine: each level is its own class.
 - **Named lengths are compared by name.** `std::array<int, MAX>` and
   `std::array<int, 8>` are different types even when `MAX` is 8. A
   `#define` is not affected (it is expanded before parsing).
-- No range-based `for`, no `auto`, no `::iterator` type names (iterators
-  are `T *`).
+- No `auto`, no `::iterator` type names (iterators are `T *`), and no
+  range-based `for` over a plain C array.

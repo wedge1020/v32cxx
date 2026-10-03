@@ -42,6 +42,14 @@ AstNode *generic_array_type(AstNode *elem, int len_value, const char *len_name, 
 /* The same for `std::vector<T>`. */
 AstNode *generic_vector_type(AstNode *elem, int line);
 
+/* What kind of generated class `class_name` is: 0 = not one,
+ * 1 = std::array, 2 = std::vector. */
+int generic_class_kind(const char *class_name);
+
+/* Set by --no-inline-containers: keep every container accessor a real
+ * function call (see lower.c, inline_container_accessor). */
+extern int g_no_inline_containers;
+
 /* Parses and splices every queued instantiation into g_program.
  * Returns 0 on success, nonzero if the generated source failed to
  * parse (an internal error, already reported). */

@@ -866,3 +866,19 @@ int desugar_unnamed_objects(AstList *decls) {
     free(all.items);
     return g_obj_errors;
 }
+
+AstNode *ast_clone_expr(const AstNode *n) {
+    if (n == NULL) return NULL;
+    AstNode *c = malloc(sizeof *c);
+    *c = *n;
+    if (n->str1 != NULL) c->str1 = strdup(n->str1);
+    if (n->str2 != NULL) c->str2 = strdup(n->str2);
+    if (n->macro_name != NULL) c->macro_name = strdup(n->macro_name);
+    c->a = ast_clone_expr(n->a);
+    c->b = ast_clone_expr(n->b);
+    c->c = ast_clone_expr(n->c);
+    c->d = ast_clone_expr(n->d);
+    c->list = ast_list_new();
+    for (int i = 0; i < n->list.count; i++) ast_list_append(&c->list, ast_clone_expr(n->list.items[i]));
+    return c;
+}

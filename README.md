@@ -183,7 +183,10 @@ transpiler expands into one ordinary class per element type
 STL-compatible spelling. `#include <array>` / `#include <vector>` switch
 them on. See [`docs/GENERICS.md`](docs/GENERICS.md) for what is
 supported, how it works and the known gaps (a vector treats its elements
-as raw memory; every access is still a function call). Several general
+as raw memory). Their accessors (`v[i]`, `v.size()`, ...) are written in
+place rather than called, and range-based `for` (`for (Enemy &e :
+enemies)`) works over them and over any class with `begin()`/`end()` —
+`tests/110sample.cpp`. Several general
 fixes came with them, each with its own self-checking test:
 
 - references used as values (`a = a + 1` on an `int &a`, `v[0] = 5`
