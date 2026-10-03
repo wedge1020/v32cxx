@@ -16,14 +16,15 @@
  *      arrays in BOTH declarator spellings.
  *
  * Companion files:
- *   - sprites.png   : the single texture referenced by the #texture hint below.
- *   - gap_probes.cpp: constructs KNOWN-unsupported today, each gated behind
- *                     its own -DGAP_xxx macro so failures stay isolated.
+ *   - textures/spyvsspy_sprites.png : the single texture referenced by the
+ *     #texture hint below (must sit at this exact path for the cart XML).
+ *   - gap_probes.cpp: the known-gap probe harness, each construct gated
+ *                     behind its own -DGAP_xxx macro so failures stay
+ *                     isolated.
  *
- * BUILD:
- *   v32c++ -o spyroad.c spyroad.cpp
- *   then compile spyroad.c with the Vircon32 C compiler and pack the cart
- *   with the generated spyroad.xml. Keep sprites.png beside this source.
+ * BUILD (the project Makefile's rule):
+ *   v32c++ -I ../../../c_api -I inc -o obj/spyvsspy.c spyvsspy.c
+ *   then compile -> (v32opt) -> assemble -> png2vircon -> packrom.
  *
  * STYLE NOTES:
  *   - Plain C89-flavoured C (the transpiler's C-subset-of-C++). It
@@ -234,6 +235,7 @@ void update_rival( Actor* a );
 void update_bullet( Actor* a );
 void update_effect( Actor* a );
 void update_prop( Actor* a );
+void update_obstacle( Actor* a );
 void update_none( Actor* a );
 int  g_player_x();
 void crash_player();
@@ -458,9 +460,9 @@ bool aabb_hit( const Actor* a, const Actor* b )
  * ========================================================================== */
 void update_none( Actor* a )
 {
-    /* KIND_NONE and static KIND_OBSTACLE: obstacles ride the road, so their
-     * motion happens against the scrolling world, not on their own.
-     * Touch nothing; self-assign keeps this a genuine statement. */
+    /* KIND_NONE only: dead pool slots never tick, but the dispatch table
+     * needs a function for every kind. Touch nothing; the self-assign
+     * keeps this a genuine statement. */
     a->flags = a->flags & 0;
 }
 
@@ -574,11 +576,28 @@ void update_rival( Actor* a )
         a->vx = 0;
     a->x = clampi( a->x + a->vx, ROAD_LEFT + 14, ROAD_RIGHT - 14 );
 
-    /* catch up while far above, then pull alongside */
+    /* catch up while far above, then pull alongside. The rival always
+     * scrolls with the road, and while it has ground to make up it
+     * closes FASTER than the scroll -- which on screen means moving DOWN
+     * toward the player. (The old `a->y -= 3` did the opposite: rivals
+     * spawned above the screen and receded forever -- never seen, never
+     * hit, never despawned, each one eating a pool slot for good.) */
     if( a->y < PLAYER_Y - 130 )
-        a->y -= 3;
+        a->y += pace + 2;
     else
         a->y += pace - 2;
+
+    /* the rival shoots back: same KIND_BULLET, different sprite region --
+     * update_bullet tells the two apart by region, so no extra kind and
+     * no ownership flag bit is needed */
+    if( a->y > 0 && a->y < PLAYER_Y - 20 &&
+        ( g_game.frame & 31 ) == 0 && ( rand() & 1 ) == 0 )
+    {
+        int slot = spawn_actor( KIND_BULLET, a->x, a->y + 26, 6, 12,
+                                RG_BULLET_RIV, 0 );
+        if( slot >= 0 )
+            g_actors[ slot ].vy = pace + 7;    /* downward, faster than the road */
+    }
 
     if( a->y > screen_height + 48 )
         a->alive = false;
@@ -588,10 +607,23 @@ void update_bullet( Actor* a )
 {
     Actor* it  = g_actors;
     Actor* end = g_actors + MAX_ACTORS;
+    bool from_rival = ( a->region == RG_BULLET_RIV );
     a->y += a->vy;
     if( a->y < -20 || a->y > screen_height + 20 )
     {
         a->alive = false;
+        return;
+    }
+    if( from_rival )
+    {
+        /* a rival shot only threatens the player: it flies over traffic
+         * and obstacles, and it dies harmlessly while you are invulnerable */
+        if( g_player != 0 && aabb_hit( a, g_player ) )
+        {
+            a->alive = false;
+            if( g_game.invuln == 0 )
+                crash_player();
+        }
         return;
     }
     while( it != end )
@@ -679,6 +711,20 @@ void update_effect( Actor* a )
 }
 
 void update_prop( Actor* a )
+{
+    int pace = 3 + g_game.speed;
+    a->y += pace;
+    if( a->y > screen_height + 48 )
+        a->alive = false;
+}
+
+/* road hazards and solid obstacles scroll with the road exactly like the
+ * roadside props, then despawn off the bottom. The dispatch table used
+ * to send KIND_OBSTACLE to update_none, which left every spawned oil
+ * slick, spike strip, barrel, crate and fuel can parked above the screen
+ * forever -- invisible, uncollidable, and quietly filling the 24-slot
+ * actor pool until spawn_actor ran dry. */
+void update_obstacle( Actor* a )
 {
     int pace = 3 + g_game.speed;
     a->y += pace;
@@ -788,8 +834,10 @@ void spawn_wave()
             int what = rand() & 3;
             int region = RG_BARREL;               /* ternary in a local init
                                                      (rewritten position #1) */
-            region = what == 0 ? RG_OIL : ( what == 1 ? RG_CRATE : RG_BARREL );
-            if( what == 3 )
+            region = what == 0 ? RG_OIL : ( what == 1 ? RG_SPIKES : RG_BARREL );
+            if( what == 2 )
+                region = RG_CRATE;
+            if( ( rand() & 7 ) == 0 )              /* fuel cans stay rare */
                 region = RG_FUELCAN;
             spawn_actor( KIND_OBSTACLE, LANE_X( lane ),
                          -48 - lane * 24, 32, 24, region, 0 );
@@ -1099,8 +1147,11 @@ void over_frame()
     print_at( 230, 160, "FINAL SCORE" );
     format_int( g_game.score, buf );
     print_at( 300, 190, buf );
+    print_at( 220, 210, "DISTANCE" );     /* the odometer finally matters */
+    format_int( g_game.distance, buf );
+    print_at( 300, 240, buf );
     if( ( g_game.frame >> 4 ) & 1 )
-        print_at( 220, 240, msg_retry );
+        print_at( 220, 280, msg_retry );
     g_game.frame += 1;
 }
 
@@ -1151,7 +1202,7 @@ void boot_game()
     g_kind_update[ KIND_TRAFFIC ]  = update_traffic;
     g_kind_update[ KIND_RIVAL ]    = update_rival;
     g_kind_update[ KIND_BULLET ]   = update_bullet;
-    g_kind_update[ KIND_OBSTACLE ] = update_none;    /* static: rides the road */
+    g_kind_update[ KIND_OBSTACLE ] = update_obstacle;  /* scrolls, then despawns */
     g_kind_update[ KIND_EFFECT ]   = update_effect;
     g_kind_update[ KIND_PROP ]     = update_prop;
 

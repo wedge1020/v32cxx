@@ -471,3 +471,147 @@ void merge_tentative_globals(AstList *decls) {
     }
     *decls = out;
 }
+
+/* ---- implicit constructors and destructors ------------------------------
+ *
+ * C++ gives a class that declares no constructor an implicit default one,
+ * which constructs its base and its members; likewise for the destructor.
+ * Everything downstream here hangs construction off a constructor that
+ * EXISTS (base-constructor calls, member construction and vtable setup are
+ * injected into constructor bodies; scope exit, delete and arrays call a
+ * destructor that has a body), so a class like
+ *
+ *     class Fast : public Body { public: virtual Vec step(); };
+ *
+ * used to get neither: `Fast f;` never ran Body(), and leaving scope never
+ * ran ~Body(). Rather than teach every phase about "a class with no
+ * constructor", the missing members are written into the class right
+ * after the parse, as if the source had said `Fast() { }` / `~Fast() { }`,
+ * and the existing machinery does the rest.
+ *
+ * Only where it changes something: a constructor when the base or a
+ * by-value member has a default constructor (or a member has virtual
+ * methods, so its vtable pointer needs setting); a destructor when the
+ * base or a by-value member has one. A plain struct gets nothing.
+ */
+typedef struct ClassList { AstNode **items; int count, cap; } ClassList;
+
+static void collect_classes(AstList *decls, ClassList *out) {
+    for (int i = 0; i < decls->count; i++) {
+        AstNode *n = decls->items[i];
+        if (n == NULL) continue;
+        if (n->kind == AST_NAMESPACE_DECL) collect_classes(&n->list, out);
+        if (n->kind != AST_CLASS_DECL) continue;
+        if (out->count == out->cap) {
+            out->cap = out->cap ? out->cap * 2 : 16;
+            out->items = realloc(out->items, sizeof(AstNode *) * out->cap);
+        }
+        out->items[out->count++] = n;
+    }
+}
+
+static AstNode *class_named(const ClassList *all, const char *name) {
+    if (name == NULL) return NULL;
+    for (int i = 0; i < all->count; i++)
+        if (strcmp(all->items[i]->str1, name) == 0) return all->items[i];
+    return NULL;
+}
+
+static int is_func(const AstNode *m) {
+    return m != NULL && (m->kind == AST_FUNC_DECL || m->kind == AST_FUNC_DEF) && m->str1 != NULL;
+}
+
+static int class_declares_ctor(const AstNode *c) {
+    for (int i = 0; i < c->list.count; i++)
+        if (is_func(c->list.items[i]) && strcmp(c->list.items[i]->str1, c->str1) == 0) return 1;
+    return 0;
+}
+
+static int class_has_default_ctor(const AstNode *c) {
+    for (int i = 0; i < c->list.count; i++) {
+        const AstNode *m = c->list.items[i];
+        if (!is_func(m) || strcmp(m->str1, c->str1) != 0) continue;
+        int all_defaulted = 1;
+        for (int p = 0; p < m->list.count; p++)
+            if (m->list.items[p]->a == NULL) { all_defaulted = 0; break; }
+        if (all_defaulted) return 1;
+    }
+    return 0;
+}
+
+static AstNode *class_dtor(const AstNode *c) {
+    for (int i = 0; i < c->list.count; i++)
+        if (is_func(c->list.items[i]) && c->list.items[i]->str1[0] == '~') return c->list.items[i];
+    return NULL;
+}
+
+static int class_has_virtuals(const ClassList *all, const AstNode *c) {
+    for (int depth = 0; c != NULL && depth < 64; depth++) {
+        for (int i = 0; i < c->list.count; i++)
+            if (is_func(c->list.items[i]) && c->list.items[i]->ival) return 1;
+        c = class_named(all, c->str2);
+    }
+    return 0;
+}
+
+/* The class of a by-value member (not a pointer, reference or array --
+ * the same members constructor injection handles), or NULL. */
+static AstNode *member_value_class(const ClassList *all, const AstNode *m) {
+    if (m == NULL || m->kind != AST_VAR_DECL || m->type == NULL) return NULL;
+    const AstNode *t = m->type;
+    while (t != NULL && t->kind == AST_CONST_TYPE) t = t->a;
+    if (t == NULL || t->kind != AST_IDENT) return NULL;
+    return class_named(all, t->str1);
+}
+
+static AstNode *make_implicit_member(const AstNode *c, int is_dtor) {
+    AstNode *f = ast_new(AST_FUNC_DEF, c->line);
+    if (is_dtor) {
+        size_t len = strlen(c->str1) + 2;
+        f->str1 = malloc(len);
+        snprintf(f->str1, len, "~%s", c->str1);
+    } else {
+        f->str1 = strdup(c->str1);
+    }
+    f->type = NULL;
+    f->a = ast_new(AST_BLOCK, c->line);
+    f->access = ACC_PUBLIC;
+    return f;
+}
+
+void synthesize_implicit_members(AstList *decls) {
+    ClassList all = { NULL, 0, 0 };
+    collect_classes(decls, &all);
+    /* in declaration order: a base is always complete, implicit members
+     * included, before a class derived from it or holding one is looked at */
+    for (int i = 0; i < all.count; i++) {
+        AstNode *c = all.items[i];
+        AstNode *base = class_named(&all, c->str2);
+        int want_ctor = 0, want_dtor = 0, base_dtor_virtual = 0;
+        if (base != NULL && base != c) {
+            if (class_has_default_ctor(base)) want_ctor = 1;
+            AstNode *bd = class_dtor(base);
+            if (bd != NULL) { want_dtor = 1; base_dtor_virtual = bd->ival; }
+        }
+        for (int j = 0; j < c->list.count; j++) {
+            AstNode *mc = member_value_class(&all, c->list.items[j]);
+            if (mc == NULL || mc == c) continue;
+            if (class_has_default_ctor(mc) ||
+                (!class_declares_ctor(mc) && class_has_virtuals(&all, mc))) want_ctor = 1;
+            if (class_dtor(mc) != NULL) want_dtor = 1;
+        }
+        if (class_declares_ctor(c)) want_ctor = 0;
+        if (class_dtor(c) != NULL) want_dtor = 0;
+        if (!want_ctor && !want_dtor) continue;
+        AstNode *pub = ast_new(AST_ACCESS_SPEC, c->line);
+        pub->access = ACC_PUBLIC;
+        ast_list_append(&c->list, pub);
+        if (want_ctor) ast_list_append(&c->list, make_implicit_member(c, 0));
+        if (want_dtor) {
+            AstNode *d = make_implicit_member(c, 1);
+            d->ival = base_dtor_virtual; /* virtual if the base's is */
+            ast_list_append(&c->list, d);
+        }
+    }
+    free(all.items);
+}

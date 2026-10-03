@@ -7514,3 +7514,57 @@ Demo-only round; no transpiler changes.
 * `demos/cxx/tempest_32k/README.md` describes the gameplay.
 * `tools/vircon32/build-tools.sh` no longer tries to build wav2vircon
   (it needs SDL audio, which the tool build does not have).
+
+## 20261003-dev: plain-C coverage (spyvsspy), by-value structs, implicit constructors/destructors
+
+Driven by `demos/c/spyvsspy` and its `gap_probes.cpp`; the Vircon32-side
+findings are in `docs/VIRCON32_QUIRKS.md` (#11, #22-#24). Recorded here:
+the parts that are about C++ semantics rather than output dialect.
+
+### Implicit default constructors and destructors
+
+- **Was**: a class that declared no constructor got none, so nothing ran
+  its base's constructor or its members' (`class Fast : public Body { ...
+  };  Fast f;` left `Body`'s fields uninitialized). Same for destructors.
+  Silent: no diagnostic here or downstream, just wrong values at run time.
+- **Now**: `synthesize_implicit_members` (ast.c, run right after the
+  parse) writes `Name() { }` / `~Name() { }` into a class that declares
+  none, when the base or a by-value member has a default constructor (or a
+  member has virtual methods and so needs its vtable pointer set), resp. a
+  destructor. The existing injection phases then treat it like any
+  written one. An implicit destructor is virtual if its base's is. Plain
+  structs get nothing, so C code is unaffected.
+
+### Destructor chaining
+
+- **Was**: a destructor ran its own body and stopped. `~Derived()` never
+  reached `~Base()`, and members' destructors never ran -- for scope exit,
+  `delete` and arrays alike, with written destructors as much as implicit
+  ones. A derived class without its own destructor also left a `0` in its
+  vtable's destructor slot.
+- **Now**: lower.c phase 9a appends, to every destructor with a body, its
+  by-value members' destructor calls (last declared first) and then a
+  direct call to the base's. A `return;` in the body becomes a goto to a
+  label ahead of the chain.
+
+### Arrays of objects are destroyed at scope exit
+
+- **Was**: `Derived arr[3];` constructed three objects and destroyed none.
+- **Now**: phase 9 registers a one-dimensional array local like any other
+  destructible local and emits a countdown loop.
+
+### Still open
+
+- Member ARRAYS of objects (`Part parts[4];` inside a class) are neither
+  constructed nor destroyed by the injected code; multi-dimensional array
+  locals are constructed but not destroyed.
+- A class whose base has only constructors that take arguments gets no
+  implicit constructor (C++ would reject using it; here it is silently
+  left unconstructed).
+- Unions with more than one word still cannot be passed or returned by
+  value.
+
+`tests/102sample.cpp` checks all of the above at run time, including
+construction/destruction ORDER. Output changed for samples 07, 32 and 84
+and for Space Invaders (derived entities now have destructors that chain
+to `Entity`'s); Star Raiders and TEMPEST 32K are byte-identical.

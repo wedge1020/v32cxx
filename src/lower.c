@@ -3982,6 +3982,8 @@ typedef struct DestructibleLocal {
     const char *var_name;
     AstNode *dtor; /* the class's own destructor -- always AST_FUNC_DEF
                        (has a body) by construction; see below */
+    int array_len; /* > 0: the local is a one-dimensional array of that
+                       many objects, each destroyed, last element first */
     struct DestructibleLocal *next;
 } DestructibleLocal;
 
@@ -4009,17 +4011,60 @@ static AstNode *build_dtor_call_stmt(DestructibleLocal *dl) {
     FuncSemaInfo *dtor_info = (FuncSemaInfo *)dl->dtor->sema_info;
     const char *dtor_mangled = (dtor_info != NULL) ? dtor_info->mangled_name : dl->dtor->str1;
 
-    AstNode *addr = ast_new(AST_UNOP, dl->dtor->line);
-    addr->str1 = strdup("addr");
-    addr->a = ast_ident(dl->var_name, dl->dtor->line);
+    int line = dl->dtor->line;
+    static int arr_dtor_counter = 0;
+    char idx_name[64];
+    snprintf(idx_name, sizeof(idx_name), "__v32_dtor_arr_i%d", arr_dtor_counter);
 
-    AstNode *call = ast_new(AST_CALL, dl->dtor->line);
-    call->a = ast_ident(dtor_mangled, dl->dtor->line);
+    AstNode *object = ast_ident(dl->var_name, line);
+    if (dl->array_len > 0) {
+        AstNode *subscript = ast_new(AST_SUBSCRIPT, line);
+        subscript->a = object;
+        subscript->b = ast_ident(idx_name, line);
+        object = subscript;
+    }
+    AstNode *addr = ast_new(AST_UNOP, line);
+    addr->str1 = strdup("addr");
+    addr->a = object;
+
+    AstNode *call = ast_new(AST_CALL, line);
+    call->a = ast_ident(dtor_mangled, line);
     ast_list_append(&call->list, addr);
 
-    AstNode *expr_stmt = ast_new(AST_EXPR_STMT, dl->dtor->line);
+    AstNode *expr_stmt = ast_new(AST_EXPR_STMT, line);
     expr_stmt->a = call;
-    return expr_stmt;
+    if (dl->array_len <= 0) return expr_stmt;
+
+    /* `Derived arr[3];` leaving scope: the mirror of build_array_ctor_loop,
+     * counting down --
+     *   for (int i = N - 1; i >= 0; i--) Derived__dtor(&arr[i]);
+     * Arrays were constructed element by element but never destroyed. */
+    arr_dtor_counter++;
+    AstNode *idx_decl = ast_new(AST_VAR_DECL, line);
+    idx_decl->str1 = strdup(idx_name);
+    idx_decl->type = ast_ident("int", line);
+    idx_decl->a = ast_new(AST_INT_LIT, line);
+    idx_decl->a->ival = dl->array_len - 1;
+
+    AstNode *cond = ast_new(AST_BINOP, line);
+    cond->str1 = strdup(">=");
+    cond->a = ast_ident(idx_name, line);
+    cond->b = ast_new(AST_INT_LIT, line);
+    cond->b->ival = 0;
+
+    AstNode *step = ast_new(AST_UNOP, line);
+    step->str1 = strdup("post--");
+    step->a = ast_ident(idx_name, line);
+
+    AstNode *body = ast_new(AST_BLOCK, line);
+    ast_list_append(&body->list, expr_stmt);
+
+    AstNode *loop = ast_new(AST_FOR, line);
+    loop->a = idx_decl;
+    loop->b = cond;
+    loop->c = step;
+    loop->d = body;
+    return loop;
 }
 
 /* True when control provably cannot fall past this statement.
@@ -4265,15 +4310,23 @@ static void destruct_scope_block(AstNode *block, DestructScope *parent_scope,
         destruct_scope_stmt(&stmt, &this_scope, loop_boundary, break_boundary, func_return_type, ret_tmp_counter);
         ast_list_append(&new_list, stmt);
 
-        if (stmt->kind == AST_VAR_DECL &&
-            (stmt->type->kind == AST_IDENT || stmt->type->kind == AST_QUALIFIED_ID)) {
-            AstNode *var_class = type_to_class(stmt->type);
+        int array_len = 0;
+        AstNode *obj_type = (stmt->kind == AST_VAR_DECL) ? stmt->type : NULL;
+        if (obj_type != NULL && obj_type->kind == AST_ARRAY_TYPE && obj_type->ival > 0 &&
+            obj_type->a != NULL) {
+            array_len = obj_type->ival;      /* one dimension only */
+            obj_type = obj_type->a;
+        }
+        if (obj_type != NULL &&
+            (obj_type->kind == AST_IDENT || obj_type->kind == AST_QUALIFIED_ID)) {
+            AstNode *var_class = type_to_class(obj_type);
             if (var_class != NULL) {
                 AstNode *dtor = find_destructor_with_body(var_class);
                 if (dtor != NULL) {
                     DestructibleLocal *dl = malloc(sizeof(DestructibleLocal));
                     dl->var_name = stmt->str1;
                     dl->dtor = dtor;
+                    dl->array_len = array_len;
                     dl->next = this_scope.locals;
                     this_scope.locals = dl;
                 }
@@ -5310,6 +5363,132 @@ static void v32_compat_free_functions(AstList *decls) {
     }
 }
 
+/* ---- phase 9a: destructor chaining ---------------------------------------
+ *
+ * A destructor's job doesn't end with its own body: C++ then destroys the
+ * class's members, in reverse declaration order, and finally its base.
+ * Nothing did that here -- `~Derived()` ran and `~Base()` never did, for
+ * a local leaving scope, a `delete`, and an array alike, since all three
+ * call just the one destructor. This appends the missing calls to every
+ * destructor that has a body (implicit ones included -- see
+ * synthesize_implicit_members in ast.c):
+ *
+ *     void Both__dtor(Both *this) {
+ *         ...the body as written...
+ *         Part__dtor(&this->part);        // members, last declared first
+ *         Base__dtor((Base *)this);       // then the base
+ *     }
+ *
+ * The base call is direct, never through the vtable: by the time a
+ * derived destructor finishes, the object is "only a Base" (a virtual
+ * destructor affects which destructor `delete` STARTS with, not this).
+ * A `return;` inside the body must not skip the chain, so it becomes a
+ * goto to a label placed just ahead of it.
+ *
+ * Runs after phase 9, which destroys the body's own locals at each
+ * return, so those still happen first. By-value members only, matching
+ * what constructor injection constructs (no member arrays, either side).
+ */
+static int stmt_has_return(const AstNode *n) {
+    if (n == NULL) return 0;
+    if (n->kind == AST_RETURN) return 1;
+    if (stmt_has_return(n->a) || stmt_has_return(n->b) ||
+        stmt_has_return(n->c) || stmt_has_return(n->d)) return 1;
+    for (int i = 0; i < n->list.count; i++)
+        if (stmt_has_return(n->list.items[i])) return 1;
+    return 0;
+}
+
+static void returns_to_goto(AstNode **slot, const char *label) {
+    AstNode *n = *slot;
+    if (n == NULL) return;
+    if (n->kind == AST_RETURN) {
+        AstNode *g = ast_new(AST_GOTO, n->line);
+        g->str1 = strdup(label);
+        *slot = g;
+        return;
+    }
+    switch (n->kind) {
+        case AST_BLOCK:
+        case AST_SWITCH:
+            for (int i = 0; i < n->list.count; i++) returns_to_goto(&n->list.items[i], label);
+            break;
+        case AST_IF:    returns_to_goto(&n->b, label); returns_to_goto(&n->c, label); break;
+        case AST_WHILE: returns_to_goto(&n->b, label); break;
+        case AST_FOR:   returns_to_goto(&n->d, label); break;
+        case AST_LABEL: returns_to_goto(&n->a, label); break;
+        default: break;
+    }
+}
+
+static AstNode *dtor_call_on(AstNode *dtor, AstNode *object_ptr, int line) {
+    FuncSemaInfo *info = (FuncSemaInfo *)dtor->sema_info;
+    AstNode *call = ast_new(AST_CALL, line);
+    call->a = ast_ident(info != NULL ? info->mangled_name : dtor->str1, line);
+    ast_list_append(&call->list, object_ptr);
+    AstNode *st = ast_new(AST_EXPR_STMT, line);
+    st->a = call;
+    return st;
+}
+
+static void chain_destructors_classes(AstList *decls) {
+    for (int i = 0; i < decls->count; i++) {
+        AstNode *n = decls->items[i];
+        if (n->kind == AST_NAMESPACE_DECL) { chain_destructors_classes(&n->list); continue; }
+        if (n->kind != AST_CLASS_DECL) continue;
+        ClassLayout *layout = (ClassLayout *)n->sema_info;
+        if (layout == NULL) continue;
+        AstNode *dtor = find_destructor_with_body(n);
+        if (dtor == NULL || dtor->a == NULL || dtor->a->kind != AST_BLOCK) continue;
+        int line = dtor->line;
+
+        AstList chain = ast_list_new();
+        for (int f = layout->data_members.count - 1; f >= 0; f--) {
+            AstNode *field = layout->data_members.items[f];
+            if (field->type == NULL || field->type->kind == AST_POINTER_TYPE ||
+                field->type->kind == AST_REFERENCE_TYPE || field->type->kind == AST_ARRAY_TYPE) continue;
+            AstNode *mclass = type_to_class(field->type);
+            if (mclass == NULL || mclass == n) continue;
+            AstNode *mdtor = find_destructor_with_body(mclass);
+            if (mdtor == NULL) continue;
+            AstNode *ref = ast_new(AST_MEMBER, line);
+            ref->str1 = strdup("->");
+            ref->str2 = strdup(field->str1);
+            ref->a = ast_ident("this", line);
+            AstNode *addr = ast_new(AST_UNOP, line);
+            addr->str1 = strdup("addr");
+            addr->a = ref;
+            if (resolve_typedef_chain(field->type)->kind == AST_CONST_TYPE) {
+                AstNode *cast = ast_new(AST_CAST, line);
+                cast->type = ast_wrap_pointer(ast_ident(mclass->str1, line), line);
+                cast->a = addr;
+                addr = cast;
+            }
+            ast_list_append(&chain, dtor_call_on(mdtor, addr, line));
+        }
+        AstNode *base = layout->base_class_decl;
+        AstNode *bdtor = (base != NULL) ? find_destructor_with_body(base) : NULL;
+        if (bdtor != NULL) {
+            AstNode *cast = ast_new(AST_CAST, line);
+            cast->type = ast_wrap_pointer(ast_ident(base->str1, line), line);
+            cast->a = ast_ident("this", line);
+            ast_list_append(&chain, dtor_call_on(bdtor, cast, line));
+        }
+        if (chain.count == 0) continue;
+
+        if (stmt_has_return(dtor->a)) {
+            returns_to_goto(&dtor->a, "__v32_dtor_chain");
+            AstNode *label = ast_new(AST_LABEL, line);
+            label->str1 = strdup("__v32_dtor_chain");
+            label->a = chain.items[0];
+            chain.items[0] = label;
+        }
+        for (int k = 0; k < chain.count; k++) ast_list_append(&dtor->a->list, chain.items[k]);
+        lower_note(line, "appended %d member/base destructor call(s) to %s",
+                   chain.count, dtor->str1);
+    }
+}
+
 /* ---- phase 9b: by-value structs across calls (--target=vircon32 only) ----
  *
  * Vircon32 C moves exactly one word per parameter and per return value:
@@ -5950,6 +6129,7 @@ int lower_run(AstNode *program) {
     inject_ctor_calls_free_functions(&program->list);
     destruct_scope_classes(&program->list);           /* phase 9 */
     destruct_scope_free_functions(&program->list);
+    chain_destructors_classes(&program->list);        /* phase 9a */
     if (g_target == TARGET_VIRCON32) {
         /* phase 10 -- deliberately conditional, unlike every earlier
          * phase: standard C supports the ternary operator natively,

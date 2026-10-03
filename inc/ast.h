@@ -934,5 +934,6 @@ int ast_decode_escape(const char **p);
 /* Post-parse, pre-sema rewrites for C storage classes -- see ast.c. */
 void hoist_static_locals(AstList *decls);
 void merge_tentative_globals(AstList *decls);
+void synthesize_implicit_members(AstList *decls);
 
 #endif /* AST_H */

@@ -406,6 +406,9 @@ int  main (int  argc, char **argv)
          * become one. */
         hoist_static_locals(&g_program->list);
         merge_tentative_globals(&g_program->list);
+        /* implicit default constructors / destructors, written into the
+         * classes that need one -- see ast.c */
+        synthesize_implicit_members(&g_program->list);
 
         if (verbosity >= 3) {
             printf("---- parse OK: AST for %s ----\n", g_current_filename);
