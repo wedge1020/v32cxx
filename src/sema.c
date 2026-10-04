@@ -1986,11 +1986,79 @@ static int min_required_args(const AstNode *func) {
 
 static int g_enum_promotes = 0; /* see type_matches_param */
 
+static int type_matches_param(const AstNode *param_type, const AstNode *arg_type);
+static int min_required_args(const AstNode *func);
+
+/* The class a type names BY VALUE (through const and, if `through_ref`,
+ * through a reference) -- not through a pointer -- or NULL. */
+static AstNode *value_class_of(const AstNode *type, int through_ref) {
+    while (type != NULL && type->kind == AST_CONST_TYPE) type = type->a;
+    type = resolve_typedef_chain(type);
+    if (through_ref && type != NULL && type->kind == AST_REFERENCE_TYPE) {
+        type = type->a;
+        while (type != NULL && type->kind == AST_CONST_TYPE) type = type->a;
+        type = resolve_typedef_chain(type);
+    }
+    if (type == NULL || (type->kind != AST_IDENT && type->kind != AST_QUALIFIED_ID)) return NULL;
+    return type_to_class(type);
+}
+
+/* ---- implicit conversion through a constructor ---------------------------
+ *
+ * C++ converts a value to a class when the class has a constructor that
+ * can be called with just that value: `std::string name = "abc";`,
+ * `greet("abc")` where greet takes a `const std::string &`,
+ * `return "abc";` from a function returning std::string. This finds that
+ * constructor: one that takes a single argument (any further parameters
+ * defaulted) of a type the value matches, taken by value or as a pointer
+ * -- not by reference, and never from another object of a class type
+ * (that would be a copy, which is a different thing here).
+ *
+ * Returns the constructor, or NULL if there is none or more than one.
+ */
+AstNode *sema_converting_ctor(const AstNode *class_type, const AstNode *arg_type) {
+    AstNode *cls = value_class_of(class_type, 1);
+    if (cls == NULL || arg_type == NULL) return NULL;
+    if (value_class_of(arg_type, 1) != NULL) return NULL;
+    ClassLayout *layout = (ClassLayout *)cls->sema_info;
+    if (layout == NULL) return NULL;
+    AstNode *found = NULL;
+    int saved = g_enum_promotes;
+    for (int pass = 0; pass < 2 && found == NULL; pass++) {
+        g_enum_promotes = pass;
+        int count = 0;
+        for (int i = 0; i < layout->methods.count; i++) {
+            AstNode *m = layout->methods.items[i];
+            if (m->str1 == NULL || strcmp(m->str1, cls->str1) != 0) continue;
+            if (m->list.count < 1 || min_required_args(m) > 1) continue;
+            const AstNode *pt = m->list.items[0]->type;
+            if (pt == NULL || pt->kind == AST_REFERENCE_TYPE) continue;
+            if (!type_matches_param(pt, arg_type)) continue;
+            found = m;
+            count++;
+        }
+        if (count > 1) found = NULL;
+        if (count > 0) break;
+    }
+    g_enum_promotes = saved;
+    return found;
+}
+
+
 static int type_matches_param(const AstNode *param_type, const AstNode *arg_type) {
     if (types_equal(param_type, arg_type)) return 1;
     const AstNode *p = param_type;
     while (p != NULL && p->kind == AST_CONST_TYPE) p = p->a;
     p = resolve_typedef_chain(p);
+    /* An array decays to a pointer to its first element: `find(name)`
+     * with `char name[16]`, or a `char m_data[N]` member, against a
+     * `const char *` parameter. The argument's type is the array, so
+     * nothing matched when the callee was overloaded. */
+    if (p != NULL && p->kind == AST_POINTER_TYPE && arg_type != NULL) {
+        const AstNode *a = arg_type;
+        while (a != NULL && a->kind == AST_CONST_TYPE) a = a->a;
+        if (a != NULL && a->kind == AST_ARRAY_TYPE && types_equal(p->a, a->a)) return 1;
+    }
     /* An enum value converts to int (C++'s integral promotion): a named
      * constant passed where an int is wanted -- `Vec2(SHOT_SPREAD, 0)`
      * against `Vec2(int, int)` -- matched nothing, because the
@@ -2003,6 +2071,33 @@ static int type_matches_param(const AstNode *param_type, const AstNode *arg_type
     if (g_enum_promotes && p != NULL && p->kind == AST_IDENT && strcmp(p->str1, "int") == 0 &&
         sema_is_enum_type(arg_type)) {
         return 1;
+    }
+    /* Third pass, once nothing matched more closely: a value the
+     * parameter's class can be constructed from (sema_converting_ctor).
+     * convert_call_arguments then builds the object. */
+    if (g_enum_promotes >= 2 && sema_converting_ctor(param_type, arg_type) != NULL) return 1;
+    /* Also second-pass only: `char` and `int` stand in for each other,
+     * directly and as what a pointer points to. On Vircon32 they are the
+     * same one-word type, and a string literal is typed `int *` here
+     * (see infer_expr_type) while C++ source says `const char *` -- so
+     * `s.find("abc")` against find(const char *) and find(const string &)
+     * matched neither. Exact matches still win: with f(char) and f(int)
+     * both declared, each argument picks its own. */
+    if (g_enum_promotes && p != NULL && arg_type != NULL) {
+        const AstNode *pp = p, *aa = arg_type;
+        while (aa != NULL && aa->kind == AST_CONST_TYPE) aa = aa->a;
+        if (pp->kind == AST_POINTER_TYPE && aa != NULL &&
+            (aa->kind == AST_POINTER_TYPE || aa->kind == AST_ARRAY_TYPE)) {
+            pp = pp->a;
+            aa = aa->a;
+            while (pp != NULL && pp->kind == AST_CONST_TYPE) pp = pp->a;
+            while (aa != NULL && aa->kind == AST_CONST_TYPE) aa = aa->a;
+        }
+        if (pp != NULL && aa != NULL && pp->kind == AST_IDENT && aa->kind == AST_IDENT) {
+            int p_word = strcmp(pp->str1, "int") == 0 || strcmp(pp->str1, "char") == 0;
+            int a_word = strcmp(aa->str1, "int") == 0 || strcmp(aa->str1, "char") == 0;
+            if (p_word && a_word) return 1;
+        }
     }
     if (p != NULL && p->kind == AST_REFERENCE_TYPE) {
         /* A plain value (or another reference to the same thing) binds
@@ -2064,7 +2159,76 @@ static int type_matches_param(const AstNode *param_type, const AstNode *arg_type
  * kept as an explicit array rather than assumed to live in `site->list`
  * because an operator's operands live in `->a`/`->b`, not a list. `name`
  * is used only for diagnostic text. */
+/* ---- implicit conversion of call arguments -------------------------------
+ *
+ * `greet("abc")`, where greet takes a std::string (by value or by const
+ * reference): the argument is not an object of the parameter's class but
+ * the class can be constructed from it. The object is built in a local
+ * declared just before the statement the call is in, and the local is
+ * passed instead:
+ *
+ *     greet("abc");   -->   std::string __v32_conv0("abc");
+ *                           greet(__v32_conv0);
+ *
+ * The call site only queues the declaration (g_conv_pending); the
+ * enclosing block (or check_body, for an unbraced `if`/loop body) puts it
+ * in place and checks it. A loop's condition or step is evaluated many
+ * times and has no "just before" inside the loop, so a conversion there
+ * is an error naming the fix.
+ */
+static AstList g_conv_pending;
+static int g_conv_counter = 0;
+static int g_conv_block_depth = 0;   /* inside a function body's block? */
+static int g_conv_in_loop_header = 0;
+
+static void convert_call_arguments(AstNode *site, AstNode **args, int arg_count,
+                                   AstNode *current_class, LocalVarType *locals) {
+    CallResolution *cr = (CallResolution *)site->sema_info;
+    if (cr == NULL || cr->resolved_target == NULL || args == NULL) return;
+    if (args != site->list.items) return; /* operator operands: matched exactly or not at all */
+    AstNode *target = cr->resolved_target;
+    for (int i = 0; i < arg_count && i < target->list.count; i++) {
+        AstNode *ptype = target->list.items[i]->type;
+        if (value_class_of(ptype, 1) == NULL) continue;
+        AstNode *atype = infer_expr_type(args[i], current_class, locals);
+        if (atype == NULL || sema_converting_ctor(ptype, atype) == NULL) continue;
+        if (g_conv_block_depth == 0 || g_conv_in_loop_header) {
+            sema_error(args[i]->line,
+                "this argument needs converting to '%s', which is not supported %s -- "
+                "construct the object in a variable first and pass that",
+                value_class_of(ptype, 1)->str1,
+                g_conv_in_loop_header ? "in a loop's condition or step" : "outside a function body");
+            continue;
+        }
+        const AstNode *vt = ptype;
+        while (vt != NULL && (vt->kind == AST_CONST_TYPE || vt->kind == AST_REFERENCE_TYPE)) vt = vt->a;
+        char name[64];
+        snprintf(name, sizeof name, "__v32_conv%d", g_conv_counter++);
+        AstNode *init = ast_new(AST_DIRECT_INIT, args[i]->line);
+        ast_list_append(&init->list, args[i]);
+        AstNode *decl = ast_new(AST_VAR_DECL, args[i]->line);
+        decl->str1 = strdup(name);
+        decl->type = (AstNode *)vt;
+        decl->a = init;
+        AstNode *use = ast_ident(name, args[i]->line);
+        decl->file = init->file = use->file = args[i]->file;
+        ast_list_append(&g_conv_pending, decl);
+        args[i] = use;
+    }
+}
+
+static void resolve_overload_generic_impl(AstNode *site, const char *name, AstNode **candidates, int count,
+                                      AstNode **args, int arg_count,
+                                      AstNode *current_class, LocalVarType *locals);
+
 static void resolve_overload_generic(AstNode *site, const char *name, AstNode **candidates, int count,
+                                      AstNode **args, int arg_count,
+                                      AstNode *current_class, LocalVarType *locals) {
+    resolve_overload_generic_impl(site, name, candidates, count, args, arg_count, current_class, locals);
+    convert_call_arguments(site, args, arg_count, current_class, locals);
+}
+
+static void resolve_overload_generic_impl(AstNode *site, const char *name, AstNode **candidates, int count,
                                       AstNode **args, int arg_count,
                                       AstNode *current_class, LocalVarType *locals) {
     if (count == 0) {
@@ -2165,7 +2329,7 @@ static void resolve_overload_generic(AstNode *site, const char *name, AstNode **
              * #define constants and C API call results as arguments. */
             AstNode *typed_match = NULL;
             int typed_match_count = 0;
-            for (int pass = 0; pass < 2 && typed_match_count == 0; pass++) {
+            for (int pass = 0; pass < 3 && typed_match_count == 0; pass++) {
             g_enum_promotes = pass;   /* exact types first, then enum -> int */
             for (int i = 0; i < count; i++) {
                 if (!(arg_count <= candidates[i]->list.count &&
@@ -2209,7 +2373,7 @@ static void resolve_overload_generic(AstNode *site, const char *name, AstNode **
 
     AstNode *match = NULL;
     int match_count = 0;
-    for (int pass = 0; pass < 2 && match_count == 0; pass++) {
+    for (int pass = 0; pass < 3 && match_count == 0; pass++) {
     g_enum_promotes = pass;   /* exact types first, then enum -> int */
     for (int i = 0; i < count; i++) {
         AstNode *cand = candidates[i];
@@ -2530,8 +2694,36 @@ static void resolve_operator_use(AstNode *node, const char *op_name, AstNode *lh
     if (op_name == NULL) return;
 
     AstNode *obj_class = resolve_expr_class(lhs_or_operand, current_class, locals);
-    if (obj_class == NULL) return; /* not class-typed -- a plain built-in
-        op on primitives, nothing for this pass to resolve at all */
+    /* A POINTER to an object (or an array of objects) is not an object:
+     * `p[0]`, `p == q`, `p + 1` on a `std::string *` are the built-in
+     * pointer operations, never the class's own operator[], ==, +.
+     * resolve_expr_class answers with the class for both, so the
+     * operand's type decides. */
+    int rhs_is_pointer = 0;
+    {
+        const AstNode *lt = infer_expr_type(lhs_or_operand, current_class, locals);
+        while (lt != NULL && lt->kind == AST_CONST_TYPE) lt = lt->a;
+        lt = resolve_typedef_chain(lt);
+        if (lt != NULL && (lt->kind == AST_POINTER_TYPE || lt->kind == AST_ARRAY_TYPE)) obj_class = NULL;
+        if (rhs_or_null != NULL) {
+            const AstNode *rt = infer_expr_type(rhs_or_null, current_class, locals);
+            while (rt != NULL && rt->kind == AST_CONST_TYPE) rt = rt->a;
+            rt = resolve_typedef_chain(rt);
+            rhs_is_pointer = (rt != NULL && (rt->kind == AST_POINTER_TYPE || rt->kind == AST_ARRAY_TYPE));
+            if (rhs_or_null->kind == AST_UNOP && rhs_or_null->str1 != NULL &&
+                strcmp(rhs_or_null->str1, "addr") == 0) rhs_is_pointer = 1; /* `this != &other` */
+        }
+        if (lhs_or_operand->kind == AST_UNOP && lhs_or_operand->str1 != NULL &&
+            strcmp(lhs_or_operand->str1, "addr") == 0) obj_class = NULL;
+    }
+    /* Not class-typed on the left. If the RIGHT operand is an object
+     * (`"x" + name`, `"quit" == command`), a free operator taking the
+     * class second may still apply -- only a free one: there is no
+     * object on the left to have members. Otherwise this is a plain
+     * built-in operation on primitives and there is nothing to resolve. */
+    if (obj_class == NULL &&
+        (rhs_or_null == NULL || rhs_is_pointer ||
+         resolve_expr_class(rhs_or_null, current_class, locals) == NULL)) return;
 
     AstNode *member_args[1];
     int member_arg_count = 0;
@@ -2539,7 +2731,8 @@ static void resolve_operator_use(AstNode *node, const char *op_name, AstNode *lh
 
     AstNode **member_candidates = NULL;
     int member_count = 0, member_cap = 0;
-    collect_method_candidates(obj_class, op_name, &member_candidates, &member_count, &member_cap);
+    if (obj_class != NULL)
+        collect_method_candidates(obj_class, op_name, &member_candidates, &member_count, &member_cap);
 
     if (member_count > 0) {
         resolve_overload_generic(node, op_name, member_candidates, member_count,
@@ -2566,6 +2759,27 @@ static void resolve_operator_use(AstNode *node, const char *op_name, AstNode *lh
     AstNode **free_candidates = NULL;
     int free_count = 0, free_cap = 0;
     collect_free_function_candidates(op_name, &free_candidates, &free_count, &free_cap);
+
+    /* Keep only the free operators these operands can actually be passed
+     * to. An operator declared for some OTHER class (std::string's
+     * `operator==(const char *, const string &)`, say) must not capture
+     * `a == b` on unrelated objects just because it is the only free
+     * operator== in the program. */
+    {
+        int kept = 0;
+        g_enum_promotes = 1;
+        for (int i = 0; i < free_count; i++) {
+            AstNode *cand = free_candidates[i];
+            int ok = (cand->list.count == free_arg_count);
+            for (int j = 0; ok && j < free_arg_count; j++) {
+                AstNode *at = infer_expr_type(free_args[j], current_class, locals);
+                if (at != NULL && !type_matches_param(cand->list.items[j]->type, at)) ok = 0;
+            }
+            if (ok) free_candidates[kept++] = cand;
+        }
+        g_enum_promotes = 0;
+        free_count = kept;
+    }
 
     if (free_count == 0) {
         free(free_candidates);
@@ -2615,17 +2829,132 @@ static AstNode *native_base_of(const AstNode *expr,
     return typedef_registry_is_native(t->str1) ? (AstNode *)t : NULL;
 }
 
+static void check_node(AstNode *n, AstNode *current_class, LocalVarType **locals);
+
+/* ---- auto ----------------------------------------------------------------
+ *
+ * `auto x = expr;` declares x with the type of expr. As in C++, a plain
+ * `auto` drops a reference and a top-level const (`auto e = *it;` is a
+ * copy), `auto &` / `const auto &` bind a reference, and `auto *` asks
+ * for a pointer. Only a local variable with an initializer can be auto.
+ */
+static int type_has_auto(const AstNode *t) {
+    while (t != NULL && (t->kind == AST_CONST_TYPE || t->kind == AST_REFERENCE_TYPE ||
+                         t->kind == AST_POINTER_TYPE)) t = t->a;
+    return t != NULL && t->kind == AST_IDENT && t->str1 != NULL && strcmp(t->str1, "auto") == 0;
+}
+
+/* `declared` with its `auto` replaced by `deduced`; NULL if they don't fit. */
+static AstNode *substitute_auto(const AstNode *declared, AstNode *deduced, int line) {
+    if (declared->kind == AST_IDENT) return deduced;
+    if (declared->kind == AST_POINTER_TYPE) {
+        while (deduced != NULL && deduced->kind == AST_CONST_TYPE) deduced = deduced->a;
+        if (deduced == NULL || deduced->kind != AST_POINTER_TYPE) return NULL;
+        AstNode *inner = substitute_auto(declared->a, deduced->a, line);
+        return inner != NULL ? ast_wrap_pointer(inner, line) : NULL;
+    }
+    AstNode *inner = substitute_auto(declared->a, deduced, line);
+    if (inner == NULL) return NULL;
+    if (declared->kind == AST_REFERENCE_TYPE) return ast_wrap_reference(inner, line);
+    if (inner->kind == AST_CONST_TYPE) return inner; /* const auto, already const */
+    AstNode *c = ast_new(AST_CONST_TYPE, line);
+    c->a = inner;
+    return c;
+}
+
+static void deduce_auto(AstNode *decl, AstNode *current_class, LocalVarType *locals) {
+    AstNode *fallback = ast_ident("int", decl->line); /* after an error: keep going */
+    if (decl->a == NULL || decl->a->kind == AST_DIRECT_INIT || decl->a->kind == AST_INIT_LIST) {
+        sema_error(decl->line, "'auto %s' needs an initializer of the form `= expression` "
+                               "to take its type from", decl->str1);
+        decl->type = fallback;
+        return;
+    }
+    AstNode *t = infer_expr_type(decl->a, current_class, locals);
+    int by_reference = 0;
+    for (const AstNode *d = decl->type; d != NULL && d->kind != AST_IDENT; d = d->a)
+        if (d->kind == AST_REFERENCE_TYPE) by_reference = 1;
+    if (t != NULL && t->kind == AST_REFERENCE_TYPE) t = t->a;
+    if (t != NULL && t->kind == AST_POINTER_TYPE && t->a != NULL && t->a->kind == AST_REFERENCE_TYPE) {
+        /* `&foes[0]`, where operator[] returns a reference: the address
+         * of what the reference names, not of the reference. */
+        t = ast_wrap_pointer(t->a->a, decl->line);
+    }
+    if (!by_reference)
+        while (t != NULL && t->kind == AST_CONST_TYPE) t = t->a; /* a copy is not const */
+    if (t != NULL && t->kind == AST_ARRAY_TYPE && !by_reference) t = ast_wrap_pointer(t->a, decl->line);
+    AstNode *result = (t != NULL) ? substitute_auto(decl->type, t, decl->line) : NULL;
+    if (result == NULL) {
+        sema_error(decl->line, "cannot work out the type of 'auto %s' from its initializer -- "
+                               "write the type out", decl->str1);
+        result = fallback;
+    }
+    decl->type = result;
+}
+
+/* `a = b;` between two objects of one class that declares operator= only
+ * for OTHER right-hand types (std::string has `= const char *` and
+ * `= char`): the implicit copy assignment, a plain copy of the object.
+ * Without this the declared operators would be the only candidates and
+ * none would match. */
+static int is_plain_copy_assignment(AstNode *n, AstNode *current_class, LocalVarType *locals) {
+    if (n->str1 == NULL || strcmp(n->str1, "=") != 0) return 0;
+    AstNode *lc = value_class_of(infer_expr_type(n->a, current_class, locals), 1);
+    if (lc == NULL || lc != value_class_of(infer_expr_type(n->b, current_class, locals), 1)) return 0;
+    ClassLayout *layout = (ClassLayout *)lc->sema_info;
+    if (layout == NULL) return 0;
+    for (int i = 0; i < layout->methods.count; i++) {
+        AstNode *m = layout->methods.items[i];
+        if (m->str1 == NULL || strcmp(m->str1, "operator=") != 0 || m->list.count != 1) continue;
+        if (value_class_of(m->list.items[0]->type, 1) == lc) return 0; /* its own copy assignment */
+    }
+    return 1;
+}
+
+/* Checks the body of an `if` or a loop. A body written without braces
+ * that needs a conversion object (see convert_call_arguments) is given
+ * braces, so the object is built inside the body -- each time round, and
+ * only when the body runs. */
+static void check_body(AstNode **slot, AstNode *current_class, LocalVarType **locals) {
+    AstNode *body = *slot;
+    if (body == NULL) return;
+    if (body->kind == AST_BLOCK) { check_node(body, current_class, locals); return; }
+    AstNode *block = ast_new(AST_BLOCK, body->line);
+    block->file = body->file;
+    ast_list_append(&block->list, body);
+    check_node(block, current_class, locals);
+    if (block->list.count > 1) *slot = block; /* otherwise leave the tree as written */
+}
+
 static void check_node(AstNode *n, AstNode *current_class, LocalVarType **locals) {
     if (n == NULL) return;
     if (n->file != NULL) g_sema_file = n->file;
     switch (n->kind) {
         case AST_BLOCK:
-            for (int i = 0; i < n->list.count; i++) check_node(n->list.items[i], current_class, locals);
+            g_conv_block_depth++;
+            for (int i = 0; i < n->list.count; i++) {
+                int mark = g_conv_pending.count;
+                check_node(n->list.items[i], current_class, locals);
+                int added = g_conv_pending.count - mark;
+                if (added > 0) {
+                    /* conversion objects this statement asked for (see
+                     * convert_call_arguments): declared just before it */
+                    AstList out = ast_list_new();
+                    for (int k = 0; k < i; k++) ast_list_append(&out, n->list.items[k]);
+                    for (int k = 0; k < added; k++) ast_list_append(&out, g_conv_pending.items[mark + k]);
+                    for (int k = i; k < n->list.count; k++) ast_list_append(&out, n->list.items[k]);
+                    g_conv_pending.count = mark;
+                    n->list = out;
+                    for (int k = 0; k < added; k++) check_node(n->list.items[i + k], current_class, locals);
+                    i += added;
+                }
+            }
+            g_conv_block_depth--;
             break;
         case AST_IF:
             check_node(n->a, current_class, locals);
-            check_node(n->b, current_class, locals);
-            check_node(n->c, current_class, locals);
+            check_body(&n->b, current_class, locals);
+            check_body(&n->c, current_class, locals);
             break;
         case AST_LABEL:
             /* The labeled statement itself (n->a) needs exactly the
@@ -2637,17 +2966,21 @@ static void check_node(AstNode *n, AstNode *current_class, LocalVarType **locals
             check_node(n->a, current_class, locals);
             break;
         case AST_WHILE:
+            g_conv_in_loop_header++;
             check_node(n->a, current_class, locals);
+            g_conv_in_loop_header--;
             g_sema_loop_depth++;
-            check_node(n->b, current_class, locals);
+            check_body(&n->b, current_class, locals);
             g_sema_loop_depth--;
             break;
         case AST_FOR:
             check_node(n->a, current_class, locals);
+            g_conv_in_loop_header++;
             check_node(n->b, current_class, locals);
             check_node(n->c, current_class, locals);
+            g_conv_in_loop_header--;
             g_sema_loop_depth++;
-            check_node(n->d, current_class, locals);
+            check_body(&n->d, current_class, locals);
             g_sema_loop_depth--;
             break;
         case AST_SWITCH:
@@ -2692,7 +3025,36 @@ static void check_node(AstNode *n, AstNode *current_class, LocalVarType **locals
                 sema_error(n->line, "'continue' statement not within a loop");
             }
             break;
-        case AST_RETURN:
+        case AST_RETURN: {
+            check_node(n->a, current_class, locals);
+            /* `return "abc";` from a function that returns an object by
+             * value: build the object from the value, then return it --
+             *     { std::string __v32_conv0("abc"); return __v32_conv0; }
+             * The statement becomes that block in place. */
+            AstNode *func = g_current_function_being_checked;
+            if (n->a != NULL && func != NULL && value_class_of(func->type, 0) != NULL &&
+                sema_converting_ctor(func->type, infer_expr_type(n->a, current_class, *locals)) != NULL) {
+                static int conv_counter = 0;
+                char name[64];
+                snprintf(name, sizeof name, "__v32_conv%d", conv_counter++);
+                AstNode *init = ast_new(AST_DIRECT_INIT, n->line);
+                ast_list_append(&init->list, n->a);
+                AstNode *decl = ast_new(AST_VAR_DECL, n->line);
+                decl->str1 = strdup(name);
+                decl->type = func->type;
+                decl->a = init;
+                AstNode *ret = ast_new(AST_RETURN, n->line);
+                ret->a = ast_ident(name, n->line);
+                decl->file = init->file = ret->file = ret->a->file = n->file;
+                n->kind = AST_BLOCK;
+                n->a = NULL;
+                n->list = ast_list_new();
+                ast_list_append(&n->list, decl);
+                ast_list_append(&n->list, ret);
+                check_node(n, current_class, locals);
+            }
+            break;
+        }
         case AST_EXPR_STMT:
         case AST_DELETE:
             check_node(n->a, current_class, locals);
@@ -2762,6 +3124,20 @@ static void check_node(AstNode *n, AstNode *current_class, LocalVarType **locals
                 n->a->type = n->type;
             }
             check_node(n->a, current_class, locals); /* initializer, if any */
+            if (type_has_auto(n->type)) deduce_auto(n, current_class, *locals);
+            /* `std::string name = "abc";` -- an object initialized from a
+             * value that is not an object of its class is constructed
+             * FROM that value: the same as `std::string name("abc");`. */
+            if (n->a != NULL && n->a->kind != AST_DIRECT_INIT && n->a->kind != AST_INIT_LIST &&
+                value_class_of(n->type, 0) != NULL &&
+                sema_converting_ctor(n->type, infer_expr_type(n->a, current_class, *locals)) != NULL) {
+                AstNode *init = ast_new(AST_DIRECT_INIT, n->a->line);
+                init->file = n->a->file;
+                ast_list_append(&init->list, n->a);
+                init->type = n->type;
+                n->a = init;
+                resolve_new_expr(init, current_class, *locals);
+            }
             LocalVarType *lv = calloc(1, sizeof(LocalVarType)); /* calloc: zero-inits was_reference too */
             lv->name = n->str1;
             lv->type = n->type;
@@ -2777,6 +3153,7 @@ static void check_node(AstNode *n, AstNode *current_class, LocalVarType **locals
         case AST_ASSIGN:
             check_node(n->a, current_class, locals);
             check_node(n->b, current_class, locals);
+            if (is_plain_copy_assignment(n, current_class, *locals)) break;
             resolve_operator_use(n, assign_operator_name(n->str1), n->a, n->b, current_class, *locals);
             break;
         case AST_SUBSCRIPT:
@@ -3151,6 +3528,30 @@ int sema_program_has_function(const AstNode *program, const char *name) {
     return decls_have_function(&program->list, name);
 }
 
+/* `auto` anywhere but a local variable (see deduce_auto): a global, a
+ * member, a parameter, a return type. Said plainly here rather than left
+ * to reach the generated C. */
+static void reject_misplaced_auto(const AstList *decls) {
+    for (int i = 0; i < decls->count; i++) {
+        const AstNode *n = decls->items[i];
+        if (n == NULL) continue;
+        if (n->kind == AST_FUNC_DEF || n->kind == AST_FUNC_DECL) {
+            if (type_has_auto(n->type))
+                sema_error(n->line, "'auto' as the return type of '%s' is not supported -- "
+                                    "write the type out", n->str1 != NULL ? n->str1 : "?");
+            for (int j = 0; j < n->list.count; j++)
+                if (n->list.items[j] != NULL && type_has_auto(n->list.items[j]->type))
+                    sema_error(n->line, "an 'auto' parameter is not supported (that is a template) -- "
+                                        "write the type out");
+            continue; /* locals inside are deduce_auto's business */
+        }
+        if (type_has_auto(n->type))
+            sema_error(n->line, "'auto' is only supported for a local variable -- write the type of "
+                                "'%s' out", n->str1 != NULL ? n->str1 : "?");
+        reject_misplaced_auto(&n->list);
+    }
+}
+
 int sema_run(AstNode *program) {
 
     g_error_count = 0;
@@ -3162,6 +3563,7 @@ int sema_run(AstNode *program) {
     free_global_var_registry(); /* same */
 
     g_lookup_ns = "";
+    reject_misplaced_auto(&program->list);
     collect_declarations(&program->list);
     attach_out_of_line(&program->list);
     compute_layouts(&program->list);

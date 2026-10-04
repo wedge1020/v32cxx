@@ -46,6 +46,7 @@
 #include <string.h>
 #include "driver.h"
 #include "parser.h"
+#include "compat.h"
 #include "generic.h"
 #include "prescan.h" /* line-marker consumption -- see the new rule below */
 
@@ -224,7 +225,7 @@ ALNUM   [A-Za-z0-9_]
      * macro.c's annotate rule). Never a token itself; '@' cannot appear
      * in C++ source outside a string, comment or this annotation. */
 "@"{ALPHA}{ALNUM}*"@"           {
-    g_pending_macro = strndup(yytext + 1, (size_t)yyleng - 2);
+    g_pending_macro = compat_strndup(yytext + 1, (size_t)yyleng - 2);
 }
 
     /* `#define LOW -1`: the annotation swallows the minus, and the literal
@@ -232,7 +233,7 @@ ALNUM   [A-Za-z0-9_]
      * literal, -1, named LOW, never `-(LOW)` (which would print back as
      * -LOW, i.e. +1). */
 "@"{ALPHA}{ALNUM}*"@-"          {
-    g_pending_macro = strndup(yytext + 1, (size_t)yyleng - 3);
+    g_pending_macro = compat_strndup(yytext + 1, (size_t)yyleng - 3);
     g_pending_negate = 1;
 }
 [ \t\r]+                        { /* whitespace */ }
@@ -410,6 +411,30 @@ ALNUM   [A-Za-z0-9_]
     return IDENTIFIER;
 }
 
+"auto"  {
+    /* `auto x = expr;` -- a type name as far as the grammar goes; sema
+     * replaces it with the type of the initializer (deduce_auto). */
+    g_last_ident_sym = NULL;
+    yylval.str = strdup(yytext);
+    return TYPE_NAME;
+}
+
+("std"[ \t]*"::"[ \t]*)?"string"[ \t]*"::"[ \t]*"npos"  {
+    /* std::string::npos: positions are int here, and "no position" is -1
+     * (see lib/string). */
+    g_last_ident_sym = NULL;
+    yylval.lit.ival = -1;
+    yylval.lit.macro = NULL;
+    return INT_LITERAL;
+}
+
+"using"[ \t]+"std"[ \t]*"::"[ \t]*{ALPHA}{ALNUM}*[ \t]*";"  {
+    /* `using std::string;` -- treated as `using namespace std;`: every
+     * name in std becomes visible, not just the one named. */
+    g_last_ident_sym = NULL;
+    g_using_std = 1;
+}
+
 "using"[ \t]+"namespace"[ \t]+"std"[ \t]*";"  {
     /* Lets `array<T, N>` be written without the std:: prefix. Nothing
      * else lives in std here, so the directive has no other effect. */
@@ -441,7 +466,15 @@ ALNUM   [A-Za-z0-9_]
      * a preceding "::" if any (symtab_lookup_qualified consumes it).
      * Remember what we resolved in case the *next* token is "::". */
     yylval.str = strdup(yytext);
+    int qualified = (g_symtab->pending_qualifier != NULL);
     Symbol *sym = symtab_lookup_qualified(g_symtab, yytext);
+    if (sym == NULL && !qualified && g_using_std) {
+        /* After `using namespace std;` a name nothing else declares is
+         * looked for in std: `string` is std::string. */
+        Symbol *ns = symtab_lookup_in(g_symtab->global, "std");
+        if (ns != NULL && ns->kind == SYM_NAMESPACE && ns->inner_scope != NULL)
+            sym = symtab_lookup_in(ns->inner_scope, yytext);
+    }
     g_last_ident_sym = sym;
     if (sym != NULL && (sym->kind == SYM_CLASS || sym->kind == SYM_TYPEDEF || sym->kind == SYM_ENUM || sym->kind == SYM_UNION)) {
         return TYPE_NAME;

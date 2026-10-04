@@ -176,6 +176,16 @@ entry #11 for the full reasoning and stated scope gaps (an array- or
 nested-struct-typed field can still under-count; unions aren't checked
 at all).
 
+**`std::string`** (`#include <string>`) is built in: an ordinary class
+with most of the usual members, `+`, comparisons, `to_string`/`stoi`,
+and conversion from literals. It holds its characters in the object
+itself, so it copies by value correctly, and truncates at a fixed
+capacity (63 characters unless `V32_STRING_CAPACITY` says otherwise).
+See [`docs/STRING.md`](docs/STRING.md).
+
+**`auto`** works for local variables (`auto it = v.begin();`) and in the
+range-based `for` (`for (auto &e : enemies)`).
+
 **`std::array<T, N>` and `std::vector<T>`** are available as
 transpiler-level generics: not templates, but two fixed forms the
 transpiler expands into one ordinary class per element type
@@ -948,6 +958,11 @@ planned, ever, rather than "not yet":
   your `PATH`.)
 - A C compiler (gcc or clang)
 
+Linux and macOS are what it is built and tested on. For Windows
+(MinGW / MSYS2), the few POSIX calls the source needs (`realpath`,
+`getline`, `strndup`, `tmpfile`, the `PATH` separator) go through
+`src/compat.c`, which has a Windows branch for each.
+
 ## Building
 
 ```sh
@@ -1156,6 +1171,9 @@ src/            implementation (.c, plus the flex/bison sources)
   generic.c     std::array<T, N> and std::vector<T>: the class text and
                 its instantiation
                 (see docs/GENERICS.md)
+  stdstring.c   the built-in <string> header's text (GENERATED from
+                lib/string by tools/embed-header.sh; see docs/STRING.md)
+  compat.c      the handful of POSIX calls that differ on Windows
   prescan.c     the C++-side preprocessor: include resolution,
                 #define/#undef, #if/#ifdef, line markers
   macro.c       macro table, expander and #if expression evaluator
@@ -1168,6 +1186,7 @@ inc/            headers for the above (one per .c, plus:)
                 `make version`), AUTHOR, URL
   config.h      build-time configuration: the #include search path
                 and its environment variable, limits
+lib/            string: the source of the built-in <string> header
 v32/            C++ headers wrapping the Vircon32 C API (video, input,
                 string, time, audio, math, misc, memcard) in namespace
                 v32 -- include with -I

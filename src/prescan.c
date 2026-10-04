@@ -4,7 +4,9 @@
 #include <errno.h>
 #include <unistd.h> /* access() */
 #include "prescan.h"
+#include "compat.h"
 #include "generic.h"
+#include "stdstring.h"
 #include "macro.h"
 
 /* ---- tiny growable path-set --------------------------------------------
@@ -43,7 +45,7 @@ static void path_set_pop(PathSet *set) {
  * slash), or "." when path has none -- so join_path(dir, "a.hpp") always
  * produces a real sibling lookup. */
 static char *path_dirname(const char *path) {
-    const char *slash = strrchr(path, '/');
+    const char *slash = compat_last_separator(path);
     if (slash == NULL) return strdup(".");
     size_t len = (size_t)(slash - path);
     if (len == 0) len = 1; /* "/file" -> "/" */
@@ -84,7 +86,7 @@ static int is_expanded_extension(const char *target) {
  * through a nonexistent-but-irrelevant component), which can only
  * make detection MORE conservative, never wrong. */
 static char *canonical_path(const char *path) {
-    char *resolved = realpath(path, NULL);
+    char *resolved = compat_realpath(path);
     return resolved ? resolved : strdup(path);
 }
 
@@ -289,7 +291,7 @@ static char *read_logical(LineReader *r, int *first, int *nphys) {
     }
     char *line = NULL;
     size_t cap = 0;
-    ssize_t len = getline(&line, &cap, r->in);
+    long len = compat_getline(&line, &cap, r->in);
     if (len == -1) { free(line); return NULL; }
     *first = ++r->lineno;
     *nphys = 1;
@@ -301,10 +303,10 @@ static char *read_logical(LineReader *r, int *first, int *nphys) {
         while (chk > 0 && line[chk - 1] == '\r') chk--;
         if (chk == 0 || line[chk - 1] != '\\') break;
         line[chk - 1] = '\0';                /* splice: drop "\\" (+ any \r) */
-        len = (ssize_t)(chk - 1);
+        len = (long)(chk - 1);
         char *next = NULL;
         size_t ncap = 0;
-        ssize_t nlen = getline(&next, &ncap, r->in);
+        long nlen = compat_getline(&next, &ncap, r->in);
         if (nlen == -1) { free(next); break; }
         r->lineno++;
         (*nphys)++;
@@ -516,9 +518,25 @@ static int expand_file(const char *path, FILE *out,
     return expand_file_mode(path, out, dirs, ndirs, is_top, 0);
 }
 
+/* The name the built-in <string> header goes by: in diagnostics, in line
+ * markers, and as its #pragma once key. Not a real path. */
+#define BUILTIN_STRING_PATH "<string>"
+
+/* The built-in header's text in a temporary file, ready to read. */
+static FILE *open_builtin_string(void) {
+    FILE *f = compat_tmpfile();
+    if (f == NULL) return NULL;
+    for (int i = 0; g_stdstring_lines[i] != NULL; i++) {
+        fputs(g_stdstring_lines[i], f);
+        fputc('\n', f);
+    }
+    rewind(f);
+    return f;
+}
+
 static int expand_file_mode(const char *path, FILE *out,
                             char *const *dirs, int ndirs, int is_top, int harvest) {
-    FILE *in = fopen(path, "r");
+    FILE *in = (strcmp(path, BUILTIN_STRING_PATH) == 0) ? open_builtin_string() : fopen(path, "r");
     if (in == NULL) {
         if (is_top)
             fprintf(stderr, "---- error: cannot open input file '%s': %s ----\n",
@@ -703,6 +721,19 @@ static int expand_file_mode(const char *path, FILE *out,
                 free(line);
                 continue;
             }
+            else if (target != NULL && angle && strcmp(target, "string") == 0) {
+                /* `#include <string>`: std::string, from the header built
+                 * into the transpiler (stdstring.h). Nothing reaches the
+                 * generated C but the class itself. */
+                if (!harvest) {
+                    rc = expand_file(BUILTIN_STRING_PATH, out, dirs, ndirs, 0);
+                    emit_marker(out, lineno + nphys, path);
+                }
+                free(target);
+                free(word);
+                free(line);
+                continue;
+            }
             else if (target != NULL && is_expanded_extension(target) && harvest) {
                 /* a .hpp included from a pass-through .h: not ours to read */
                 free(target);
@@ -826,7 +857,7 @@ FILE *prescan_expand(const char *input_filename, char *const *include_dirs, int 
                      char *const *system_dirs, int system_dir_count) {
     g_system_dirs = system_dirs;
     g_system_dir_count = system_dir_count;
-    FILE *out = tmpfile();
+    FILE *out = compat_tmpfile();
     if (out == NULL) {
         perror("tmpfile");
         return NULL;

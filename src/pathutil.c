@@ -1,10 +1,11 @@
 #include <stdlib.h>
 #include <string.h>
 #include "pathutil.h"
+#include "compat.h"
 
 char *replace_extension(const char *path, const char *new_ext) {
     const char *dot = strrchr(path, '.');
-    const char *slash = strrchr(path, '/');
+    const char *slash = compat_last_separator(path);
     size_t base_len = (dot != NULL && (slash == NULL || dot > slash))
                      ? (size_t)(dot - path)
                      : strlen(path);

@@ -106,9 +106,10 @@ for (Enemy *it = enemies.begin(); it != enemies.end(); ++it) {
 
 It works over anything with `begin()` and `end()` returning `T *`:
 `std::array`, `std::vector`, or a class of your own. `break` and
-`continue` behave as usual. The element type must be written out (there
-is no `auto`), and a plain C array has no `begin()`/`end()` to call, so
-it cannot be the range. Unlike C++, `end()` is asked for on every pass,
+`continue` behave as usual. The element type can be written out or left
+to `auto` (`for (auto &e : enemies)`, `for (const auto &e : enemies)`,
+`for (auto e : enemies)` for a copy). A plain C array has no
+`begin()`/`end()` to call, so it cannot be the range. Unlike C++, `end()` is asked for on every pass,
 and the range expression is evaluated once for `begin()` and once per
 `end()`: use a variable, not a function call, as the range.
 `tests/110sample.cpp` covers it.
@@ -207,5 +208,8 @@ loops.
 - **Named lengths are compared by name.** `std::array<int, MAX>` and
   `std::array<int, 8>` are different types even when `MAX` is 8. A
   `#define` is not affected (it is expanded before parsing).
-- No `auto`, no `::iterator` type names (iterators are `T *`), and no
-  range-based `for` over a plain C array.
+- No `::iterator` type names (iterators are `T *`; `auto it =
+  v.begin();` works), and no range-based `for` over a plain C array.
+- `auto` is for local variables with an `= expression` initializer, and
+  for the range-based `for`. It is not supported for globals, members,
+  parameters or return types.

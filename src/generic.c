@@ -8,6 +8,7 @@
 #include "generic.h"
 #include "driver.h"
 #include "prescan.h"
+#include "compat.h"
 
 int g_generic_array_enabled = 0;
 int g_generic_vector_enabled = 0;
@@ -523,7 +524,7 @@ int generic_instantiate_pending(void) {
         }
         if (first == NULL) break;
 
-        FILE *f = tmpfile();
+        FILE *f = compat_tmpfile();
         if (f == NULL) { perror("tmpfile"); rc = 1; break; }
         fputs("# 1 \"<generic>\"\n", f);
         Instance *last = NULL;

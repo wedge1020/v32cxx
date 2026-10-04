@@ -2204,8 +2204,9 @@ stmt:
              * -- so every later pass sees an ordinary for loop over
              * pointers. Works for anything with begin()/end() returning
              * `T *`: std::array, std::vector, or a class of your own.
-             * The element type must be written out (there is no `auto`),
-             * and a plain C array has no begin()/end() to call.
+             * The element type may be `auto` (`auto`, `auto &`,
+             * `const auto &`). A plain C array has no begin()/end() to
+             * call.
              *
              * Differences from C++: the range expression is evaluated
              * once per begin() and once per end(), and end() is asked for
@@ -2232,6 +2233,11 @@ stmt:
             AstNode *it_decl = ast_new(AST_VAR_DECL, line);
             it_decl->str1 = strdup(it_name);
             it_decl->type = ast_wrap_pointer(elem, line);
+            if ($3 != 1 && elem->kind == AST_IDENT && strcmp(elem->str1, "auto") == 0) {
+                /* `for (auto &e : enemies)`: the iterator is whatever
+                 * begin() returns, and sema deduces both from there. */
+                it_decl->type = ast_ident("auto", line);
+            }
             it_decl->a = begin_call;
 
             AstNode *cond = ast_new(AST_BINOP, line);

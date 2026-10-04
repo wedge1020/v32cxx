@@ -1,0 +1,377 @@
+#pragma once
+// <string> -- v32c++'s built-in std::string.
+//
+// A std::string here is a FIXED-CAPACITY string: its characters live inside
+// the object itself (no heap), in an array of V32_STRING_CAPACITY + 1
+// characters. That is what lets it be copied, assigned, passed and
+// returned BY VALUE exactly as in C++ -- a copy is a plain copy of the
+// object, with nothing shared and nothing to free -- in a transpiler that
+// has no copy constructors. The price: a string that would grow past the
+// capacity is TRUNCATED, silently.
+//
+// The capacity is 63 characters unless V32_STRING_CAPACITY is defined
+// before this header is included (#define, or -D on the command line).
+// On Vircon32 every character is one 32-bit word, so a std::string
+// occupies capacity + 2 words, and copying one copies all of them.
+//
+// Sizes and positions are int. std::string::npos is -1.
+#ifndef V32_STRING_CAPACITY
+#define V32_STRING_CAPACITY 63
+#endif
+
+namespace std {
+
+class string {
+public:
+    char m_data[V32_STRING_CAPACITY + 1];   // always 0-terminated
+    int  m_size;
+
+    // ---- construction -------------------------------------------------------
+    string()                              { m_size = 0; m_data[0] = 0; }
+    string(const char* text)              { m_size = 0; m_data[0] = 0; append(text); }
+    string(const char* text, int count)   { m_size = 0; m_data[0] = 0; append(text, count); }
+    string(int count, char c)             { m_size = 0; m_data[0] = 0; append(count, c); }
+    string(const string& other, int pos, int count = -1) {
+        m_size = 0; m_data[0] = 0;
+        append(other, pos, count);
+    }
+
+    // ---- size ---------------------------------------------------------------
+    int  size() const     { return m_size; }
+    int  length() const   { return m_size; }
+    bool empty() const    { return m_size == 0; }
+    int  capacity() const { return V32_STRING_CAPACITY; }
+    int  max_size() const { return V32_STRING_CAPACITY; }
+    void clear()          { m_size = 0; m_data[0] = 0; }
+    void reserve(int n)   { }                 // the capacity is fixed
+    void shrink_to_fit()  { }
+
+    void resize(int count, char c = 0) {
+        if (count < 0) count = 0;
+        if (count > V32_STRING_CAPACITY) count = V32_STRING_CAPACITY;
+        for (int i = m_size; i < count; ++i) m_data[i] = c;
+        m_size = count;
+        m_data[m_size] = 0;
+    }
+
+    // ---- element access -----------------------------------------------------
+    char& operator[](int i) { return m_data[i]; }
+    char& at(int i)         { return m_data[i]; }   // no bounds check: no exceptions
+    char& front()           { return m_data[0]; }
+    char& back()            { return m_data[m_size - 1]; }
+    const char* c_str() const { return m_data; }
+    const char* data() const  { return m_data; }
+    char* begin()           { return m_data; }
+    char* end()             { return m_data + m_size; }
+
+    // ---- appending ----------------------------------------------------------
+    void push_back(char c) {
+        if (m_size >= V32_STRING_CAPACITY) return;
+        m_data[m_size] = c;
+        ++m_size;
+        m_data[m_size] = 0;
+    }
+    void pop_back() {
+        if (m_size > 0) --m_size;
+        m_data[m_size] = 0;
+    }
+
+    string& append(const char* text) {
+        for (int i = 0; text[i] != 0 && m_size < V32_STRING_CAPACITY; ++i) {
+            m_data[m_size] = text[i];
+            ++m_size;
+        }
+        m_data[m_size] = 0;
+        return *this;
+    }
+    string& append(const char* text, int count) {
+        for (int i = 0; i < count && text[i] != 0 && m_size < V32_STRING_CAPACITY; ++i) {
+            m_data[m_size] = text[i];
+            ++m_size;
+        }
+        m_data[m_size] = 0;
+        return *this;
+    }
+    string& append(const string& other) {
+        // by index, with the count fixed first: s.append(s) doubles s
+        int count = other.m_size;
+        for (int i = 0; i < count && m_size < V32_STRING_CAPACITY; ++i) {
+            m_data[m_size] = other.m_data[i];
+            ++m_size;
+        }
+        m_data[m_size] = 0;
+        return *this;
+    }
+    string& append(const string& other, int pos, int count = -1) {
+        if (pos < 0) pos = 0;
+        int available = other.m_size - pos;
+        if (count < 0 || count > available) count = available;
+        for (int i = 0; i < count && m_size < V32_STRING_CAPACITY; ++i) {
+            m_data[m_size] = other.m_data[pos + i];
+            ++m_size;
+        }
+        m_data[m_size] = 0;
+        return *this;
+    }
+    string& append(int count, char c) {
+        for (int i = 0; i < count; ++i) push_back(c);
+        return *this;
+    }
+
+    string& operator+=(const string& other) { return append(other); }
+    string& operator+=(const char* text)    { return append(text); }
+    string& operator+=(char c)              { push_back(c); return *this; }
+
+    // ---- assigning ----------------------------------------------------------
+    // (string = string needs nothing here: it is a plain copy of the object)
+    string& operator=(const char* text) { clear(); return append(text); }
+    string& operator=(char c)           { clear(); push_back(c); return *this; }
+    string& assign(const char* text)    { clear(); return append(text); }
+    string& assign(const string& other) { if (this != &other) { clear(); append(other); } return *this; }
+    string& assign(int count, char c)   { clear(); return append(count, c); }
+
+    // ---- inserting, erasing, replacing --------------------------------------
+    string& erase(int pos = 0, int count = -1) {
+        if (pos < 0) pos = 0;
+        if (pos >= m_size) return *this;
+        if (count < 0 || count > m_size - pos) count = m_size - pos;
+        for (int i = pos; i + count <= m_size; ++i) m_data[i] = m_data[i + count];
+        m_size -= count;
+        return *this;
+    }
+    string& insert(int pos, const char* text) {
+        if (pos < 0) pos = 0;
+        if (pos > m_size) pos = m_size;
+        int count = 0;
+        while (text[count] != 0) ++count;
+        if (count > V32_STRING_CAPACITY - pos) count = V32_STRING_CAPACITY - pos;
+        int size = m_size + count;                 // what survives of the tail
+        if (size > V32_STRING_CAPACITY) size = V32_STRING_CAPACITY;
+        for (int i = size - 1; i >= pos + count; --i) m_data[i] = m_data[i - count];
+        for (int i = 0; i < count; ++i) m_data[pos + i] = text[i];
+        m_size = size;
+        m_data[m_size] = 0;
+        return *this;
+    }
+    string& insert(int pos, const string& other) {
+        string copy = other;                       // other may be *this
+        return insert(pos, copy.m_data);
+    }
+    string& insert(int pos, int count, char c) {
+        string run(count, c);
+        return insert(pos, run.m_data);
+    }
+    string& replace(int pos, int count, const char* text) {
+        erase(pos, count);
+        return insert(pos, text);
+    }
+    string& replace(int pos, int count, const string& other) {
+        string copy = other;
+        erase(pos, count);
+        return insert(pos, copy.m_data);
+    }
+
+    // ---- searching (all return a position, or -1 = std::string::npos) --------
+    int find(const char* text, int pos = 0) const {
+        if (pos < 0) pos = 0;
+        int count = 0;
+        while (text[count] != 0) ++count;
+        for (int i = pos; i + count <= m_size; ++i) {
+            int k = 0;
+            while (k < count && m_data[i + k] == text[k]) ++k;
+            if (k == count) return i;
+        }
+        return -1;
+    }
+    int find(const string& other, int pos = 0) const { return find(other.m_data, pos); }
+    int find(char c, int pos = 0) const {
+        if (pos < 0) pos = 0;
+        for (int i = pos; i < m_size; ++i)
+            if (m_data[i] == c) return i;
+        return -1;
+    }
+    int rfind(const char* text) const {
+        int count = 0;
+        while (text[count] != 0) ++count;
+        for (int i = m_size - count; i >= 0; --i) {
+            int k = 0;
+            while (k < count && m_data[i + k] == text[k]) ++k;
+            if (k == count) return i;
+        }
+        return -1;
+    }
+    int rfind(const string& other) const { return rfind(other.m_data); }
+    int rfind(char c) const {
+        for (int i = m_size - 1; i >= 0; --i)
+            if (m_data[i] == c) return i;
+        return -1;
+    }
+    int find_first_of(const char* set, int pos = 0) const {
+        if (pos < 0) pos = 0;
+        for (int i = pos; i < m_size; ++i)
+            for (int k = 0; set[k] != 0; ++k)
+                if (m_data[i] == set[k]) return i;
+        return -1;
+    }
+    int find_first_not_of(const char* set, int pos = 0) const {
+        if (pos < 0) pos = 0;
+        for (int i = pos; i < m_size; ++i) {
+            bool listed = false;
+            for (int k = 0; set[k] != 0; ++k)
+                if (m_data[i] == set[k]) listed = true;
+            if (!listed) return i;
+        }
+        return -1;
+    }
+    int find_last_of(const char* set) const {
+        for (int i = m_size - 1; i >= 0; --i)
+            for (int k = 0; set[k] != 0; ++k)
+                if (m_data[i] == set[k]) return i;
+        return -1;
+    }
+    int find_last_not_of(const char* set) const {
+        for (int i = m_size - 1; i >= 0; --i) {
+            bool listed = false;
+            for (int k = 0; set[k] != 0; ++k)
+                if (m_data[i] == set[k]) listed = true;
+            if (!listed) return i;
+        }
+        return -1;
+    }
+
+    bool starts_with(const char* text) const {
+        int i = 0;
+        while (text[i] != 0) {
+            if (i >= m_size || m_data[i] != text[i]) return false;
+            ++i;
+        }
+        return true;
+    }
+    bool starts_with(const string& other) const { return starts_with(other.m_data); }
+    bool ends_with(const char* text) const {
+        int count = 0;
+        while (text[count] != 0) ++count;
+        if (count > m_size) return false;
+        for (int i = 0; i < count; ++i)
+            if (m_data[m_size - count + i] != text[i]) return false;
+        return true;
+    }
+    bool ends_with(const string& other) const { return ends_with(other.m_data); }
+
+    string substr(int pos = 0, int count = -1) const {
+        string part;
+        part.append(*this, pos, count);
+        return part;
+    }
+
+    // ---- comparing ----------------------------------------------------------
+    // < 0, 0 or > 0, like strcmp
+    int compare(const char* text) const {
+        int i = 0;
+        while (i < m_size && text[i] != 0 && m_data[i] == text[i]) ++i;
+        int mine   = (i < m_size) ? m_data[i] : 0;
+        int theirs = text[i];
+        return mine - theirs;
+    }
+    int compare(const string& other) const { return compare(other.m_data); }
+
+    bool operator==(const string& other) const { return compare(other.m_data) == 0; }
+    bool operator!=(const string& other) const { return compare(other.m_data) != 0; }
+    bool operator<(const string& other) const  { return compare(other.m_data) < 0; }
+    bool operator>(const string& other) const  { return compare(other.m_data) > 0; }
+    bool operator<=(const string& other) const { return compare(other.m_data) <= 0; }
+    bool operator>=(const string& other) const { return compare(other.m_data) >= 0; }
+    bool operator==(const char* text) const { return compare(text) == 0; }
+    bool operator!=(const char* text) const { return compare(text) != 0; }
+    bool operator<(const char* text) const  { return compare(text) < 0; }
+    bool operator>(const char* text) const  { return compare(text) > 0; }
+    bool operator<=(const char* text) const { return compare(text) <= 0; }
+    bool operator>=(const char* text) const { return compare(text) >= 0; }
+
+    // ---- joining ------------------------------------------------------------
+    string operator+(const string& other) const { string joined = *this; joined.append(other); return joined; }
+    string operator+(const char* text) const    { string joined = *this; joined.append(text);  return joined; }
+    string operator+(char c) const              { string joined = *this; joined.push_back(c);  return joined; }
+};
+
+// "text" + s, and "text" == s
+string operator+(const char* text, const string& s) { string joined(text); joined.append(s); return joined; }
+bool operator==(const char* text, const string& s)  { return s.compare(text) == 0; }
+bool operator!=(const char* text, const string& s)  { return s.compare(text) != 0; }
+
+// ---- numbers <-> text ---------------------------------------------------------
+string to_string(int value) {
+    string digits;
+    bool negative = value < 0;
+    // work on the negative side so the most negative int is not a special case
+    if (!negative) value = -value;
+    do {
+        digits.push_back('0' - value % 10);
+        value /= 10;
+    } while (value != 0);
+    if (negative) digits.push_back('-');
+    string text;
+    for (int i = digits.m_size - 1; i >= 0; --i) text.push_back(digits.m_data[i]);
+    return text;
+}
+
+// six decimals, like the C++ library's "%f"
+string to_string(float value) {
+    string text;
+    if (value < 0) { text.push_back('-'); value = -value; }
+    int whole = value;
+    float fraction = value - whole;
+    text.append(to_string(whole));
+    text.push_back('.');
+    for (int i = 0; i < 6; ++i) {
+        fraction *= 10;
+        int digit = fraction;
+        text.push_back('0' + digit);
+        fraction -= digit;
+    }
+    return text;
+}
+
+// leading spaces, an optional sign, then digits; stops at anything else
+int stoi(const string& s) {
+    int i = 0;
+    while (i < s.m_size && s.m_data[i] == ' ') ++i;
+    bool negative = false;
+    if (i < s.m_size && (s.m_data[i] == '-' || s.m_data[i] == '+')) {
+        negative = (s.m_data[i] == '-');
+        ++i;
+    }
+    int value = 0;
+    while (i < s.m_size && s.m_data[i] >= '0' && s.m_data[i] <= '9') {
+        value = value * 10 + (s.m_data[i] - '0');
+        ++i;
+    }
+    return negative ? -value : value;
+}
+
+float stof(const string& s) {
+    int i = 0;
+    while (i < s.m_size && s.m_data[i] == ' ') ++i;
+    bool negative = false;
+    if (i < s.m_size && (s.m_data[i] == '-' || s.m_data[i] == '+')) {
+        negative = (s.m_data[i] == '-');
+        ++i;
+    }
+    float value = 0;
+    while (i < s.m_size && s.m_data[i] >= '0' && s.m_data[i] <= '9') {
+        value = value * 10 + (s.m_data[i] - '0');
+        ++i;
+    }
+    if (i < s.m_size && s.m_data[i] == '.') {
+        ++i;
+        float place = 0.1;
+        while (i < s.m_size && s.m_data[i] >= '0' && s.m_data[i] <= '9') {
+            value += (s.m_data[i] - '0') * place;
+            place /= 10;
+            ++i;
+        }
+    }
+    return negative ? -value : value;
+}
+
+} // namespace std

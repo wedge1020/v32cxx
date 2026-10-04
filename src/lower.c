@@ -643,6 +643,10 @@ static AstNode *strip_const_member_read(AstNode *expr, AstNode *class_decl, Loca
     /* A struct can't be cast by value (`(Vec)this->pos` is not C);
      * phase 11 reads a const struct through a pointer cast instead. */
     if (type_to_class(read_type) != NULL) return expr;
+    /* Nor can an array (`(char [64])this->m_data` is not C either): an
+     * array member read through a const object is left as it is, and
+     * decays to a pointer to const like any other. */
+    if (read_type->kind == AST_ARRAY_TYPE) return expr;
     AstNode *cast = ast_new(AST_CAST, expr->line);
     cast->type = read_type; /* reused by reference, not deep-copied --
         same convention as every other cast built in this file */
@@ -5813,20 +5817,21 @@ static void v32_unconst_read(AstNode **slot, AstNode *cls, LocalVarType *locals)
         lower_note(e->line, "inserted a cast around a read of a const value "
             "-- Vircon32 C rejects copying a const-qualified value into a "
             "plain one (\"discards const qualifier\"), which standard C allows");
-    } else if (core == e && vt->kind == AST_IDENT && type_to_class(vt) != NULL) {
+    } else if (core == e && (vt->kind == AST_IDENT || vt->kind == AST_QUALIFIED_ID) &&
+               type_to_class(vt) != NULL) {
         /* const struct, copied by value: *((S *)&expr) */
         AstNode *addr = ast_new(AST_UNOP, e->line);
         addr->str1 = strdup("addr");
         addr->a = e;
         AstNode *cast = ast_new(AST_CAST, e->line);
-        cast->type = ast_wrap_pointer(ast_ident(vt->str1, e->line), e->line);
+        cast->type = ast_wrap_pointer(vt, e->line); /* vt itself: it may be qualified (std::string) */
         cast->a = addr;
         AstNode *deref = ast_new(AST_UNOP, e->line);
         deref->str1 = strdup("deref");
         deref->a = cast;
         *slot = deref;
         lower_note(e->line, "read a const struct through a (%s *) cast -- "
-            "Vircon32 C rejects copying a const struct into a plain one", vt->str1);
+            "Vircon32 C rejects copying a const struct into a plain one", type_to_class(vt)->str1);
     }
 }
 
@@ -5878,6 +5883,30 @@ static void v32_compat_expr(AstNode **slot, AstNode *cls, LocalVarType *locals) 
             for (int i = 0; i < n->list.count; i++) {
                 v32_compat_expr(&n->list.items[i], cls, locals);
                 v32_unconst_read(&n->list.items[i], cls, locals);
+            }
+            {
+                /* A pointer-to-const handed to a C function the program
+                 * did not write (`print(name.c_str())`, `strlen(text)`
+                 * with a `const char *text`): the Vircon32 SDK declares
+                 * its text parameters as plain `int *`, and Vircon32 C
+                 * rejects the const pointer outright. Cast the const
+                 * away, as for every other const read. */
+                CallResolution *ncr = (CallResolution *)n->sema_info;
+                if (ncr == NULL || ncr->resolved_target == NULL) {
+                    for (int i = 0; i < n->list.count; i++) {
+                        AstNode *arg = n->list.items[i];
+                        if (arg == NULL || arg->kind == AST_CAST || arg->kind == AST_STRING_LIT) continue;
+                        const AstNode *at = v32_strip_const(infer_expr_type(arg, cls, locals));
+                        if (at == NULL || at->kind != AST_POINTER_TYPE || at->a == NULL ||
+                            at->a->kind != AST_CONST_TYPE || !v32_is_builtin_scalar(at->a->a)) continue;
+                        AstNode *cast = ast_new(AST_CAST, arg->line);
+                        cast->type = ast_wrap_pointer(at->a->a, arg->line);
+                        cast->a = arg;
+                        n->list.items[i] = cast;
+                        lower_note(arg->line, "cast a pointer-to-const argument of a C function to a "
+                            "plain pointer -- Vircon32 C rejects passing it (\"discards const qualifier\")");
+                    }
+                }
             }
             break;
         case AST_INIT_LIST:

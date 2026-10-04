@@ -434,4 +434,9 @@ void sema_dump(const AstNode *program);
  * sema_cleanup(), i.e. through lowering. */
 int sema_is_enum_type(const AstNode *type);
 
+/* The constructor that implicitly converts a value of `arg_type` to the
+ * class `class_type` names (by value or by reference), or NULL -- see
+ * the doc comment in sema.c. */
+AstNode *sema_converting_ctor(const AstNode *class_type, const AstNode *arg_type);
+
 #endif /* SEMA_H */

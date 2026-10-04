@@ -14,6 +14,7 @@
 #include "cartxml.h"
 #include "debugmap.h"
 #include "prescan.h"
+#include "compat.h"
 #include "generic.h"
 
 #define  MAX_INCLUDE_DIRS V32CXX_MAX_INCLUDE_DIRS
@@ -99,7 +100,7 @@ static int build_system_include_dirs(char **dirs, int max) {
     if (env != NULL) {
         const char *p = env;
         while (*p) {
-            const char *colon = strchr(p, ':');
+            const char *colon = strchr(p, COMPAT_PATH_LIST_SEP);
             size_t len = colon ? (size_t)(colon - p) : strlen(p);
             if (len > 0) {
                 if (n >= max) return -1;
@@ -124,7 +125,7 @@ static int build_system_include_dirs(char **dirs, int max) {
 static int add_path_list(char **dirs, int n, int max, const char *list) {
     const char *p = list;
     while (p != NULL && *p) {
-        const char *colon = strchr(p, ':');
+        const char *colon = strchr(p, COMPAT_PATH_LIST_SEP);
         size_t len = colon ? (size_t)(colon - p) : strlen(p);
         if (len > 0) {
             if (n >= max) return -1;
@@ -148,7 +149,7 @@ static int build_sdk_include_dirs(char **dirs, int max) {
     if (n < 0) return -1;
     const char *path = getenv("PATH");
     for (const char *p = path; p != NULL && *p; ) {
-        const char *colon = strchr(p, ':');
+        const char *colon = strchr(p, COMPAT_PATH_LIST_SEP);
         size_t len = colon ? (size_t)(colon - p) : strlen(p);
         if (len > 0) {
             char *exe = malloc(len + strlen(V32CXX_SDK_COMPILER_NAME) + 2);
@@ -157,7 +158,7 @@ static int build_sdk_include_dirs(char **dirs, int max) {
             sprintf(inc, "%.*s/include", (int)len, p);
             char *probe = malloc(strlen(inc) + 16);
             sprintf(probe, "%s/video.h", inc);
-            int ok = access(exe, X_OK) == 0 && access(probe, R_OK) == 0;
+            int ok = compat_is_executable(exe) && access(probe, R_OK) == 0;
             free(exe);
             free(probe);
             if (ok) {
