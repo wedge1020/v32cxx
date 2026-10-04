@@ -433,6 +433,7 @@ int  main (int  argc, char **argv)
             /* C input: where C says something C++ does not (cmode.c) */
             cmode_separate_tags(&g_program->list);
             cmode_unify_prototypes(&g_program->list);
+            cmode_drop_unused_args(&g_program->list);
             cmode_lower_main_params(&g_program->list);
             if (cmode_rewrite_variadics(&g_program->list) != 0) rc = 1;
         }

@@ -68,8 +68,13 @@ typedef int mode_t;
 
 /* ---- errno -------------------------------------------------------------- */
 extern int errno;
-#define ENOENT  2
-#define EACCES  13
+#define ENOENT  2       /* no such file */
+#define ENOMEM  12
+#define EACCES  13      /* the memory card holds another game's data */
+#define ENODEV  19      /* no memory card */
+#define EMFILE  24
+#define ENOSPC  28      /* the memory card is full */
+char *strerror(int error);
 
 /* ---- ctype (the rest is in the SDK's string.h) -------------------------- */
 int isprint(int c);
@@ -123,13 +128,30 @@ void abort(void);
  * wants something else sets v32_exit_hook. */
 void v32_exit(int status);
 extern void (*v32_exit_hook)(int status);
+extern char *v32_exit_prompt;           /* what is shown while waiting for START */
 #define exit(status) v32_exit(status)
 
 /* ---- stdio -------------------------------------------------------------- */
-/* There is no file system. A FILE exists so declarations compile; the
- * three standard streams are real objects, fopen() always fails. Output to
- * stdout/stderr goes to the screen terminal (see below). */
-typedef struct v32_file { int fd; } FILE;
+/* Output to stdout/stderr goes to the screen terminal (see below), and
+ * stdin reads the gamepad's keyboard. Every other FILE is a file on the
+ * memory card: see v32file.c, which also says what "a file" is here
+ * (whole files held in RAM while open, sizes in words). */
+#define V32FILE_MAX_FILES   8
+#define V32FILE_NAME_LEN    24
+typedef struct v32_file {
+    int fd;                 /* 0, 1, 2: the standard streams; 3: a card file */
+    int open;
+    int readable;
+    int writable;
+    int dirty;              /* changed since it was last written to the card */
+    int error;
+    int eof;
+    int *data;              /* the whole file */
+    int size;
+    int capacity;
+    int pos;
+    char name[V32FILE_NAME_LEN];
+} FILE;
 extern FILE *stdin;
 extern FILE *stdout;
 extern FILE *stderr;
@@ -152,10 +174,46 @@ int getchar(void);
 char *fgets(char *buf, int size, FILE *f);
 int fflush(FILE *f);
 void setbuf(FILE *f, char *buf);
-FILE *fopen(char *name, char *mode);
+int sscanf(char *s, char *fmt, ...);     /* %d %u %x %c %s, with h / l and a width */
+FILE *fopen(char *name, char *mode);    /* "r" "w" "a" "r+" "w+" */
 int fclose(FILE *f);
+size_t fread(void *ptr, size_t size, size_t count, FILE *f);
+size_t fwrite(void *ptr, size_t size, size_t count, FILE *f);
+int fgetc(FILE *f);
+#define getc(f)     fgetc(f)
+#define putc(c, f)  fputc(c, f)
+int fseek(FILE *f, int offset, int whence);
+int ftell(FILE *f);
 void rewind(FILE *f);
+int feof(FILE *f);
+int ferror(FILE *f);
+int remove(char *name);
 void perror(char *s);
+
+/* ---- unistd / sys/stat --------------------------------------------------- */
+struct stat {
+    int st_mode;
+    int st_size;            /* in words */
+    int st_nlink;
+    int st_uid;
+    int st_mtime;
+};
+int stat(char *name, struct stat *st);  /* 0, or -1 when there is no such file */
+int unlink(char *name);
+extern char **environ;                  /* always empty */
+
+/* ---- the memory card ------------------------------------------------------
+ * Files live on the memory card, under the program's own signature (the
+ * first 20 words of a card say which game its data belongs to). Set
+ * v32file_signature before the first file is opened. */
+extern char *v32file_signature;
+#define V32FILE_NO_CARD 0
+#define V32FILE_READY   1               /* this program's card */
+#define V32FILE_BLANK   2               /* an empty card: formatted on first write */
+#define V32FILE_FOREIGN 3               /* another game's data: never written */
+int  v32file_card(void);
+void v32file_format(void);              /* erases the card and makes it this program's */
+int  v32file_free_words(void);
 
 /* ---- signal ------------------------------------------------------------- */
 /* No signals on a console: signal() remembers nothing and returns SIG_DFL. */

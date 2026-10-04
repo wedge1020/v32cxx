@@ -10,6 +10,7 @@
  *                               namespace in C; the output has one
  *    cmode_unify_prototypes     `void fatal();` then `void fatal(char *s)
  *                               { ... }` is one function, not two overloads
+ *    cmode_drop_unused_args     arguments passed to a function defined `f()`
  *    cmode_lower_main_params    main(argc, argv, envp)
  *    cmode_rewrite_variadics    calls of `...` functions
  *
@@ -239,6 +240,43 @@ void cmode_unify_prototypes(AstList *decls) {
     *decls = out;
 }
 
+/* ---- arguments nobody takes ------------------------------------------------------
+ *
+ * `THING *new_item() { ... }` called as `new_item(sizeof (THING))`: old C
+ * does not check a call against a function defined with `()`, and code
+ * that changed a function's parameters without visiting every caller
+ * still compiles. The extra arguments go nowhere, so they are dropped
+ * here, with a warning.
+ */
+static void drop_unused_args(AstNode *n, const NameSet *no_params) {
+    if (n == NULL) return;
+    drop_unused_args(n->a, no_params);
+    drop_unused_args(n->b, no_params);
+    drop_unused_args(n->c, no_params);
+    drop_unused_args(n->d, no_params);
+    for (int i = 0; i < n->list.count; i++) drop_unused_args(n->list.items[i], no_params);
+    if (n->kind == AST_CALL && n->list.count > 0 && n->a != NULL && n->a->kind == AST_IDENT &&
+        name_set_has(no_params, n->a->str1)) {
+        fprintf(stderr, "%s:%d: warning: '%s' takes no parameters; the %d argument(s) "
+                "of this call are dropped\n", n->file ? n->file : g_current_filename,
+                n->line, n->a->str1, n->list.count);
+        n->list.count = 0;
+    }
+}
+
+void cmode_drop_unused_args(AstList *decls) {
+    NameSet no_params = { NULL, NULL, 0, 0 };
+    for (int i = 0; i < decls->count; i++) {
+        const AstNode *f = decls->items[i];
+        if (f->kind == AST_FUNC_DEF && f->str1 != NULL && f->list.count == 0)
+            name_set_add(&no_params, f->str1, 0);
+    }
+    if (no_params.count > 0)
+        for (int i = 0; i < decls->count; i++)
+            if (decls->items[i]->kind == AST_FUNC_DEF) drop_unused_args(decls->items[i]->a, &no_params);
+    name_set_free(&no_params);
+}
+
 /* ---- main(argc, argv, envp) --------------------------------------------------
  *
  * A cartridge is not run from a command line: Vircon32's main takes
@@ -251,6 +289,15 @@ void cmode_unify_prototypes(AstList *decls) {
  *         char **argv = __v32_argv;
  *         char *__v32_envp[1] = { NULL };
  *         char **envp = __v32_envp;
+ *
+ * A program that wants a say defines
+ *
+ *     char **v32_main_args(int *argc, char **argv);
+ *
+ * and main then continues with `argv = v32_main_args(&argc, argv);`. The
+ * function runs before anything in main does, may change *argc and returns
+ * the argv to use: the place for a title screen whose choices become the
+ * program's command line ("rogue -r" to restore a saved game).
  */
 static AstNode *main_string_array(const char *name, const char *first, int line) {
     AstNode *init = ast_new(AST_INIT_LIST, line);
@@ -268,6 +315,12 @@ static AstNode *main_string_array(const char *name, const char *first, int line)
 }
 
 void cmode_lower_main_params(AstList *decls) {
+    int has_args_hook = 0;
+    for (int i = 0; i < decls->count; i++) {
+        const AstNode *f = decls->items[i];
+        if (f->kind == AST_FUNC_DEF && f->str1 != NULL && strcmp(f->str1, "v32_main_args") == 0)
+            has_args_hook = 1;
+    }
     for (int i = 0; i < decls->count; i++) {
         AstNode *f = decls->items[i];
         if (f->kind != AST_FUNC_DEF || f->str1 == NULL || strcmp(f->str1, "main") != 0) continue;
@@ -289,6 +342,23 @@ void cmode_lower_main_params(AstList *decls) {
             }
             ast_list_append(&body, v);
             if (p == 2) break;
+        }
+        if (has_args_hook && f->list.count >= 2) {
+            /* argv = v32_main_args(&argc, argv); */
+            AstNode *addr = ast_new(AST_UNOP, line);
+            addr->str1 = strdup("addr");
+            addr->a = ast_ident(f->list.items[0]->str1, line);
+            AstNode *call = ast_new(AST_CALL, line);
+            call->a = ast_ident("v32_main_args", line);
+            ast_list_append(&call->list, addr);
+            ast_list_append(&call->list, ast_ident(f->list.items[1]->str1, line));
+            AstNode *assign = ast_new(AST_ASSIGN, line);
+            assign->str1 = strdup("=");
+            assign->a = ast_ident(f->list.items[1]->str1, line);
+            assign->b = call;
+            AstNode *stmt = ast_new(AST_EXPR_STMT, line);
+            stmt->a = assign;
+            ast_list_append(&body, stmt);
         }
         for (int s = 0; s < f->a->list.count; s++) ast_list_append(&body, f->a->list.items[s]);
         f->a->list = body;

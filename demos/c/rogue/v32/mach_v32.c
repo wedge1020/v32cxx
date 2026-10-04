@@ -9,8 +9,10 @@
  * to do here. What remains:
  *
  *   - keys come from the gamepad (v32/pad.c);
- *   - the top-ten list lives on the memory card;
- *   - saving a game is not supported.
+ *   - the files are on the memory card (libc/v32file.c): the top-ten
+ *     list and the saved game, both read and written by Rogue's own
+ *     save.c and state.c;
+ *   - the program starts at a title screen (v32/title.c).
  *
  * Every function keeps the name and signature the rest of Rogue calls.
  */
@@ -29,9 +31,8 @@ bool allscore = TRUE;
 void
 md_init()
 {
-    v32term_init();
-    v32term_key_source = rogue_pad_getkey;
-    curses_ink_hook = rogue_ink;
+    /* the console side is set up before main() starts: see
+     * v32_main_args() in title.c */
 }
 
 void
@@ -195,51 +196,30 @@ md_raw_standend()
     v32term_attr(0);
 }
 
-/* ---- the top-ten list, on the memory card ---------------------------------
+/* ---- files: the memory card ------------------------------------------------
  *
- * A memory card starts with a 20-word signature saying which game its
- * data belongs to; the scores follow it. A card that is missing, or that
- * holds another game's data, is left alone: the list is then just this
- * session's score.
+ * Rogue keeps two files, and libc keeps files on the memory card
+ * (libc/v32file.c): the top-ten list, which Rogue holds open for the whole
+ * session, and the saved game. Reading and writing them is Rogue's own
+ * code (save.c, state.c). What is left for this layer is what was
+ * Unix-specific about it.
  */
 
-#define SCORE_SIGNATURE_WORDS 20
-static char score_signature[SCORE_SIGNATURE_WORDS] = "ROGUE 5.4.4 SCORES";
-static char card_signature[SCORE_SIGNATURE_WORDS];
+#define SCORE_FILE	"rogue.scr"
 
-/*
- * score_card:
- *	Can the scores be kept on the card in the slot?  0 = no,
- *	1 = yes and it has a list, 2 = yes and it is blank.
- */
-static int
-score_card()
-{
-    int i;
-    bool blank = TRUE;
-    bool ours = TRUE;
-
-    if (!card_is_connected())
-	return 0;
-    card_read_data(card_signature, 0, SCORE_SIGNATURE_WORDS);
-    for (i = 0; i < SCORE_SIGNATURE_WORDS; i++)
-    {
-	if (card_signature[i] != 0)
-	    blank = FALSE;
-	if (card_signature[i] != score_signature[i])
-	    ours = FALSE;
-    }
-    if (ours)
-	return 1;
-    if (blank)
-	return 2;
-    return 0;
-}
+static bool saving = FALSE;	/* save_file() has started writing */
 
 void
 open_score()
 {
-    scoreboard = NULL;
+    if (scoreboard != NULL)
+    {
+	rewind(scoreboard);
+	return;
+    }
+    scoreboard = fopen(SCORE_FILE, "r+");
+    if (scoreboard == NULL && errno == ENOENT)
+	scoreboard = fopen(SCORE_FILE, "w+");
 }
 
 void
@@ -258,35 +238,82 @@ unlock_sc()
 {
 }
 
-void
-rd_score(SCORE *top_ten)
+/*
+ * md_chmod:
+ *	Nothing to change on a memory card. save_file() calls this just
+ *	before it writes the game out, which is how rogue_exit() below
+ *	knows that leaving means "saved", not "quit".
+ */
+int
+md_chmod(char *filename, int mode)
 {
-    if (score_card() == 1)
-	card_read_data(top_ten, SCORE_SIGNATURE_WORDS, numscores * sizeof (SCORE));
+    NOOP(mode);
+    if (strcmp(filename, file_name) == 0)
+	saving = TRUE;
+    return 0;
 }
 
-void
-wr_score(SCORE *top_ten)
+int
+md_unlink(char *file)
 {
-    if (score_card() == 0)
-	return;
-    card_write_data(score_signature, 0, SCORE_SIGNATURE_WORDS);
-    card_write_data(top_ten, SCORE_SIGNATURE_WORDS, numscores * sizeof (SCORE));
+    return unlink(file);
 }
 
-/* ---- saving --------------------------------------------------------------- */
-
-void
-save_game()
+/*
+ * md_unlink_open_file:
+ *	restore() deletes the saved game once it has been read, so a
+ *	game can only ever be resumed once. The open file is in memory
+ *	by then, and stays readable.
+ */
+int
+md_unlink_open_file(char *file, FILE *inf)
 {
-    msg("a game cannot be saved on this console");
-    after = FALSE;
+    NOOP(inf);
+    return unlink(file);
 }
 
 bool
-restore(char *file, char **envp)
+is_symlink(char *sp)
 {
-    NOOP(file);
-    NOOP(envp);
+    NOOP(sp);
     return FALSE;
+}
+
+void
+md_ignoreallsignals()
+{
+}
+
+void
+md_tstphold()
+{
+}
+
+/* ---- leaving ----------------------------------------------------------------- */
+
+/*
+ * rogue_exit:
+ *	exit() comes here first (v32_exit_hook). After it, libc waits
+ *	for START and restarts the cartridge, which brings the title
+ *	screen back.
+ */
+void
+rogue_exit(int status)
+{
+    struct stat st;
+
+    NOOP(status);
+    if (!saving)
+	return;
+    if (stat(file_name, &st) >= 0)
+    {
+	v32term_attr(V32TERM_INK(V32INK_GREEN));
+	printf("\nGame saved on the memory card.\n");
+    }
+    else
+    {
+	v32term_attr(V32TERM_INK(V32INK_RED));
+	printf("\nThe game could not be saved: %s.\n", strerror(errno));
+    }
+    v32term_attr(0);
 }

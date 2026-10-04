@@ -22,7 +22,7 @@
  *   --More--           any button continues
  *   "which object..."  a list of what is in the pack to choose from
  *   "which direction"  the D-pad answers
- *   y/n, left/right    a two-line menu
+ *   y/n, left/right    a two-line menu (quitting, saving, which hand)
  *   anything else that waits at a prompt, and text: the on-screen keyboard
  *
  * How does it know what Rogue is asking? Rogue's sources are not changed
@@ -203,6 +203,7 @@ static struct pad_command pad_other_cmds[] = {
     { "What is that symbol?",		"/" },
     { "Help",				"?" },
     { "Options",			"o" },
+    { "Save the game and stop",		"S" },
     { "Redraw the screen",		"\022" },
     { "Version",			"v" },
     { "Quit",				"Q" },
@@ -504,6 +505,30 @@ rogue_pad_getkey()
 	strcpy(pad_labels[0], "No, keep playing");
 	strcpy(pad_labels[1], "Yes, quit");
 	return pad_menu("Really quit?", 2, 0) == 1 ? 'y' : 'n';
+    }
+
+    if (strstr(prompt, "ave file (") != NULL)
+    {
+	strcpy(pad_labels[0], "Yes, save and stop playing");
+	strcpy(pad_labels[1], "No, keep playing");
+	return pad_menu("Save the game on the memory card?", 2, 0) == 0 ? 'y' : ESCAPE;
+    }
+    if (strstr(prompt, "ish to overwrite it?") != NULL)
+    {
+	strcpy(pad_labels[0], "Yes, replace the saved game");
+	strcpy(pad_labels[1], "No, keep the old one");
+	return pad_menu("There is a saved game already", 2, 0) == 0 ? 'y' : ESCAPE;
+    }
+    if (strstr(prompt, "ile name:") != NULL)
+    {
+	/*
+	 * Rogue only asks for another file name here when the one
+	 * saved game could not be written. Say why, and go back to
+	 * the game.
+	 */
+	strcpy(pad_labels[0], strerror(errno));
+	pad_menu("The game was not saved", 1, 0);
+	return ESCAPE;
     }
 
     if (strstr(prompt, "eft hand or right hand") != NULL

@@ -11,6 +11,9 @@
 //  usage: v32shot bios.v32 cart.v32 script out_prefix frame [frame...]
 //         writes out_prefix<frame>.ppm for each listed frame
 //
+//  V32SHOT_CARD=file puts a memory card in the slot (created blank if the
+//  file does not exist, written back at the end).
+//
 //  Script: as v32prof (connect / press / release / tap / end; `segment`
 //  lines are accepted and ignored).
 //
@@ -169,6 +172,16 @@ int main( int argc, char** argv )
         V32Console console;
         console.LoadBios( argv[ 1 ] );
         console.LoadCartridge( argv[ 2 ] );
+        if( getenv( "V32SHOT_CARD" ) )
+        {
+            // a memory card in the slot: created blank if the file does
+            // not exist, written back when the run ends
+            const char* card = getenv( "V32SHOT_CARD" );
+            FILE* existing = fopen( card, "rb" );
+            if( existing ) fclose( existing );
+            else console.CreateMemoryCard( card );
+            console.LoadMemoryCard( card );
+        }
         console.SetPower( true );
         size_t next = 0;
         for( int frame = 0; frame <= last_frame && !console.IsCPUHalted(); frame++ )
@@ -200,6 +213,7 @@ int main( int argc, char** argv )
             }
         }
         if( console.IsCPUHalted() ) printf( "CPU halted\n" );
+        if( console.HasMemoryCard() ) console.SaveMemoryCard();
     }
     catch( const std::exception& e )
     {

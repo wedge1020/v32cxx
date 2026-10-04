@@ -5842,9 +5842,121 @@ static int v32_op_decays(const char *op) {
         strcmp(op, "<=") == 0 || strcmp(op, ">=") == 0);
 }
 
+/* ---- compound assignment to a target with side effects ---------------------
+ *
+ * Vircon32 C compiles `target op= value` as `target = target op value`
+ * with the target written out twice, so a side effect in it happens
+ * twice: `*p++ ^= key;` reads through p, stores through p + 1, and leaves
+ * p two further on; `rooms[rnd_room()].r_flags |= ISGONE;` picks two
+ * different rooms (both confirmed with the real compiler). When the
+ * assignment is a statement of its own, the target's address is taken
+ * once:
+ *
+ *     *p++ ^= key;      ->      { char *__v32_target0 = &*p++;
+ *                                 *__v32_target0 ^= key; }
+ *
+ * or, where the target's type is not known, ++ / -- of plain variables are
+ * moved out of it: `{ *p ^= key; p++; }`. Anything else (the assignment
+ * used as a value inside a larger expression) is left as written, with a
+ * warning.
+ */
+static int v32_is_step(const AstNode *e) {
+    return e != NULL && e->kind == AST_UNOP && e->str1 != NULL &&
+           (strcmp(e->str1, "post++") == 0 || strcmp(e->str1, "post--") == 0 ||
+            strcmp(e->str1, "pre++") == 0 || strcmp(e->str1, "pre--") == 0);
+}
+
+static int v32_has_side_effect(const AstNode *e) {
+    if (e == NULL) return 0;
+    if (v32_is_step(e) || e->kind == AST_ASSIGN || e->kind == AST_CALL) return 1;
+    if (v32_has_side_effect(e->a) || v32_has_side_effect(e->b) || v32_has_side_effect(e->c)) return 1;
+    for (int i = 0; i < e->list.count; i++)
+        if (v32_has_side_effect(e->list.items[i])) return 1;
+    return 0;
+}
+
+/* Moves every ++ / -- of a plain variable out of *slot into `before` or
+ * `after`. Returns 0 if a side effect it cannot move is in there. */
+static int v32_extract_steps(AstNode **slot, AstList *before, AstList *after) {
+    AstNode *e = *slot;
+    if (e == NULL) return 1;
+    if (v32_is_step(e)) {
+        if (e->a == NULL || e->a->kind != AST_IDENT) return 0;
+        AstNode *stmt = ast_new(AST_EXPR_STMT, e->line);
+        stmt->a = e;
+        ast_list_append(e->str1[1] == 'r' ? before : after, stmt);   /* p-r-e / p-o-st */
+        *slot = ast_clone_expr(e->a);
+        return 1;
+    }
+    if (e->kind == AST_ASSIGN || e->kind == AST_CALL) return 0;
+    if (!v32_extract_steps(&e->a, before, after) || !v32_extract_steps(&e->b, before, after) ||
+        !v32_extract_steps(&e->c, before, after))
+        return 0;
+    for (int i = 0; i < e->list.count; i++)
+        if (!v32_extract_steps(&e->list.items[i], before, after)) return 0;
+    return 1;
+}
+
+static int v32_is_compound_assign(const AstNode *n) {
+    return n != NULL && n->kind == AST_ASSIGN && n->str1 != NULL && strcmp(n->str1, "=") != 0;
+}
+
+/* An expression statement `target op= value;`: see above. */
+static void v32_split_compound_stmt(AstNode **slot, AstNode *cls, LocalVarType *locals) {
+    AstNode *stmt = *slot;
+    AstNode *n = stmt->a;
+    if (!v32_is_compound_assign(n) || !v32_has_side_effect(n->a)) return;
+
+    /* The general way, whenever the target's type is known: take its
+     * address once. */
+    const AstNode *type = infer_expr_type(n->a, cls, locals);
+    const AstNode *resolved = type ? resolve_typedef_chain(type) : NULL;
+    if (resolved != NULL && resolved->kind != AST_ARRAY_TYPE && resolved->kind != AST_CONST_TYPE &&
+        resolved->kind != AST_REFERENCE_TYPE) {
+        static int counter = 0;
+        char name[40];
+        snprintf(name, sizeof name, "__v32_target%d", counter++);
+        AstNode *addr = ast_new(AST_UNOP, stmt->line);
+        addr->str1 = strdup("addr");
+        addr->a = n->a;
+        AstNode *ptr = ast_new(AST_VAR_DECL, stmt->line);
+        ptr->str1 = strdup(name);
+        ptr->type = ast_wrap_pointer((AstNode *)type, stmt->line);
+        ptr->a = addr;
+        AstNode *deref = ast_new(AST_UNOP, stmt->line);
+        deref->str1 = strdup("deref");
+        deref->a = ast_ident(name, stmt->line);
+        n->a = deref;
+        AstNode *block = ast_new(AST_BLOCK, stmt->line);
+        ast_list_append(&block->list, ptr);
+        ast_list_append(&block->list, stmt);
+        *slot = block;
+        lower_note(stmt->line, "took the address of a compound assignment's target once -- "
+            "Vircon32 C evaluates that target twice, side effects included");
+        return;
+    }
+    AstList before = ast_list_new(), after = ast_list_new();
+    AstNode *target = ast_clone_expr(n->a);
+    if (!v32_extract_steps(&target, &before, &after)) return;    /* warned about in v32_compat_expr */
+    n->a = target;
+    AstNode *block = ast_new(AST_BLOCK, stmt->line);
+    block->list = before;
+    ast_list_append(&block->list, stmt);
+    for (int i = 0; i < after.count; i++) ast_list_append(&block->list, after.items[i]);
+    *slot = block;
+    lower_note(stmt->line, "moved ++/-- out of the target of a compound assignment -- "
+        "Vircon32 C evaluates that target twice");
+}
+
 static void v32_compat_expr(AstNode **slot, AstNode *cls, LocalVarType *locals) {
     AstNode *n = *slot;
     if (n == NULL) return;
+    if (v32_is_compound_assign(n) && v32_has_side_effect(n->a)) {
+        fprintf(stderr, "%s:%d: warning: the target of this `%s` has a side effect, and "
+                "Vircon32 C evaluates the target of a compound assignment twice -- "
+                "the side effect will happen twice; write it as separate statements\n",
+                n->file ? n->file : g_current_filename, n->line, n->str1);
+    }
     switch (n->kind) {
         case AST_BINOP:
             v32_compat_expr(&n->a, cls, locals);
@@ -5966,6 +6078,11 @@ static void v32_compat_stmt(AstNode **slot, AstNode *cls, LocalVarType **locals)
             v32_unconst_read(&n->a, cls, *locals);
             break;
         case AST_EXPR_STMT:
+            v32_split_compound_stmt(slot, cls, *locals);
+            if (*slot != n) {
+                v32_compat_stmt(slot, cls, locals);     /* now a block */
+                break;
+            }
             v32_compat_expr(&n->a, cls, *locals);
             break;
         case AST_VAR_DECL: {
@@ -6828,6 +6945,13 @@ static int c_type_is_pointerish(const AstNode *t) {
                          t->kind == AST_ARRAY_TYPE);
 }
 
+static int c_is_void_pointer(const AstNode *t) {
+    t = c_resolved_type(t);
+    if (t == NULL || t->kind != AST_POINTER_TYPE) return 0;
+    t = c_resolved_type(t->a);
+    return t != NULL && t->kind == AST_IDENT && strcmp(t->str1, "void") == 0;
+}
+
 static int c_is_null(const AstNode *e) {
     return e != NULL && e->kind == AST_NULL_LIT;
 }
@@ -6979,6 +7103,16 @@ static void c_expr(AstNode **slot, AstNode *cls, LocalVarType *locals, int is_ca
                 } else if (c_is_null(n->a) && !c_is_null(n->b)) {
                     n->b = c_int_cast(n->b);
                     n->a = c_int_lit(0, n->line);
+                } else {
+                    /* `thing == ptr` with a `void *ptr`: C compares any
+                     * pointer with a void pointer; Vircon32 C wants the
+                     * two types to match. Compare the addresses. */
+                    int va = c_is_void_pointer(infer_expr_type(n->a, cls, locals));
+                    int vb = c_is_void_pointer(infer_expr_type(n->b, cls, locals));
+                    if (va != vb) {
+                        n->a = c_int_cast(n->a);
+                        n->b = c_int_cast(n->b);
+                    }
                 }
             }
             break;

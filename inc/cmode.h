@@ -16,6 +16,7 @@ extern AstList g_tag_decls;
 
 void cmode_separate_tags(AstList *decls);
 void cmode_unify_prototypes(AstList *decls);
+void cmode_drop_unused_args(AstList *decls);
 void cmode_lower_main_params(AstList *decls);
 /* Returns the number of errors it reported. */
 int  cmode_rewrite_variadics(AstList *decls);

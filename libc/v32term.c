@@ -97,6 +97,7 @@ void v32term_clear(void)
 #define V32TERM_REG_BODY    256         /* + character */
 #define V32TERM_REG_TAIL    512         /* + character */
 #define V32TERM_REG_PAPER   768
+#define V32TERM_REG_SHADE   769         /* + (character - 17) * 2 + (row & 1) */
 
 /* 0 = no tail, 1 = rows 16..17 as they are, 2 = rows 16..19 at half height */
 static int v32term_tail_kind(int ch)
@@ -146,6 +147,21 @@ static void v32term_define_font(void)
     y = v32term_region_min_y();
     select_region(V32TERM_REG_PAPER);
     define_region(x, y, x + 9, y + V32TERM_CELL_H - 1, x, y);
+    /* The shade blocks, characters 17..20: three dither patterns and the
+     * solid block. A cell is cut straight out of the pattern, 8x15, not
+     * scaled (scaling a dither ruins it). The patterns repeat every two
+     * rows and a cell has 15, so odd screen rows start one row down:
+     * that keeps the pattern unbroken from one row of cells to the next. */
+    for (ch = V32TERM_SHADE_FIRST; ch <= V32TERM_SHADE_LAST; ch++) {
+        select_region(ch);
+        x = v32term_region_min_x();
+        y = v32term_region_min_y();
+        for (kind = 0; kind < 2; kind++) {
+            select_region(V32TERM_REG_SHADE + (ch - V32TERM_SHADE_FIRST) * 2 + kind);
+            define_region(x, y + kind, x + V32TERM_CELL_W - 1, y + kind + V32TERM_CELL_H - 1,
+                          x, y + kind);
+        }
+    }
 }
 
 void v32term_init(void)
@@ -270,6 +286,13 @@ void v32term_flush(void)
                         draw_region_zoomed_at(px, py + V32TERM_BODY_ROWS);
                     }
                 }
+            } else if (ch >= V32TERM_SHADE_FIRST && ch <= V32TERM_SHADE_LAST) {
+                select_region(V32TERM_REG_SHADE + (ch - V32TERM_SHADE_FIRST) * 2 +
+                              ((i / V32TERM_COLS) & 1));
+                set_multiply_color(ink);
+                set_drawing_scale(1.0, 1.0);
+                draw_region_zoomed_at(px, py);
+                set_drawing_scale(0.8, 1.0);
             }
             v32term_shown[i] = cell;
         }

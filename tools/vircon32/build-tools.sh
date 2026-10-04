@@ -79,6 +79,9 @@ $CXX -O2 -std=c++17 -w -I$CL -I$SRC/DesktopEmulator "$HERE/v32prof.cpp" $CL/*.cp
 echo "building v32shot..."
 $CXX -O2 -std=c++17 -w -I$CL -I$SRC/DesktopEmulator "$HERE/v32shot.cpp" $CL/*.cpp -o "$BIN/v32shot"
 
+echo "building v32peek..."
+$CXX -O2 -std=c++17 -w -I$CL -I$SRC/DesktopEmulator "$HERE/v32peek.cpp" $CL/*.cpp -o "$BIN/v32peek"
+
 rm -rf "$BIN/include"
 cp -r "$DT/Data/include" "$BIN/include"
 cp "$SRC/DesktopEmulator/Data/Bios/StandardBios.v32" "$BIN/StandardBios.v32"

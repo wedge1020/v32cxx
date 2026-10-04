@@ -11,7 +11,11 @@
  *   4. nested: a variadic call as an argument of another;
  *   5. a variable declaration's initializer and a return value;
  *   6. struct, union and enum definitions inside other declarations, and a
- *      tag that is also the name of a variable.
+ *      tag that is also the name of a variable;
+ *   7. a compound assignment whose target has a side effect (`*p++ ^= k`,
+ *      `table[next()] += n`): Vircon32 C would evaluate the target twice;
+ *   8. a pointer compared with a void pointer; a call with arguments of a
+ *      function defined with `()`.
  *
  *  Self-checking: test_errors must end at 0. Also valid for a native C
  *  compiler (gcc -x c tests/117sample.c && ./a.out prints the count).
@@ -83,6 +87,23 @@ struct shape {
 
 int point = 9;                      /* an ordinary name, same as the tag */
 
+/* ---- 7, 8 -------------------------------------------------------------------- */
+int cells[4] = { 1, 2, 4, 8 };
+int next_calls = 0;
+
+int
+next_cell()
+{
+    return next_calls++;
+}
+
+int
+is_same(int *p, void *q)
+{
+    return p == q;
+}
+
+
 int
 main(void)
 {
@@ -146,6 +167,26 @@ main(void)
     shape.size = LARGE;
     if (shape.u.box.w != 7 || shape.u.box.h != 8 || shape.u.disc.r != 7) e++;
     if (shape.size != LARGE || SMALL != 0 || point != 9) e++;
+
+    /* 7 */
+    {
+        int *cp = cells;
+
+        *cp++ ^= 16;
+        *cp++ += 16;
+        if (cp != &cells[2] || cells[0] != 17 || cells[1] != 18) e++;
+        cells[next_cell()] |= 32;
+        cells[next_cell()] -= 8;
+        if (next_calls != 2 || cells[0] != 49 || cells[1] != 10) e++;
+        i = 2;
+        cells[i++] *= 3;
+        cells[--i] += 1;
+        if (i != 2 || cells[2] != 13 || cells[3] != 8) e++;
+    }
+
+    /* 8 */
+    if (!is_same(cells, cells) || is_same(cells, &point)) e++;
+    if (next_cell(99) != 2) e++;
 
     test_errors = e;
 #ifndef __V32CXX__

@@ -25,9 +25,12 @@ samples; both are also valid for a native C compiler.
 | `void fatal();` then `void fatal(char *s) { }`; `void leave(int);`; a prototype inside a function | One function: the first declaration is rewritten to say what the definition says. No name mangling. A function declared and never defined is dropped. | `cmode.c`, `sema.c` |
 | `extern char prbuf[];` and, elsewhere, `char prbuf[2*MAXSTR];` | One variable; the declaration with the size wins. | `ast.c` |
 | `main(int argc, char **argv, char **envp)`, no return type | `void main(void)` whose first statements declare `argc` (1), `argv` (`{"program", NULL}`) and `envp` (`{NULL}`). | `parser.y`, `cmode.c` |
+| `new_item(sizeof (THING))` where the definition is `new_item()` | The arguments are dropped, with a warning. | `cmode.c` |
+| a program-defined `char **v32_main_args(int *argc, char **argv)` | Called at the top of `main` (`argv = v32_main_args(&argc, argv);`): lets a title screen choose the program's command line. | `cmode.c` |
 | `int printf(char *fmt, ...)`, `va_start`, `va_arg`, `va_end` | See *Variadic functions* below. | `parser.y`, `cmode.c` |
 | `char **argv`, `char **a, *b;` | Pointers to pointers (up to three levels). | `parser.y` |
 | `void (*func)()` as a parameter, `(void (*)())fn` | Function pointer parameters and casts. | `parser.y` |
+| `thing == ptr` with a `void *ptr` | Compared as addresses. | `lower.c` phase 12 |
 | `(*d_func)(arg)` through a pointer declared `void (*d_func)();` | The pointer is cast to the type the call implies: `((void(int)*)d_func)(arg)`. | `lower.c` phase 12 |
 | a function's name as a value: an argument, a table entry, `f == g` | `&name` | `lower.c` phase 12 |
 | `NULL`, `p = 0`, `if (p)`, `!p`, `p && p->x` | See *The null pointer* below. | `lower.c` phase 12, `codegen.c` |
@@ -104,6 +107,35 @@ curses, written in C and transpiled with the program:
 with `#include <v32libc.c>` (and `<v32curses.c>`) once in the program's
 one file. See `libc/v32libc.h`.
 
+| Part | What it gives a C program |
+|---|---|
+| `v32libc.c` | `printf` family, `sscanf`, `malloc`/`free` with a C null pointer, string and ctype functions the SDK lacks, `time`/`localtime`, `exit` (waits for START, then restarts the cartridge), `strerror` |
+| `v32term.c` | An 80x24 text screen of 8x15 cells drawn from the BIOS font, with colour, reverse video and the shade blocks (characters 17-20); gamepad polling; an on-screen keyboard |
+| `v32curses.c` | curses on that screen: windows, `move`/`addch`/`printw`/`mvwinch`, `getch`, refresh |
+| `v32file.c` | Files on the memory card: `fopen`, `fread`, `fwrite`, `getc`, `putc`, `fclose`, `rewind`, `fseek`, `remove`, `unlink`, `stat` |
+
+### Files on the memory card
+
+The card's first 20 words are the game signature every Vircon32 game
+writes (`v32file_signature`, set by the program). After it come a
+directory of 8 named files and the files themselves, each a contiguous
+run of words. An open file is held whole in RAM and written back when it
+is closed, flushed or rewound, so files can change size freely. A card
+that is missing or belongs to another game is never written: `fopen`
+fails and `errno` says why. A blank card is formatted on first write.
+
+Sizes are in words: `sizeof(int) == sizeof(char) == 1`. Code that writes
+"the 4 bytes of an int" (`fwrite(&n, 1, 4, f)`) reads and writes three
+words past the variable; it has to say `sizeof n`. That is the one kind
+of change Rogue's save code needed.
+
+### A command line
+
+`main(argc, argv)` gets `argc == 1` unless the program defines
+`char **v32_main_args(int *argc, char **argv)`, which v32c++ then calls
+at the top of `main`. Rogue's title screen is that function: its menu
+entries stand for `rogue`, `rogue -r` and `rogue -s`.
+
 ## Limits
 
 - One translation unit, as always: `static` at file scope means nothing,
@@ -111,6 +143,10 @@ one file. See `libc/v32libc.h`.
 - `unsigned` is `int` (warned once); `char`, `short` and `long` are one
   32-bit word, so `sizeof(char) == sizeof(int) == 1`.
 - A union cannot be brace-initialized (Vircon32 C).
+- Code that assumes `sizeof(int) == 4` (see *Files on the memory card*).
+- A compound assignment whose target has a side effect, used as a value
+  inside a larger expression, is miscompiled by Vircon32 C (quirk 25 in
+  `VIRCON32_QUIRKS.md`); as a statement it is handled.
 - K&R parameter declarations (`f(a, b) int a; char *b; { }`) are not
   parsed; prototype-style definitions are.
 - Bit-fields: as for C++ (a warning, or `--reject-bit-fields`).

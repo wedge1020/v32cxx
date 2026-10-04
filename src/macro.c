@@ -506,7 +506,15 @@ static int c_passthrough_ok(const Macro *m) {
         }
         if (isdigit(ch)) {
             if (ch == '0' && isdigit((unsigned char)b[i + 1])) return 0;   /* octal */
-            i = skip_ppnumber(b, i, len);
+            if (ch == '0' && b[i + 1] == 'X') return 0;     /* Vircon32 C wants 0x */
+            size_t end = skip_ppnumber(b, i, len);
+            /* a suffix (10L, 0x10u) is not Vircon32 C either */
+            int hex = (ch == '0' && b[i + 1] == 'x');
+            for (size_t k = i; k < end; k++)
+                if (strchr(hex ? "uUlL" : "uUlLfF", b[k]) != NULL && !(hex && k < i + 2)) {
+                    if (!hex || strchr("uUlL", b[k]) != NULL) return 0;
+                }
+            i = end;
             continue;
         }
         if (strchr(" \t()+-*/%<>|&^~!={},", ch) == NULL) return 0;

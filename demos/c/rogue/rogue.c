@@ -4,7 +4,7 @@
  * Vircon32 C compiles exactly one file and has no linker, so this file
  * pools the whole program into one translation unit: the C library and
  * curses that v32c++ ships (libc/), Rogue's own sources as they were
- * written for Unix (src/), and the two files that stand in for Rogue's
+ * written for Unix (src/), and the files that stand in for Rogue's
  * machine-dependent layer (v32/).
  *
  *     v32c++ -I ../../../libc -I v32 -I src -o obj/rogue.c rogue.c
@@ -45,14 +45,18 @@
 #include "src/rings.c"
 #include "src/rip.c"
 #include "src/rooms.c"
+#include "src/save.c"
 #include "src/scrolls.c"
+#include "src/state.c"
 #include "src/sticks.c"
 #include "src/things.c"
 #include "src/weapons.c"
 #include "src/wizard.c"
 
-/* The Vircon32 side: what mach_dep.c, mdport.c and save.c were on Unix */
+/* The Vircon32 side: what mach_dep.c and mdport.c were on Unix, and the
+ * title screen that stands in for a command line */
 #include "v32/pad.c"
 #include "v32/mach_v32.c"
+#include "v32/title.c"
 
 #include "src/main.c"

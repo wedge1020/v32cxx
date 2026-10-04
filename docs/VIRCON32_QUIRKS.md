@@ -834,6 +834,42 @@ would make this much easier to spot than the parser error.
   gets the `&` Vircon32 C requires, as assignments and initializers
   already did.
 
+## 25. A compound assignment evaluates its target twice
+
+Vircon32 C compiles `target op= value` as `target = target op value`,
+writing the target out twice. A side effect in the target therefore
+happens twice. Confirmed with the real compiler (v26.04.24):
+
+```c
+int[4] buf;  int* p = buf;
+*(p++) ^= 16;      // reads buf[0], stores into buf[1], p ends 2 further on
+rooms[rnd_room()].r_flags |= ISGONE;   // reads one random room, writes another
+```
+
+Found through Rogue: its save file's decoder (`*start++ ^= key`) produced
+garbage, and its level generator was flagging the wrong rooms as "gone".
+
+**What v32c++ does** (`lower.c`, phase 11, both C and C++ input): when the
+compound assignment is a statement of its own and its target has a side
+effect (`++`, `--`, an assignment, a call -- an overloaded `operator[]`
+counts), the target's address is taken once:
+
+```c
+{ int * __v32_target0 = (&rooms[rnd_room()].r_flags); ((*__v32_target0) |= 2); }
+```
+
+or, where the target's type is unknown, `++`/`--` of plain variables are
+moved out of it (`{ *p ^= key; p++; }`). A compound assignment with such a
+target used as a VALUE inside a larger expression is left as written, with
+a warning.
+
+## 26. A pointer does not compare with a `void *`
+
+`thing == ptr` with `THING *thing` and `void *ptr` is "invalid operands
+for equality comparison"; C allows it. For C input both sides are
+compared as addresses (`((int)thing) == ((int)ptr)`). See also
+`docs/C_INPUT.md` for the null pointer, which is a larger subject.
+
 ---
 
 ## What this list does NOT cover

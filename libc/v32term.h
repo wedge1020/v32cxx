@@ -34,6 +34,15 @@
 #define V32TERM_COLOR   0xF000              /* palette index, see below */
 #define V32TERM_INK(n)  ((n) << 12)
 
+/* Characters 17..20 are the BIOS font's shade blocks: a quarter, a half
+ * and three quarters of the pixels lit, and a solid block. */
+#define V32TERM_SHADE_FIRST 17
+#define V32TERM_SHADE_LIGHT 17
+#define V32TERM_SHADE_HALF  18
+#define V32TERM_SHADE_DARK  19
+#define V32TERM_SHADE_SOLID 20
+#define V32TERM_SHADE_LAST  20
+
 /* Palette indices for V32TERM_INK(). 0 is the default text colour. */
 #define V32INK_DEFAULT  0
 #define V32INK_RED      1

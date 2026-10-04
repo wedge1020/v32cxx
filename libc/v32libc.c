@@ -10,6 +10,12 @@
 
 int errno = 0;
 
+int v32file_close(FILE *f);
+int v32file_flush(FILE *f);
+int v32file_getc(FILE *f);
+int v32file_putc(int c, FILE *f);
+#include "v32file.c"
+
 /* ---- ctype ---------------------------------------------------------------- */
 
 int isprint(int c)
@@ -230,13 +236,14 @@ static void v32_restart(void)
 }
 
 void (*v32_exit_hook)(int status) = NULL;
+char *v32_exit_prompt = "\n[Press START to play again]";
 
 void v32_exit(int status)
 {
     if (v32_exit_hook != NULL)
         v32_exit_hook(status);
     v32term_attr(V32TERM_INK(V32INK_YELLOW));
-    v32term_puts("\n[Press START to play again]");
+    v32term_puts(v32_exit_prompt);
     v32term_attr(0);
     do {
         v32pad_poll();
@@ -444,9 +451,18 @@ int putchar(int c)
 
 int fputc(int c, FILE *f)
 {
-    if (f == stdout || f == stderr)
+    if (f == stdout || f == stderr) {
         v32term_putc(c);
-    return c;
+        return c;
+    }
+    return v32file_putc(c, f);
+}
+
+int fgetc(FILE *f)
+{
+    if (f == stdin)
+        return getchar();
+    return v32file_getc(f);
 }
 
 int fputs(char *s, FILE *f)
@@ -465,9 +481,8 @@ int puts(char *s)
 
 int fflush(FILE *f)
 {
-    f = f;
     v32term_flush();
-    return 0;
+    return v32file_flush(f);
 }
 
 void setbuf(FILE *f, char *buf)
@@ -515,29 +530,128 @@ char *fgets(char *buf, int size, FILE *f)
     return buf;
 }
 
-FILE *fopen(char *name, char *mode)
-{
-    name = name;
-    mode = mode;
-    errno = ENOENT;
-    return NULL;
-}
-
 int fclose(FILE *f)
 {
-    f = f;
-    return 0;
+    return v32file_close(f);
 }
 
-void rewind(FILE *f)
+char *strerror(int error)
 {
-    f = f;
+    switch (error) {
+        case 0:      return "No error";
+        case ENOENT: return "No such file";
+        case ENOMEM: return "Out of memory";
+        case EACCES: return "The memory card holds another game's data";
+        case ENODEV: return "No memory card";
+        case EMFILE: return "Too many open files";
+        case ENOSPC: return "The memory card is full";
+    }
+    return "Error";
 }
 
 void perror(char *s)
 {
-    v32term_puts(s);
-    v32term_puts(": error\n");
+    if (s != NULL && s[0] != '\0') {
+        v32term_puts(s);
+        v32term_puts(": ");
+    }
+    v32term_puts(strerror(errno));
+    v32term_putc('\n');
+}
+
+char **environ = NULL;
+
+/* ---- sscanf ----------------------------------------------------------------- */
+
+static int v32_scan_digit(int c, int base)
+{
+    int d = -1;
+
+    if (c >= '0' && c <= '9')
+        d = c - '0';
+    else if (c >= 'a' && c <= 'f')
+        d = c - 'a' + 10;
+    else if (c >= 'A' && c <= 'F')
+        d = c - 'A' + 10;
+    return (d >= 0 && d < base) ? d : -1;
+}
+
+int sscanf(char *s, char *fmt, ...)
+{
+    va_list args;
+    int count = 0;
+    int width, base, negative, value, digits, d;
+    char *out;
+    int *number;
+
+    va_start(args, fmt);
+    while (*fmt != '\0') {
+        if (isspace(*fmt)) {
+            while (isspace(*s))
+                s++;
+            fmt++;
+            continue;
+        }
+        if (*fmt != '%') {
+            if (*s != *fmt)
+                break;
+            s++;
+            fmt++;
+            continue;
+        }
+        fmt++;
+        width = 0;
+        while (*fmt >= '0' && *fmt <= '9')
+            width = width * 10 + (*fmt++ - '0');
+        while (*fmt == 'h' || *fmt == 'l')
+            fmt++;
+        if (*fmt == 'c') {
+            if (*s == '\0')
+                break;
+            out = va_arg(args, char *);
+            *out = *s++;
+            count++;
+        } else if (*fmt == 's') {
+            while (isspace(*s))
+                s++;
+            if (*s == '\0')
+                break;
+            out = va_arg(args, char *);
+            digits = 0;
+            while (*s != '\0' && !isspace(*s) && (width == 0 || digits < width)) {
+                *out++ = *s++;
+                digits++;
+            }
+            *out = '\0';
+            count++;
+        } else if (*fmt == 'd' || *fmt == 'u' || *fmt == 'x' || *fmt == 'i') {
+            base = (*fmt == 'x') ? 16 : 10;
+            while (isspace(*s))
+                s++;
+            negative = 0;
+            if (*s == '-' || *s == '+') {
+                negative = (*s == '-');
+                s++;
+            }
+            value = 0;
+            digits = 0;
+            while ((d = v32_scan_digit(*s, base)) >= 0 && (width == 0 || digits < width)) {
+                value = value * base + d;
+                digits++;
+                s++;
+            }
+            if (digits == 0)
+                break;
+            number = va_arg(args, int *);
+            *number = negative ? -value : value;
+            count++;
+        } else {
+            break;
+        }
+        fmt++;
+    }
+    va_end(args);
+    return count;
 }
 
 /* ---- signal --------------------------------------------------------------- */

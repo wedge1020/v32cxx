@@ -147,6 +147,8 @@ int killchar(void);
 
 #define getyx(win, y, x)      (y = (win)->_cury, x = (win)->_curx)
 #define getmaxyx(win, y, x)   (y = (win)->_maxy, x = (win)->_maxx)
+#define getmaxy(win)          ((win)->_maxy)
+#define getmaxx(win)          ((win)->_maxx)
 #define getbegyx(win, y, x)   (y = (win)->_begy, x = (win)->_begx)
 
 /* Terminal modes: nothing to switch on a console. */
