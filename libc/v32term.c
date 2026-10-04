@@ -73,7 +73,7 @@ void v32term_clear(void)
 /* ---- the 8x15 character cell ---------------------------------------------
  *
  * A BIOS glyph is a 10x20 region of the BIOS texture (texture -1; region
- * N is character N, 32 to a row, the sheet starting at pixel 1,22). Its
+ * N is character N; where it lies is read from the BIOS, never assumed). Its
  * ink never touches the first three rows, sits in rows 3..15 for every
  * character's body, and only g j p q y , Q and _ reach below that.
  *
@@ -92,8 +92,6 @@ void v32term_clear(void)
  *     16..17 as they are (, Q _);
  *   - the paper: 10x15 of the solid block (character 20).
  */
-#define V32TERM_FONT_X      1           /* where the glyph sheet starts */
-#define V32TERM_FONT_Y      22
 #define V32TERM_BODY_TOP    3           /* first glyph row with ink */
 #define V32TERM_BODY_ROWS   13
 #define V32TERM_REG_BODY    256         /* + character */
@@ -110,14 +108,29 @@ static int v32term_tail_kind(int ch)
     return 0;
 }
 
+/* Where the BIOS itself says the selected region is. The glyphs are never
+ * located by fixed texture coordinates: BIOS versions have moved the font
+ * within the texture (1.0 -> 1.1 did), but region N is character N in all
+ * of them. */
+static int v32term_region_min_x(void)
+{
+    asm { "in R0, GPU_RegionMinX" }
+}
+
+static int v32term_region_min_y(void)
+{
+    asm { "in R0, GPU_RegionMinY" }
+}
+
 static void v32term_define_font(void)
 {
     int ch, x, y, kind;
 
     select_texture(-1);
     for (ch = 33; ch < 127; ch++) {
-        x = V32TERM_FONT_X + (ch % 32) * 10;
-        y = V32TERM_FONT_Y + (ch / 32) * 20;
+        select_region(ch);
+        x = v32term_region_min_x();
+        y = v32term_region_min_y();
         select_region(V32TERM_REG_BODY + ch);
         define_region(x, y + V32TERM_BODY_TOP, x + 9,
                       y + V32TERM_BODY_TOP + V32TERM_BODY_ROWS - 1,
@@ -128,8 +141,9 @@ static void v32term_define_font(void)
             define_region(x, y + 16, x + 9, y + (kind == 2 ? 19 : 17), x, y + 16);
         }
     }
-    x = V32TERM_FONT_X + 20 * 10;       /* character 20: the solid block */
-    y = V32TERM_FONT_Y;
+    select_region(20);                  /* character 20: the solid block */
+    x = v32term_region_min_x();
+    y = v32term_region_min_y();
     select_region(V32TERM_REG_PAPER);
     define_region(x, y, x + 9, y + V32TERM_CELL_H - 1, x, y);
 }
