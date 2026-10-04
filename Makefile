@@ -324,13 +324,13 @@ sysinstall: all
 put: clean
 	@mkdir -p put
 	@rm -f put/*
-	@cp inc/*.h src/*.c docs/* v32/* README.md c_api/*.h put/
+	@cp inc/*.h src/*.c docs/* v32/* README.md c_api/*.h lib/* libc/* put/
 	@cp man/v32c++.1  put/v32c++.1.txt
 	@cp src/lexer.l   put/lexer.l.txt
 	@cp src/parser.y  put/parser.y.txt
 
 archive: clean
-	zip -r v32cxx-project.zip demos docs inc Makefile man README.md src tests v32 tools \
+	zip -r v32cxx-project.zip * \
 	    -x 'tools/vircon32/bin/*' 'tools/vircon32/ComputerSoftware/*'
 # -r matters: without it, `demos/*` stores only the demos/c and demos/cxx
 # directory ENTRIES, not the files inside them, so the archive silently
