@@ -477,8 +477,47 @@ Macro *macro_define_cmdline(const char *spec) {
     return m;
 }
 
+/* C input: every use of every macro has been expanded by the time the
+ * generated C is written, so a #define is only passed through when it is
+ * worth having there by name -- a constant: an object-like macro whose
+ * body is literals, operators, and other macros that are passed through
+ * themselves (`#define STATLINE (NUMLINES - 1)`). Everything else stays
+ * out: C programs define macros Vircon32 C's preprocessor cannot take
+ * (`#define when break;case`, a body with `?`), and an octal constant
+ * (`#define ISHELD 0000400`) would be read as decimal there. */
+extern int g_c_mode;
+
+static int c_passthrough_ok(const Macro *m) {
+    if (m->is_function) return 0;
+    const char *b = m->body;
+    size_t len = strlen(b);
+    for (size_t i = 0; i < len; ) {
+        unsigned char ch = (unsigned char)b[i];
+        if (ch == '"' || ch == '\'') { i = skip_literal(b, i, len); continue; }
+        if (macro_is_ident_start(ch)) {
+            size_t j = i;
+            while (j < len && macro_is_ident_char((unsigned char)b[j])) j++;
+            char *name = dup_range(b, i, j);
+            Macro *other = macro_lookup(name);
+            free(name);
+            if (other == NULL || other == m || !macro_passthrough_ok(other)) return 0;
+            i = j;
+            continue;
+        }
+        if (isdigit(ch)) {
+            if (ch == '0' && isdigit((unsigned char)b[i + 1])) return 0;   /* octal */
+            i = skip_ppnumber(b, i, len);
+            continue;
+        }
+        if (strchr(" \t()+-*/%<>|&^~!={},", ch) == NULL) return 0;
+        i++;
+    }
+    return 1;
+}
+
 int macro_passthrough_ok(const Macro *m) {
     if (m->is_builtin || m->is_variadic) return 0;
+    if (g_c_mode && !c_passthrough_ok(m)) return 0;
     const char *b = m->body;
     size_t len = strlen(b), nlen = strlen(m->name);
     for (size_t i = 0; i < len; ) {

@@ -72,6 +72,9 @@
  * "::", we know what to arm the qualifier context with. Reset to NULL by
  * every other token so stale state can't leak across unrelated tokens
  * (e.g. "foo ; bar :: baz" must not treat foo as bar's qualifier). */
+#define YY_DECL int yylex_raw(void)
+int yylex_raw(void);
+
 static Symbol *g_last_ident_sym = NULL;
 
 /* Macro-name annotation handoff (see the "@" rule below). The pre-scan
@@ -119,6 +122,8 @@ static void register_cart_resource(CartResourceList *list, const char *name, con
 %}
 
 %option noyywrap
+    /* The scanner proper is yylex_raw(); yylex(), at the end of this
+     * file, wraps it for what C input needs. */
 %option nounput
 %option noinput
 
@@ -129,7 +134,7 @@ ALNUM   [A-Za-z0-9_]
 %%
 
 "//"[^\n]*                     { /* line comment, discard */ }
-"/*"([^*]|\*+[^*/])*\*+"/"      { /* block comment, discard */ }
+"/*"([^*]|\*+[^*/])*\*+"/"      { for (char *c = yytext; *c; c++) if (*c == '\n') g_lex_lineno++; /* block comment, discard */ }
 
     /* Cart hints -- `#texture NAME "file.png"` / `#sound NAME "file.wav"`.
      * Matched BEFORE the generic "#"-line pass-through rule below,
@@ -305,7 +310,17 @@ ALNUM   [A-Za-z0-9_]
      * merge_tentative_globals (ast.c) folds the two declarations into
      * one in that case. An extern function declaration is just a
      * prototype. */
-"extern"     { g_last_ident_sym = NULL; }
+"extern"     {
+    g_last_ident_sym = NULL;
+    Scope *sc = g_symtab->current;
+    /* C input: the grammar needs to know. Inside a function an extern
+     * declaration declares nothing new; at file scope it is what tells a
+     * declaration (`extern char prbuf[];`, usually from a header) from the
+     * definition (`char prbuf[2*MAXSTR];`). */
+    if (g_c_mode && !sc->is_class_scope) return EXTERN;
+}
+
+"..."        { g_last_ident_sym = NULL; return ELLIPSIS; }
 
     /* `static` depends on where it stands, which the scope stack knows:
      *   - at file or namespace scope it only limits linkage, and there is
@@ -415,8 +430,12 @@ ALNUM   [A-Za-z0-9_]
     /* `auto x = expr;` -- a type name as far as the grammar goes; sema
      * replaces it with the type of the initializer (deduce_auto). */
     g_last_ident_sym = NULL;
+    if (g_c_mode) {
+        /* C's `auto` is a storage class, and the default one: dropped. */
+    } else {
     yylval.str = strdup(yytext);
     return TYPE_NAME;
+    }
 }
 
 ("std"[ \t]*"::"[ \t]*)?"string"[ \t]*"::"[ \t]*"npos"  {
@@ -613,3 +632,80 @@ ALNUM   [A-Za-z0-9_]
 }
 
 %%
+
+/* ---- yylex: the scanner the parser calls -----------------------------------
+ *
+ * For C++ input this is yylex_raw() and nothing else. For C input (g_c_mode)
+ * it adjusts the token stream where C and C++ disagree:
+ *
+ *   - C++'s own keywords are ordinary names in C: `class`, `new`, `this`,
+ *     `delete`, `virtual`, ... come back as identifiers. They are given a
+ *     trailing underscore (`this_`), because the rest of the transpiler
+ *     still gives the bare words their C++ meaning;
+ *   - `struct {`, `union {` and `enum {` -- no tag -- become ANON_STRUCT /
+ *     ANON_UNION / ANON_ENUM, except straight after `typedef`, where
+ *     the grammar's own `typedef struct { ... } Name;` rule names the
+ *     struct after the typedef. This needs the token after `struct`, so
+ *     one token of lookahead is kept here.
+ */
+static int g_prev_token = 0;
+
+static int g_peek_valid = 0;
+static int g_peek_token;
+static YYSTYPE g_peek_val;
+static YYLTYPE g_peek_loc;
+
+static int c_mode_identifier(void) {
+    size_t len = strlen(yytext);
+    char *name = malloc(len + 2);
+    memcpy(name, yytext, len);
+    name[len] = '_';
+    name[len + 1] = '\0';
+    yylval.str = name;
+    g_last_ident_sym = symtab_lookup(g_symtab, name);
+    return IDENTIFIER;
+}
+
+static int scan_token(void) {
+    int tok = yylex_raw();
+    if (!g_c_mode) return tok;
+    switch (tok) {
+        case CLASS: case NEW: case DELETE: case THIS: case VIRTUAL:
+        case OPERATOR: case FRIEND: case PUBLIC: case PRIVATE: case PROTECTED:
+        case NAMESPACE: case NULLPTR_KW: case STATIC_CAST: case DYNAMIC_CAST:
+        case CONST_CAST: case REINTERPRET_CAST:
+            return c_mode_identifier();
+        case IDENTIFIER:
+            if (strcmp(yylval.str, "va_arg") == 0) return VA_ARG;
+            return tok;
+        default:
+            return tok;
+    }
+}
+
+int yylex(void) {
+    int tok;
+    if (g_peek_valid) {
+        g_peek_valid = 0;
+        tok = g_peek_token;
+        yylval = g_peek_val;
+        yylloc = g_peek_loc;
+    } else {
+        tok = scan_token();
+    }
+    if (g_c_mode && (tok == STRUCT || tok == UNION || tok == ENUM)) {
+        YYSTYPE val = yylval;
+        YYLTYPE loc = yylloc;
+        g_peek_token = scan_token();
+        g_peek_val = yylval;
+        g_peek_loc = yylloc;
+        g_peek_valid = 1;
+        yylval = val;
+        yylloc = loc;
+        if (g_peek_token == '{' && g_prev_token != TYPEDEF)
+            tok = (tok == STRUCT) ? ANON_STRUCT : (tok == UNION) ? ANON_UNION : ANON_ENUM;
+    }
+    g_prev_token = tok;
+    return tok;
+}
+

@@ -48,6 +48,7 @@
 #include "symtab.h"
 #include "driver.h"
 #include "generic.h"
+#include "cmode.h"
 
 /* Expand a string literal's stored inner text (quotes already stripped
  * by lexer.l's STRING_LITERAL rule; escape sequences still raw
@@ -184,12 +185,177 @@ static void parse_record_enum_values(const AstList *enumerators) {
  * AST_VAR_DECL_GROUP -- ast_list_append_flatten splices a group's entries
  * into the surrounding list, so an empty group vanishes and a two-entry
  * group lands as two ordinary top-level declarations. */
+/* pointer_opt's value: 0 nothing, 1 `*`, 2 `&`, and N+1 for N >= 2 stars
+ * (`char **argv` is 3). */
+static AstNode *apply_ptr(AstNode *base, int ptr, int line) {
+    if (ptr == 2) return ast_wrap_reference(base, line);
+    int depth = (ptr == 1) ? 1 : (ptr >= 3 ? ptr - 1 : 0);
+    while (depth-- > 0) base = ast_wrap_pointer(base, line);
+    return base;
+}
+
+/* ---- C's tag namespace ----------------------------------------------------
+ *
+ * In C, `struct rdes { ... } rdes[9];` is fine: tags (struct, union and
+ * enum names) live in a namespace of their own, and are only ever
+ * written after their keyword. The generated Vircon32 C has ONE namespace
+ * -- a struct is used by its bare name there -- so for C input:
+ *   - a tag is never entered in the symbol table (the lexer must keep
+ *     seeing `rdes` as an ordinary identifier);
+ *   - every node that names a tag is remembered in g_tag_refs, and
+ *     ast_separate_c_tags (ast.c) renames a tag that collides with an
+ *     ordinary name, in its declaration and all of those nodes.
+ * A struct/union/enum DEFINED inside another declaration (`struct x {..}
+ * v;`, an anonymous struct member, one inside a function) is moved out to
+ * file scope, ahead of the declaration that contained it. */
+AstList g_tag_refs;
+AstList g_tag_decls;
+static AstList g_hoisted_tags;
+
+/* A struct/union/enum declaration with a tag (C input only). */
+static AstNode *tag_decl(AstNode *decl) {
+    if (g_c_mode) ast_list_append(&g_tag_decls, decl);
+    return decl;
+}
+
+static AstNode *tag_ref(const char *name, int line) {
+    AstNode *n = ast_ident(name, line);
+    if (g_c_mode) ast_list_append(&g_tag_refs, n);
+    return n;
+}
+
+static AstNode *hoist_tag_def(AstNode *decl) {
+    ast_list_append(&g_hoisted_tags, decl);
+    return tag_ref(decl->str1, decl->line);
+}
+
+static char *anon_tag_name(void) {
+    static int g_anon_tag_counter = 0;
+    char buf[40];
+    snprintf(buf, sizeof buf, "__v32_anon%d", g_anon_tag_counter++);
+    return strdup(buf);
+}
+
+/* A parameter nobody named (`void leave(int);`). */
+static char *unnamed_param_name(void) {
+    static int unnamed_counter = 0;
+    char buf[40];
+    snprintf(buf, sizeof buf, "__v32_unnamed%d", unnamed_counter++);
+    return strdup(buf);
+}
+
+static AstNode *make_func_header(AstNode *ret, const char *name, AstList params, int is_const, int line) {
+    AstNode *f = ast_new(AST_FUNC_DECL, line);
+    f->str1 = strdup(name);
+    f->type = ret;
+    f->list = params;
+    f->str2 = is_const ? strdup("const") : NULL;
+    return f;
+}
+
+/* ---- sizeof in a constant expression --------------------------------------
+ *
+ * `bool used[sizeof rainbow / sizeof (char *)];` needs the size of things
+ * while still parsing. File-scope declarations are remembered as they are
+ * reduced, and sizes are counted in words (everything scalar is one word
+ * on Vircon32). Anything this cannot size -- a class with a base or
+ * virtual functions, a local variable -- just fails to fold. */
+static AstList g_parse_decls;
+
+static void parse_register_decl(AstNode *d) {
+    if (d == NULL) return;
+    if (d->kind == AST_VAR_DECL_GROUP) {
+        for (int i = 0; i < d->list.count; i++) parse_register_decl(d->list.items[i]);
+        return;
+    }
+    if (d->kind == AST_VAR_DECL || d->kind == AST_TYPEDEF_DECL || d->kind == AST_CLASS_DECL ||
+        d->kind == AST_UNION_DECL || d->kind == AST_ENUM_DECL)
+        ast_list_append(&g_parse_decls, d);
+}
+
+/* The latest declaration of `name`: a variable (want_type 0) or a type. */
+static AstNode *parse_find_decl(const char *name, int want_type) {
+    for (int i = g_parse_decls.count - 1; i >= 0; i--) {
+        AstNode *d = g_parse_decls.items[i];
+        if ((d->kind == AST_VAR_DECL) == want_type) continue;
+        if (d->str1 != NULL && strcmp(d->str1, name) == 0) return d;
+    }
+    return NULL;
+}
+
+static int parse_type_words(const AstNode *t, int *out);
+
+static int parse_members_words(const AstNode *decl, int is_union, int *out) {
+    int total = 0;
+    if (decl->kind == AST_CLASS_DECL && decl->str2 != NULL) return 0;
+    for (int i = 0; i < decl->list.count; i++) {
+        const AstNode *m = decl->list.items[i];
+        int w;
+        if (m->kind == AST_ACCESS_SPEC) continue;
+        if (m->kind != AST_VAR_DECL || !parse_type_words(m->type, &w)) return 0;
+        if (is_union) { if (w > total) total = w; }
+        else total += w;
+    }
+    *out = total;
+    return 1;
+}
+
+static int parse_type_words(const AstNode *t, int *out) {
+    int inner;
+    if (t == NULL) return 0;
+    switch (t->kind) {
+        case AST_POINTER_TYPE:
+        case AST_REFERENCE_TYPE:
+        case AST_FUNC_PTR_TYPE:
+            *out = 1;
+            return 1;
+        case AST_CONST_TYPE:
+            return parse_type_words(t->a, out);
+        case AST_ARRAY_TYPE:
+            if (t->ival < 0 || !parse_type_words(t->a, &inner)) return 0;
+            *out = t->ival * inner;
+            return 1;
+        case AST_IDENT: {
+            const char *n = t->str1;
+            if (strcmp(n, "int") == 0 || strcmp(n, "char") == 0 ||
+                strcmp(n, "bool") == 0 || strcmp(n, "float") == 0) { *out = 1; return 1; }
+            const AstNode *d = parse_find_decl(n, 1);
+            if (d == NULL) return 0;
+            if (d->kind == AST_TYPEDEF_DECL) return parse_type_words(d->type, out);
+            if (d->kind == AST_ENUM_DECL) { *out = 1; return 1; }
+            return parse_members_words(d, d->kind == AST_UNION_DECL, out);
+        }
+        default:
+            return 0;
+    }
+}
+
+static int parse_fold_sizeof(const AstNode *e, int *out) {
+    if (e->type != NULL) return parse_type_words(e->type, out);
+    const AstNode *x = e->a;
+    if (x == NULL) return 0;
+    if (x->kind == AST_STRING_LIT) {
+        int n = 1;      /* the terminator */
+        for (const char *p = x->str1; *p != '\0'; n++) {
+            if (*p++ == '\\' && *p != '\0') ast_decode_escape(&p);
+        }
+        *out = n;
+        return 1;
+    }
+    if (x->kind == AST_IDENT) {
+        const AstNode *d = parse_find_decl(x->str1, 0);
+        return d != NULL && parse_type_words(d->type, out);
+    }
+    return 0;
+}
+
 static AstNode *decl_group_new(int line) {
     return ast_new(AST_VAR_DECL_GROUP, line);
 }
 
 /* Make `name` lex as TYPE_NAME from here on, unless it already does. */
 static void declare_type_name(const char *name, SymbolKind kind) {
+    if (g_c_mode && kind != SYM_TYPEDEF) return;   /* a tag: its own namespace */
     Symbol *s = symtab_lookup(g_symtab, name);
     if (s != NULL && (s->kind == SYM_CLASS || s->kind == SYM_UNION ||
                       s->kind == SYM_ENUM  || s->kind == SYM_TYPEDEF)) return;
@@ -202,12 +368,10 @@ static AstNode *tag_typedef_group(AstNode *decl, int ptr, const char *name, int 
     AstNode *g = decl_group_new(line);
     ast_list_append(&g->list, decl);
     if (ptr != 0 || strcmp(decl->str1, name) != 0) {
-        AstNode *t = ast_ident(decl->str1, line);
+        AstNode *t = tag_ref(decl->str1, line);
         AstNode *td = ast_new(AST_TYPEDEF_DECL, line);
         td->str1 = strdup(name);
-        td->type = (ptr == 1) ? ast_wrap_pointer(t, line)
-                 : (ptr == 2) ? ast_wrap_reference(t, line)
-                 : t;
+        td->type = apply_ptr(t, ptr, line);
         symtab_insert(g_symtab, g_symtab->current, name, SYM_TYPEDEF);
         ast_list_append(&g->list, td);
     }
@@ -219,6 +383,10 @@ static void size_unsized_array(AstList dims, const AstNode *init, int line) {
     if (dims.count == 0 || dims.items[0]->ival >= 0) return;
     if (init != NULL && init->kind == AST_INIT_LIST && init->list.count > 0) {
         dims.items[0]->ival = init->list.count;
+    } else if (init == NULL && g_c_mode) {
+        /* `extern char names[];` -- the definition, elsewhere in the
+         * file, has the size: merge_tentative_globals (ast.c) takes it
+         * from there, and reports the array nobody defines. */
     } else {
         fprintf(stderr, "%s:%d: error: an array declared with empty brackets "
                 "needs an initializer to take its size from\n",
@@ -242,9 +410,7 @@ static AstNode *finish_declarators(AstNode *first, AstNode *base, AstList more, 
         symtab_insert(g_symtab, g_symtab->current, spec->str1, SYM_VAR);
         AstNode *resolved = ast_new(AST_VAR_DECL, spec->line);
         resolved->str1 = spec->str1;
-        AstNode *t = (spec->ival == 1) ? ast_wrap_pointer(base, line)
-                   : (spec->ival == 2) ? ast_wrap_reference(base, line)
-                   : base;
+        AstNode *t = apply_ptr(base, spec->ival, line);
         if (spec->list.count > 0) {
             size_unsized_array(spec->list, spec->a, spec->line);
             t = ast_wrap_array_dims(t, spec->list, line);
@@ -300,7 +466,8 @@ static AstNode *finish_declarators(AstNode *first, AstNode *base, AstList more, 
  * and confirm the actual concrete input you care about still parses
  * correctly before trusting the new number.
  */
-%expect 47
+%expect 64
+%expect-rr 1
 /* 46 -> 47: the range-based for. After `for (` and a type, an IDENTIFIER
  * either follows an empty pointer_opt (reduce: `for (int x : v)`, and
  * the ordinary `for (int i = 0; ...)`) or is shifted by a declarator
@@ -498,16 +665,17 @@ static AstNode *finish_declarators(AstNode *first, AstNode *base, AstList more, 
 %token ASM VOLATILE NATIVE
 %token MODEQ STATIC
 %token STD_ARRAY STD_VECTOR
+%token ELLIPSIS ANON_STRUCT ANON_UNION ANON_ENUM EXTERN VA_ARG
 
 %type <node> program top_decl namespace_decl class_decl member
 %type <node> braced_init init_item
 %type <list> init_items
 %type <node> func_decl func_def func_header var_decl typedef_decl tag_typedef_decl out_of_line_def native_decl
-%type <node> enum_decl enumerator union_decl func_ptr_param_type
+%type <node> enum_decl enumerator union_decl func_ptr_param_type implicit_int_header anon_tag_decl
 %type <node> opt_member_init_list member_init
 %type <node> block stmt for_init opt_initializer opt_array_initializer
 %type <node> expr unary_expr postfix_expr primary_expr
-%type <node> qualified_id_expr qualified_type type_spec param opt_base
+%type <node> qualified_id_expr qualified_type type_spec tag_def_type param opt_base
 
 %type <list> top_decl_list class_body member_list stmt_list
 %type <list> param_list opt_param_list arg_list opt_arg_list qname_prefix
@@ -554,7 +722,20 @@ program:
 
 top_decl_list:
       /* empty */               { $$ = ast_list_new(); }
-    | top_decl_list top_decl    { $$ = $1; ast_list_append_flatten(&$$, $2); }
+    | top_decl_list top_decl
+        {
+            $$ = $1;
+            /* struct/union/enum definitions found inside this declaration
+             * (see hoist_tag_def) come out ahead of it */
+            g_ast_sizeof_hook = parse_fold_sizeof;
+            for (int i = 0; i < g_hoisted_tags.count; i++) {
+                parse_register_decl(g_hoisted_tags.items[i]);
+                ast_list_append(&$$, g_hoisted_tags.items[i]);
+            }
+            g_hoisted_tags.count = 0;
+            parse_register_decl($2);
+            ast_list_append_flatten(&$$, $2);
+        }
     ;
 
 top_decl:
@@ -567,6 +748,34 @@ top_decl:
     | var_decl ';'       { $$ = $1; }
     | typedef_decl ';'   { $$ = $1; }
     | tag_typedef_decl ';' { $$ = $1; }
+    | anon_tag_decl ';'
+        {
+            /* `enum { RED, GREEN };` -- constants with no type name */
+            $$ = $1;
+        }
+    | EXTERN var_decl ';'
+        {
+            /* C input only (see the lexer's "extern" rule) */
+            $$ = $2;
+            if ($$->kind == AST_VAR_DECL_GROUP) {
+                for (int i = 0; i < $$->list.count; i++) $$->list.items[i]->is_extern = 1;
+            } else {
+                $$->is_extern = 1;
+            }
+        }
+    | EXTERN func_decl ';'   { $$ = $2; }
+    | implicit_int_header ';'
+        {
+            $$ = $1;
+            symtab_pop_scope(g_symtab);
+        }
+    | implicit_int_header block
+        {
+            $$ = $1;
+            $$->kind = AST_FUNC_DEF;
+            $$->a = $2;
+            symtab_pop_scope(g_symtab);
+        }
     | class_or_struct_kw name_tok ';'
         {
             /* Forward declaration, `struct Actor;` -- only has to make
@@ -664,6 +873,11 @@ class_decl:
              * name, now classified as TYPE_NAME by the lexer -- resolve
              * correctly. See driver.h for the single-class-at-a-time
              * caveat (no nested classes yet). */
+            if (g_c_mode) {
+                /* a tag: not a name the lexer may ever see as a type */
+                g_current_class_sym = NULL;
+                symtab_push_scope(g_symtab, "__tag", 1);
+            } else {
             g_current_class_sym = symtab_insert(g_symtab, g_symtab->current, $2, SYM_CLASS);
             symtab_push_scope(g_symtab, $2, 1);
             g_current_class_sym->inner_scope = g_symtab->current;
@@ -688,6 +902,7 @@ class_decl:
              * necessary but not sufficient on its own. */
             Symbol *injected = symtab_insert(g_symtab, g_symtab->current, $2, SYM_CLASS);
             injected->inner_scope = g_symtab->current;
+            }
         }
     class_body
         {
@@ -707,6 +922,7 @@ class_decl:
                 other piece of this project's class machinery applies
                 identically either way) */
             g_current_class_sym = NULL;
+            tag_decl($$);
         }
     ;
 
@@ -1041,9 +1257,7 @@ func_header:
             symtab_insert(g_symtab, g_symtab->current->parent, $3, SYM_FUNC);
             $$ = ast_new(AST_FUNC_DECL, @3.first_line);
             $$->str1 = strdup($3);
-            $$->type = ($2 == 1) ? ast_wrap_pointer($1, @1.first_line)
-                     : ($2 == 2) ? ast_wrap_reference($1, @1.first_line)
-                     : $1; /* pointer_opt lets a function's return type be
+            $$->type = apply_ptr($1, $2, @1.first_line); /* pointer_opt lets a function's return type be
                               a pointer or reference to T -- see
                               docs/VIRCON32_QUIRKS.md entry #12 for why
                               this was missing and what closing it
@@ -1075,6 +1289,49 @@ func_header:
             $$->str1 = dtor_name;
             $$->type = NULL;
             $$->list = ast_list_new();
+        }
+    ;
+
+/* C: a function with no return type written is `int` (`main(argc, argv)`).
+ * File scope only -- inside a function `f(x);` is a call. */
+implicit_int_header:
+    IDENTIFIER '(' { symtab_push_scope(g_symtab, NULL, 0); } opt_param_list ')'
+        {
+            symtab_insert(g_symtab, g_symtab->current->parent, $1, SYM_FUNC);
+            $$ = make_func_header(ast_ident("int", @1.first_line), $1, $4, 0, @1.first_line);
+        }
+    ;
+
+/* C: `struct { ... } name;` -- a struct or union with no tag (the lexer
+ * only produces these tokens for C input, see yylex in lexer.l). */
+anon_tag_decl:
+      ANON_STRUCT
+        {
+            g_current_class_sym = NULL;
+            symtab_push_scope(g_symtab, "__anonymous", 1);
+        }
+      class_body
+        {
+            symtab_pop_scope(g_symtab);
+            $$ = ast_new(AST_CLASS_DECL, @1.first_line);
+            $$->str1 = anon_tag_name();
+            $$->str2 = NULL;
+            $$->access = ACC_PUBLIC;
+            $$->list = $3;
+            $$->ival = 1;
+        }
+    | ANON_UNION '{' union_member_list '}'
+        {
+            $$ = ast_new(AST_UNION_DECL, @1.first_line);
+            $$->str1 = anon_tag_name();
+            $$->list = $3;
+        }
+    | ANON_ENUM '{' enumerator_list '}'
+        {
+            parse_record_enum_values(&$3);
+            $$ = ast_new(AST_ENUM_DECL, @1.first_line);
+            $$->str1 = anon_tag_name();
+            $$->list = $3;
         }
     ;
 
@@ -1156,9 +1413,7 @@ out_of_line_def:
         {
             $$ = ast_new(AST_FUNC_DEF, @1.first_line);
             $$->str1 = strdup($4);
-            $$->type = ($2 == 1) ? ast_wrap_pointer($1, @1.first_line)
-                     : ($2 == 2) ? ast_wrap_reference($1, @1.first_line)
-                     : $1; /* see func_header's identical pointer_opt
+            $$->type = apply_ptr($1, $2, @1.first_line); /* see func_header's identical pointer_opt
                               handling above -- out-of-line definitions need
                               the same pointer/reference return-type
                               support */
@@ -1241,8 +1496,8 @@ out_of_line_def:
 
 opt_param_list:
       /* empty */   { $$ = ast_list_new(); }
-    | VOID_KW        { $$ = ast_list_new(); /* `(void)` -- real C's own "no parameters" spelling, same fix as opt_func_ptr_param_list's own VOID_KW alternative. A genuine, PRE-EXISTING gap, unrelated to function pointers -- found only because a function-pointer test happened to also declare an ordinary function using this spelling. Unambiguous against param_list's own first alternative: a bare VOID_KW with nothing following only ever matches here, since param itself always requires a name after its own type. */ }
-    | param_list     { $$ = $1; }
+    | VOID_KW        %dprec 2 { $$ = ast_list_new(); /* `(void)` -- real C's own "no parameters" spelling, same fix as opt_func_ptr_param_list's own VOID_KW alternative. A genuine, PRE-EXISTING gap, unrelated to function pointers -- found only because a function-pointer test happened to also declare an ordinary function using this spelling. A bare VOID_KW also matches param's unnamed-parameter form (`void leave(int);`); %dprec picks this one. */ }
+    | param_list     %dprec 1 { $$ = $1; }
     ;
 
 param_list:
@@ -1256,9 +1511,7 @@ param:
             symtab_insert(g_symtab, g_symtab->current, $3, SYM_PARAM);
             $$ = ast_new(AST_PARAM, @3.first_line);
             $$->str1 = strdup($3);
-            $$->type = ($2 == 1) ? ast_wrap_pointer($1, @1.first_line)
-                     : ($2 == 2) ? ast_wrap_reference($1, @1.first_line)
-                     : $1;
+            $$->type = apply_ptr($1, $2, @1.first_line);
         }
     | type_spec pointer_opt IDENTIFIER '=' expr
         {
@@ -1287,9 +1540,7 @@ param:
             symtab_insert(g_symtab, g_symtab->current, $3, SYM_PARAM);
             $$ = ast_new(AST_PARAM, @3.first_line);
             $$->str1 = strdup($3);
-            $$->type = ($2 == 1) ? ast_wrap_pointer($1, @1.first_line)
-                     : ($2 == 2) ? ast_wrap_reference($1, @1.first_line)
-                     : $1;
+            $$->type = apply_ptr($1, $2, @1.first_line);
             $$->a = $5;
         }
     | type_spec pointer_opt IDENTIFIER '[' ']'
@@ -1307,9 +1558,7 @@ param:
             symtab_insert(g_symtab, g_symtab->current, $3, SYM_PARAM);
             $$ = ast_new(AST_PARAM, @3.first_line);
             $$->str1 = strdup($3);
-            AstNode *base = ($2 == 1) ? ast_wrap_pointer($1, @1.first_line)
-                          : ($2 == 2) ? ast_wrap_reference($1, @1.first_line)
-                          : $1;
+            AstNode *base = apply_ptr($1, $2, @1.first_line);
             $$->type = ast_wrap_pointer(base, @1.first_line);
         }
     | type_spec pointer_opt IDENTIFIER '[' array_dim ']'
@@ -1324,15 +1573,59 @@ param:
             symtab_insert(g_symtab, g_symtab->current, $3, SYM_PARAM);
             $$ = ast_new(AST_PARAM, @3.first_line);
             $$->str1 = strdup($3);
-            AstNode *base = ($2 == 1) ? ast_wrap_pointer($1, @1.first_line)
-                          : ($2 == 2) ? ast_wrap_reference($1, @1.first_line)
-                          : $1;
+            AstNode *base = apply_ptr($1, $2, @1.first_line);
             $$->type = ast_wrap_pointer(base, @1.first_line);
+        }
+    | type_spec pointer_opt
+        {
+            /* `void leave(int);` -- a prototype may leave its parameters
+             * unnamed. Vircon32 C requires a name, so one is made up. */
+            $$ = ast_new(AST_PARAM, @1.first_line);
+            $$->str1 = unnamed_param_name();
+            $$->type = apply_ptr($1, $2, @1.first_line);
+        }
+    | type_spec pointer_opt '[' ']'
+        {
+            $$ = ast_new(AST_PARAM, @1.first_line);
+            $$->str1 = unnamed_param_name();
+            $$->type = ast_wrap_pointer(apply_ptr($1, $2, @1.first_line), @1.first_line);
+        }
+    | ELLIPSIS
+        {
+            /* `...`: the extra arguments arrive as one pointer to an array
+             * of words, which lower.c builds at each call (see va_rewrite
+             * there). str2 marks the parameter. */
+            if (!g_c_mode) {
+                yyerror("variadic functions (`...`) are supported for C input only "
+                        "(a .c file); in C++ use overloads or default arguments");
+                g_parse_errors++;
+            }
+            symtab_insert(g_symtab, g_symtab->current, "__v32_va", SYM_PARAM);
+            $$ = ast_new(AST_PARAM, @1.first_line);
+            $$->str1 = strdup("__v32_va");
+            $$->str2 = strdup("...");
+            $$->type = ast_wrap_pointer(ast_ident("int", @1.first_line), @1.first_line);
+        }
+    | type_spec pointer_opt '(' '*' IDENTIFIER ')' '(' opt_func_ptr_param_list ')'
+        {
+            /* a function pointer parameter: `void (*func)(int)` */
+            symtab_insert(g_symtab, g_symtab->current, $5, SYM_PARAM);
+            $$ = ast_new(AST_PARAM, @5.first_line);
+            $$->str1 = strdup($5);
+            $$->type = ast_wrap_func_ptr(apply_ptr($1, $2, @1.first_line), $8, @1.first_line);
+        }
+    | type_spec pointer_opt '(' '*' ')' '(' opt_func_ptr_param_list ')'
+        {
+            $$ = ast_new(AST_PARAM, @1.first_line);
+            $$->str1 = unnamed_param_name();
+            $$->type = ast_wrap_func_ptr(apply_ptr($1, $2, @1.first_line), $7, @1.first_line);
         }
     ;
 
 pointer_opt:
       /* empty */  { $$ = 0; }
+    | '*' '*'      { $$ = 3; }
+    | '*' '*' '*'  { $$ = 4; }
     | '*'          { $$ = 1; }
     | '&'          { $$ = 2; }
     | '*' CONST    { $$ = 1; /* `T* const p` -- a const POINTER (as opposed
@@ -1346,6 +1639,21 @@ pointer_opt:
 
 /* ---- types ------------------------------------------------------------ */
 
+/* A struct, union or enum DEFINED where a variable is declared: `struct
+ * rdes { ... } rdes[9];`, a struct member that is itself an unnamed
+ * struct. The definition moves to file scope (hoist_tag_def) and what is
+ * left is its name. Only var_decl uses this -- deliberately not part of
+ * type_spec: there, the parser could not tell `class X { ... };` from the
+ * start of a declaration until the closing brace, and would run the whole
+ * class body with its actions deferred (GLR), which the lexer's use of
+ * the symbol table cannot survive. */
+tag_def_type:
+      class_decl                   { $$ = hoist_tag_def($1); }
+    | union_decl                   { $$ = hoist_tag_def($1); }
+    | enum_decl                    { $$ = hoist_tag_def($1); }
+    | anon_tag_decl                { $$ = hoist_tag_def($1); }
+    ;
+
 type_spec:
       INT_KW        { $$ = ast_ident("int", @1.first_line); }
     | FLOAT_KW      { $$ = ast_ident("float", @1.first_line); }
@@ -1353,9 +1661,10 @@ type_spec:
     | BOOL_KW       { $$ = ast_ident("bool", @1.first_line); }
     | CHAR_KW       { $$ = ast_ident("char", @1.first_line); }
     | TYPE_NAME     { $$ = ast_ident($1, @1.first_line); }
-    | class_or_struct_kw name_tok  { $$ = ast_ident($2, @2.first_line); }
-    | UNION name_tok               { $$ = ast_ident($2, @2.first_line); }
-    | ENUM name_tok                { $$ = ast_ident($2, @2.first_line); }
+    | class_or_struct_kw name_tok  { $$ = tag_ref($2, @2.first_line); }
+    | UNION name_tok               { $$ = tag_ref($2, @2.first_line); }
+    | ENUM name_tok                { $$ = tag_ref($2, @2.first_line); }
+
     | qualified_type { $$ = $1; }
     | STD_ARRAY '<' type_spec pointer_opt ',' INT_LITERAL '>'
         {
@@ -1476,7 +1785,26 @@ qualified_id_expr:
 /* ---- declarations ------------------------------------------------------ */
 
 var_decl:
-    type_spec pointer_opt IDENTIFIER opt_initializer more_plain_declarators
+      tag_def_type pointer_opt IDENTIFIER opt_initializer more_plain_declarators
+        {
+            symtab_insert(g_symtab, g_symtab->current, $3, SYM_VAR);
+            AstNode *first = ast_new(AST_VAR_DECL, @3.first_line);
+            first->str1 = strdup($3);
+            first->type = apply_ptr($1, $2, @1.first_line);
+            first->a = $4;
+            $$ = finish_declarators(first, $1, $5, @1.first_line);
+        }
+    | tag_def_type pointer_opt IDENTIFIER array_bracket_list opt_array_initializer more_plain_declarators
+        {
+            symtab_insert(g_symtab, g_symtab->current, $3, SYM_VAR);
+            AstNode *first = ast_new(AST_VAR_DECL, @3.first_line);
+            first->str1 = strdup($3);
+            size_unsized_array($4, $5, @3.first_line);
+            first->type = ast_wrap_array_dims(apply_ptr($1, $2, @1.first_line), $4, @1.first_line);
+            first->a = $5;
+            $$ = finish_declarators(first, $1, $6, @1.first_line);
+        }
+    | type_spec pointer_opt IDENTIFIER opt_initializer more_plain_declarators
         {
             /* The plain declarator, now with an optional comma-separated
              * tail of MORE plain declarators sharing this SAME base type
@@ -1505,9 +1833,7 @@ var_decl:
             symtab_insert(g_symtab, g_symtab->current, $3, SYM_VAR);
             AstNode *first = ast_new(AST_VAR_DECL, @3.first_line);
             first->str1 = strdup($3);
-            first->type = ($2 == 1) ? ast_wrap_pointer($1, @1.first_line)
-                        : ($2 == 2) ? ast_wrap_reference($1, @1.first_line)
-                        : $1;
+            first->type = apply_ptr($1, $2, @1.first_line);
             first->a = $4;
 
             $$ = finish_declarators(first, $1, $5, @1.first_line);
@@ -1584,9 +1910,7 @@ var_decl:
             symtab_insert(g_symtab, g_symtab->current, $3, SYM_VAR);
             AstNode *first = ast_new(AST_VAR_DECL, @3.first_line);
             first->str1 = strdup($3);
-            AstNode *base = ($2 == 1) ? ast_wrap_pointer($1, @1.first_line)
-                          : ($2 == 2) ? ast_wrap_reference($1, @1.first_line)
-                          : $1;
+            AstNode *base = apply_ptr($1, $2, @1.first_line);
             size_unsized_array($4, $5, @3.first_line);
             first->type = ast_wrap_array_dims(base, $4, @1.first_line);
             first->a = $5;
@@ -1641,9 +1965,7 @@ var_decl:
             symtab_insert(g_symtab, g_symtab->current, $5, SYM_VAR);
             $$ = ast_new(AST_VAR_DECL, @5.first_line);
             $$->str1 = strdup($5);
-            AstNode *ret = ($2 == 1) ? ast_wrap_pointer($1, @1.first_line)
-                         : ($2 == 2) ? ast_wrap_reference($1, @1.first_line)
-                         : $1;
+            AstNode *ret = apply_ptr($1, $2, @1.first_line);
             $$->type = ast_wrap_func_ptr(ret, $8, @1.first_line);
             $$->a = $10;
         }
@@ -1659,9 +1981,7 @@ var_decl:
             symtab_insert(g_symtab, g_symtab->current, $7, SYM_VAR);
             $$ = ast_new(AST_VAR_DECL, @7.first_line);
             $$->str1 = strdup($7);
-            AstNode *ret = ($2 == 1) ? ast_wrap_pointer($1, @1.first_line)
-                         : ($2 == 2) ? ast_wrap_reference($1, @1.first_line)
-                         : $1;
+            AstNode *ret = apply_ptr($1, $2, @1.first_line);
             $$->type = ast_wrap_func_ptr(ret, $4, @1.first_line);
             $$->a = $8;
         }
@@ -1679,9 +1999,7 @@ var_decl:
             symtab_insert(g_symtab, g_symtab->current, $5, SYM_VAR);
             $$ = ast_new(AST_VAR_DECL, @5.first_line);
             $$->str1 = strdup($5);
-            AstNode *ret = ($2 == 1) ? ast_wrap_pointer($1, @1.first_line)
-                         : ($2 == 2) ? ast_wrap_reference($1, @1.first_line)
-                         : $1;
+            AstNode *ret = apply_ptr($1, $2, @1.first_line);
             AstNode *fp = ast_wrap_func_ptr(ret, $11, @1.first_line);
             $$->type = ast_wrap_array(fp, $7->ival, @1.first_line);
             $$->type->b = $7->a;
@@ -1701,9 +2019,7 @@ var_decl:
             symtab_insert(g_symtab, g_symtab->current, $10, SYM_VAR);
             $$ = ast_new(AST_VAR_DECL, @10.first_line);
             $$->str1 = strdup($10);
-            AstNode *ret = ($2 == 1) ? ast_wrap_pointer($1, @1.first_line)
-                         : ($2 == 2) ? ast_wrap_reference($1, @1.first_line)
-                         : $1;
+            AstNode *ret = apply_ptr($1, $2, @1.first_line);
             AstNode *fp = ast_wrap_func_ptr(ret, $4, @1.first_line);
             $$->type = ast_wrap_array(fp, $8->ival, @1.first_line);
             $$->type->b = $8->a;
@@ -1766,15 +2082,11 @@ more_plain_declarators:
 func_ptr_param_type:
     type_spec pointer_opt
         {
-            $$ = ($2 == 1) ? ast_wrap_pointer($1, @1.first_line)
-               : ($2 == 2) ? ast_wrap_reference($1, @1.first_line)
-               : $1;
+            $$ = apply_ptr($1, $2, @1.first_line);
         }
     | type_spec pointer_opt name_tok
         {
-            $$ = ($2 == 1) ? ast_wrap_pointer($1, @1.first_line)
-               : ($2 == 2) ? ast_wrap_reference($1, @1.first_line)
-               : $1;
+            $$ = apply_ptr($1, $2, @1.first_line);
         }
     ;
 
@@ -2000,9 +2312,7 @@ typedef_decl:
                 symtab_insert(g_symtab, g_symtab->current, $4, SYM_TYPEDEF);
                 $$ = ast_new(AST_TYPEDEF_DECL, @4.first_line);
                 $$->str1 = strdup($4);
-                $$->type = ($3 == 1) ? ast_wrap_pointer($2, @2.first_line)
-                         : ($3 == 2) ? ast_wrap_reference($2, @2.first_line)
-                         : $2;
+                $$->type = apply_ptr($2, $3, @2.first_line);
             }
         }
     | TYPEDEF type_spec pointer_opt '(' '*' IDENTIFIER ')' '(' opt_func_ptr_param_list ')'
@@ -2030,9 +2340,7 @@ typedef_decl:
             symtab_insert(g_symtab, g_symtab->current, $6, SYM_TYPEDEF);
             $$ = ast_new(AST_TYPEDEF_DECL, @6.first_line);
             $$->str1 = strdup($6);
-            AstNode *ret = ($3 == 1) ? ast_wrap_pointer($2, @2.first_line)
-                         : ($3 == 2) ? ast_wrap_reference($2, @2.first_line)
-                         : $2;
+            AstNode *ret = apply_ptr($2, $3, @2.first_line);
             $$->type = ast_wrap_func_ptr(ret, $9, @2.first_line);
         }
     | TYPEDEF type_spec pointer_opt '(' opt_func_ptr_param_list ')' '*' IDENTIFIER
@@ -2048,9 +2356,7 @@ typedef_decl:
             symtab_insert(g_symtab, g_symtab->current, $8, SYM_TYPEDEF);
             $$ = ast_new(AST_TYPEDEF_DECL, @8.first_line);
             $$->str1 = strdup($8);
-            AstNode *ret = ($3 == 1) ? ast_wrap_pointer($2, @2.first_line)
-                         : ($3 == 2) ? ast_wrap_reference($2, @2.first_line)
-                         : $2;
+            AstNode *ret = apply_ptr($2, $3, @2.first_line);
             $$->type = ast_wrap_func_ptr(ret, $5, @2.first_line);
         }
     ;
@@ -2071,10 +2377,11 @@ enum_decl:
     ENUM name_tok '{' enumerator_list '}'
         {
             parse_record_enum_values(&$4);
-            symtab_insert(g_symtab, g_symtab->current, $2, SYM_ENUM);
+            if (!g_c_mode) symtab_insert(g_symtab, g_symtab->current, $2, SYM_ENUM);
             $$ = ast_new(AST_ENUM_DECL, @1.first_line);
             $$->str1 = strdup($2);
             $$->list = $4;
+            tag_decl($$);
         }
     ;
 
@@ -2116,10 +2423,11 @@ enumerator:
 union_decl:
     UNION name_tok '{' union_member_list '}'
         {
-            symtab_insert(g_symtab, g_symtab->current, $2, SYM_UNION);
+            if (!g_c_mode) symtab_insert(g_symtab, g_symtab->current, $2, SYM_UNION);
             $$ = ast_new(AST_UNION_DECL, @1.first_line);
             $$->str1 = strdup($2);
             $$->list = $4;
+            tag_decl($$);
         }
     ;
 
@@ -2254,9 +2562,7 @@ stmt:
             deref->a = ast_ident(it_name, line);
             AstNode *var = ast_new(AST_VAR_DECL, @4.first_line);
             var->str1 = strdup($4);
-            var->type = ($3 == 1) ? ast_wrap_pointer($2, line)
-                      : ($3 == 2) ? ast_wrap_reference($2, line)
-                      : $2;
+            var->type = apply_ptr($2, $3, line);
             var->a = deref;
 
             AstNode *body = ast_new(AST_BLOCK, line);
@@ -2393,6 +2699,24 @@ stmt:
             YYERROR;
         }
     | var_decl ';'      { $$ = $1; }
+    | EXTERN var_decl ';'
+        {
+            /* `extern int seed;` inside a function names a file-scope
+             * variable; it declares nothing here. (The lexer only returns
+             * EXTERN inside a function body.) */
+            $$ = decl_group_new(@1.first_line);
+        }
+    | EXTERN func_header ';'
+        {
+            symtab_pop_scope(g_symtab);
+            $$ = $2;
+        }
+    | type_spec pointer_opt IDENTIFIER '(' { symtab_push_scope(g_symtab, NULL, 0); } opt_param_list ')' ';'
+        {
+            /* a function declared inside a function: just a prototype */
+            symtab_pop_scope(g_symtab);
+            $$ = make_func_header(apply_ptr($1, $2, @1.first_line), $3, $6, 0, @3.first_line);
+        }
     | typedef_decl ';'  { $$ = $1; }
     | comma_expr ';'
         {
@@ -2500,6 +2824,31 @@ primary_expr:
     | FLOAT_LITERAL        { $$ = ast_new(AST_FLOAT_LIT, @1.first_line); $$->fval = $1.fval; $$->macro_name = $1.macro; }
     | string_seq            { $$ = ast_new(AST_STRING_LIT, @1.first_line); $$->str1 = $1; }
     | CHAR_LITERAL            { $$ = ast_new(AST_CHAR_LIT, @1.first_line); $$->ival = $1.ival; $$->macro_name = $1.macro; }
+    | VA_ARG '(' expr ',' type_spec pointer_opt ')'
+        {
+            /* va_arg(ap, T): the next extra argument. A va_list is a
+             * pointer into an array of words, one per argument (see the
+             * ELLIPSIS parameter), so this is *((T *)((ap += 1) - 1)). */
+            int line = @1.first_line;
+            AstNode *one = ast_new(AST_INT_LIT, line);
+            one->ival = 1;
+            AstNode *step = ast_new(AST_ASSIGN, line);
+            step->str1 = strdup("+=");
+            step->a = $3;
+            step->b = one;
+            AstNode *one2 = ast_new(AST_INT_LIT, line);
+            one2->ival = 1;
+            AstNode *back = ast_new(AST_BINOP, line);
+            back->str1 = strdup("-");
+            back->a = step;
+            back->b = one2;
+            AstNode *cast = ast_new(AST_CAST, line);
+            cast->type = ast_wrap_pointer(apply_ptr($5, $6, line), line);
+            cast->a = back;
+            $$ = ast_new(AST_UNOP, line);
+            $$->str1 = strdup("deref");
+            $$->a = cast;
+        }
     | TRUE_KW                  { $$ = ast_new(AST_BOOL_LIT, @1.first_line); $$->ival = 1; }
     | FALSE_KW                  { $$ = ast_new(AST_BOOL_LIT, @1.first_line); $$->ival = 0; }
     | NULLPTR_KW                 { $$ = ast_new(AST_NULL_LIT, @1.first_line); }
@@ -2529,6 +2878,21 @@ postfix_expr:
             $$ = ast_new(AST_CALL, @1.first_line);
             $$->a = $1;
             $$->list = $3;
+            if (g_c_mode && $1->kind == AST_IDENT && $3.count >= 1 &&
+                (strcmp($1->str1, "va_start") == 0 || strcmp($1->str1, "va_end") == 0)) {
+                /* va_start(ap, last): ap = the pointer `...` arrived as.
+                 * va_end(ap): ap = 0. */
+                int start = ($1->str1[3] == 's');
+                $$ = ast_new(AST_ASSIGN, @1.first_line);
+                $$->str1 = strdup("=");
+                $$->a = $3.items[0];
+                if (start) {
+                    $$->b = ast_ident("__v32_va", @1.first_line);
+                } else {
+                    $$->b = ast_new(AST_INT_LIT, @1.first_line);
+                    $$->b->ival = 0;
+                }
+            }
         }
     | postfix_expr '.' IDENTIFIER
         {
@@ -2612,6 +2976,13 @@ unary_expr:
             $$->a = $4;
             $$->ival = 1;
         }
+    | '(' type_spec pointer_opt '(' '*' ')' '(' opt_func_ptr_param_list ')' ')' unary_expr
+        {
+            /* a cast to a function pointer: `(void (*)(int))handler` */
+            $$ = ast_new(AST_CAST, @1.first_line);
+            $$->type = ast_wrap_func_ptr(apply_ptr($2, $3, @1.first_line), $8, @1.first_line);
+            $$->a = $11;
+        }
     | '(' type_spec pointer_opt ')' unary_expr
         {
             /* C-style cast -- (Type)expr, (Type *)expr, (Type &)expr.
@@ -2633,9 +3004,7 @@ unary_expr:
              * starting here, never the start of a plain parenthesized
              * expression. */
             $$ = ast_new(AST_CAST, @1.first_line);
-            $$->type = ($3 == 1) ? ast_wrap_pointer($2, @1.first_line)
-                     : ($3 == 2) ? ast_wrap_reference($2, @1.first_line)
-                     : $2;
+            $$->type = apply_ptr($2, $3, @1.first_line);
             $$->a = $5;
         }
     | SIZEOF '(' type_spec pointer_opt ')'  %prec SIZEOF_TYPE_PREC
@@ -2684,9 +3053,7 @@ unary_expr:
              * already uses for the dangling-else problem elsewhere in
              * this grammar. */
             $$ = ast_new(AST_SIZEOF, @1.first_line);
-            $$->type = ($4 == 1) ? ast_wrap_pointer($3, @1.first_line)
-                     : ($4 == 2) ? ast_wrap_reference($3, @1.first_line)
-                     : $3;
+            $$->type = apply_ptr($3, $4, @1.first_line);
         }
     | SIZEOF unary_expr
         {
@@ -2725,9 +3092,7 @@ unary_expr:
              * "identifier < args >" production the way an actual
              * template instantiation would need. */
             $$ = ast_new(AST_CAST, @1.first_line);
-            $$->type = ($4 == 1) ? ast_wrap_pointer($3, @1.first_line)
-                     : ($4 == 2) ? ast_wrap_reference($3, @1.first_line)
-                     : $3;
+            $$->type = apply_ptr($3, $4, @1.first_line);
             $$->a = $7;
             $$->ival = ($1 == 3) ? 1 : 0; /* 1 only for dynamic_cast */
         }

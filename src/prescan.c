@@ -79,6 +79,40 @@ static int is_expanded_extension(const char *target) {
     return ends_with(target, ".hpp") || ends_with(target, ".cpp");
 }
 
+/* ---- C input ---------------------------------------------------------------
+ *
+ * When the file being transpiled is C (its name ends in .c -- see
+ * g_c_mode in driver.h), the program's own .c and .h files are C the
+ * transpiler must read and translate, so their #includes are expanded
+ * exactly as .hpp/.cpp are. The exception is the Vircon32 SDK's own
+ * headers (video.h, string.h, ...): those are already Vircon32 C, belong
+ * to the downstream compiler, and keep passing through (and being
+ * harvested for macros and type names) as they always have. */
+int g_c_mode = 0;
+
+int prescan_is_c_source(const char *filename) {
+    return ends_with(filename, ".c");
+}
+
+static int is_sdk_header_name(const char *target) {
+    static const char *const names[] = {
+        "audio.h", "input.h", "math.h", "memcard.h", "misc.h",
+        "string.h", "time.h", "video.h", NULL
+    };
+    const char *base = strrchr(target, '/');
+    base = base ? base + 1 : target;
+    for (int i = 0; names[i] != NULL; i++)
+        if (strcmp(base, names[i]) == 0) return 1;
+    return 0;
+}
+
+/* A C file's #include that is this program's own C, to be expanded. */
+static int is_c_header_candidate(const char *target) {
+    if (!g_c_mode) return 0;
+    if (!ends_with(target, ".h") && !ends_with(target, ".c")) return 0;
+    return !is_sdk_header_name(target);
+}
+
 /* Canonical identity for #pragma-once and cycle detection. realpath()
  * resolves "../", symlinks, and repeated-inclusion-via-different-
  * relative-paths, which is exactly the identity #pragma once needs.
@@ -604,6 +638,7 @@ static int expand_file_mode(const char *path, FILE *out,
         int extra_lines = 0;    /* lines emit_text adds beyond the one it replaces */
 
         /* ---- conditionals: processed even inside inactive regions ---- */
+        char *resolved_c = NULL;
         if (strcmp(word, "ifdef") == 0 || strcmp(word, "ifndef") == 0) {
             int value = 0;
             if (cond_active(&conds)) {
@@ -734,12 +769,27 @@ static int expand_file_mode(const char *path, FILE *out,
                 free(line);
                 continue;
             }
+            else if (target != NULL && g_c_mode && angle && strcmp(target, "stdarg.h") == 0) {
+                /* <stdarg.h>: there is no such file. The transpiler does
+                 * variadic functions itself (see lower.c); all the header
+                 * has to provide is the type name. */
+                static int stdarg_done = 0;
+                if (!harvest && !stdarg_done) {
+                    stdarg_done = 1;
+                    emit_text = strdup("typedef int *va_list;");
+                    consumed = 0;
+                }
+                free(target);
+            }
             else if (target != NULL && is_expanded_extension(target) && harvest) {
                 /* a .hpp included from a pass-through .h: not ours to read */
                 free(target);
             }
-            else if (target != NULL && is_expanded_extension(target)) {
-                char *resolved = resolve_include(target, angle, path, dirs, ndirs);
+            else if (target != NULL && (is_expanded_extension(target) ||
+                                        (!harvest && is_c_header_candidate(target) &&
+                                         (resolved_c = resolve_include(target, angle, path, dirs, ndirs)) != NULL))) {
+                char *resolved = resolved_c ? resolved_c : resolve_include(target, angle, path, dirs, ndirs);
+                resolved_c = NULL;
                 if (resolved == NULL) {
                     fprintf(stderr, "---- error: cannot find #include %s%s%s (from %s:%d) ----\n",
                             angle ? "<" : "\"", target, angle ? ">" : "\"", path, lineno);

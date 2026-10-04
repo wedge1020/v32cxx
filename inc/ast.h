@@ -845,6 +845,7 @@ struct AstNode {
     /* AST_VAR_DECL only: 1 for a `static` LOCAL, between the parse and
      * hoist_static_locals (ast.c), which moves it to file scope. */
     int is_static_local;
+    int is_extern;          /* C input: declared `extern` (a VAR_DECL at file scope) */
 
     /* Set by lower.c's by-value-struct ABI phase on a function, call or
      * function-pointer type it has already rewritten (nodes are shared,
@@ -927,6 +928,9 @@ int ast_fold_int(const AstNode *e, int (*lookup)(const char *name, int *value), 
 /* 1 when a dimension expression can be printed back into the generated C
  * as written: only literals and arithmetic, no identifiers (whose C names
  * may be mangled) and no ternary (which Vircon32 C rejects). */
+/* How ast_fold_int evaluates a sizeof: set by the parser, which knows the
+ * declarations seen so far. Returns 1 and the size in words, or 0. */
+extern int (*g_ast_sizeof_hook)(const AstNode *sizeof_node, int *out);
 int ast_dim_expr_printable(const AstNode *e);
 AstNode *ast_wrap_array_dims(AstNode *inner, AstList dims, int line);
 AstNode *ast_wrap_func_ptr(AstNode *return_type, AstList param_types, int line);

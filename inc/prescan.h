@@ -80,4 +80,7 @@ void prescan_add_cmdline_macro(const char *spec, int is_undef);
  */
 void prescan_set_sdk_dirs(char *const *dirs, int count);
 
+/* 1 when `filename` names a C source file (.c). */
+int prescan_is_c_source(const char *filename);
+
 #endif /* PRESCAN_H */

@@ -82,6 +82,7 @@ $(BIN_DIR)/v32c++: $(OBJ_DIR)/parser.o   $(OBJ_DIR)/lexer.o   \
                    $(OBJ_DIR)/lower.o    $(OBJ_DIR)/codegen.o \
 				   $(OBJ_DIR)/pathutil.o $(OBJ_DIR)/compat.o $(OBJ_DIR)/generic.o $(OBJ_DIR)/stdstring.o $(OBJ_DIR)/cartxml.o \
 				   $(OBJ_DIR)/debugmap.o $(OBJ_DIR)/macro.o    \
+				   $(OBJ_DIR)/cmode.o    \
 				   $(OBJ_DIR)/main.o | $(BIN_DIR)
 	$(CC) $(CFLAGS) -o $@ $^
 # If linking fails looking for yywrap/yy_flex_* symbols on your system,
@@ -207,6 +208,8 @@ test: all | $(OUT_DIR)
 	$(BIN)  -vvv    -o out/113program.c tests/113sample.cpp 1> out/113sample.txt 2>&1
 	$(BIN)  -vvv    -o out/114program.c tests/114sample.cpp 1> out/114sample.txt 2>&1
 	$(BIN)  -vvv    -o out/115program.c tests/115sample.cpp 1> out/115sample.txt 2>&1
+	$(BIN)  -vvv    -o out/116program.c tests/116sample.c   1> out/116sample.txt 2>&1
+	$(BIN)  -vvv    -o out/117program.c tests/117sample.c   1> out/117sample.txt 2>&1
 # `-vvv` (this project's own verbosity flag, a later round -- see
 # main.c) is passed to every sample specifically so `make test`'s own
 # output still captures the full AST/semantic-analysis/lowering dumps

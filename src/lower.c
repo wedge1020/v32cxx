@@ -6756,6 +6756,419 @@ static void abi_walk(AstList *decls, int pass) {
     }
 }
 
+/* The file-scope declarations, for looking a union up by name (phase 12). */
+static const AstList *g_lower_unions = NULL;
+
+static const AstNode *lower_find_union(const char *name) {
+    if (g_lower_unions == NULL || name == NULL) return NULL;
+    for (int i = 0; i < g_lower_unions->count; i++) {
+        const AstNode *n = g_lower_unions->items[i];
+        if (n->kind == AST_UNION_DECL && strcmp(n->str1, name) == 0) return n;
+    }
+    return NULL;
+}
+
+/* ---- phase 12: C input ------------------------------------------------------
+ *
+ * Runs only when the file being transpiled is C (g_c_mode), last of all,
+ * and writes down the places where C's rules and Vircon32 C's differ --
+ * each found by compiling a real C program (demos/c/rogue) with the real
+ * compiler. See docs/C_INPUT.md.
+ *
+ *  1. The null pointer. In C it is 0: `p = 0`, `if (p)`, `!p`, zeroed
+ *     memory, an uninitialized static. Vircon32 C's NULL is -1, and it
+ *     takes no int where a pointer goes, nor a pointer where a condition
+ *     goes. For C input the null pointer stays 0 -- codegen.c prints it
+ *     as `((void *)0)` -- and
+ *       - `NULL` and a literal 0 in a pointer position are that null;
+ *       - `p == NULL` / `p != NULL` become `((int)p) == 0`;
+ *       - a pointer used as a truth value -- the condition of
+ *         if/while/for, an operand of ! && || -- becomes `((int)p)`.
+ *  2. A function's name used as a value (`start_daemon(doctor, ...)`, a
+ *     table of handlers, `op->o_putfunc == put_bool`) gets its `&`
+ *     everywhere, not only in the assignments phase 3 handles.
+ *  3. A call through a K&R function pointer, `void (*d_func)();` called
+ *     as `(*d_func)(arg)`: Vircon32 C checks the call against the
+ *     pointer's (empty) parameter list, so the pointer is cast to the
+ *     type the call implies: `((void(int)*)d_func)(arg)`.
+ *  4. A string literal holding a control character (`"\033[2J"`,
+ *     `"\b \b"`): Vircon32 C's strings have no such escapes. It becomes a
+ *     file-scope char array, and the literal a pointer to it.
+ *  5. An initializer list is matched to its type: a string that
+ *     initializes a char array MEMBER becomes the characters, padded with
+ *     zeros to the array's length; a 0 that initializes a pointer member
+ *     becomes the null pointer.
+ *  6. `(void) f();` is just `f();`.
+ */
+static AstList g_c_hoisted_strings;
+
+static AstNode *c_int_cast(AstNode *e) {
+    AstNode *cast = ast_new(AST_CAST, e->line);
+    cast->type = ast_ident("int", e->line);
+    cast->a = e;
+    return cast;
+}
+
+static AstNode *c_int_lit(int value, int line) {
+    AstNode *n = ast_new(AST_INT_LIT, line);
+    n->ival = value;
+    return n;
+}
+
+static const AstNode *c_resolved_type(const AstNode *t) {
+    if (t == NULL) return NULL;
+    t = resolve_typedef_chain(t);
+    while (t != NULL && t->kind == AST_CONST_TYPE) t = resolve_typedef_chain(t->a);
+    return t;
+}
+
+static int c_type_is_pointerish(const AstNode *t) {
+    t = c_resolved_type(t);
+    return t != NULL && (t->kind == AST_POINTER_TYPE || t->kind == AST_FUNC_PTR_TYPE ||
+                         t->kind == AST_ARRAY_TYPE);
+}
+
+static int c_is_null(const AstNode *e) {
+    return e != NULL && e->kind == AST_NULL_LIT;
+}
+
+/* A value used as a condition: a pointer becomes `((int)value)`.
+ * Comparisons and logical operators are already truth values. */
+static void c_truth(AstNode **slot, AstNode *cls, LocalVarType *locals) {
+    AstNode *n = *slot;
+    if (n == NULL) return;
+    if (n->kind == AST_BINOP || n->kind == AST_BOOL_LIT || n->kind == AST_INT_LIT ||
+        n->kind == AST_CALL) {
+        if (n->kind != AST_CALL) return;
+    }
+    if (n->kind == AST_UNOP && n->str1 != NULL && strcmp(n->str1, "!") == 0) return;
+    if (c_is_null(n)) { *slot = c_int_lit(0, n->line); return; }
+    const AstNode *t = c_resolved_type(infer_expr_type(n, cls, locals));
+    if (t == NULL) return;
+    if (c_type_is_pointerish(t)) *slot = c_int_cast(n);
+}
+
+/* Does this string literal hold a character Vircon32 C's strings cannot
+ * spell? (Its escapes are \n \r \t \\ \' \" -- see print_vircon32_string
+ * in codegen.c.) */
+static int c_string_needs_array(const char *raw) {
+    for (const char *p = raw; *p != '\0'; p++) {
+        if ((unsigned char)*p < ' ' && *p != '\t') return 1;
+        if (*p != '\\' || p[1] == '\0') continue;
+        p++;
+        if (strchr("nrt\\'\"", *p) == NULL) return 1;
+    }
+    return 0;
+}
+
+/* The characters of a string literal, one AST_INT_LIT each, terminator
+ * included, zero-padded to `length` when that is longer. */
+static AstNode *c_string_chars(const char *raw, int length, int line) {
+    AstNode *list = ast_new(AST_INIT_LIST, line);
+    for (const char *p = raw; *p != '\0'; ) {
+        int ch = (unsigned char)*p++;
+        if (ch == '\\' && *p != '\0') ch = ast_decode_escape(&p);
+        ast_list_append(&list->list, c_int_lit(ch, line));
+    }
+    ast_list_append(&list->list, c_int_lit(0, line));
+    while (list->list.count < length) ast_list_append(&list->list, c_int_lit(0, line));
+    return list;
+}
+
+static AstNode *c_hoist_string(const AstNode *lit) {
+    char name[40];
+    int line = lit->line;
+    snprintf(name, sizeof name, "__v32_str%d", g_c_hoisted_strings.count);
+    AstNode *var = ast_new(AST_VAR_DECL, line);
+    var->str1 = strdup(name);
+    var->a = c_string_chars(lit->str1, 0, line);
+    var->type = ast_wrap_array(ast_ident("char", line), var->a->list.count, line);
+    ast_list_append(&g_c_hoisted_strings, var);
+    lower_note(line, "moved a string literal with a control character into the char "
+        "array %s -- Vircon32 C's string literals have no escape for it", name);
+    /* &__v32_strN[0] */
+    AstNode *element = ast_new(AST_SUBSCRIPT, line);
+    element->a = ast_ident(name, line);
+    element->b = c_int_lit(0, line);
+    AstNode *addr = ast_new(AST_UNOP, line);
+    addr->str1 = strdup("addr");
+    addr->a = element;
+    return addr;
+}
+
+/* The type a call through an unprototyped function pointer implies:
+ * the pointer's return type, and one parameter per argument. */
+static AstNode *c_unprototyped_call_type(const AstNode *fp, const AstNode *call,
+                                         AstNode *cls, LocalVarType *locals) {
+    AstList params = ast_list_new();
+    for (int i = 0; i < call->list.count; i++) {
+        const AstNode *at = c_resolved_type(infer_expr_type(call->list.items[i], cls, locals));
+        AstNode *pt;
+        if (at == NULL) pt = ast_ident("int", call->line);
+        else if (at->kind == AST_ARRAY_TYPE) pt = ast_wrap_pointer(at->a, call->line);
+        else pt = (AstNode *)at;
+        ast_list_append(&params, pt);
+    }
+    return ast_wrap_func_ptr(fp->type, params, call->line);
+}
+
+/* A function (pointer) that takes parameters, stored where the program
+ * declared a K&R pointer -- `void (*func)()`, parameters unspecified:
+ * C allows it, Vircon32 C compares the two parameter lists. The value is
+ * cast to the pointer's own type. */
+static void c_unprototyped_target(AstNode **slot, const AstNode *target_type,
+                                  AstNode *cls, LocalVarType *locals) {
+    AstNode *e = *slot;
+    const AstNode *tt = c_resolved_type(target_type);
+    if (e == NULL || tt == NULL || tt->kind != AST_FUNC_PTR_TYPE || tt->list.count != 0) return;
+    if (e->kind == AST_CAST || e->kind == AST_NULL_LIT) return;
+    int params = 0;
+    if (e->kind == AST_UNOP && e->str1 != NULL && strcmp(e->str1, "addr") == 0 &&
+        e->a != NULL && e->a->kind == AST_IDENT && is_bare_free_function_ref(e->a, locals)) {
+        AstNode **candidates = NULL;
+        int count = 0, cap = 0;
+        collect_free_function_candidates(e->a->str1, &candidates, &count, &cap);
+        if (count > 0) params = candidates[0]->list.count;
+        free(candidates);
+    } else {
+        const AstNode *st = c_resolved_type(infer_expr_type(e, cls, locals));
+        if (st != NULL && st->kind == AST_FUNC_PTR_TYPE) params = st->list.count;
+    }
+    if (params == 0) return;
+    AstNode *cast = ast_new(AST_CAST, e->line);
+    cast->type = (AstNode *)target_type;
+    cast->a = e;
+    *slot = cast;
+    lower_note(e->line, "cast a function with parameters to the parameterless (K&R) "
+        "function pointer type it is stored in -- Vircon32 C compares the parameter lists");
+}
+
+static void c_expr(AstNode **slot, AstNode *cls, LocalVarType *locals, int is_callee) {
+    AstNode *n = *slot;
+    if (n == NULL) return;
+    switch (n->kind) {
+        case AST_IDENT:
+            if (n->str1 != NULL && strcmp(n->str1, "NULL") == 0 && find_local(locals, "NULL") == NULL) {
+                *slot = ast_new(AST_NULL_LIT, n->line);
+            } else if (!is_callee && is_bare_free_function_ref(n, locals)) {
+                wrap_addr_of(slot);
+            }
+            break;
+        case AST_STRING_LIT:
+            if (c_string_needs_array(n->str1)) *slot = c_hoist_string(n);
+            break;
+        case AST_UNOP:
+            if (n->str1 != NULL && strcmp(n->str1, "addr") == 0 && n->a != NULL &&
+                n->a->kind == AST_IDENT) {
+                break;                              /* `&name`: as written */
+            }
+            c_expr(&n->a, cls, locals, 0);
+            if (n->str1 != NULL && strcmp(n->str1, "!") == 0) c_truth(&n->a, cls, locals);
+            break;
+        case AST_BINOP: {
+            c_expr(&n->a, cls, locals, 0);
+            c_expr(&n->b, cls, locals, 0);
+            const char *op = n->str1 ? n->str1 : "";
+            if (strcmp(op, "&&") == 0 || strcmp(op, "||") == 0) {
+                c_truth(&n->a, cls, locals);
+                c_truth(&n->b, cls, locals);
+            } else if (strcmp(op, "==") == 0 || strcmp(op, "!=") == 0) {
+                if (c_is_null(n->b) && !c_is_null(n->a)) {
+                    n->a = c_int_cast(n->a);
+                    n->b = c_int_lit(0, n->line);
+                } else if (c_is_null(n->a) && !c_is_null(n->b)) {
+                    n->b = c_int_cast(n->b);
+                    n->a = c_int_lit(0, n->line);
+                }
+            }
+            break;
+        }
+        case AST_ASSIGN:
+            c_expr(&n->a, cls, locals, 0);
+            c_expr(&n->b, cls, locals, 0);
+            if (n->str1 != NULL && strcmp(n->str1, "=") == 0) {
+                const AstNode *target = infer_expr_type(n->a, cls, locals);
+                rewrite_zero_to_null(&n->b, target);
+                c_unprototyped_target(&n->b, target, cls, locals);
+            }
+            break;
+        case AST_TERNARY:
+            c_expr(&n->a, cls, locals, 0);
+            c_expr(&n->b, cls, locals, 0);
+            c_expr(&n->c, cls, locals, 0);
+            c_truth(&n->a, cls, locals);
+            break;
+        case AST_CALL: {
+            c_expr(&n->a, cls, locals, 1);
+            for (int i = 0; i < n->list.count; i++) c_expr(&n->list.items[i], cls, locals, 0);
+            {
+                CallResolution *cr = (CallResolution *)n->sema_info;
+                if (cr != NULL && cr->resolved_target != NULL) {
+                    const AstList *params = &cr->resolved_target->list;
+                    for (int i = 0; i < n->list.count && i < params->count; i++)
+                        c_unprototyped_target(&n->list.items[i], params->items[i]->type, cls, locals);
+                }
+            }
+            /* through a function pointer declared with `()` */
+            AstNode *fp_expr = n->a;
+            if (fp_expr != NULL && fp_expr->kind == AST_UNOP && fp_expr->str1 != NULL &&
+                strcmp(fp_expr->str1, "deref") == 0)
+                fp_expr = fp_expr->a;
+            if (fp_expr != NULL && n->list.count > 0 &&
+                !(fp_expr->kind == AST_IDENT && is_bare_free_function_ref(fp_expr, locals))) {
+                const AstNode *ft = c_resolved_type(infer_expr_type(fp_expr, cls, locals));
+                if (ft != NULL && ft->kind == AST_FUNC_PTR_TYPE && ft->list.count == 0) {
+                    AstNode *cast = ast_new(AST_CAST, n->line);
+                    cast->type = c_unprototyped_call_type(ft, n, cls, locals);
+                    cast->a = fp_expr;
+                    n->a = cast;
+                    lower_note(n->line, "cast a function pointer declared without parameters "
+                        "to the type this call implies -- Vircon32 C checks the arguments "
+                        "against the pointer's own (empty) parameter list");
+                }
+            }
+            break;
+        }
+        case AST_CAST:
+            c_expr(&n->a, cls, locals, 0);
+            if (n->type != NULL && n->type->kind == AST_IDENT && strcmp(n->type->str1, "void") == 0)
+                *slot = n->a;                       /* `(void) f();` */
+            break;
+        case AST_MEMBER:
+            c_expr(&n->a, cls, locals, 0);
+            break;
+        case AST_SUBSCRIPT:
+            c_expr(&n->a, cls, locals, 0);
+            c_expr(&n->b, cls, locals, 0);
+            break;
+        case AST_INIT_LIST:
+        case AST_DIRECT_INIT:
+            for (int i = 0; i < n->list.count; i++) c_expr(&n->list.items[i], cls, locals, 0);
+            break;
+        default:
+            break;      /* literals; AST_SIZEOF, whose operand is not evaluated */
+    }
+}
+
+/* The members of a struct, in order (the first only, for a union). */
+static void c_fix_init(const AstNode *type, AstNode **slot);
+
+static void c_fix_init_members(const AstList *members, int first_only, AstNode *init) {
+    int item = 0;
+    for (int i = 0; i < members->count && item < init->list.count; i++) {
+        const AstNode *m = members->items[i];
+        if (m == NULL || m->kind != AST_VAR_DECL) continue;
+        c_fix_init(m->type, &init->list.items[item++]);
+        if (first_only) break;
+    }
+}
+
+static void c_fix_init(const AstNode *type, AstNode **slot) {
+    AstNode *init = *slot;
+    const AstNode *t = c_resolved_type(type);
+    if (init == NULL || t == NULL) return;
+    if (init->kind == AST_INIT_LIST) {
+        if (t->kind == AST_ARRAY_TYPE) {
+            for (int i = 0; i < init->list.count; i++) c_fix_init(t->a, &init->list.items[i]);
+        } else if (t->kind == AST_IDENT) {
+            AstNode *cls = type_to_class(t);
+            if (cls != NULL) {
+                c_fix_init_members(&cls->list, 0, init);
+            } else {
+                const AstNode *u = lower_find_union(t->str1);
+                if (u != NULL) c_fix_init_members(&u->list, 1, init);
+            }
+        }
+        return;
+    }
+    if (init->kind == AST_STRING_LIT && t->kind == AST_ARRAY_TYPE) {
+        const AstNode *elem = c_resolved_type(t->a);
+        if (elem != NULL && elem->kind == AST_IDENT)
+            *slot = c_string_chars(init->str1, t->ival, init->line);
+        return;
+    }
+    rewrite_zero_to_null(slot, t);
+    c_unprototyped_target(slot, type, NULL, NULL);
+}
+
+static void c_stmt(AstNode **slot, AstNode *cls, LocalVarType **locals) {
+    AstNode *n = *slot;
+    if (n == NULL) return;
+    switch (n->kind) {
+        case AST_BLOCK: {
+            LocalVarType *outer = *locals;
+            for (int i = 0; i < n->list.count; i++) c_stmt(&n->list.items[i], cls, locals);
+            *locals = outer;
+            break;
+        }
+        case AST_IF:
+            c_expr(&n->a, cls, *locals, 0);
+            c_truth(&n->a, cls, *locals);
+            c_stmt(&n->b, cls, locals);
+            c_stmt(&n->c, cls, locals);
+            break;
+        case AST_WHILE:
+            c_expr(&n->a, cls, *locals, 0);
+            c_truth(&n->a, cls, *locals);
+            c_stmt(&n->b, cls, locals);
+            break;
+        case AST_FOR: {
+            LocalVarType *outer = *locals;
+            c_stmt(&n->a, cls, locals);
+            c_expr(&n->b, cls, *locals, 0);
+            c_truth(&n->b, cls, *locals);
+            c_expr(&n->c, cls, *locals, 0);
+            c_stmt(&n->d, cls, locals);
+            *locals = outer;
+            break;
+        }
+        case AST_SWITCH:
+            c_expr(&n->a, cls, *locals, 0);
+            for (int i = 0; i < n->list.count; i++) c_stmt(&n->list.items[i], cls, locals);
+            break;
+        case AST_LABEL:
+            c_stmt(&n->a, cls, locals);
+            break;
+        case AST_RETURN:
+        case AST_EXPR_STMT:
+            c_expr(&n->a, cls, *locals, 0);
+            break;
+        case AST_VAR_DECL: {
+            c_expr(&n->a, cls, *locals, 0);
+            c_fix_init(n->type, &n->a);
+            LocalVarType *lv = calloc(1, sizeof(LocalVarType));
+            lv->name = n->str1;
+            lv->type = n->type;
+            lv->next = *locals;
+            *locals = lv;
+            break;
+        }
+        default:
+            break;
+    }
+}
+
+static void c_input_fixups(AstNode *program) {
+    AstList *decls = &program->list;
+    g_lower_unions = decls;
+    for (int i = 0; i < decls->count; i++) {
+        AstNode *n = decls->items[i];
+        if (n->kind == AST_VAR_DECL) {
+            c_expr(&n->a, NULL, NULL, 0);
+            c_fix_init(n->type, &n->a);
+        } else if (n->kind == AST_FUNC_DEF && n->b == NULL) {
+            LocalVarType *locals = seed_locals_from_params(n);
+            c_stmt(&n->a, NULL, &locals);
+        }
+    }
+    if (g_c_hoisted_strings.count > 0) {
+        AstList out = g_c_hoisted_strings;
+        for (int i = 0; i < decls->count; i++) ast_list_append(&out, decls->items[i]);
+        *decls = out;
+        g_c_hoisted_strings = ast_list_new();
+    }
+}
+
 int lower_run(AstNode *program) {
     lower_notes_reset(); /* always start this run's log empty -- see
         lower_notes_print's own doc comment */
@@ -6815,6 +7228,7 @@ int lower_run(AstNode *program) {
         if (errors > 0) return errors;
         v32_compat_classes(&program->list);           /* phase 11 */
         v32_compat_free_functions(&program->list);
+        if (g_c_mode) c_input_fixups(program);        /* phase 12 */
     }
     return 0;
 }

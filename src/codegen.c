@@ -696,17 +696,22 @@ static void emit_enums(FILE *out, const AstList *decls) {
  * there's no need for a second, parallel printing function here either
  * (same reasoning as emit_globals's own reuse of it).
  */
+static void emit_union(FILE *out, const AstNode *n) {
+    fprintf(out, "union %s {\n", n->str1);
+    for (int j = 0; j < n->list.count; j++) {
+        fprintf(out, "    ");
+        print_var_decl_inline(out, n->list.items[j]);
+        fprintf(out, ";\n");
+    }
+    fprintf(out, "};\n\n");
+}
+
 static void emit_unions(FILE *out, const AstList *decls) {
     for (int i = 0; i < decls->count; i++) {
         const AstNode *n = decls->items[i];
         if (n->kind == AST_UNION_DECL) {
-            fprintf(out, "union %s {\n", n->str1);
-            for (int j = 0; j < n->list.count; j++) {
-                fprintf(out, "    ");
-                print_var_decl_inline(out, n->list.items[j]);
-                fprintf(out, ";\n");
-            }
-            fprintf(out, "};\n\n");
+            if (g_c_mode) continue;     /* written with the structs, in order: emit_classes */
+            emit_union(out, n);
         } else if (n->kind == AST_NAMESPACE_DECL) {
             emit_unions(out, &n->list);
         }
@@ -1149,6 +1154,11 @@ static void emit_classes(FILE *out, const AstList *decls) {
         if (n->kind == AST_CLASS_DECL) {
             emit_vtable_struct(out, n);
             emit_struct(out, n);
+        } else if (n->kind == AST_UNION_DECL && g_c_mode) {
+            /* C input: structs and unions hold each other by value (a
+             * union of two structs, inside a struct), so they are written
+             * in the order the source declares them. */
+            emit_union(out, n);
         } else if (n->kind == AST_NAMESPACE_DECL) {
             emit_classes(out, &n->list);
         }
@@ -1178,6 +1188,8 @@ static void emit_forward_declarations(FILE *out, const AstList *decls) {
         const AstNode *n = decls->items[i];
         if (n->kind == AST_CLASS_DECL) {
             fprintf(out, "struct %s;\n", n->str1);
+        } else if (n->kind == AST_UNION_DECL && g_c_mode) {
+            fprintf(out, "union %s;\n", n->str1);
         } else if (n->kind == AST_NAMESPACE_DECL) {
             emit_forward_declarations(out, &n->list);
         }
@@ -1344,6 +1356,13 @@ static void print_expr(FILE *out, const AstNode *e) {
             if (!print_macro_name(out, e)) print_char_literal(out, e->ival);
             break;
         case AST_NULL_LIT:
+            if (g_c_mode && g_target == TARGET_VIRCON32) {
+                /* C input: the null pointer is 0, as C says -- not
+                 * Vircon32 C's NULL, which is -1 (zeroed memory and
+                 * `if (p)` both depend on it; see lower.c, phase 12). */
+                fprintf(out, "((void *)0)");
+                break;
+            }
             /* `nullptr` always prints as the literal word `NULL`, in
              * BOTH target dialects -- Vircon32's own compiler rejects a
              * bare `0` in pointer context outright (docs/
@@ -2534,6 +2553,11 @@ void codegen_run(const AstNode *program, FILE *out, int verbose_comments) {
      * dropping misc.h and every runtime function that depends on it
      * from the output despite being called. */
     int needs_misc = program_has_any_class(&program->list) || g_uses_new_or_delete;
+    if (needs_misc && g_c_mode && !g_uses_new_or_delete) {
+        /* C input: a struct is only data, and nothing from misc.h is
+         * needed on its account. */
+        needs_misc = 0;
+    }
     if (needs_misc) {
         /* Vircon32 mode: "misc.h", Vircon32's own header providing
          * malloc/free/rand/srand/exit (among others). Standard mode:
@@ -2557,11 +2581,14 @@ void codegen_run(const AstNode *program, FILE *out, int verbose_comments) {
     emit_enums(out, &program->list);
     emit_unions(out, &program->list);
     emit_classes(out, &program->list);
-    emit_globals(out, &program->list);
+    /* C input: a file-scope initializer may name a function (a table of
+     * handlers), so the prototypes go ahead of the variables there. */
+    if (!g_c_mode) emit_globals(out, &program->list);
     emit_function_prototypes_classes(out, &program->list);
     SeenNames seen = {0};
     emit_function_prototypes_free_functions(out, &program->list, &seen);
     free(seen.names);
+    if (g_c_mode) emit_globals(out, &program->list);
     fprintf(out, "\n");
     emit_vtable_instances_classes(out, &program->list);
     if (needs_misc) {

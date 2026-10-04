@@ -65,9 +65,10 @@ echo "real toolchain: $built program(s) compiled and assembled" \
      "($unpacked not packed: their #texture/#sound assets aren't in tests/); $failed failed"
 
 ran=0
-for src in "$ROOT"/tests/*sample.cpp; do
+for src in "$ROOT"/tests/*sample.cpp "$ROOT"/tests/*sample.c; do
+    [ -e "$src" ] || continue
     grep -q "^int test_errors" "$src" || continue
-    num=$(basename "$src" sample.cpp)
+    num=$(basename "$src" | sed 's/sample\.c\(pp\)\{0,1\}$//')
     n="${num}program"
     if [ ! -e "$OUT/$n.v32" ]; then
         echo "FAIL (emulator) $n -- no cartridge built"

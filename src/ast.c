@@ -107,10 +107,16 @@ AstNode *ast_wrap_array_dims(AstNode *inner, AstList dims, int line) {
     return result;
 }
 
+int (*g_ast_sizeof_hook)(const AstNode *sizeof_node, int *out) = NULL;
+
 int ast_fold_int(const AstNode *e, int (*lookup)(const char *name, int *value), int *out) {
     if (e == NULL) return 0;
     int a, b, c;
     switch (e->kind) {
+        case AST_SIZEOF:
+            /* `char buf[sizeof table / sizeof table[0]]`: only whoever
+             * knows the declarations so far can say (parser.y). */
+            return g_ast_sizeof_hook != NULL && g_ast_sizeof_hook(e, out);
         case AST_INT_LIT:
         case AST_CHAR_LIT:
         case AST_BOOL_LIT:
@@ -452,6 +458,10 @@ void hoist_static_locals(AstList *decls) {
  * and it is still one object. Vircon32 C wants exactly one definition,
  * so keep one declaration per name: the one with an initializer if there
  * is one, otherwise the first. */
+static int array_is_unsized(const AstNode *type) {
+    return type != NULL && type->kind == AST_ARRAY_TYPE && type->ival < 0;
+}
+
 void merge_tentative_globals(AstList *decls) {
     AstList out = ast_list_new();
     for (int i = 0; i < decls->count; i++) {
@@ -463,9 +473,19 @@ void merge_tentative_globals(AstList *decls) {
                 AstNode *o = decls->items[j];
                 if (j == i || o->kind != AST_VAR_DECL || o->str1 == NULL ||
                     strcmp(o->str1, n->str1) != 0) continue;
+                /* `extern char prbuf[];` (C input): the declaration that
+                 * gives the array its size is the one to keep. */
+                int n_unsized = array_is_unsized(n->type), o_unsized = array_is_unsized(o->type);
+                if (n_unsized != o_unsized) {
+                    if (n_unsized) drop = 1;
+                    continue;
+                }
                 if (n->a == NULL && (o->a != NULL || j < i)) drop = 1;
             }
             if (drop) continue;
+            /* declared `extern` with no size and never defined: there is
+             * no such array in this program */
+            if (array_is_unsized(n->type) && n->is_extern) continue;
         }
         ast_list_append(&out, n);
     }

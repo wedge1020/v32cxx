@@ -607,6 +607,44 @@ and bit-fields
 .PP
 Never supported, by design: templates, exceptions, RTTI, multiple
 inheritance.
+.SH C INPUT
+An input file whose name ends in
+.B .c
+is transpiled as C, not C++.
+The program's own
+.B .h
+and
+.B .c
+includes are expanded and transpiled (the Vircon32 SDK's headers still
+pass through); struct, union and enum tags have a namespace of their
+own; a function declared more than once, or with less detail than its
+definition
+.RB ( "void fatal();" ),
+is one function, and names are not mangled; variadic functions
+.RB ( ... ,
+.BR va_start ,
+.BR va_arg ,
+.BR va_end )
+are supported; the null pointer is 0, as C says, rather than Vircon32
+C's -1;
+.B main
+may take
+.BR argc ,
+.B argv
+and
+.BR envp ;
+and C++ keywords
+.RB ( class ,
+.BR new ,
+.BR this ...)
+are ordinary names.
+The directory
+.B libc/
+holds a small C library and curses for such programs; add it with
+.BR -I .
+See
+.B docs/C_INPUT.md
+for the full list and the limits.
 .SH PREPROCESSOR
 Before parsing,
 .B v32c++

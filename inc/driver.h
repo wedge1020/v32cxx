@@ -102,6 +102,20 @@ typedef enum {
 
 extern CodegenTarget g_target;
 
+/*
+ * C input. Set once, in main.c, when the file being transpiled is a .c
+ * file. v32c++ has always accepted most of C as a subset of C++; this
+ * flag turns on the places where C and C++ actually disagree, or where
+ * old C says less than C++ requires:
+ *   - #include of the program's own .h/.c files is expanded (prescan.c);
+ *   - `class`, `new`, `this`, ... are ordinary identifiers (lexer.l);
+ *   - struct/union/enum tags have their own namespace (parser.y, ast.c);
+ *   - `void f();` says nothing about f's parameters;
+ *   - the null pointer is 0 in the generated code (codegen.c).
+ * Defined in prescan.c.
+ */
+extern int g_c_mode;
+
 /* --reject-bit-fields. Default 0: a bit-field member (`int level : 6;`)
  * is accepted as an ordinary full-word member, with a warning that says
  * what that changes. 1: it is an error. Read by parser.y. */

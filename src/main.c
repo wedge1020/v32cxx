@@ -14,6 +14,7 @@
 #include "cartxml.h"
 #include "debugmap.h"
 #include "prescan.h"
+#include "cmode.h"
 #include "compat.h"
 #include "generic.h"
 
@@ -352,6 +353,8 @@ int  main (int  argc, char **argv)
     }
 
     const char *input_filename = argv[optind];
+    /* A .c file is C, not C++: see driver.h's g_c_mode. */
+    g_c_mode = prescan_is_c_source(input_filename);
     /* Include pre-scan FIRST: .hpp/.cpp #includes are expanded into a
      * monolithic temp stream here (with line markers to keep the
      * lexer's file/line tracking honest), and .h/system includes are
@@ -426,6 +429,13 @@ int  main (int  argc, char **argv)
          * tree: static locals become file-scope variables, and repeated
          * file-scope declarations of one variable (extern + definition)
          * become one. */
+        if (g_c_mode) {
+            /* C input: where C says something C++ does not (cmode.c) */
+            cmode_separate_tags(&g_program->list);
+            cmode_unify_prototypes(&g_program->list);
+            cmode_lower_main_params(&g_program->list);
+            if (cmode_rewrite_variadics(&g_program->list) != 0) rc = 1;
+        }
         hoist_static_locals(&g_program->list);
         merge_tentative_globals(&g_program->list);
         /* implicit default constructors / destructors, written into the

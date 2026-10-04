@@ -3,6 +3,7 @@
 #include <string.h>
 #include <stdarg.h>
 #include "sema.h"
+#include "driver.h"
 
 static int g_error_count = 0;
 
@@ -346,7 +347,9 @@ static void register_free_function(AstNode *func, const char *ns) {
     for (FreeFuncRegEntry *e = g_free_func_registry; e != NULL; e = e->next) {
         if (strcmp(e->ns, ns) == 0 &&   /* same name+signature in a DIFFERENT
                                            namespace is a different function */
-            strcmp(e->func->str1, func->str1) == 0 && param_lists_match(&e->func->list, &func->list)) {
+            strcmp(e->func->str1, func->str1) == 0 &&
+            (g_c_mode ||    /* C: one name, one function */
+             param_lists_match(&e->func->list, &func->list))) {
             if (func->kind == AST_FUNC_DEF && e->func->kind != AST_FUNC_DEF) {
                 e->func = func;
             }
@@ -462,6 +465,8 @@ typedef struct EnumConstRegEntry {
 } EnumConstRegEntry;
 
 static EnumRegEntry *g_enum_registry = NULL;
+/* Unions, by name: what `u.member` has for a type (infer_expr_type). */
+static EnumRegEntry *g_union_registry = NULL;
 static EnumConstRegEntry *g_enum_const_registry = NULL;
 
 static void enum_registry_add(const char *name, AstNode *decl) {
@@ -513,6 +518,9 @@ static void free_enum_registries(void) {
     EnumRegEntry *e = g_enum_registry;
     while (e != NULL) { EnumRegEntry *next = e->next; free(e); e = next; }
     g_enum_registry = NULL;
+    e = g_union_registry;
+    while (e != NULL) { EnumRegEntry *next = e->next; free(e); e = next; }
+    g_union_registry = NULL;
     EnumConstRegEntry *c = g_enum_const_registry;
     while (c != NULL) { EnumConstRegEntry *next = c->next; free(c); c = next; }
     g_enum_const_registry = NULL;
@@ -547,6 +555,14 @@ static void collect_declarations_in(AstList *decls, const char *ns) {
             char *inner = sema_ns_join(ns, n->str1);
             collect_declarations_in(&n->list, inner);
             free(inner);
+        }
+        else if (n->kind == AST_UNION_DECL) {
+            /* shares the enum registry's list type: name -> declaration */
+            EnumRegEntry *e = malloc(sizeof(EnumRegEntry));
+            e->name = n->str1;
+            e->decl = n;
+            e->next = g_union_registry;
+            g_union_registry = e;
         }
         else if (n->kind == AST_ENUM_DECL) {
             enum_registry_add(n->str1, n);                 /* the type name */
@@ -837,6 +853,10 @@ static char *mangle(const char *class_name, const char *method_name, const AstLi
          * quietly changing behavior -- keeping the C++ source able to
          * read like ordinary C++ was judged more valuable here). */
         return strdup("main");
+    }
+    if (class_name == NULL && g_c_mode) {
+        /* C has no overloading: a function's name is its name. */
+        return strdup(method_name);
     }
     const char *name_part = method_name;
     if (method_name[0] == '~') {
@@ -1520,8 +1540,24 @@ AstNode *infer_expr_type(const AstNode *expr, AstNode *current_class, LocalVarTy
             return NULL;
         }
         case AST_MEMBER: {
-            AstNode *obj_class = type_to_class(infer_expr_type(expr->a, current_class, locals));
-            if (obj_class == NULL) return NULL;
+            AstNode *obj_type = infer_expr_type(expr->a, current_class, locals);
+            AstNode *obj_class = type_to_class(obj_type);
+            if (obj_class == NULL) {
+                /* a union's member: `thing._o._o_count` */
+                const AstNode *t = resolve_typedef_chain(obj_type);
+                while (t != NULL && (t->kind == AST_POINTER_TYPE || t->kind == AST_REFERENCE_TYPE ||
+                                     t->kind == AST_CONST_TYPE))
+                    t = resolve_typedef_chain(t->a);
+                if (t == NULL || t->kind != AST_IDENT || expr->str2 == NULL) return NULL;
+                for (EnumRegEntry *e = g_union_registry; e != NULL; e = e->next) {
+                    if (strcmp(e->name, t->str1) != 0) continue;
+                    for (int i = 0; i < e->decl->list.count; i++) {
+                        AstNode *m = e->decl->list.items[i];
+                        if (m->kind == AST_VAR_DECL && strcmp(m->str1, expr->str2) == 0) return m->type;
+                    }
+                }
+                return NULL;
+            }
             AstNode *owner = NULL;
             AstNode *member = find_member_in_hierarchy(obj_class, expr->str2, &owner);
             if (member == NULL || member->kind != AST_VAR_DECL) return NULL;

@@ -183,6 +183,15 @@ itself, so it copies by value correctly, and truncates at a fixed
 capacity (63 characters unless `V32_STRING_CAPACITY` says otherwise).
 See [`docs/STRING.md`](docs/STRING.md).
 
+**C input.** A file named `.c` is transpiled as C rather than C++:
+the program's own `.h`/`.c` includes are expanded, struct tags get
+their own namespace, prototypes that say less than the definition
+(`void fatal();`) are unified, variadic functions (`...`, `va_arg`)
+work, the null pointer is 0, and `main(argc, argv)` is accepted. With
+the small C library and curses in `libc/`, this is enough to build the
+Unix game Rogue from its unmodified sources (`demos/c/rogue`). See
+[`docs/C_INPUT.md`](docs/C_INPUT.md).
+
 **`auto`** works for local variables (`auto it = v.begin();`) and in the
 range-based `for` (`for (auto &e : enemies)`).
 
@@ -1164,6 +1173,9 @@ src/            implementation (.c, plus the flex/bison sources)
                 finalization, reference-to-pointer, new/delete,
                 vtable init, constructor/destructor invocation,
                 Vircon32 quirk rewrites (ternaries, &function, casts)
+  cmode.c       C input (.c files): the passes that reconcile C with
+                the C++ pipeline -- tags, prototypes, main's
+                parameters, variadic calls (see docs/C_INPUT.md)
   codegen.c     C code generator (Vircon32 or --target=standard)
   cartxml.c     Vircon32 cart-packing XML generation
   pathutil.c    shared filename-extension-swapping helper
@@ -1187,10 +1199,13 @@ inc/            headers for the above (one per .c, plus:)
   config.h      build-time configuration: the #include search path
                 and its environment variable, limits
 lib/            string: the source of the built-in <string> header
+libc/           for C input: a small C library (stdio, stdlib, string,
+                ctype, ...), an 80x24 text terminal on the BIOS font,
+                and curses, transpiled along with the program
 v32/            C++ headers wrapping the Vircon32 C API (video, input,
                 string, time, audio, math, misc, memcard) in namespace
                 v32 -- include with -I
-tests/          NNsample.cpp inputs run by `make test`, including
+tests/          NNsample.cpp (and .c) inputs run by `make test`, including
                 intentionally-invalid ones and several real,
                 hand-written programs
 demos/          example programs as C (demos/c) and C++ (demos/cxx);
