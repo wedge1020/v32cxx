@@ -2,8 +2,8 @@
  * title.c -- the title screen.
  *
  * On Unix Rogue is started from a shell, and what it does is decided by
- * its command line: `rogue` plays, `rogue -r` restores the saved game,
- * `rogue -s` prints the top ten. A console has no command line, so this
+ * its command line: `rogue` plays, `rogue <file>` restores the game saved
+ * in that file, `rogue -s` prints the top ten. A console has no command line, so this
  * is one: v32c++ calls v32_main_args() at the top of main(), the player
  * picks from a menu, and main() gets the argv that choice stands for.
  * Rogue's main() does the rest, exactly as it would on Unix.
@@ -25,7 +25,7 @@ void rogue_exit(int status);
 
 static char *title_items[TITLE_ITEMS] = {
     "New game",
-    "Resume the saved game",
+    "Resume a saved game",
     "Hall of fame",
     "Instructions",
 };
@@ -123,14 +123,13 @@ title_adopt_old_card()
 static bool
 title_have_save()
 {
-    struct stat st;
-
-    return stat("rogue.save", &st) >= 0;
+    return save_slots_used() > 0;
 }
 
 static void
 title_card_line(int y)
 {
+    static char line[V32TERM_COLS + 1];
     char *text = "";
     int ink = V32INK_GRAY;
 
@@ -145,7 +144,8 @@ title_card_line(int y)
 	    ink = V32INK_ORANGE;
 	    break;
 	default:
-	    text = title_have_save() ? "Memory card: one saved game" : "Memory card: no saved game";
+	    sprintf(line, "Memory card: %d of %d saved-game slots in use", save_slots_used(), SAVE_SLOTS);
+	    text = line;
     }
     v32term_fill(y, 0, 1, V32TERM_COLS, ' ');
     title_center(y, text, V32TERM_INK(ink));
@@ -196,10 +196,10 @@ static char *title_help[HELP_PAGES][HELP_LINES] = {
     {
 	"SAVING",
 	"",
-	"Y, then \"Save the game and stop\", writes the game to the",
-	"memory card and returns here.",
+	"Y, then \"Save the game and stop\", writes the game to one of",
+	"four slots on the memory card and returns here.",
 	"",
-	"\"Resume the saved game\" picks it up where you left it -- and",
+	"\"Resume a saved game\" picks one up where you left it -- and",
 	"erases it from the card. A saved game can be resumed once:",
 	"saving is for taking a break, not for a second chance.",
 	"",
@@ -256,6 +256,57 @@ title_instructions()
 #define MENU_TOP	14
 #define MENU_LEFT	28
 #define MENU_WIDTH	25
+#define SLOT_LEFT	18
+#define SLOT_WIDTH	44
+
+static int title_slot = -1;	/* the saved game to resume */
+
+/*
+ * title_pick_slot:
+ *	Which saved game to resume. Returns the slot, or -1 for "back".
+ */
+static int
+title_pick_slot()
+{
+    static char label[V32TERM_COLS + 1];
+    int slot, sel = -1, attr;
+
+    for (slot = SAVE_SLOTS - 1; slot >= 0; slot--)
+	if (save_slot_used(slot))
+	    sel = slot;
+    v32term_fill(MENU_TOP - 1, 0, TITLE_ITEMS + 2, V32TERM_COLS, ' ');
+    title_center(V32TERM_ROWS - 1, "Up / down: choose        A: resume        B: back",
+	V32TERM_INK(V32INK_CYAN));
+    for (;;)
+    {
+	if (sel < 0)
+	    return -1;
+	for (slot = 0; slot < SAVE_SLOTS; slot++)
+	{
+	    save_slot_label(slot, label);
+	    attr = V32TERM_INK(save_slot_used(slot) ? V32INK_WHITE : V32INK_DIM);
+	    if (slot == sel)
+		attr = V32TERM_REVERSE | V32TERM_INK(V32INK_YELLOW);
+	    v32term_fill(MENU_TOP + slot, SLOT_LEFT, 1, SLOT_WIDTH, ' ' | attr);
+	    v32term_text(MENU_TOP + slot, SLOT_LEFT + 2, label, attr);
+	}
+	v32pad_poll();
+	if (v32pad_hit(V32PAD_UP))
+	    do
+		sel = (sel + SAVE_SLOTS - 1) % SAVE_SLOTS;
+	    while (!save_slot_used(sel));
+	if (v32pad_hit(V32PAD_DOWN))
+	    do
+		sel = (sel + 1) % SAVE_SLOTS;
+	    while (!save_slot_used(sel));
+	if (v32pad_hit(V32PAD_B))
+	    return -1;
+	if (v32pad_hit(V32PAD_A) || v32pad_hit(V32PAD_START))
+	    return sel;
+	if (!save_slot_used(sel))
+	    sel = -1;			/* the card was taken out */
+    }
+}
 
 /*
  * title_menu:
@@ -308,9 +359,16 @@ title_menu()
 	    sel = TITLE_NEW;		/* the card was taken out */
 	if (v32pad_hit(V32PAD_A) || v32pad_hit(V32PAD_START))
 	{
-	    if (sel != TITLE_HELP)
+	    if (sel == TITLE_RESUME)
+	    {
+		title_slot = title_pick_slot();
+		if (title_slot >= 0)
+		    return sel;
+	    }
+	    else if (sel != TITLE_HELP)
 		return sel;
-	    title_instructions();
+	    else
+		title_instructions();
 	    redraw = TRUE;
 	}
     }
@@ -336,6 +394,7 @@ v32_main_args(int *argc, char **argv)
     v32_exit_hook = rogue_exit;
     v32_exit_prompt = "\n[Press START for the title screen]";
     title_adopt_old_card();
+    save_adopt_old();
 
     choice = title_menu();
     v32term_clear();
@@ -347,7 +406,7 @@ v32_main_args(int *argc, char **argv)
     *argc = 1;
     if (choice == TITLE_RESUME)
     {
-	args[1] = "-r";
+	args[1] = save_slot_name(title_slot);
 	*argc = 2;
     }
     else if (choice == TITLE_SCORES)

@@ -112,7 +112,7 @@ one file. See `libc/v32libc.h`.
 | `v32libc.c` | `printf` family, `sscanf`, `malloc`/`free` with a C null pointer, string and ctype functions the SDK lacks, `time`/`localtime`, `exit` (waits for START, then restarts the cartridge), `strerror` |
 | `v32term.c` | An 80x24 text screen of 8x15 cells drawn from the BIOS font, with colour, reverse video and the shade blocks (characters 17-20); gamepad polling; an on-screen keyboard |
 | `v32curses.c` | curses on that screen: windows, `move`/`addch`/`printw`/`mvwinch`, `getch`, refresh |
-| `v32file.c` | Files on the memory card: `fopen`, `fread`, `fwrite`, `getc`, `putc`, `fclose`, `rewind`, `fseek`, `remove`, `unlink`, `stat` |
+| `v32file.c` | Files on the memory card: `fopen`, `fread`, `fwrite`, `getc`, `putc`, `fclose`, `rewind`, `fseek`, `remove`, `rename`, `unlink`, `stat` |
 
 ### Files on the memory card
 

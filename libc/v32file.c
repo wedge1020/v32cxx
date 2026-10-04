@@ -4,7 +4,7 @@
  *  A Vircon32 console has no file system; what it has that outlives a
  *  session is the memory card, 262144 words. This gives a C program the
  *  stdio it expects on top of it: fopen / fread / fwrite / getc / putc /
- *  fclose / rewind / remove, and stat for "does it exist".
+ *  fclose / rewind / remove / rename, and stat for "does it exist".
  *
  *  The card:
  *
@@ -454,6 +454,24 @@ int remove(char *name)
 int unlink(char *name)
 {
     return remove(name);
+}
+
+int rename(char *old_name, char *new_name)
+{
+    int index, i;
+
+    if (v32file_card() != V32FILE_READY || (index = v32file_lookup(old_name)) < 0) {
+        errno = ENOENT;
+        return -1;
+    }
+    i = v32file_lookup(new_name);
+    if (i >= 0 && i != index)
+        v32file_dir[i].name[0] = '\0';      /* replaces it, as rename does */
+    memset(v32file_dir[index].name, 0, V32FILE_NAME_LEN);
+    for (i = 0; i < V32FILE_NAME_LEN - 1 && new_name[i] != '\0'; i++)
+        v32file_dir[index].name[i] = new_name[i];
+    v32file_write_dir();
+    return 0;
 }
 
 int stat(char *name, struct stat *st)

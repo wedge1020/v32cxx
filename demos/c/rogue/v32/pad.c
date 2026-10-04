@@ -33,6 +33,17 @@
 #include <curses.h>
 #include "rogue.h"
 
+/* the four saved-game slots: v32/mach_v32.c */
+#define SAVE_SLOTS	4
+char *save_slot_name(int slot);
+int save_slot_of(char *name);
+bool save_slot_used(int slot);
+int save_slots_used();
+void save_slot_label(int slot, char *buf);
+void save_adopt_old();
+
+static int pad_save_slot = -1;	/* the slot whose file name is about to be typed */
+
 /* ---- characters waiting to be handed to Rogue ---------------------------- */
 
 #define PAD_QUEUE 16
@@ -507,28 +518,48 @@ rogue_pad_getkey()
 	return pad_menu("Really quit?", 2, 0) == 1 ? 'y' : 'n';
     }
 
+    /*
+     * Saving. Rogue asks "save file (name)?", and for a file name if
+     * the answer is no. The player picks one of the four slots
+     * instead, and the slot's file name is typed for them.
+     */
     if (strstr(prompt, "ave file (") != NULL)
     {
-	strcpy(pad_labels[0], "Yes, save and stop playing");
-	strcpy(pad_labels[1], "No, keep playing");
-	return pad_menu("Save the game on the memory card?", 2, 0) == 0 ? 'y' : ESCAPE;
+	int slot = save_slot_of(file_name);
+
+	for (key = 0; key < SAVE_SLOTS; key++)
+	    save_slot_label(key, pad_labels[key]);
+	slot = pad_menu("Save and stop playing: which slot?", SAVE_SLOTS, slot < 0 ? 0 : slot);
+	if (slot < 0)
+	    return ESCAPE;
+	if (strcmp(save_slot_name(slot), file_name) == 0)
+	    return 'y';
+	pad_save_slot = slot;
+	return 'n';
     }
-    if (strstr(prompt, "ish to overwrite it?") != NULL)
+    /* (exactly that: "file name: rogue.sv2" is what a restored game says) */
+    if (len >= 9 && strcmp(&prompt[len - 9], "ile name:") == 0)
     {
-	strcpy(pad_labels[0], "Yes, replace the saved game");
-	strcpy(pad_labels[1], "No, keep the old one");
-	return pad_menu("There is a saved game already", 2, 0) == 0 ? 'y' : ESCAPE;
-    }
-    if (strstr(prompt, "ile name:") != NULL)
-    {
+	if (pad_save_slot >= 0)
+	{
+	    pad_push(save_slot_name(pad_save_slot));
+	    pad_push("\n");
+	    pad_save_slot = -1;
+	    return pad_pop();
+	}
 	/*
-	 * Rogue only asks for another file name here when the one
-	 * saved game could not be written. Say why, and go back to
-	 * the game.
+	 * Asked again: the file could not be written. Say why, and go
+	 * back to the game.
 	 */
 	strcpy(pad_labels[0], strerror(errno));
 	pad_menu("The game was not saved", 1, 0);
 	return ESCAPE;
+    }
+    if (strstr(prompt, "ish to overwrite it?") != NULL)
+    {
+	strcpy(pad_labels[0], "Yes, replace the game saved there");
+	strcpy(pad_labels[1], "No, go back to playing");
+	return pad_menu("That slot is in use", 2, 0) == 0 ? 'y' : ESCAPE;
     }
 
     if (strstr(prompt, "eft hand or right hand") != NULL

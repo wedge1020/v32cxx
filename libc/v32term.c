@@ -88,8 +88,12 @@ void v32term_clear(void)
  *     own height. Only the width is scaled, 10 -> 8, which thins the
  *     two-pixel stems to one and leaves a pixel of space either side;
  *   - a tail, for the eight characters that have one, in the cell's last
- *     two rows: rows 16..19 squeezed to half height (g j p q y), or rows
- *     16..17 as they are (, Q _);
+ *     two rows. For , Q and _ that is rows 16..17 as they are. The
+ *     descenders of g j p q y are four rows (16..19) and only two fit:
+ *     the first, which carries the stem or the sides of the loop, and the
+ *     last, which closes it (for y, the last two: its hook). Scaling the
+ *     four rows to half height instead lets the GPU drop the closing row,
+ *     and g, j and y lose their shape;
  *   - the paper: 10x15 of the solid block (character 20).
  */
 #define V32TERM_BODY_TOP    3           /* first glyph row with ink */
@@ -98,8 +102,9 @@ void v32term_clear(void)
 #define V32TERM_REG_TAIL    512         /* + character */
 #define V32TERM_REG_PAPER   768
 #define V32TERM_REG_SHADE   769         /* + (character - 17) * 2 + (row & 1) */
+#define V32TERM_REG_TAIL2   1024        /* + character */
 
-/* 0 = no tail, 1 = rows 16..17 as they are, 2 = rows 16..19 at half height */
+/* 0 = no tail, 1 = rows 16..17 as they are, 2 = two rows picked from 16..19 */
 static int v32term_tail_kind(int ch)
 {
     if (ch == 'g' || ch == 'j' || ch == 'p' || ch == 'q' || ch == 'y')
@@ -137,9 +142,17 @@ static void v32term_define_font(void)
                       y + V32TERM_BODY_TOP + V32TERM_BODY_ROWS - 1,
                       x, y + V32TERM_BODY_TOP);
         kind = v32term_tail_kind(ch);
-        if (kind != 0) {
+        if (kind == 1) {
             select_region(V32TERM_REG_TAIL + ch);
-            define_region(x, y + 16, x + 9, y + (kind == 2 ? 19 : 17), x, y + 16);
+            define_region(x, y + 16, x + 9, y + 17, x, y + 16);
+        } else if (kind == 2) {
+            /* two chosen rows, each a region one row high */
+            int first = (ch == 'y') ? 18 : 16;
+
+            select_region(V32TERM_REG_TAIL + ch);
+            define_region(x, y + first, x + 9, y + first, x, y + first);
+            select_region(V32TERM_REG_TAIL2 + ch);
+            define_region(x, y + 19, x + 9, y + 19, x, y + 19);
         }
     }
     select_region(20);                  /* character 20: the solid block */
@@ -278,12 +291,10 @@ void v32term_flush(void)
                 kind = v32term_tail_kind(ch);
                 if (kind != 0) {
                     select_region(V32TERM_REG_TAIL + ch);
+                    draw_region_zoomed_at(px, py + V32TERM_BODY_ROWS);
                     if (kind == 2) {
-                        set_drawing_scale(0.8, 0.5);
-                        draw_region_zoomed_at(px, py + V32TERM_BODY_ROWS);
-                        set_drawing_scale(0.8, 1.0);
-                    } else {
-                        draw_region_zoomed_at(px, py + V32TERM_BODY_ROWS);
+                        select_region(V32TERM_REG_TAIL2 + ch);
+                        draw_region_zoomed_at(px, py + V32TERM_BODY_ROWS + 1);
                     }
                 }
             } else if (ch >= V32TERM_SHADE_FIRST && ch <= V32TERM_SHADE_LAST) {

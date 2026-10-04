@@ -188,6 +188,7 @@ void rewind(FILE *f);
 int feof(FILE *f);
 int ferror(FILE *f);
 int remove(char *name);
+int rename(char *old_name, char *new_name);
 void perror(char *s);
 
 /* ---- unistd / sys/stat --------------------------------------------------- */

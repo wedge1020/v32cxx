@@ -53,16 +53,20 @@ screen is that command line: v32c++ calls `v32_main_args()` (in
 | Menu entry | Command line | What Rogue does |
 |---|---|---|
 | New game | `rogue` | plays |
-| Resume the saved game | `rogue -r` | `restore()` in `save.c` |
+| Resume a saved game | `rogue rogue.sv2` | `restore()` in `save.c`, on the slot picked |
 | Hall of fame | `rogue -s` | prints the top ten |
 | Instructions | (none) | three pages, drawn by `title.c` |
 
 Saving is Rogue's own `save.c` and `state.c`, writing through `fopen` /
 `putc` / `fread` to the memory card (`libc/v32file.c`). **Y**, then *Save
-the game and stop*, writes the game and returns to the title screen. As
-in Unix Rogue, resuming a saved game deletes it: a save is for taking a
-break, not a second chance. The top ten is Rogue's score file, kept open
-on the card for the whole session.
+the game and stop*, asks which of four slots to use, writes the game and
+returns to the title screen. Rogue asks for a file name at that point;
+the slot menu answers it, and `pad.c` types the slot's file name
+(`rogue.sv1` to `rogue.sv4`). A small index file notes each slot's level,
+hit points and gold for the menus. As in Unix Rogue, resuming a saved
+game deletes it: a save is for taking a break, not a second chance. The
+top ten is Rogue's score file, kept open on the card for the whole
+session.
 
 The one source change: `state.c` writes an `int` as "4 bytes" and a
 `short` as "2". On Vircon32 every scalar is one word and `sizeof(int)` is
@@ -76,7 +80,12 @@ On the memory card (262,144 words):
 |---|---|
 | signature, directory | 230 |
 | top ten (`rogue.scr`) | 11,240 |
-| one saved game (`rogue.save`) | about 20,000 |
+| slot index (`rogue.idx`) | 16 |
+| each saved game, up to four | about 20,000 on level 1 |
+
+With all four slots in use that is about 92,000 words, leaving 170,000
+free: every save could grow to three times its level-1 size and all four
+would still fit.
 
 A card that belongs to another game is never written, and without a card
 the game still plays; the title screen says which it is.
@@ -113,6 +122,6 @@ In menus: up/down, A picks, B cancels.
 
 ## Differences from Unix Rogue
 
-- One saved game, under a fixed name, on the memory card.
+- Up to four saved games, in numbered slots on the memory card.
 - No wizard mode, shell escape or user names (the player is "Rogue").
 - `unsigned` is plain signed int on Vircon32 (v32c++ warns once).
