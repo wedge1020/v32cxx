@@ -11,7 +11,8 @@ requires, and where Vircon32 C differs from both. Each item below was
 found by building a real program, Rogue 5.4.4 (`demos/c/rogue`), whose
 28 source files are transpiled byte-for-byte as they were written for
 Unix. `tests/116sample.c` and `tests/117sample.c` are the self-checking
-samples; both are also valid for a native C compiler.
+samples; both are also valid for a native C compiler. `tests/118sample.c`
+covers tags used without their keyword, which only Vircon32 C accepts.
 
 ## What a C program can use
 
@@ -21,6 +22,7 @@ samples; both are also valid for a native C compiler.
 | `#include <stdarg.h>` | No file is read; it provides `va_list`. | `prescan.c` |
 | `#define when break;case`, function-like macros | Every use is expanded, and only constants are passed through to the generated C (`#define MAXSTR 1024`, `#define STATLINE (NUMLINES - 1)`). An octal constant is never passed through: Vircon32 C would read it as decimal. | `macro.c` |
 | `struct rdes { ... } rdes[9];` | Tags have their own namespace. A tag that is also an ordinary name is renamed `rdes_tag` in the output. | `parser.y`, `cmode.c` |
+| `v32key *next;` after `struct v32key { ... }` or `struct v32key;`, with no typedef | A tag used without its keyword, as Vircon32 C allows, is read as the type: members (a struct pointing at itself included), return types, parameters, locals, casts, `sizeof`. Where the same name is also a variable, member or parameter in scope, it is that instead, so `struct rdes rdes[9];` is unaffected. | `lexer.l` (`yylex`), `parser.y` (`c_tag_known`) |
 | a struct, union or enum defined inside a declaration, with or without a tag | The definition moves to file scope, ahead of the declaration; unnamed ones are called `__v32_anonN`. | `parser.y` |
 | `void fatal();` then `void fatal(char *s) { }`; `void leave(int);`; a prototype inside a function | One function: the first declaration is rewritten to say what the definition says. No name mangling. A function declared and never defined is dropped. | `cmode.c`, `sema.c` |
 | `extern char prbuf[];` and, elsewhere, `char prbuf[2*MAXSTR];` | One variable; the declaration with the size wins. | `ast.c` |

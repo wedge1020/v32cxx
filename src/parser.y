@@ -210,16 +210,42 @@ static AstNode *apply_ptr(AstNode *base, int ptr, int line) {
  * file scope, ahead of the declaration that contained it. */
 AstList g_tag_refs;
 AstList g_tag_decls;
+int c_tag_known(const char *name);
 static AstList g_hoisted_tags;
+
+/* Vircon32 C lets a struct be named without its keyword (`v32key *next;`
+ * with no typedef), and C written for it does. Standard C does not, so
+ * the tag still stays out of the symbol table; instead every tag seen so
+ * far -- defined, being defined (a member pointing at its own struct) or
+ * forward-declared -- is remembered here, and the lexer (yylex, lexer.l)
+ * hands the grammar a TAG_NAME when such a name stands where only a type
+ * can, and is not also an ordinary name in scope. `struct rdes rdes[9];`
+ * and Rogue's other tag/name pairs read exactly as before. */
+static char **g_known_tags = NULL;
+static int g_known_tag_count = 0;
+
+static void c_tag_note(const char *name) {
+    if (!g_c_mode || c_tag_known(name)) return;
+    g_known_tags = realloc(g_known_tags, (g_known_tag_count + 1) * sizeof *g_known_tags);
+    g_known_tags[g_known_tag_count++] = strdup(name);
+}
+
+int c_tag_known(const char *name) {
+    for (int i = 0; i < g_known_tag_count; i++)
+        if (strcmp(g_known_tags[i], name) == 0) return 1;
+    return 0;
+}
 
 /* A struct/union/enum declaration with a tag (C input only). */
 static AstNode *tag_decl(AstNode *decl) {
+    c_tag_note(decl->str1);
     if (g_c_mode) ast_list_append(&g_tag_decls, decl);
     return decl;
 }
 
 static AstNode *tag_ref(const char *name, int line) {
     AstNode *n = ast_ident(name, line);
+    c_tag_note(name);       /* `struct v32key;`, `struct v32key *p;` */
     if (g_c_mode) ast_list_append(&g_tag_refs, n);
     return n;
 }
@@ -355,7 +381,10 @@ static AstNode *decl_group_new(int line) {
 
 /* Make `name` lex as TYPE_NAME from here on, unless it already does. */
 static void declare_type_name(const char *name, SymbolKind kind) {
-    if (g_c_mode && kind != SYM_TYPEDEF) return;   /* a tag: its own namespace */
+    if (g_c_mode && kind != SYM_TYPEDEF) {         /* a tag: its own namespace */
+        c_tag_note(name);
+        return;
+    }
     Symbol *s = symtab_lookup(g_symtab, name);
     if (s != NULL && (s->kind == SYM_CLASS || s->kind == SYM_UNION ||
                       s->kind == SYM_ENUM  || s->kind == SYM_TYPEDEF)) return;
@@ -465,8 +494,13 @@ static AstNode *finish_declarators(AstNode *first, AstNode *base, AstList more, 
  * -- see the postmortem for why that assumption failed once already),
  * and confirm the actual concrete input you care about still parses
  * correctly before trusting the new number.
+ *
+ * 64 -> 68: TAG_NAME (a C tag used bare, see c_tag_known). It starts a
+ * type exactly where TYPE_NAME does, so it adds the same opt_virtual
+ * shift/reduce TYPE_NAME already has, in the same four states (2, 26,
+ * 218, 324 of parser.output) and nowhere else.
  */
-%expect 64
+%expect 68
 %expect-rr 1
 /* 46 -> 47: the range-based for. After `for (` and a type, an IDENTIFIER
  * either follows an empty pointer_opt (reduce: `for (int x : v)`, and
@@ -650,7 +684,7 @@ static AstNode *finish_declarators(AstNode *first, AstNode *base, AstList more, 
     struct { int ival; double fval; char *macro; } lit;
 }
 
-%token <str> IDENTIFIER TYPE_NAME STRING_LITERAL
+%token <str> IDENTIFIER TYPE_NAME TAG_NAME STRING_LITERAL
 %token <lit> INT_LITERAL CHAR_LITERAL FLOAT_LITERAL
 
 %token CLASS STRUCT ENUM UNION PUBLIC PRIVATE PROTECTED NAMESPACE TYPEDEF
@@ -875,6 +909,7 @@ class_decl:
              * caveat (no nested classes yet). */
             if (g_c_mode) {
                 /* a tag: not a name the lexer may ever see as a type */
+                c_tag_note($2);
                 g_current_class_sym = NULL;
                 symtab_push_scope(g_symtab, "__tag", 1);
             } else {
@@ -1661,6 +1696,8 @@ type_spec:
     | BOOL_KW       { $$ = ast_ident("bool", @1.first_line); }
     | CHAR_KW       { $$ = ast_ident("char", @1.first_line); }
     | TYPE_NAME     { $$ = ast_ident($1, @1.first_line); }
+    | TAG_NAME      { $$ = tag_ref($1, @1.first_line); /* C input: a tag
+                         used bare, Vircon32 C style -- see c_tag_known */ }
     | class_or_struct_kw name_tok  { $$ = tag_ref($2, @2.first_line); }
     | UNION name_tok               { $$ = tag_ref($2, @2.first_line); }
     | ENUM name_tok                { $$ = tag_ref($2, @2.first_line); }

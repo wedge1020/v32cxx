@@ -683,15 +683,59 @@ static int scan_token(void) {
     }
 }
 
+extern int c_tag_known(const char *name);
+
+/* Which '{' opened a struct/union/enum body: after the '}' that closes
+ * one comes a declarator (`struct rdes { ... } rdes[9];`) or a ';', never
+ * a type, while the '}' of a function or a block can be followed by a
+ * declaration that starts with a bare tag (`node [2] spare;`). */
+#define BRACE_STACK_MAX 256
+static char g_brace_is_tag[BRACE_STACK_MAX];
+static int g_brace_depth = 0;
+static int g_tag_head = 0;          /* tokens left in which a tag's '{' can come */
+static int g_closed_tag_body = 0;   /* the previous token was such a '}' */
+
+static void track_braces(int tok) {
+    g_closed_tag_body = 0;
+    if (tok == '{') {
+        if (g_brace_depth < BRACE_STACK_MAX) g_brace_is_tag[g_brace_depth] = (g_tag_head > 0);
+        g_brace_depth++;
+    } else if (tok == '}' && g_brace_depth > 0) {
+        g_brace_depth--;
+        if (g_brace_depth < BRACE_STACK_MAX) g_closed_tag_body = g_brace_is_tag[g_brace_depth];
+    }
+    if (tok == STRUCT || tok == UNION || tok == ENUM ||
+        tok == ANON_STRUCT || tok == ANON_UNION || tok == ANON_ENUM)
+        g_tag_head = 2;             /* the keyword's '{', or its name's */
+    else if (g_tag_head > 0)
+        g_tag_head--;
+}
+
+static int bare_tag_may_start(int prev) {
+    if (g_closed_tag_body) return 0;
+    switch (prev) {
+        case 0: case ';': case '{': case '}': case '(': case ',':
+        case CONST: case STATIC: case EXTERN: case TYPEDEF:
+            return 1;
+        default:
+            return 0;
+    }
+}
+
 int yylex(void) {
     int tok;
+    Symbol *tag_sym = NULL;     /* the ordinary name an identifier is, if any */
     if (g_peek_valid) {
         g_peek_valid = 0;
         tok = g_peek_token;
         yylval = g_peek_val;
         yylloc = g_peek_loc;
+        /* scanned early: look it up now that the token before it has
+         * been acted on */
+        if (tok == IDENTIFIER) tag_sym = symtab_lookup(g_symtab, yylval.str);
     } else {
         tok = scan_token();
+        if (tok == IDENTIFIER) tag_sym = g_last_ident_sym;
     }
     if (g_c_mode && (tok == STRUCT || tok == UNION || tok == ENUM)) {
         YYSTYPE val = yylval;
@@ -705,6 +749,27 @@ int yylex(void) {
         if (g_peek_token == '{' && g_prev_token != TYPEDEF)
             tok = (tok == STRUCT) ? ANON_STRUCT : (tok == UNION) ? ANON_UNION : ANON_ENUM;
     }
+    /* A tag used bare, as Vircon32 C allows (`v32key *next;`): see
+     * c_tag_known in parser.y. It is a type only if no ordinary name is in
+     * scope, a declaration or a parenthesized type can start here, and
+     * what follows is what follows a type. */
+    else if (g_c_mode && tok == IDENTIFIER && tag_sym == NULL &&
+             c_tag_known(yylval.str) && bare_tag_may_start(g_prev_token)) {
+        YYSTYPE val = yylval;
+        YYLTYPE loc = yylloc;
+        int prev = g_prev_token;
+        g_peek_token = scan_token();
+        g_peek_val = yylval;
+        g_peek_loc = yylloc;
+        g_peek_valid = 1;
+        yylval = val;
+        yylloc = loc;
+        if (g_peek_token == '*' || g_peek_token == IDENTIFIER ||
+            (g_peek_token == ')' && prev == '(') ||
+            (g_peek_token == '[' && prev != '(' && prev != ','))
+            tok = TAG_NAME;
+    }
+    if (g_c_mode) track_braces(tok);
     g_prev_token = tok;
     return tok;
 }

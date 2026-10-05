@@ -28,7 +28,7 @@
  * configuration.
  */
 
-#define  VERSION  "20261004-dev"
+#define  VERSION  "20261005-dev"
 #define  AUTHOR   "Matthew Haas"
 #define  URL      "https://github.com/wedge1020/v32cxx"
 
