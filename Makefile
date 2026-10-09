@@ -26,9 +26,9 @@ VERSION := $(shell sed -n 's/^\#define[[:space:]]*VERSION[[:space:]]*"\(.*\)".*/
 MONTH   := $(shell LC_ALL=C date +"%B %Y")
 # The installed-header directory, from inc/config.h (same single-source
 # idea): `make sysinstall` puts the v32/ veneer headers there.
-INCPATH := $(shell sed -n 's/^\#define[[:space:]]*V32CXX_INCLUDE_PATH[[:space:]]*"\(.*\)".*/\1/p' $(INC_DIR)/config.h)
+INCPATH := $(shell sed -n 's/^[[:space:]]*\#[[:space:]]*define[[:space:]]*V32CXX_INCLUDE_PATH[[:space:]]*"\(.*\)".*/\1/p' $(INC_DIR)/config.h)
 
-.PHONY: all clean test realcheck install uninstall sysinstall version
+.PHONY: all clean test realcheck install uninstall sysinstall sysuninstall version
 
 all: $(BIN_DIR)/v32c++
 
@@ -127,7 +127,7 @@ test: all | $(OUT_DIR)
 	$(BIN)  -vvv    -o out/35program.c tests/35sample.cpp 1> out/35sample.txt 2>&1
 	-$(BIN) -vvv    -o out/36failure.c tests/36sample.cpp 1> out/36sample.txt 2>&1
 	$(BIN)  -vvv    -o out/37program.c tests/37sample.cpp 1> out/37sample.txt 2>&1
-	-$(BIN) -vvv    -o out/38failure.c tests/38sample.cpp 1> out/38sample.txt 2>&1
+	$(BIN)  -vvv    -o out/38program.c tests/38sample.cpp 1> out/38sample.txt 2>&1
 	$(BIN)  -vvv    -o out/39program.c tests/39sample.cpp 1> out/39sample.txt 2>&1
 	$(BIN)  -vvv    -o out/40program.c tests/40sample.cpp 1> out/40sample.txt 2>&1
 	$(BIN)  -vvv    -o out/41program.c tests/41sample.cpp 1> out/41sample.txt 2>&1
@@ -212,6 +212,11 @@ test: all | $(OUT_DIR)
 	$(BIN)  -vvv    -o out/117program.c tests/117sample.c   1> out/117sample.txt 2>&1
 	$(BIN)  -vvv    -o out/118program.c tests/118sample.c   1> out/118sample.txt 2>&1
 	$(BIN)  -vvv -I . -o out/119program.c tests/119sample.cpp 1> out/119sample.txt 2>&1
+	$(BIN)  -vvv    -o out/120program.c tests/120sample.cpp 1> out/120sample.txt 2>&1
+	$(BIN)  -vvv    -o out/121program.c tests/121sample.cpp 1> out/121sample.txt 2>&1
+	$(BIN)  -vvv    -o out/122program.c tests/122sample.cpp 1> out/122sample.txt 2>&1
+	$(BIN)  -vvv    -o out/123program.c tests/123sample.cpp 1> out/123sample.txt 2>&1
+	$(BIN)  -vvv    -o out/124program.c tests/124sample.cpp 1> out/124sample.txt 2>&1
 # `-vvv` (this project's own verbosity flag, a later round -- see
 # main.c) is passed to every sample specifically so `make test`'s own
 # output still captures the full AST/semantic-analysis/lowering dumps
@@ -317,14 +322,34 @@ install: all
 uninstall:
 	rm -f $(HOME)/bin/v32c++
 
-# System-wide install: the binary to /usr/local/bin, and the v32/ veneer
-# headers to V32CXX_INCLUDE_PATH (inc/config.h), so <v32/math.hpp> resolves
-# from any directory with no -I. May need sudo.
+# System-wide install: the binary to /usr/local/bin, the man page to
+# /usr/local/share/man/man1, the v32/ C++ headers to V32CXX_INCLUDE_PATH
+# (inc/config.h; /usr/local/Vircon32/v32c++/include by default), so
+# <v32/math.hpp> resolves from any directory with no -I, and the C library
+# for C input next to them (/usr/local/Vircon32/v32c++/libc). The same
+# layout `cmake --install` produces with its default prefix (see
+# CMakeLists.txt). May need sudo. `make sysuninstall` removes it again.
+LIBCDIR := $(patsubst %/include,%/libc,$(INCPATH))
+V32ROOT := $(patsubst %/include,%,$(INCPATH))
+MANDIR  := /usr/local/share/man/man1
+
 sysinstall: all
-	install -d /usr/local/bin $(INCPATH)/v32
+	install -d /usr/local/bin $(MANDIR) $(INCPATH)/v32 $(LIBCDIR)/sys
 	install -m 755 $(BIN) /usr/local/bin/v32c++
+	install -m 644 man/v32c++.1 $(MANDIR)/v32c++.1
 	install -m 644 v32/*.hpp $(INCPATH)/v32/
-	@echo "Installed v32c++ to /usr/local/bin and headers to $(INCPATH)/v32"
+	install -m 644 libc/*.h libc/*.c $(LIBCDIR)/
+	install -m 644 libc/sys/*.h $(LIBCDIR)/sys/
+	@echo "Installed v32c++ to /usr/local/bin, its man page to $(MANDIR),"
+	@echo "the C++ headers to $(INCPATH)/v32 and the C library to $(LIBCDIR)"
+
+sysuninstall:
+	rm -f /usr/local/bin/v32c++ $(MANDIR)/v32c++.1
+	rm -f $(addprefix $(INCPATH)/v32/,$(notdir $(wildcard v32/*.hpp)))
+	rm -f $(addprefix $(LIBCDIR)/,$(notdir $(wildcard libc/*.h libc/*.c)))
+	rm -f $(addprefix $(LIBCDIR)/sys/,$(notdir $(wildcard libc/sys/*.h)))
+	-rmdir $(INCPATH)/v32 $(INCPATH) $(LIBCDIR)/sys $(LIBCDIR) $(V32ROOT) $(dir $(V32ROOT)) 2>/dev/null
+	@# (the last two only if empty: the Vircon32 DevTools may share the parent)
 
 put: clean
 	@mkdir -p put
@@ -336,13 +361,13 @@ put: clean
 
 archive: clean
 	zip -r v32cxx-project.zip * \
-	    -x 'tools/vircon32/bin/*' 'tools/vircon32/ComputerSoftware/*'
+	    -x 'tools/vircon32/bin/*' 'tools/vircon32/ComputerSoftware/*' 'build/*'
 # -r matters: without it, `demos/*` stores only the demos/c and demos/cxx
 # directory ENTRIES, not the files inside them, so the archive silently
 # ships empty demo folders.
 
 clean:
-	rm -f $(BIN_DIR)/* $(OBJ_DIR)/* $(SRC_DIR)/parser.output $(OUT_DIR)/* put/* *.txt *.zip
+	rm -f $(BIN_DIR)/* $(OBJ_DIR)/* $(SRC_DIR)/parser.output $(OUT_DIR)/* put/* counterexamples.txt *.zip
 	$(MAKE) -C demos clean
 	#rm -f $(SRC_DIR)/parser.c $(SRC_DIR)/lexer.c $(INC_DIR)/parser.h
 # Removing the bison/flex-generated files here (not just objects/binary) is

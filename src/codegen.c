@@ -1389,6 +1389,19 @@ static void print_expr(FILE *out, const AstNode *e) {
             fprintf(out, "this" /* WARNING: unlowered AST_THIS reached codegen */);
             break;
         case AST_MEMBER:
+            /* `(*p).m` is printed `(p)->m`: the same in C, and Vircon32 C
+             * evaluates p TWICE in the first form when p is a call
+             * (`(*get()).n` calls get() twice; `get()->n` once) -- the
+             * shape every member access on a reference-returning call
+             * takes. See VIRCON32_QUIRKS.md #27. */
+            if (e->str1 != NULL && strcmp(e->str1, ".") == 0 && e->a != NULL &&
+                e->a->kind == AST_UNOP && e->a->str1 != NULL &&
+                strcmp(e->a->str1, "deref") == 0) {
+                fprintf(out, "(");
+                print_expr(out, e->a->a);
+                fprintf(out, ")->%s", e->str2);
+                break;
+            }
             print_expr(out, e->a);
             fprintf(out, "%s%s", e->str1, e->str2);
             break;

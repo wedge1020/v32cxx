@@ -685,6 +685,7 @@ static AstNode *finish_declarators(AstNode *first, AstNode *base, AstList more, 
 }
 
 %token <str> IDENTIFIER TYPE_NAME TAG_NAME STRING_LITERAL
+%token CLASS_FINAL   /* `final` in a class head: `class D final : public B` (see yylex) */
 %token <lit> INT_LITERAL CHAR_LITERAL FLOAT_LITERAL
 
 %token CLASS STRUCT ENUM UNION PUBLIC PRIVATE PROTECTED NAMESPACE TYPEDEF
@@ -722,7 +723,7 @@ static AstNode *finish_declarators(AstNode *first, AstNode *base, AstList more, 
 
 %type <str> name_tok func_name operator_symbol
 %type <access> access_spec
-%type <ival> pointer_opt opt_virtual opt_const class_or_struct_kw cpp_cast_kw
+%type <ival> pointer_opt opt_virtual opt_const class_or_struct_kw cpp_cast_kw opt_class_final
 
 %right '=' PLUSEQ MINUSEQ STAREQ SLASHEQ MODEQ ANDEQ OREQ XOREQ SHLEQ SHREQ
 %right '?'
@@ -899,7 +900,7 @@ namespace_decl:
 /* ---- classes -------------------------------------------------------- */
 
 class_decl:
-    class_or_struct_kw name_tok opt_base
+    class_or_struct_kw name_tok opt_class_final opt_base
         {
             /* Register the class *before* the body is scanned, so that
              * self-referential members (`Node *next;`) and constructor/
@@ -944,13 +945,14 @@ class_decl:
             symtab_pop_scope(g_symtab);
             $$ = ast_new(AST_CLASS_DECL, @1.first_line);
             $$->str1 = strdup($2);
-            $$->str2 = $3 ? strdup($3->str1) : NULL;
+            $$->str2 = $4 ? strdup($4->str1) : NULL;
             /* Inheritance access-specifier (public/private/protected),
-             * carried on $3 (see opt_base) -- meaningless when $3/str2 is
+             * carried on $4 (see opt_base) -- meaningless when $4/str2 is
              * NULL (no base at all), but ACC_PUBLIC is a harmless inert
              * default for that case rather than leaving it uninitialized. */
-            $$->access = $3 ? $3->access : ACC_PUBLIC;
-            $$->list = $5;
+            $$->access = $4 ? $4->access : ACC_PUBLIC;
+            $$->list = $6;
+            $$->virt_spec = $3;
             $$->ival = $1; /* is_struct -- see class_or_struct_kw below and
                 AST_CLASS_DECL's own doc comment in ast.h for what this
                 controls (only the default member-access level; every
@@ -981,6 +983,15 @@ class_body:
 class_or_struct_kw:
       CLASS   { $$ = 0; }
     | STRUCT  { $$ = 1; }
+    ;
+
+/* `final` after a class's name: no class may derive from it. The lexer
+ * turns `final` into CLASS_FINAL only in exactly this position (after
+ * `class Name` / `struct Name`, before ':' or '{'), so `final` stays an
+ * ordinary identifier everywhere else. */
+opt_class_final:
+      /* empty */   { $$ = 0; }
+    | CLASS_FINAL   { $$ = VIRT_SPEC_FINAL; }
     ;
 
 opt_base:
@@ -1199,6 +1210,26 @@ opt_virtual:
 opt_const:
       /* empty */  { $$ = 0; }
     | CONST        { $$ = 1; }
+    | opt_const IDENTIFIER
+        {
+            /* C++11 virt-specifiers, `override` and `final`, after the
+             * parameter list (and const). Contextual keywords, not
+             * reserved words -- `int final;` stays an ordinary
+             * declaration everywhere else -- so they arrive as an
+             * IDENTIFIER, and only these two spellings are accepted in
+             * this position. The value is a bit set: 1 const,
+             * VIRT_SPEC_OVERRIDE, VIRT_SPEC_FINAL (ast.h). */
+            int bit = 0;
+            if (!g_c_mode && strcmp($2, "override") == 0) bit = VIRT_SPEC_OVERRIDE;
+            else if (!g_c_mode && strcmp($2, "final") == 0) bit = VIRT_SPEC_FINAL;
+            if (bit == 0) {
+                yyerror("expected 'override', 'final', ';' or a function body "
+                        "after the parameter list");
+                g_parse_errors++;
+                YYERROR;
+            }
+            $$ = $1 | bit;
+        }
     ;
 /* Unlike opt_virtual just above, this sits AFTER a func_header's own
  * closing ')', not before type_spec -- structurally a different
@@ -1242,10 +1273,9 @@ opt_const:
  *     yet (not even as ordinary bitwise operators in `expr`), so there's
  *     nothing for operator_symbol to reuse; would need its own lexer/expr
  *     work first, unrelated to operator overloading specifically.
- *   - `++`/`--` -- real C++ disambiguates prefix from postfix via a
- *     dummy, otherwise-meaningless `int` parameter on the postfix form
- *     (`T operator++(int)`), which is a genuine special case worth
- *     handling deliberately rather than folding in as an afterthought.
+ *   (`++`/`--` ARE supported now, 20261009: prefix is `operator++()`,
+ *   postfix `operator++(int)` with C++'s dummy int parameter -- sema.c
+ *   passes a literal 0 for it; see resolve_operator_use's AST_UNOP case.)
  *   - `operator ReturnType()` (user-defined conversion operators) --
  *     structurally different (no separate return-type token at all,
  *     which is what everything else here assumes exists).
@@ -1275,6 +1305,8 @@ operator_symbol:
     | SLASHEQ   { $$ = strdup("operator/="); }
     | '[' ']'   { $$ = strdup("operator[]"); }
     | '(' ')'   { $$ = strdup("operator()"); }
+    | INC       { $$ = strdup("operator++"); }   /* prefix: (); postfix: (int) */
+    | DEC       { $$ = strdup("operator--"); }
     ;
 
 func_header:
@@ -1298,7 +1330,8 @@ func_header:
                               this was missing and what closing it
                               required on the lowering side. */
             $$->list = $6;
-            $$->str2 = $8 ? strdup("const") : NULL; /* see AST_FUNC_DECL's
+            $$->virt_spec = $8 & (VIRT_SPEC_OVERRIDE | VIRT_SPEC_FINAL);
+            $$->str2 = ($8 & 1) ? strdup("const") : NULL; /* see AST_FUNC_DECL's
                 own doc comment in ast.h for this field's meaning here --
                 str2 is otherwise completely unused across this whole
                 func_decl/func_def/out_of_line_def family, confirmed
@@ -1453,7 +1486,14 @@ out_of_line_def:
                               the same pointer/reference return-type
                               support */
             $$->list = $7;
-            $$->str2 = $9 ? strdup("const") : NULL; /* see func_header's
+            if ($9 & (VIRT_SPEC_OVERRIDE | VIRT_SPEC_FINAL)) {
+                /* C++ allows virt-specifiers only on the in-class
+                 * declaration, never on an out-of-line definition. */
+                yyerror("'override' and 'final' belong on the declaration "
+                        "inside the class, not on an out-of-line definition");
+                g_parse_errors++;
+            }
+            $$->str2 = ($9 & 1) ? strdup("const") : NULL; /* see func_header's
                 own identical assignment above, and AST_FUNC_DECL's doc
                 comment in ast.h, for this field's meaning */
             $$->a = $10;

@@ -805,6 +805,9 @@ typedef enum {
 
 typedef enum { ACC_PUBLIC, ACC_PRIVATE, ACC_PROTECTED } AccessSpec;
 
+#define VIRT_SPEC_OVERRIDE 2
+#define VIRT_SPEC_FINAL    4
+
 typedef struct AstNode AstNode;
 
 typedef struct AstList {
@@ -847,6 +850,13 @@ struct AstNode {
     int is_static_local;
     int is_extern;          /* C input: declared `extern` (a VAR_DECL at file scope) */
 
+    /* C++11 virt-specifiers. AST_FUNC_DECL/AST_FUNC_DEF (in a class
+     * body): VIRT_SPEC_OVERRIDE and/or VIRT_SPEC_FINAL, as written after
+     * the parameter list (and any const). AST_CLASS_DECL:
+     * VIRT_SPEC_FINAL for `class D final : ...`. Checked by sema.c's
+     * build_vtable/compute_layout; nothing is emitted for them. */
+    int virt_spec;
+
     /* Set by lower.c's by-value-struct ABI phase on a function, call or
      * function-pointer type it has already rewritten (nodes are shared,
      * and must be rewritten exactly once). */
@@ -860,6 +870,15 @@ struct AstNode {
      * dereferences every OTHER use of a reference identifier, so this
      * flag is how it tells the two apart. */
     int ref_as_ptr;
+
+    /* AST_VAR_DECL of a class's DATA MEMBER only: the member was declared
+     * a reference (`int &r;`). Phase 5 relabels its type to a pointer
+     * and sets this, so every use of the member (`this->r`, `obj.r`,
+     * `p->r`) can be dereferenced -- unless the use is flagged
+     * ref_as_ptr (an AST_MEMBER can carry that flag too: the member
+     * initializer that stores the address, a receiver, a forwarded
+     * reference argument). */
+    int is_ref_member;
 
     /*
      * Opaque annotation slot for later compiler passes (semantic

@@ -9,7 +9,8 @@
 # or the modified DesktopEmulator (its v32kbd/v32mouse gamepad devices);
 # see docs/V32IO.md.
 #
-# -I ../../.. finds this repository's own v32/ headers (v32/v32io.hpp), so
+# -I ../../.. finds this repository's own v32/ headers (v32io.hpp,
+# keyboard.hpp, mouse.hpp), so
 # the examples build without `make sysinstall`.
 
 DEMOS         = typewriter paint monitor notepad
@@ -35,7 +36,9 @@ prep:
 
 # C++ -> C. v32c++ also writes obj/<name>.xml, whose <binary path> is
 # obj/<name>.vbin; it moves up here, where packrom runs.
-obj/%.c: %.cpp ../../../v32/v32io.hpp | prep
+HEADERS       = ../../../v32/v32io.hpp ../../../v32/keyboard.hpp ../../../v32/mouse.hpp
+
+obj/%.c: %.cpp $(HEADERS) | prep
 	$(TRANSPILER) $(DEBUG_FLAGS) -o obj/$*.c $*.cpp
 	mv obj/$*.xml .
 

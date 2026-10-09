@@ -1,19 +1,23 @@
 # v32io: keyboard and mouse input
 
-`v32/v32io.hpp` gives v32c++ programs a real **keyboard** and **mouse** on
-the Vircon32 console. It is a C++ port of the
-[v32io](https://github.com/wedge1020/v32io) Vircon32 C drivers (`lib/v32io.h`,
-`lib/keyboard.h`, `lib/mouse.h`): the same protocols and the same decoding,
-wrapped as three classes.
+Three `v32/` headers give v32c++ programs a real **keyboard** and
+**mouse** on the Vircon32 console. They are a C++ port of the
+[v32io](https://github.com/wedge1020/v32io) Vircon32 C drivers, split the
+same way: the same protocols and the same decoding, wrapped as three
+classes.
 
-| Class           | Replaces (C library)            | What it is                                        |
-| --------------- | ------------------------------- | ------------------------------------------------- |
-| `v32::IoDevice` | `v32io` / `v32io_*()`           | the core: a gamepad's 11 controls read as data    |
-| `v32::Keyboard` | `v32kbd` / `v32kbd_*()`         | key events, typed characters, held keys           |
-| `v32::Mouse`    | `v32mouse` / `v32mouse_*()`     | a pointer, movement and three buttons             |
+| Header             | Class           | Replaces (C library)                     | What it is                                     |
+| ------------------ | --------------- | ---------------------------------------- | ---------------------------------------------- |
+| `v32/v32io.hpp`    | `v32::IoDevice` | `v32io.h`: `v32io` / `v32io_*()`         | the core: a gamepad's 11 controls read as data |
+| `v32/keyboard.hpp` | `v32::Keyboard` | `keyboard.h`: `v32kbd` / `v32kbd_*()`    | key events, typed characters, held keys        |
+| `v32/mouse.hpp`    | `v32::Mouse`    | `mouse.h`: `v32mouse` / `v32mouse_*()`   | a pointer, movement and three buttons          |
+
+A program includes the driver(s) it needs (`keyboard.hpp`, `mouse.hpp`,
+or both); each one includes the core, `v32io.hpp`, which is only included
+directly to use `v32::IoDevice` on its own.
 
 ```cpp
-#include <v32/v32io.hpp>
+#include <v32/keyboard.hpp>
 
 v32::Keyboard keyboard( v32::SecondGamepadPort );
 
@@ -69,7 +73,7 @@ that data:
 > program expects a v32io device on produces random key events and mouse
 > movement.
 
-Without a device, a program using `v32io.hpp` still builds and runs: the
+Without a device, a program using these headers still builds and runs: the
 port is simply not connected (`connected()` is false) or shows nothing, and
 no events arrive. The examples print a "no device" message in that case.
 
@@ -144,20 +148,22 @@ together, is a profile mapping mistake.
 
 ---
 
-## Using `v32io.hpp`
+## Using the headers
 
 Add the repository root (the directory holding `v32/`) with `-I`, or
-install the headers with `sudo make sysinstall`:
+install the headers system-wide (`sudo make sysinstall`, or `sudo cmake
+--install build`; see the README's "Installing"), after which no `-I` is
+needed:
 
 ```sh
 v32c++ -I path/to/v32c++ -o obj/game.c game.cpp
 ```
 
-Like every `v32/` header, it is C++ source inlined into your program. It is
-self-contained: the v32io **C** library is not needed to build a v32c++
-program (and the two are not meant to be mixed in one program). It
-includes the SDK's `input.h`, `time.h` and `misc.h`, which pass through to
-the generated C.
+Like every `v32/` header, they are C++ source inlined into your program.
+They are self-contained: the v32io **C** library is not needed to build a
+v32c++ program (and the two are not meant to be mixed in one program).
+The core includes the SDK's `input.h`, `time.h` and `misc.h`, which pass
+through to the generated C.
 
 ### The one rule: probe every frame
 
@@ -368,7 +374,7 @@ and `docs/PROTOCOLS.md`.
 
 ## Porting from the C library
 
-| C (`keyboard.h`, `mouse.h`, `v32io.h`)                | C++ (`v32/v32io.hpp`)                              |
+| C (`keyboard.h`, `mouse.h`, `v32io.h`)                | C++ (`v32/keyboard.hpp`, `mouse.hpp`, `v32io.hpp`) |
 | ----------------------------------------------------- | -------------------------------------------------- |
 | `v32kbd *kb = v32kbd_init (SECOND_GAMEPAD_PORT);`     | `v32::Keyboard kb( v32::SecondGamepadPort );`      |
 | `v32kbd_free (&kb);`                                  | — (nothing to free)                                |

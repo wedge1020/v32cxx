@@ -16,8 +16,8 @@ differently.
 > **Status: functional, and approaching its first release.** The whole
 > pipeline — preprocessing, parsing, semantic analysis, lowering and code
 > generation — works end to end and is checked against the **real**
-> Vircon32 compiler, assembler and console (`make realcheck`: over 90
-> programs built into cartridges, 25 of them self-checking at run time on
+> Vircon32 compiler, assembler and console (`make realcheck`: 96
+> programs built into cartridges, 30 of them self-checking at run time on
 > a headless console). Five sizeable demos (three C++ games, Rogue, and a
 > C game) build with it. See [Known limitations](#known-limitations) for
 > the honest picture of what is missing.
@@ -78,14 +78,22 @@ It is **not** an attempt to support all of C++ — see
   virtual functions (`= 0`), virtual destructors (`delete` through a
   base pointer).
 - **Operator overloading**: arithmetic, comparison, compound assignment,
-  unary minus, assignment, `[]`, used with natural syntax (`a + b`,
-  `list[i]->draw()`).
+  unary minus and `!`, assignment, `[]`, function call `()` (function
+  objects: `f(5)` on an object), and prefix/postfix `++`/`--` (C++'s
+  `operator++()` / `operator++(int)`), as members or free functions,
+  used with natural syntax (`a + b`, `list[i]->draw()`, `++it`, `it++`).
+- **`override` and `final`** on member functions, and `final` on a class,
+  checked as C++ checks them (an `override` that overrides nothing,
+  overriding a `final` function and deriving from a `final` class are
+  errors); they stay ordinary names elsewhere (`int final;`). `explicit`
+  is accepted.
 - **Overloading** of functions and methods, resolved by argument count
   and type; it reports an ambiguity instead of guessing.
 - Objects **by value**: a struct or class larger than one word can be
   passed and returned by value; v32c++ rewrites it into the hidden
   pointers Vircon32 C needs (`docs/VIRCON32_QUIRKS.md` #11).
-- **References** — parameters, return values, locals, `const T &`
+- **References** — parameters, return values, locals, data members
+  (`int &r;`, bound in the constructor's initializer list), `const T &`
   binding to temporaries.
 - `const` (variables, pointers to const, `T * const`, `const` member
   functions) — accepted and emitted, not enforced.
@@ -114,7 +122,8 @@ It is **not** an attempt to support all of C++ — see
 - `static` locals (moved to file scope under unique names), file-scope
   `static`, `extern`, `volatile`, `inline`, `register` (accepted;
   Vircon32 C has none of them). `unsigned`, `signed`, `short`, `long`
-  are the one 32-bit `int` type (`unsigned` with a warning). Bit-fields
+  are the one 32-bit `int` type (`unsigned` with a warning); `double`
+  and `long double` are `float`, Vircon32's one floating type. Bit-fields
   are accepted as full words with a warning, or rejected with
   `--reject-bit-fields`.
 - **Inline assembly** in Vircon32's `asm { "..." }` form, plus GCC basic
@@ -166,8 +175,8 @@ Rogue from its sources (`demos/c/rogue`). See
 
 `v32/` holds C++ headers in the `v32::` namespace, one per SDK header —
 `video.hpp`, `input.hpp`, `string.hpp`, `time.hpp`, `audio.hpp`,
-`math.hpp`, `misc.hpp`, `memcard.hpp` — plus **`v32io.hpp`** (keyboard and
-mouse, below). Each SDK wrapper passes its `.h` through and adds only what
+`math.hpp`, `misc.hpp`, `memcard.hpp` — plus **`v32io.hpp`**,
+**`keyboard.hpp`** and **`mouse.hpp`** (keyboard and mouse, below). Each SDK wrapper passes its `.h` through and adds only what
 the C API can't express well: typed enums instead of `#define`s, overload
 sets (`v32::minimum`, `v32::clamp`, `v32::absolute` for int and float),
 RAII scope guards for the console's "selected" texture/gamepad/sound/
@@ -180,18 +189,25 @@ API stays callable alongside them.
 
 Use them with `-I` pointing at the directory that holds `v32/`
 (`v32c++ -I path/to/v32c++ game.cpp`, then `#include <v32/video.hpp>`),
-or install them with `sudo make sysinstall`.
+or install them (see [Installing](#installing)).
 
 ## Keyboard and mouse: v32io
 
-`v32/v32io.hpp` gives programs a real **keyboard** (`v32::Keyboard`: key
-events, typed characters with shift and caps lock, held keys) and
-**mouse** (`v32::Mouse`: a bounded pointer, movement, three buttons). It
-is a C++ port of the [v32io](https://github.com/wedge1020/v32io)
-Vircon32 C drivers, protocol-for-protocol.
+Three headers give programs a real **keyboard** and **mouse**, split the
+same way as the [v32io](https://github.com/wedge1020/v32io) Vircon32 C
+drivers they port, protocol-for-protocol:
+
+| Header | Class | The C library's |
+| ------ | ----- | --------------- |
+| `v32/v32io.hpp` | `v32::IoDevice`: a gamepad's 11 controls read as data (the core) | `v32io.h` |
+| `v32/keyboard.hpp` | `v32::Keyboard`: key events, typed characters with shift and caps lock, held keys | `keyboard.h` |
+| `v32/mouse.hpp` | `v32::Mouse`: a bounded pointer, movement, three buttons | `mouse.h` |
+
+A program includes the driver(s) it needs; each includes the core.
 
 ```cpp
-#include <v32/v32io.hpp>
+#include <v32/keyboard.hpp>
+#include <v32/mouse.hpp>
 
 v32::Keyboard keyboard( v32::SecondGamepadPort );   // "Gamepad 2"
 v32::Mouse    mouse( v32::ThirdGamepadPort );       // "Gamepad 3"
@@ -227,15 +243,9 @@ Checked against the current transpiler and the real Vircon32 compiler
 **Not supported** (a clear error unless noted):
 
 - `static` class members.
-- `enum class`, `constexpr`, lambdas, `using namespace`, `explicit`,
-  `mutable`, `override`/`final`, conversion operators (`operator int()`),
-  `operator++`/`operator--`, nested classes and class-scope enums,
-  stacked declarators like `T *&`.
-- The `double` keyword (use `float`: both are the same 32-bit float on
-  Vircon32).
-- Reference class members (`int &r;`) — transpile, but the C is rejected.
-- **`operator()` (function objects)** — accepted, but a call through one
-  is not rewritten and the real compiler rejects the result.
+- `enum class`, `constexpr`, lambdas, `using namespace`, `mutable`,
+  conversion operators (`operator int()`), nested classes and
+  class-scope enums, stacked declarators like `T *&`.
 - A two-dimensional array parameter (`void f(int g[4][4])`).
 - Templates, exceptions, RTTI and multiple inheritance: never (see below).
 
@@ -311,6 +321,29 @@ make test       # transpiles every sample in tests/ into out/
 
 `make test` shows that every transpile succeeded (or, for the
 deliberately invalid samples, failed cleanly).
+
+### With CMake
+
+For those who prefer it, `CMakeLists.txt` builds the same transpiler
+from the same sources (the Makefile stays the primary build, and
+`make realcheck` is still the real-toolchain check):
+
+```sh
+cmake -S . -B build              # Release by default
+cmake --build build              # build/v32c++
+ctest --test-dir build           # transpile every sample (read from the Makefile's test list)
+sudo cmake --install build       # see "Installing"
+```
+
+flex and bison are used when found (`-DV32CXX_REGENERATE_PARSER=OFF`
+skips them); otherwise the already-generated `src/parser.c`,
+`inc/parser.h` and `src/lexer.c` are compiled as they are, so a plain
+build needs only a C compiler and CMake 3.10+. On **Windows**, build with
+MinGW-w64 (for example from an MSYS2 MINGW64 shell, `cmake -S . -B build
+-G "MinGW Makefiles"`); MSVC isn't supported (the sources use
+`getopt_long` and `<unistd.h>`). `cpack --config build/CPackConfig.cmake`
+makes a `.tar.gz` (plus `.deb` / `.rpm` where `dpkg-deb` / `rpmbuild` are
+available), or a `.zip` on Windows.
 
 ## Checking with the real toolchain
 
@@ -443,7 +476,7 @@ when it is installed).
 | Document | What it covers |
 | -------- | -------------- |
 | [`man/v32c++.1`](man/v32c++.1) | the manual page: every option, the language, the preprocessor, packaging |
-| [`docs/V32IO.md`](docs/V32IO.md) | keyboard and mouse support (`v32/v32io.hpp`) |
+| [`docs/V32IO.md`](docs/V32IO.md) | keyboard and mouse support (`v32/keyboard.hpp`, `v32/mouse.hpp`) |
 | [`docs/C_INPUT.md`](docs/C_INPUT.md) | transpiling C, and the `libc/` C library |
 | [`docs/STRING.md`](docs/STRING.md) | the built-in `std::string` |
 | [`docs/GENERICS.md`](docs/GENERICS.md) | `std::array` and `std::vector` |
@@ -491,8 +524,8 @@ inc/            headers for the above, plus:
 lib/string      the source of the built-in <string> header
 libc/           for C input: a small C library, an 80x24 text terminal on
                 the BIOS font, curses, memory-card files
-v32/            C++ headers for the Vircon32 C API, plus v32io.hpp
-                (keyboard and mouse) -- include with -I
+v32/            C++ headers for the Vircon32 C API, plus v32io.hpp,
+                keyboard.hpp and mouse.hpp (keyboard and mouse)
 c_api/          copies of the Vircon32 SDK's own C headers, for reference
 tests/          NNsample.cpp / .c inputs run by `make test` (some
                 deliberately invalid); self-checking ones run by
@@ -501,6 +534,8 @@ tests/          NNsample.cpp / .c inputs run by `make test` (some
 demos/          example programs, C (demos/c) and C++ (demos/cxx)
 docs/           the documents listed above
 man/            v32c++.1, the manual page (`man ./man/v32c++.1`)
+CMakeLists.txt  the CMake build, install and packaging (see "With CMake")
+cmake/          uninstall.cmake.in, for CMake's `uninstall` target
 tools/
   embed-header.sh   regenerates src/stdstring.c from lib/string
   vircon32/         build-tools.sh (the real Vircon32 toolchain and the
@@ -510,15 +545,38 @@ tools/
 
 ## Installing
 
+A system-wide install puts everything where a Vircon32 setup expects it,
+next to the DevTools:
+
+| | Linux / macOS | Windows (CMake) |
+| --- | --- | --- |
+| transpiler | `/usr/local/bin/v32c++` | `C:\Program Files\Vircon32\v32c++\v32c++.exe` |
+| man page | `/usr/local/share/man/man1/v32c++.1` | `...\v32c++\doc\v32c++.1` |
+| C++ headers (`v32/`) | `/usr/local/Vircon32/v32c++/include/v32` | `...\v32c++\include\v32` |
+| C library (`libc/`) | `/usr/local/Vircon32/v32c++/libc` | `...\v32c++\libc` |
+| documentation | `/usr/local/share/doc/v32c++` (CMake) | `...\v32c++\doc` |
+
+Either build does it:
+
 ```sh
-make install          # bin/v32c++ to ~/bin (make sure it's on your PATH)
-make uninstall
-sudo make sysinstall  # v32c++ to /usr/local/bin, and v32/*.hpp to
-                      # /usr/local/Vircon32/v32c++/include/v32
+sudo make sysinstall                          # Linux / macOS
+sudo make sysuninstall
+
+sudo cmake --install build                    # any system (prefix: /usr/local,
+sudo cmake --build build --target uninstall   #   or C:/Program Files/Vircon32)
 ```
 
-After `sysinstall`, `#include <v32/video.hpp>` (or `<v32/v32io.hpp>`)
-works from any directory without `-I`. Installation defaults (the header
+The header directory is compiled into the transpiler, so after
+installing, `#include <v32/video.hpp>` (or `<v32/keyboard.hpp>`, ...)
+works from any directory without `-I`. With CMake, pick a different
+location at configure time (`cmake -S . -B build
+-DCMAKE_INSTALL_PREFIX=/opt/vircon32`) and the transpiler will look
+there. For C input, add `-I` with the installed `libc` directory. On
+Windows, add `C:\Program Files\Vircon32\v32c++` to your `PATH`, as for
+the DevTools.
+
+`make install` / `make uninstall` instead copy just the binary to
+`~/bin`. Installation defaults for the Makefile build (the header
 directory, the environment variable names, a few limits) live in
 [`inc/config.h`](inc/config.h); change one there and rebuild, or
 override it when building:

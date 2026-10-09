@@ -1,5 +1,5 @@
 // *****************************************************************************
-//  tests/119sample.cpp — v32/v32io.hpp: v32::Keyboard and v32::Mouse, driven
+//  tests/119sample.cpp — v32/keyboard.hpp and v32/mouse.hpp, driven
 //  by scripted v32io input
 //
 //  A keyboard on gamepad port 1 and a mouse on port 2, fed by
@@ -20,7 +20,8 @@
 //  Self-checking: test_errors must end at 0.
 // *****************************************************************************
 
-#include <v32/v32io.hpp>
+#include <v32/keyboard.hpp>
+#include <v32/mouse.hpp>
 
 int test_errors = -1;
 

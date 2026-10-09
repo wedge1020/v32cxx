@@ -278,6 +278,14 @@ ALNUM   [A-Za-z0-9_]
 "default"    { g_last_ident_sym = NULL; return DEFAULT; }
 "int"        { g_last_ident_sym = NULL; return INT_KW; }
 "float"      { g_last_ident_sym = NULL; return FLOAT_KW; }
+    /* `double` and `long double` are `float`: Vircon32 has exactly one
+     * floating-point type, a 32-bit float (its C compiler accepts
+     * `double` as another name for it). Emitted as `float`, so the
+     * generated C reads the same either way. A program relying on more
+     * than float precision gets float precision -- as it would from the
+     * Vircon32 C compiler itself. */
+"double"     { g_last_ident_sym = NULL; return FLOAT_KW; }
+"long"[ \t]+"double"  { g_last_ident_sym = NULL; return FLOAT_KW; }
 "void"       { g_last_ident_sym = NULL; return VOID_KW; }
 "bool"       { g_last_ident_sym = NULL; return BOOL_KW; }
 "char"       { g_last_ident_sym = NULL; return CHAR_KW; }
@@ -649,6 +657,7 @@ ALNUM   [A-Za-z0-9_]
  *     one token of lookahead is kept here.
  */
 static int g_prev_token = 0;
+static int g_prev_prev_token = 0;
 
 static int g_peek_valid = 0;
 static int g_peek_token;
@@ -769,7 +778,31 @@ int yylex(void) {
             (g_peek_token == '[' && prev != '(' && prev != ','))
             tok = TAG_NAME;
     }
+    /* C++'s contextual keywords. `explicit` only restricts implicit
+     * conversions, which every program that compiles without it already
+     * avoids, so it is accepted and dropped. `final` after a class's name
+     * (`class D final : public B`, `struct S final {`) is CLASS_FINAL;
+     * anywhere else it stays an identifier (`override`/`final` after a
+     * member function's parameter list are read by the grammar, see
+     * opt_const in parser.y). */
+    else if (!g_c_mode && tok == IDENTIFIER && strcmp(yylval.str, "explicit") == 0) {
+        return yylex();
+    }
+    else if (!g_c_mode && tok == IDENTIFIER && strcmp(yylval.str, "final") == 0 &&
+             (g_prev_token == IDENTIFIER || g_prev_token == TYPE_NAME) &&
+             (g_prev_prev_token == CLASS || g_prev_prev_token == STRUCT)) {
+        YYSTYPE val = yylval;
+        YYLTYPE loc = yylloc;
+        g_peek_token = scan_token();
+        g_peek_val = yylval;
+        g_peek_loc = yylloc;
+        g_peek_valid = 1;
+        yylval = val;
+        yylloc = loc;
+        if (g_peek_token == ':' || g_peek_token == '{') tok = CLASS_FINAL;
+    }
     if (g_c_mode) track_braces(tok);
+    g_prev_prev_token = g_prev_token;
     g_prev_token = tok;
     return tok;
 }

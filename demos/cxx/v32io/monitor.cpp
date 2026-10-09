@@ -29,7 +29,9 @@
 
 #include "video.h"
 #include "string.h"
-#include <v32/v32io.hpp>
+#include <v32/v32io.hpp>      // v32::IoDevice
+#include <v32/keyboard.hpp>   // the keyboard protocol constants
+#include <v32/mouse.hpp>      // v32::mouse_counter
 
 #define PORTS 4
 

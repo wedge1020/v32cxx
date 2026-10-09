@@ -23,7 +23,8 @@
 #version 1.0
 
 #include "video.h"
-#include <v32/v32io.hpp>
+#include <v32/keyboard.hpp>
+#include <v32/mouse.hpp>
 
 #define KEYBOARD_PORT  v32::SecondGamepadPort   // Gamepad 2
 #define MOUSE_PORT     v32::ThirdGamepadPort    // Gamepad 3

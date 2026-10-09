@@ -640,6 +640,10 @@ static AstNode *strip_const_member_read(AstNode *expr, AstNode *class_decl, Loca
      * declared type was already unqualified. */
     if (read_type->kind == AST_CONST_TYPE) read_type = read_type->a;
     if (read_type == NULL) return expr;
+    /* A reference member (`int &r;`) is not made const by a const
+     * object -- what it refers to keeps its own constness, as in C++ --
+     * and phase 5 turns its reads into `(*this->r)`, a plain int. */
+    if (read_type->kind == AST_REFERENCE_TYPE) return expr;
     /* A struct can't be cast by value (`(Vec)this->pos` is not C);
      * phase 11 reads a const struct through a pointer cast instead. */
     if (type_to_class(read_type) != NULL) return expr;
@@ -758,7 +762,8 @@ static AstNode *address_of_if_needed(AstNode *obj_expr, AstNode *class_decl, Loc
          * produce a double pointer, a strictly worse outcome than
          * leaving the original (already-known) bug in place for
          * whatever rare case reaches this branch. */
-        if (t != NULL && t->kind == AST_REFERENCE_TYPE && obj_expr->kind == AST_IDENT) {
+        if (t != NULL && t->kind == AST_REFERENCE_TYPE &&
+            (obj_expr->kind == AST_IDENT || obj_expr->kind == AST_MEMBER)) {
             /* This reference identifier is wanted as the POINTER it
              * lowers to -- tell phase 5 not to dereference it (see
              * ref_as_ptr in ast.h). */
@@ -2295,7 +2300,9 @@ static void finalize_calls_expr(AstNode **slot, AstNode *class_decl, LocalVarTyp
             break;
         case AST_UNOP:
             finalize_calls_expr(&n->a, class_decl, locals);
-            rewrite_operator_use(slot, n->a, NULL, class_decl, locals);
+            /* n->b: postfix ++/--'s dummy int argument, set by sema only
+             * when an operator++(int) / operator--(int) resolved */
+            rewrite_operator_use(slot, n->a, n->b, class_decl, locals);
             break;
         case AST_TERNARY:
             /* No rewrite_operator_use call -- same reasoning as
@@ -2783,6 +2790,34 @@ static LocalVarType *seed_locals_with_reference_tracking(AstNode *func) {
     return locals;
 }
 
+/* Phase 5's view of reference DATA members: the class whose method is
+ * being walked (NULL in a free function), and whether any class in the
+ * program has one at all (so the lookup costs nothing otherwise). */
+static AstNode *g_fix_ref_class = NULL;
+static int g_fix_ref_any_members = 0;
+
+/* `int &r;` as a class member is a pointer in C: relabel every such
+ * member's type once, before any body is walked, and mark it. */
+static void relabel_reference_members(AstList *decls) {
+    for (int i = 0; i < decls->count; i++) {
+        AstNode *n = decls->items[i];
+        if (n->kind == AST_CLASS_DECL) {
+            ClassLayout *layout = (ClassLayout *)n->sema_info;
+            if (layout == NULL) continue;
+            for (int j = 0; j < layout->data_members.count; j++) {
+                AstNode *m = layout->data_members.items[j];
+                if (m->type != NULL && m->type->kind == AST_REFERENCE_TYPE) {
+                    m->type->kind = AST_POINTER_TYPE;
+                    m->is_ref_member = 1;
+                    g_fix_ref_any_members = 1;
+                }
+            }
+        } else if (n->kind == AST_NAMESPACE_DECL) {
+            relabel_reference_members(&n->list);
+        }
+    }
+}
+
 static void fix_reference_access_expr(AstNode **slot, LocalVarType *locals) {
     AstNode *n = *slot;
     if (n == NULL) return;
@@ -2805,15 +2840,29 @@ static void fix_reference_access_expr(AstNode **slot, LocalVarType *locals) {
             break;
         }
         case AST_MEMBER: {
+            int converted = 0;
             if (n->str1 != NULL && strcmp(n->str1, ".") == 0 && n->a != NULL && n->a->kind == AST_IDENT) {
                 LocalVarType *lv = find_local(locals, n->a->str1);
                 if (lv != NULL && lv->was_reference) {
                     free(n->str1);
                     n->str1 = strdup("->");
-                    break; /* `r.x` -> `r->x`: the identifier stays a pointer */
+                    converted = 1; /* `r.x` -> `r->x`: the identifier stays a pointer */
                 }
             }
-            fix_reference_access_expr(&n->a, locals);
+            if (!converted) fix_reference_access_expr(&n->a, locals);
+            /* A reference DATA MEMBER (`int &r;`, now a pointer) used as
+             * a value means its referent: `(*this->r)`. */
+            if (!n->ref_as_ptr && n->str2 != NULL && g_fix_ref_any_members) {
+                AstNode *cls = resolve_expr_class(n->a, g_fix_ref_class, locals);
+                AstNode *owner = NULL;
+                AstNode *member = cls ? find_member_in_hierarchy(cls, n->str2, &owner) : NULL;
+                if (member != NULL && member->kind == AST_VAR_DECL && member->is_ref_member) {
+                    AstNode *deref = ast_new(AST_UNOP, n->line);
+                    deref->str1 = strdup("deref");
+                    deref->a = n;
+                    *slot = deref;
+                }
+            }
             break;
         }
         case AST_CALL:
@@ -2950,8 +2999,10 @@ static void fix_references_classes(AstList *decls) {
             ClassLayout *layout = (ClassLayout *)n->sema_info;
             if (layout != NULL) {
                 for (int j = 0; j < layout->methods.count; j++) {
+                    g_fix_ref_class = n;
                     fix_references_in_method(layout->methods.items[j]);
                 }
+                g_fix_ref_class = NULL;
             }
         } else if (n->kind == AST_NAMESPACE_DECL) {
             fix_references_classes(&n->list);
@@ -3336,12 +3387,10 @@ static void new_delete_rewrite_free_functions(AstList *decls) {
  *     unconstructed in that case is a real, known gap, not silently
  *     "fixed" by calling something that doesn't exist.
  *
- *   - Only a VarDecl appearing directly as a BLOCK statement is
- *     handled -- NOT one appearing as a for-loop's own init clause
- *     (`for (Player p; ...)`). Inserting an extra statement there would
- *     need to land inside the loop BODY instead of right after the
- *     declaration, which is meaningfully more involved for a pattern no
- *     current test uses. Documented gap, not silently mishandled.
+ *   - An object declared in a for-loop's own init clause
+ *     (`for (Player p; ...)`) is moved into a block wrapping the loop
+ *     first (inject_ctor_calls_stmt's AST_FOR case, 20261009), so it is
+ *     handled exactly like a block statement.
  *
  *   - A class WITH virtual methods still gets its constructor called,
  *     but that constructor does NOT populate `this->vtable` -- there's
@@ -3797,8 +3846,28 @@ static void inject_ctor_calls_stmt(AstNode **slot, AstNode *class_decl, LocalVar
             inject_ctor_calls_stmt(&s->b, class_decl, locals, arr_ctor_counter);
             break;
         case AST_FOR:
-            /* Deliberately NOT recursing into s->a (the for-loop's own
-             * init clause) -- see this phase's own doc comment above. */
+            /* `for (Iter it; it.ok(); ++it)` (or `for (Iter it(v); ...)`):
+             * an OBJECT declared in the init clause. Its constructor call
+             * has to come between the declaration and the loop, so the
+             * declaration moves into a block around the loop -- the same
+             * scope C++ gives it -- where the block-level injection
+             * constructs it, and phase 9 destroys it after the loop.
+             * (Added 20261009; scalars and pointers stay where they are.) */
+            if (s->a != NULL && s->a->kind == AST_VAR_DECL && s->a->type != NULL &&
+                resolve_typedef_chain(s->a->type)->kind != AST_POINTER_TYPE &&
+                resolve_typedef_chain(s->a->type)->kind != AST_REFERENCE_TYPE &&
+                type_to_class(s->a->type) != NULL) {
+                AstNode *block = ast_new(AST_BLOCK, s->line);
+                block->file = s->file;
+                ast_list_append(&block->list, s->a);
+                s->a = NULL;
+                ast_list_append(&block->list, s);
+                *slot = block;
+                inject_ctor_calls_block(block, class_decl, locals, arr_ctor_counter);
+                break;
+            }
+            /* Otherwise not recursing into s->a: a scalar init needs no
+             * constructor (see this phase's own doc comment above). */
             inject_ctor_calls_stmt(&s->d, class_decl, locals, arr_ctor_counter);
             break;
         default:
@@ -4328,6 +4397,18 @@ static void inject_member_init_assigns_classes(AstList *decls) {
                         AstNode *assign = ast_new(AST_ASSIGN, m->line);
                         assign->str1 = strdup("=");
                         assign->a = field_ref;
+                        AstNode *member_decl = layout->data_members.items[d];
+                        if (member_decl->type != NULL && member_decl->type->kind == AST_REFERENCE_TYPE) {
+                            /* A reference member (`int &r;` with `: r(x)`)
+                             * stores the ADDRESS of what it is bound to:
+                             * `this->r = &x;`. The member itself is wanted
+                             * as the pointer here, not dereferenced. */
+                            field_ref->ref_as_ptr = 1;
+                            AstNode *addr = ast_new(AST_UNOP, m->line);
+                            addr->str1 = strdup("addr");
+                            addr->a = entry->list.items[0];
+                            assign->b = addr;
+                        } else
                         assign->b = entry->list.items[0]; /* resolve_member_init_list
                             already confirmed exactly one argument for any
                             ival==1 entry -- see its own doc comment */
@@ -5901,10 +5982,104 @@ static int v32_is_compound_assign(const AstNode *n) {
     return n != NULL && n->kind == AST_ASSIGN && n->str1 != NULL && strcmp(n->str1, "=") != 0;
 }
 
+/* ---- writing through a pointer a call returned ------------------------------
+ *
+ * A second, related Vircon32 C fault (v26.04.24, found 20261009 while
+ * adding operator++): when an assignment or ++/-- writes through a pointer
+ * that a CALL produced, the call runs more than once --
+ *
+ *     *get() = 5;          get() runs twice
+ *     get()->m = 7;        twice
+ *     get()->m += 1;       three times
+ *     (*get())++;          twice
+ *
+ * (plain reads, `x = *get();` and `x = get()->m;`, run it once; subscripts
+ * and `*p++ = v` are fine). C++ produces this shape constantly: every
+ * call of a reference-returning function or operator used as a target
+ * (`v[i] = 5` through a user `T &operator[]`, `++it` returning `*this`,
+ * `obj.ref() = x`) is `*call(...)` in the generated C. So when such a
+ * statement's target writes through a call's result, the pointer is
+ * computed once into a temporary:
+ *
+ *     get()->m = 7;   ->   { S *__v32_ptr0 = get(); __v32_ptr0->m = 7; }
+ *
+ * (The read-only `(*get()).m` case is fixed in codegen, which prints it as
+ * `(get())->m`.) */
+static int v32_has_call(const AstNode *e) {
+    if (e == NULL) return 0;
+    if (e->kind == AST_CALL) return 1;
+    if (v32_has_call(e->a) || v32_has_call(e->b) || v32_has_call(e->c)) return 1;
+    for (int i = 0; i < e->list.count; i++)
+        if (v32_has_call(e->list.items[i])) return 1;
+    return 0;
+}
+
+/* Within an lvalue, the outermost pointer operand (of a `*` or `->`)
+ * that has a call in it, or NULL. Subscript indexes and the like are
+ * evaluated once already and are not looked into. */
+static AstNode **v32_called_pointer(AstNode **slot) {
+    while (slot != NULL && *slot != NULL) {
+        AstNode *e = *slot;
+        if (e->kind == AST_MEMBER) {
+            if (e->str1 != NULL && strcmp(e->str1, "->") == 0 && v32_has_call(e->a)) return &e->a;
+            slot = &e->a;
+        } else if (e->kind == AST_UNOP && e->str1 != NULL && strcmp(e->str1, "deref") == 0) {
+            if (v32_has_call(e->a)) return &e->a;
+            slot = &e->a;
+        } else if (e->kind == AST_SUBSCRIPT) {
+            slot = &e->a;
+        } else {
+            return NULL;
+        }
+    }
+    return NULL;
+}
+
+/* An expression statement `target = value;`, `target++;` (any of the four
+ * steps) or `target op= value;` writing through a called pointer: see
+ * above. Returns 1 if *slot became a block. */
+static int v32_hoist_called_pointer(AstNode **slot, AstNode *cls, LocalVarType *locals) {
+    AstNode *stmt = *slot;
+    AstNode *n = stmt->a;
+    if (n == NULL) return 0;
+    AstNode **target;
+    if (n->kind == AST_ASSIGN) target = &n->a;
+    else if (v32_is_step(n)) target = &n->a;
+    else return 0;
+    AstNode **ptr_slot = v32_called_pointer(target);
+    if (ptr_slot == NULL) return 0;
+    const AstNode *type = infer_expr_type(*ptr_slot, cls, locals);
+    const AstNode *resolved = type ? resolve_typedef_chain(type) : NULL;
+    while (resolved != NULL && resolved->kind == AST_CONST_TYPE) resolved = resolve_typedef_chain(resolved->a);
+    if (resolved == NULL || resolved->kind != AST_POINTER_TYPE) {
+        fprintf(stderr, "%s:%d: warning: this statement writes through a pointer returned by a "
+                "call, and Vircon32 C evaluates that call more than once; store the pointer "
+                "in a variable first\n",
+                stmt->file ? stmt->file : g_current_filename, stmt->line);
+        return 0;
+    }
+    static int counter = 0;
+    char name[40];
+    snprintf(name, sizeof name, "__v32_ptr%d", counter++);
+    AstNode *decl = ast_new(AST_VAR_DECL, stmt->line);
+    decl->str1 = strdup(name);
+    decl->type = (AstNode *)type;
+    decl->a = *ptr_slot;
+    *ptr_slot = ast_ident(name, stmt->line);
+    AstNode *block = ast_new(AST_BLOCK, stmt->line);
+    ast_list_append(&block->list, decl);
+    ast_list_append(&block->list, stmt);
+    *slot = block;
+    lower_note(stmt->line, "stored a call's pointer result before writing through it -- "
+        "Vircon32 C runs a call in an assignment target more than once");
+    return 1;
+}
+
 /* An expression statement `target op= value;`: see above. */
 static void v32_split_compound_stmt(AstNode **slot, AstNode *cls, LocalVarType *locals) {
     AstNode *stmt = *slot;
     AstNode *n = stmt->a;
+    if (v32_hoist_called_pointer(slot, cls, locals)) return;
     if (!v32_is_compound_assign(n) || !v32_has_side_effect(n->a)) return;
 
     /* The general way, whenever the target's type is known: take its
@@ -7333,6 +7508,7 @@ int lower_run(AstNode *program) {
         the final body, matching real C++'s own construction order) */
     finalize_calls_classes(&program->list);       /* phase 3 + phase 4 (operator rewriting lives inside this same walk) */
     finalize_calls_free_functions(&program->list);
+    relabel_reference_members(&program->list);      /* phase 5 (members first) */
     fix_references_classes(&program->list);         /* phase 5 */
     fix_references_free_functions(&program->list);
     insert_pointer_cast_classes(&program->list);      /* phase 6a -- MUST run

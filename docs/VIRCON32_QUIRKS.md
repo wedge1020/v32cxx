@@ -872,6 +872,54 @@ compared as addresses (`((int)thing) == ((int)ptr)`). See also
 
 ---
 
+## 27. Writing through a pointer a call returned runs the call more than once
+
+Vircon32 C (v26.04.24) evaluates a call that produces the pointer an
+assignment writes through more than once, and does the same for a member
+access written as `(*call()).m`, even when only reading. Confirmed in
+plain Vircon32 C, counting calls (found 20261009 while adding
+`operator++`):
+
+```c
+*geti() = 5;          // geti() runs 2 times
+*geti() += 1;         // 3
+(*geti())++;          // 2
+get()->m = 7;         // 2
+get()->m += 1;        // 3
+(*get()).m = 7;       // 3
+r = (*get()).n;       // 2  -- a read
+r = get()->n;         // 1
+r = *geti();          // 1
+buf[idx()] = 3;       // 1  -- subscripts are fine
+*p++ = 7;             // p advances once -- fine
+```
+
+C++ makes this shape common: a call of any reference-returning function
+or operator is `*call(...)` in the generated C, so `v[i] = 5` through a
+user `int &operator[]`, `++it` (returning `*this`), `obj.ref() = x` and
+`list[i].hp = 0` all hit it -- a side effect in the call (a counter, a
+lazily-growing container) happened twice, and every such access cost two
+or three calls.
+
+**What v32c++ does** (Vircon32 mode):
+
+- **reads**: codegen prints `(*E).m` as `(E)->m` -- the same in C, and
+  evaluated once (`codegen.c`, `AST_MEMBER`);
+- **writes**: lowering phase 11 (`v32_hoist_called_pointer`, `lower.c`)
+  stores the pointer first when an expression statement assigns,
+  compound-assigns or `++`/`--`es through a `*` or `->` whose pointer has
+  a call in it:
+
+  ```c
+  get()->m = 7;   ->   { S * __v32_ptr0 = get(); (__v32_ptr0->m = 7); }
+  ```
+
+  When the pointer's type can't be worked out, it is left as written with
+  a warning. As with #25, an assignment used as a VALUE inside a larger
+  expression is not rewritten.
+
+`tests/124sample.cpp` counts the calls for each shape.
+
 ## What this list does NOT cover
 
 - Anything this project hasn't discovered yet -- this is a record of

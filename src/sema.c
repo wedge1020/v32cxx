@@ -832,6 +832,8 @@ static const char *mangle_operator_symbol(const char *name) {
     if (strcmp(sym, "/=") == 0) return "op_diveq";
     if (strcmp(sym, "[]") == 0) return "op_index";
     if (strcmp(sym, "()") == 0) return "op_call";
+    if (strcmp(sym, "++") == 0) return "op_inc";
+    if (strcmp(sym, "--") == 0) return "op_dec";
     return "op_unknown";
 }
 
@@ -1038,6 +1040,18 @@ static void build_vtable(ClassLayout *layout) {
     for (int i = 0; i < layout->methods.count; i++) {
         AstNode *m = layout->methods.items[i];
         int slot = vtable_find_slot(vt, m);
+        if (slot >= 0 && (vt->entries[slot].method->virt_spec & VIRT_SPEC_FINAL) &&
+            vt->entries[slot].method != m) {
+            sema_error(m->line, "'%s' overrides a function declared 'final' in a base class",
+                       m->str1);
+        }
+        if (slot < 0 && (m->virt_spec & VIRT_SPEC_OVERRIDE)) {
+            sema_error(m->line, "'%s' is marked 'override', but does not override "
+                       "any virtual function of a base class", m->str1);
+        }
+        if (slot < 0 && m->ival != 1 && (m->virt_spec & VIRT_SPEC_FINAL)) {
+            sema_error(m->line, "'%s' is marked 'final', but is not virtual", m->str1);
+        }
         if (slot >= 0) {
             /* Overriding an inherited slot. Real C++ treats this as
              * virtual even if 'virtual' isn't repeated on the override --
@@ -1183,6 +1197,9 @@ static void compute_layout(AstNode *class_decl) {
              * named in `opt_base`, so a class can never (even
              * transitively) end up inheriting from itself. */
             compute_layout(layout->base_class_decl);
+            if (layout->base_class_decl->virt_spec & VIRT_SPEC_FINAL)
+                sema_error(class_decl->line, "class '%s' cannot derive from '%s', "
+                           "which is declared 'final'", class_decl->str1, class_decl->str2);
         }
         /* Deliberately not merging the base's DATA members into
          * data_members/methods here -- see the ClassLayout doc comment
@@ -1683,6 +1700,12 @@ AstNode *infer_expr_type(const AstNode *expr, AstNode *current_class, LocalVarTy
             return NULL;
         }
         case AST_UNOP: {
+            /* An overloaded unary operator (`-v`, `++it`, `it++`): its
+             * declared return type is the answer. */
+            {
+                CallResolution *ucr = (CallResolution *)expr->sema_info;
+                if (ucr != NULL && ucr->resolved_target != NULL) return ucr->resolved_target->type;
+            }
             /* Same reasoning as AST_SUBSCRIPT just above -- without
              * this, `*p` and `&x` both silently fell through to
              * "unknown" here, discovered when a dereferenced pointer
@@ -2448,7 +2471,64 @@ static void resolve_overload_generic_impl(AstNode *site, const char *name, AstNo
     free(candidates);
 }
 
+/* A call whose callee is an OBJECT, not a function: `f(1)` with
+ * `Adder f;`, `mFilter(x)` on a member, `table[i](x)`, `(*p)(x)`. If the
+ * object's class declares operator(), the call means `f.operator()(1)`,
+ * so the callee is rewritten into exactly that member access -- after
+ * which the call is an ordinary method call for every later phase
+ * (overload resolution below, this-injection, finalize_call, receiver
+ * address-taking, virtual dispatch for a virtual operator()).
+ *
+ * A local, parameter, member or global of that name wins over a free
+ * function of the same name, as in C++: lookup_ident_expr_type only
+ * answers for variables. A pointer to an object is NOT a function
+ * object (`p(1)` is ill-formed C++ too); only the object itself, a
+ * reference to it, or an expression yielding one is. */
+static void rewrite_functor_call(AstNode *call, AstNode *current_class, LocalVarType *locals) {
+    AstNode *callee = call->a;
+    if (callee == NULL) return;
+    if (callee->kind == AST_MEMBER && callee->str2 != NULL) {
+        /* `obj.method(...)` names a method: leave it, unless the name is
+         * really a DATA member whose class has operator(). */
+        AstNode *obj_class = resolve_expr_class(callee->a, current_class, locals);
+        if (obj_class == NULL) return;
+        AstNode **c = NULL;
+        int cc = 0, ccap = 0;
+        collect_method_candidates(obj_class, callee->str2, &c, &cc, &ccap);
+        free(c);
+        if (cc > 0) return;
+    } else if (callee->kind == AST_IDENT) {
+        if (lookup_ident_expr_type(callee->str1, current_class, locals) == NULL) return;
+    } else if (callee->kind != AST_SUBSCRIPT && callee->kind != AST_UNOP &&
+               callee->kind != AST_CALL && callee->kind != AST_QUALIFIED_ID) {
+        return;
+    }
+    const AstNode *t = infer_expr_type(callee, current_class, locals);
+    while (t != NULL && t->kind == AST_CONST_TYPE) t = t->a;
+    t = resolve_typedef_chain(t);
+    if (t == NULL || t->kind == AST_POINTER_TYPE || t->kind == AST_ARRAY_TYPE ||
+        t->kind == AST_FUNC_PTR_TYPE) return;
+    AstNode *cls = resolve_expr_class(callee, current_class, locals);
+    if (cls == NULL) return;
+    AstNode **cands = NULL;
+    int count = 0, cap = 0;
+    collect_method_candidates(cls, "operator()", &cands, &count, &cap);
+    free(cands);
+    if (count == 0) {
+        sema_error(call->line, "an object of class '%s' is called like a function, "
+                   "but '%s' has no operator()", cls->str1, cls->str1);
+        return;
+    }
+    AstNode *mem = ast_new(AST_MEMBER, call->line);
+    mem->file = call->file;
+    mem->str1 = strdup(".");
+    mem->str2 = strdup("operator()");
+    mem->a = callee;
+    call->a = mem;
+}
+
 static void resolve_call(AstNode *call, AstNode *current_class, LocalVarType *locals) {
+    rewrite_functor_call(call, current_class, locals);
     const AstNode *callee = call->a;
     if (callee == NULL) return;
 
@@ -2697,6 +2777,8 @@ static const char *unop_operator_name(const char *op) {
      * they're never rewritten here, always plain built-in AST_UNOP. */
     if (strcmp(op, "neg") == 0) return "operator-";
     if (strcmp(op, "!") == 0) return "operator!";
+    if (strcmp(op, "pre++") == 0 || strcmp(op, "post++") == 0) return "operator++";
+    if (strcmp(op, "pre--") == 0 || strcmp(op, "post--") == 0) return "operator--";
     return NULL;
 }
 
@@ -3199,7 +3281,21 @@ static void check_node(AstNode *n, AstNode *current_class, LocalVarType **locals
             break;
         case AST_UNOP:
             check_node(n->a, current_class, locals);
-            resolve_operator_use(n, unop_operator_name(n->str1), n->a, NULL, current_class, *locals);
+            if (n->str1 != NULL && (strcmp(n->str1, "post++") == 0 || strcmp(n->str1, "post--") == 0)) {
+                /* Postfix ++/-- on an object is `operator++(int)`: C++
+                 * tells it from prefix by a dummy int argument, so pass
+                 * one. Kept in n->b for lowering to pass along too, and
+                 * dropped again if nothing resolved (a built-in x++). */
+                AstNode *dummy = ast_new(AST_INT_LIT, n->line);
+                dummy->file = n->file;
+                dummy->ival = 0;
+                n->b = dummy;
+                resolve_operator_use(n, unop_operator_name(n->str1), n->a, n->b, current_class, *locals);
+                CallResolution *pcr = (CallResolution *)n->sema_info;
+                if (pcr == NULL || pcr->resolved_target == NULL) n->b = NULL;
+            } else {
+                resolve_operator_use(n, unop_operator_name(n->str1), n->a, NULL, current_class, *locals);
+            }
             break;
         case AST_TERNARY:
             /* No resolve_operator_use call -- the ternary operator isn't

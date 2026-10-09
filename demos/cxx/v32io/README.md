@@ -1,6 +1,8 @@
 # v32io examples
 
-Four small programs using [`v32/v32io.hpp`](../../../v32/v32io.hpp), the
+Four small programs using [`v32/keyboard.hpp`](../../../v32/keyboard.hpp)
+and [`v32/mouse.hpp`](../../../v32/mouse.hpp) (both built on
+[`v32/v32io.hpp`](../../../v32/v32io.hpp)), the
 v32c++ keyboard and mouse support. Full documentation:
 [`docs/V32IO.md`](../../../docs/V32IO.md).
 

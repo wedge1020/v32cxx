@@ -21,7 +21,7 @@
 #include "video.h"
 #include "string.h"
 #include <v32/math.hpp>
-#include <v32/v32io.hpp>
+#include <v32/mouse.hpp>
 
 #define MOUSE_PORT  v32::SecondGamepadPort   // Gamepad 2
 #define DOTS_MAX    1200

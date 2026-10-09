@@ -7625,10 +7625,110 @@ by the Vircon32 compiler.
 
 The README was rewritten for the release as a reference rather than a
 log. Its previous "Current status" narrative is preserved below,
-verbatim, as it stood at 20261005-dev -- several of its entries describe
-gaps that have since closed.
+verbatim, as it stood at 20261005-dev, in the last section of this file
+-- several of its entries describe gaps that have since closed.
 
-### Archived: the README's "Current status" section (20261005-dev)
+## 20261009-dev (second pass): operator() and ++/--, virt-specifiers, reference members, CMake
+
+### `operator()` -- function objects
+
+`operator()` had always been declarable (`operator_symbol` in parser.y,
+mangled `op_call`), but nothing ever routed a CALL to it: `f(5)` on an
+`Adder f;` reached codegen as `f(5)`, which the Vircon32 compiler rejects
+("indirect call callee must be a function pointer"). sema.c's new
+`rewrite_functor_call`, run at the start of `resolve_call`, rewrites the
+callee of a call whose callee is an OBJECT (a local/member/global
+variable, a subscript, a dereference, a call result -- never a pointer,
+which isn't a function object in C++ either) into `f.operator()`, after
+which it is an ordinary method call for every later phase: overloads,
+this-injection, receiver address-taking, virtual dispatch (`(*p)(x)`
+through a base pointer works). An object of a class with no operator()
+called like a function is now an error instead of bad C. tests/120.
+
+### `operator++` / `operator--`
+
+Prefix `++x` resolves `operator++()`, postfix `x++` `operator++(int)`,
+C++'s dummy int parameter: sema passes a literal 0 for it (kept in the
+AST_UNOP's `b` for lowering, dropped again if nothing resolved, so a
+built-in `i++` is untouched). Members and free functions. An overloaded
+unary operator's type is now its declared return type in
+`infer_expr_type`. tests/122.
+
+Two further faults turned up while testing it:
+
+- **A Vircon32 compiler fault** (VIRCON32_QUIRKS.md #27): writing
+  through a pointer a CALL returned runs the call two or three times
+  (`*f() = 5`, `f()->m += 1`), and `(*f()).m` runs it twice even to
+  read. Every reference-returning call is `*call()` in the generated C,
+  so this hit `++it`, user `operator[]` targets and `obj.ref() = x`
+  alike. Fixed in codegen (`(*E).m` printed `(E)->m`) and lowering
+  phase 11 (`v32_hoist_called_pointer`). tests/124 counts the calls;
+  under the previous transpiler most of its checks fail.
+- **An object declared in a `for` init clause** (`for (Iter it; ...;
+  ++it)`) was never constructed or destroyed -- a gap documented in
+  lower.c that no test had reached. Phase 7 now moves such a declaration
+  into a block around the loop, where the ordinary block-level
+  construction and phase 9's destruction apply. tests/122.
+
+### `override`, `final`, `explicit`
+
+`override` and `final` are contextual keywords (`int final;` is legal,
+and common in C), so they are not reserved words. After a member
+function's parameter list (and const) they arrive as IDENTIFIERs, which
+`opt_const` now accepts only with these two spellings (it returns a bit
+set; `virt_spec` on the AST node). `final` after a class's name is
+recognized by the lexer only when `class`/`struct` + name precede it and
+`:` or `{` follows (CLASS_FINAL, `opt_class_final`). sema's
+`build_vtable` reports an `override` that overrides nothing, a `final`
+on a non-virtual function, and overriding a `final` one;
+`compute_layout` reports deriving from a `final` class. On an
+out-of-line definition they are an error, as in C++. `explicit` is
+accepted and dropped in the lexer (it only forbids implicit conversions
+a compiling program already doesn't rely on). Bison's conflict counts are
+unchanged. tests/121.
+
+### `double`
+
+`double` and `long double` lex as `float`, Vircon32's one floating type
+(its own compiler accepts `double` as a synonym). tests/121.
+
+### Reference data members
+
+`int &r;` in a class: phase 5 now relabels a reference member's type to a
+pointer (`relabel_reference_members`, marking `is_ref_member`), and
+dereferences every use of it (`this->r`, `obj.r`, `p->r`) unless the use
+wants the pointer itself -- the member initializer (phase 8a stores
+`this->r = &x`), or a forwarded reference argument / receiver, which
+`address_of_if_needed` now flags on AST_MEMBER as it already did on
+AST_IDENT. `strip_const_member_read` no longer casts a reference
+member's read in a const method (the referent's constness is its own, as
+in C++). tests/123.
+
+### Also
+
+- `tests/38sample.cpp` was still run as an expected FAILURE (class-typed
+  member initializers, implemented in tests/112); `make test`'s `-`
+  prefix hid that it now succeeds. It is a positive test now.
+- `make sysinstall` read `V32CXX_INCLUDE_PATH` from config.h with a
+  pattern that missed its indented `#define`, so it installed the headers
+  to `/v32`. Fixed; it now also installs the man page
+  (`/usr/local/share/man/man1`) and `libc/`, and `make sysuninstall`
+  removes it all.
+- `v32/v32io.hpp` was split like the C library: `v32io.hpp` (core),
+  `keyboard.hpp`, `mouse.hpp`.
+- CMake (`CMakeLists.txt`, `cmake/uninstall.cmake.in`): builds the same
+  sources (regenerating the parser when flex/bison exist, otherwise using
+  the generated files in src/), runs every `make test` sample as a CTest
+  test (read from the Makefile, so the list has one home), installs in
+  the Vircon32 layout (Linux/macOS: `<prefix>/bin`,
+  `<prefix>/share/man/man1`, `<prefix>/Vircon32/v32c++/{include,libc}`;
+  Windows: `C:/Program Files/Vircon32/v32c++/...`, beside the DevTools)
+  with the header directory compiled in, adds `uninstall`, and packages
+  with cpack. Verified on Linux (install, uninstall, a custom prefix, the
+  no-bison path, .tar.gz and .deb) and by cross-compiling for Windows with
+  llvm-mingw (zero warnings, .zip layout); not run on Windows itself.
+
+## Archived: the README's "Current status" section (20261005-dev)
 
 
 **Parsing and semantic analysis** cover namespaces, classes and plain

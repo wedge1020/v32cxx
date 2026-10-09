@@ -75,7 +75,7 @@ project. Where the numbered gaps above stand now:
 | #   | Gap                                              | Now                                                                 |
 | --- | ------------------------------------------------ | ------------------------------------------------------------------- |
 | 1   | `static`                                         | Locals and file-scope `static` work (20261009 check); members don't |
-| 2   | `explicit`                                       | Still a syntax error                                                |
+| 2   | `explicit`                                       | Accepted (and dropped), 20261009                                    |
 | 3   | `unsigned`/`short`/`long`/`signed`               | Accepted as the one `int` type (`unsigned` warns)                   |
 | 4   | Class-nested enums                               | Still open: the game's enums are namespace-level                    |
 | 5   | Pure virtual `= 0`                               | Supported (tests/112sample.cpp); the slot gets a do-nothing body    |

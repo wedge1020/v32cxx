@@ -1,14 +1,11 @@
-// Deliberately invalid: a member-initializer list naming an actual data
-// member whose own type IS a class (not a pointer/reference to one) --
-// valid C++, but real, separate complexity (invoking the member's own
-// constructor) this project doesn't support anywhere yet, unlike a
-// primitive member field (see sample37.cpp) or base-class delegation
-// (see sample35.cpp). Should produce exactly one semantic error, from
-// resolve_member_init_list's own "class-typed fields aren't supported
-// yet" branch -- not a parse failure, not silent acceptance, and not
-// the "not a base class or member" branch either (`thing` IS a real,
-// declared member -- just one this round's own scope doesn't reach).
-
+// A member-initializer list naming a data member whose own type IS a
+// class (not a pointer/reference to one): `: thing(42)` constructs the
+// member with its own constructor. Written as a deliberately INVALID
+// sample when this wasn't supported (it expected a "class-typed fields
+// aren't supported yet" error); since class-typed member initializers
+// landed (tests/112sample.cpp) it is an ordinary, valid program, and
+// `make test` checks that it transpiles (20261009: found still listed
+// as an expected failure, which `make test`'s `-` prefix had hidden).
 class Inner {
     public:
         Inner(int v);

@@ -20,7 +20,7 @@
 
 #include "video.h"
 #include "string.h"
-#include <v32/v32io.hpp>
+#include <v32/keyboard.hpp>
 
 #define KEYBOARD_PORT  v32::SecondGamepadPort   // Gamepad 2
 #define COLUMNS        64                       // 640 / 10-pixel glyphs

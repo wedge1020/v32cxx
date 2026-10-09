@@ -1,0 +1,30 @@
+# Removes every file the last `cmake --install` of this build tree wrote,
+# as listed in its install_manifest.txt, then the v32c++ directories that
+# are left empty. Run through `cmake --build <build> --target uninstall`.
+set(_manifest "@CMAKE_CURRENT_BINARY_DIR@/install_manifest.txt")
+if(NOT EXISTS "${_manifest}")
+    message(FATAL_ERROR "Nothing to uninstall: ${_manifest} not found (run cmake --install first)")
+endif()
+file(STRINGS "${_manifest}" _files)
+foreach(_file IN LISTS _files)
+    if(EXISTS "${_file}" OR IS_SYMLINK "${_file}")
+        message(STATUS "Removing ${_file}")
+        file(REMOVE "${_file}")
+    endif()
+endforeach()
+foreach(_dir
+        "@V32CXX_HEADER_PATH@/v32"
+        "@V32CXX_HEADER_PATH@"
+        "@CMAKE_INSTALL_PREFIX@/@V32CXX_INSTALL_ROOT@/libc/sys"
+        "@CMAKE_INSTALL_PREFIX@/@V32CXX_INSTALL_ROOT@/libc"
+        "@CMAKE_INSTALL_PREFIX@/@V32CXX_INSTALL_DOCDIR@"
+        "@CMAKE_INSTALL_PREFIX@/@V32CXX_INSTALL_ROOT@"
+        "@V32CXX_PARENT_DIR@")   # <prefix>/Vircon32, only if nothing else (the DevTools) is in it
+    if(IS_DIRECTORY "${_dir}")
+        file(GLOB _left "${_dir}/*")
+        if(NOT _left)
+            message(STATUS "Removing directory ${_dir}")
+            file(REMOVE_RECURSE "${_dir}")
+        endif()
+    endif()
+endforeach()

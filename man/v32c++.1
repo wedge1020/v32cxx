@@ -330,7 +330,7 @@ v32c++ \-I ~/src/v32c++ \-o build/game.c game.cpp
 .RE
 .PP
 Build a program that reads a v32io keyboard on Gamepad 2
-.RI ( "#include <v32/v32io.hpp>" ;
+.RI ( "#include <v32/keyboard.hpp>" ;
 running it needs the v32io adaptor or a modified emulator, see
 .B KEYBOARD AND MOUSE
 below):
@@ -541,6 +541,25 @@ by its bare name is rewritten correctly too (
 .I ": y(x)"
 becomes
 .IR "this\->y = this\->x" );
+function objects (a call through
+.BR operator() ),
+prefix and postfix
+.BR operator++ / operator\-\-
+.RI ( "operator++()" " and " "operator++(int)" );
+.BR override " and " final
+on member functions and
+.B final
+on a class, checked as C++ checks them, while staying ordinary names
+everywhere else;
+.B explicit
+(accepted);
+reference data members
+.RI ( "int &r;" ,
+bound in the constructor's initializer list);
+.BR double " and " "long double" ,
+which are
+.BR float ,
+Vircon32's one floating type;
 duplicate detection for a member-initializer list (
 .I ": x(a), x(b)"
 is a reported error, not a silent, arbitrary pick between the two);
@@ -604,21 +623,11 @@ class members;
 .BR constexpr ,
 lambdas,
 .BR "using namespace" ,
-.BR explicit ,
 .BR mutable ,
-.BR override " and " final ,
 conversion operators,
-.BR operator++ / operator\-\- ,
 nested classes and class-scope enums, and stacked declarators such as
 .IR "T *&" ;
-the
-.B double
-keyword (use
-.BR float ,
-the same 32-bit type on Vircon32); a two-dimensional array parameter;
-reference class members (transpiled, but the generated C is rejected);
-.B operator()
-(accepted, but calls through it are not rewritten \(em see BUGS).
+a two-dimensional array parameter.
 .PP
 Array
 .B new
@@ -776,9 +785,9 @@ texture, gamepad, sound or channel at the closing brace, and small
 handle classes
 .RB ( v32::Channel ", " v32::MemoryCard ", " v32::HeapBlock ", ...)."
 Wrapper names never reuse a C function's name, so the raw C API stays
-available alongside them. A ninth header,
-.IR v32io.hpp ,
-provides keyboard and mouse support (see
+available alongside them. Three more,
+.IR v32io.hpp ", " keyboard.hpp " and " mouse.hpp ,
+provide keyboard and mouse support (see
 .B KEYBOARD AND MOUSE
 below).
 .PP
@@ -845,17 +854,23 @@ declared inside a namespace is still emitted under its bare C name.
 .B native
 is a reserved word.
 .SH KEYBOARD AND MOUSE
+.IR v32/keyboard.hpp ,
+.I v32/mouse.hpp
+and
 .I v32/v32io.hpp
-is a C++ port of the
+are a C++ port of the
 .B v32io
-Vircon32 C drivers: a keyboard
+Vircon32 C drivers, split the same way as its
+.IR keyboard.h ", " mouse.h " and " v32io.h :
+a keyboard
 .RB ( v32::Keyboard :
 key events, typed characters with shift and caps lock, held keys) and a
 mouse
 .RB ( v32::Mouse :
-a bounded pointer, movement, three buttons), both built on
+a bounded pointer, movement, three buttons), both built on the core,
 .BR v32::IoDevice ,
-which reads a gamepad's 11 controls as data.
+which reads a gamepad's 11 controls as data. A program includes the
+driver(s) it needs; each includes the core.
 .PP
 .B This REQUIRES a v32io device.
 The console has no keyboard or mouse port; a v32io device reaches it
@@ -883,7 +898,7 @@ device is not a v32io keyboard.
 .PP
 .RS
 .nf
-#include <v32/v32io.hpp>
+#include <v32/keyboard.hpp>
 
 v32::Keyboard keyboard( v32::SecondGamepadPort );  // Gamepad 2
 
@@ -1220,18 +1235,46 @@ and before
 .B \-v
 lists the folders searched.
 .SH FILES (INSTALLATION)
+Where
+.B make sysinstall
+and
+.B cmake \-\-install
+(default prefix
+.IR /usr/local )
+put things on Linux and macOS:
+.TP
+.I /usr/local/bin/v32c++
+The transpiler.
+.TP
+.I /usr/local/share/man/man1/v32c++.1
+This manual page.
 .TP
 .I /usr/local/Vircon32/v32c++/include
-The installed header directory, searched last for
+The installed header directory, holding
+.IR v32/ ,
+searched last for
 .I .hpp
 and
 .I .cpp
-includes;
-.B make sysinstall
-puts the
-.I v32/
-headers there. Set at build time in
-.IR inc/config.h .
+includes, so
+.B #include <v32/video.hpp>
+needs no
+.BR \-I .
+Compiled into the transpiler: by
+.I inc/config.h
+for the Makefile build, from the install prefix for the CMake build.
+.TP
+.I /usr/local/Vircon32/v32c++/libc
+The C library and curses for C input (add it with
+.BR \-I ).
+.PP
+On Windows, the CMake install puts the transpiler, the headers
+.RI ( include/v32 ),
+.I libc
+and the documentation under
+.IR "C:\eProgram Files\eVircon32\ev32c++" ,
+next to the Vircon32 DevTools; add that directory to
+.BR PATH .
 .SH SEE ALSO
 .BR v32lua (1),
 the Vircon32 C compiler documentation.
@@ -1294,17 +1337,7 @@ function, the generated
 .I this
 parameter's own type \(em with real violations left for the downstream
 C/C++ compiler to catch.
-.PP
-Two constructs are accepted but produce C the Vircon32 compiler rejects,
-instead of a clear error from
-.BR v32c++ :
-a call through an overloaded
-.B operator()
-.RI ( "f(1)"
-on a function object) is left as a plain call, and a reference class
-member
-.RI ( "int &r;" )
-is initialized as a pointer.
+
 .PP
 Array
 .B new
