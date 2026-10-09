@@ -1,10 +1,10 @@
 #pragma once
 // *****************************************************************************
-//  v32/video.hpp — pilot C++ veneer over Vircon32's "video.h"
+//  v32/video.hpp — thin C++ veneer over Vircon32's "video.h"
 //
 //  Consumption model: this file is C++ source in the v32c++ subset, meant to
-//  be inlined into the user's translation unit by v32pp (or included once a
-//  real preprocessor exists inside the transpiler). The "#include" below is
+//  be inlined into the user's translation unit by v32c++'s own include
+//  resolution (-I, or an installed copy). The "#include" below is
 //  a pass-through line: v32c++ re-emits it verbatim, and the downstream
 //  Vircon32 C compiler resolves the real video.h that provides every
 //  function called here. Nothing in this file re-implements hardware

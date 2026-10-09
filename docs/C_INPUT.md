@@ -144,6 +144,8 @@ entries stand for `rogue`, `rogue -r` and `rogue -s`.
   and two files' `static` functions of the same name collide.
 - `unsigned` is `int` (warned once); `char`, `short` and `long` are one
   32-bit word, so `sizeof(char) == sizeof(int) == 1`.
+- `double` is not accepted (a syntax error); write `float`, which is the
+  same 32-bit type on Vircon32.
 - A union cannot be brace-initialized (Vircon32 C).
 - Code that assumes `sizeof(int) == 4` (see *Files on the memory card*).
 - A compound assignment whose target has a side effect, used as a value

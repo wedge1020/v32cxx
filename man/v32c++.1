@@ -1,4 +1,4 @@
-.TH V32C++ 1 "October 2026" "v32c++ 20261002-dev" "User Commands"
+.TH V32C++ 1 "October 2026" "v32c++ 20261009-dev" "User Commands"
 .SH NAME
 v32c++ \- transpile a subset of C++ to Vircon32 C
 .SH SYNOPSIS
@@ -128,7 +128,15 @@ plus a full dump of the parsed AST, a semantic-analysis summary
 (class layouts, vtables, resolved calls), and the fully-lowered form
 of every method and function body \(em genuinely useful for following
 along with what the tool understood about a given program and how it
-transformed it, not just debugging output.
+transformed it, not just debugging output. It ends with a
+.IR "lowering notes log" :
+one line per place a lowering phase rewrote the program specifically to
+work around a Vircon32 C quirk (a ternary hoisted into
+.IR if / else ,
+an implicit
+.IR &function ,
+a const-discarding receiver cast, a base/derived pointer cast), naming
+the source line and the quirk.
 .RE
 .TP
 .BI \-I " dir\fR, " \-\-include= dir
@@ -257,14 +265,14 @@ discarding whatever the source declared; standard mode honors it
 preserving real
 .B return
 statements rather than stripping them. Vircon32 mode also rewrites
-the ternary operator into an equivalent
+every ternary operator into an equivalent
 .IR if / else
-wherever it directly initializes a variable, is directly assigned to
-a bare identifier, or is directly a
-.B return
-expression (including a chain of these) \(em the real Vircon32
-compiler doesn't support the ternary operator at all; standard mode
-keeps it exactly as written. Function pointers (including arrays of
+(through a temporary where the value is needed inside a larger
+expression, keeping C++'s rule that only the chosen branch runs), and
+splits the comma operator into separate statements \(em the real
+Vircon32 compiler supports neither; standard mode keeps both exactly as
+written. Multi-word structs passed or returned by value are rewritten to
+travel by hidden pointer in Vircon32 mode only. Function pointers (including arrays of
 them, and virtual-dispatch vtables) also produce correct standard-C
 declarator/cast syntax under
 .BR \-\-target=standard ,
@@ -321,6 +329,19 @@ v32c++ \-I ~/src/v32c++ \-o build/game.c game.cpp
 .fi
 .RE
 .PP
+Build a program that reads a v32io keyboard on Gamepad 2
+.RI ( "#include <v32/v32io.hpp>" ;
+running it needs the v32io adaptor or a modified emulator, see
+.B KEYBOARD AND MOUSE
+below):
+.PP
+.RS
+.nf
+v32c++ \-I ~/src/v32c++ \-o obj/typewriter.c typewriter.cpp
+compile \-o obj/typewriter.asm obj/typewriter.c
+.fi
+.RE
+.PP
 Produce portable C instead, for checking with a desktop compiler:
 .PP
 .RS
@@ -360,10 +381,8 @@ input;
 .B #include
 resolution with
 .B #pragma once
-(every other
-.B #
-line is carried into the output verbatim; see
-.B HEADERS AND C TYPES
+and a full preprocessor (see
+.B PREPROCESSOR
 below);
 .B native
 opaque type declarations for C types defined in pass-through headers
@@ -469,9 +488,8 @@ and standard C's
 .RI ( "ReturnType (*name)(ParamTypes);" ),
 including arrays of either \(em output is always Vircon32's own
 required form regardless of which the source used, the same dual-
-acceptance treatment array declarators already have (see BUGS below
-for one specific spelling that isn't yet confirmed against the real
-compiler);
+acceptance treatment array declarators already have, all confirmed
+against the real compiler;
 multi-dimensional arrays
 .RI ( "int grid[8][4];" " or " "int [8][4] grid;" ,
 dimensions nested outermost-first, matching real C exactly), with
@@ -525,7 +543,46 @@ becomes
 .IR "this\->y = this\->x" );
 duplicate detection for a member-initializer list (
 .I ": x(a), x(b)"
-is a reported error, not a silent, arbitrary pick between the two).
+is a reported error, not a silent, arbitrary pick between the two);
+member initializers for members that are themselves objects
+.RI ( ": mVel(vx, vy)" );
+in-class default member initializers
+.RI ( "int mLives = 3;" ),
+applied by every constructor that doesn't initialize the member itself;
+pure virtual functions
+.RI ( "= 0" );
+unnamed temporaries
+.RI ( "return Vec(x, y);" );
+file-scope objects, constructed at the top of
+.B main
+(with constructor arguments if given);
+arrays of objects, constructed and destroyed element by element
+(member arrays included);
+structs and classes larger than one word passed and returned by value
+(rewritten to hidden pointers for Vircon32 C);
+references as parameters, return values and locals, scalar ones
+included;
+.B auto
+locals and range-based
+.BR for ;
+the built-in
+.BR std::string ,
+.B std::array
+and
+.B std::vector
+(see the project's
+.IR docs/STRING.md " and " docs/GENERICS.md );
+.B static
+locals, and file-scope
+.BR static ,
+.BR extern " and " volatile
+(Vircon32 C has none of them: locals move to file scope under unique
+names, the rest are dropped or merged);
+.BR unsigned ", " signed ", " short " and " long
+as the one 32-bit integer type
+.RB ( unsigned
+with a warning); bit-fields, as full words with a warning (see
+.BR \-\-reject\-bit\-fields ).
 .PP
 .B dynamic_cast
 is accepted too, but honestly, not silently: it parses and transpiles
@@ -538,72 +595,39 @@ produces a
 not an error \(em printed to stderr, never blocking the transpile.
 Warnings are a diagnostic category separate from the semantic errors
 described throughout this section \(em they never affect this tool's
-own exit status. The other warning, under
-.B \-\-target=vircon32
-only, flags a class or struct larger than one word passed or returned
-by value: the Vircon32 C compiler only accepts one-word parameters and
-return values, so pass a pointer instead.
+own exit status.
 .PP
-Not yet supported:
-class-typed member-field initializers (
-.I ": thing(args)"
-where
-.IR thing 's
-own type is a class, not a primitive/pointer/reference \(em invoking a
-member's own constructor is real, separate complexity not supported
-anywhere in this project yet); virtual destructor dispatch through
+Not supported (each is a clear error unless noted):
+.B static
+class members;
+.BR "enum class" ,
+.BR constexpr ,
+lambdas,
+.BR "using namespace" ,
+.BR explicit ,
+.BR mutable ,
+.BR override " and " final ,
+conversion operators,
+.BR operator++ / operator\-\- ,
+nested classes and class-scope enums, and stacked declarators such as
+.IR "T *&" ;
+the
+.B double
+keyword (use
+.BR float ,
+the same 32-bit type on Vircon32); a two-dimensional array parameter;
+reference class members (transpiled, but the generated C is rejected);
+.B operator()
+(accepted, but calls through it are not rewritten \(em see BUGS).
+.PP
+Array
+.B new
+.RI ( "new T[n]" )
+allocates without constructing each element, and
 .B delete[]
-specifically (plain
-.B delete
-through a base pointer already dispatches correctly);
-.B static
-class members; range-based
-.BR for .
-.PP
-The original list of basic, non-OOP C syntax gaps (confirmed directly
-by checking the grammar rather than assumed) is now complete: bitwise
-operators,
-.BR switch / case ,
-bare
-.BR struct ,
-C-style casts, C++-style casts, hex/octal/binary literals with
-suffixes, the ternary operator,
-.BR do / while ,
-.BR enum ,
-.BR union ,
-source-level
-.BR sizeof ,
-.BR goto ,
-function pointers, and multi-dimensional arrays are all supported now.
-.PP
-A fresh audit (confirmed directly, not assumed) found a further,
-separate round of common C gaps.
-.BR const ,
-multiple declarators in one statement, and function-pointer
-.BR typedef s
-are now closed (see above, and BUGS below for
-.BR const 's
-exact boundary), and so are adjacent string-literal concatenation,
-.B inline
-and
-.B register
-(accepted and ignored), multiple declarators in a
-.B for
-init clause, and the comma operator
-.RI ( "a, b"
-in expression statements, parentheses and all three
-.B for
-clauses \(em split into statements for Vircon32 C, which has none).
-Still open:
-.B static
-and
-.B extern
-(not recognized),
-.B volatile
-outside
-.BR "asm volatile" ,
-and bit-fields
-.RI ( "unsigned x : 4;" ).
+runs no destructors; prefer
+.B std::vector
+or a stack array.
 .PP
 Never supported, by design: templates, exceptions, RTTI, multiple
 inheritance.
@@ -752,7 +776,11 @@ texture, gamepad, sound or channel at the closing brace, and small
 handle classes
 .RB ( v32::Channel ", " v32::MemoryCard ", " v32::HeapBlock ", ...)."
 Wrapper names never reuse a C function's name, so the raw C API stays
-available alongside them.
+available alongside them. A ninth header,
+.IR v32io.hpp ,
+provides keyboard and mouse support (see
+.B KEYBOARD AND MOUSE
+below).
 .PP
 A free function declared inside a namespace is emitted under a C name
 that includes the namespace
@@ -816,6 +844,60 @@ when it's already a class, struct, or typedef is an error. A native
 declared inside a namespace is still emitted under its bare C name.
 .B native
 is a reserved word.
+.SH KEYBOARD AND MOUSE
+.I v32/v32io.hpp
+is a C++ port of the
+.B v32io
+Vircon32 C drivers: a keyboard
+.RB ( v32::Keyboard :
+key events, typed characters with shift and caps lock, held keys) and a
+mouse
+.RB ( v32::Mouse :
+a bounded pointer, movement, three buttons), both built on
+.BR v32::IoDevice ,
+which reads a gamepad's 11 controls as data.
+.PP
+.B This REQUIRES a v32io device.
+The console has no keyboard or mouse port; a v32io device reaches it
+through a gamepad port, its controls carrying keyboard or mouse data,
+and something outside the console must produce that data: either the
+.B v32io hardware adaptor
+(a USB keyboard or mouse plugged into the v32io-pico board, presented
+to any Vircon32 emulator as the joystick
+.I v32io:kbd
+or
+.IR v32io:mouse ),
+or a
+.B modified Vircon32 DesktopEmulator
+offering the
+.I v32kbd
+and
+.I v32mouse
+gamepad devices \(em the fork at
+.IR https://github.com/wedge1020/ComputerSoftware ,
+.B v32io
+branch, or the stock emulator with the v32io repository's patches
+applied. The stock emulator's own
+.I Keyboard
+device is not a v32io keyboard.
+.PP
+.RS
+.nf
+#include <v32/v32io.hpp>
+
+v32::Keyboard keyboard( v32::SecondGamepadPort );  // Gamepad 2
+
+    keyboard.probe();             // once on EVERY frame
+    int key = keyboard.read();    // next press as a character; 0: none
+.fi
+.RE
+.PP
+Every device must be probed once on every frame, or key events can be
+lost and mouse movement misread. See
+.I docs/V32IO.md
+for setup, the full API and the protocols, and
+.I demos/cxx/v32io
+for examples.
 .SH CART PACKAGING
 Alongside the generated
 .IR .c ,
@@ -925,15 +1007,14 @@ Not yet supported: a duplicate-name check across
 .B #texture
 /
 .B #sound
-hints (two
+hints. Two
 .B #texture
 lines naming the same
 .I NAME
-currently produce two conflicting
+produce two
 .B #define
-lines, caught only later, by the C compiler itself, not by
-.B v32c++
-directly).
+lines for it, which the Vircon32 C compiler accepts without complaint:
+the later id silently wins, while both files still go into the XML.
 .SH BIOS MODE
 .B \-b
 (see OPTIONS, above) transpiles a Vircon32
@@ -1155,6 +1236,27 @@ headers there. Set at build time in
 .BR v32lua (1),
 the Vircon32 C compiler documentation.
 .PP
+In the source distribution:
+.I README.md
+(overview and known limitations),
+.I docs/V32IO.md
+(keyboard and mouse),
+.I docs/C_INPUT.md
+(C input and
+.IR libc/ ),
+.IR docs/STRING.md ,
+.I docs/GENERICS.md
+.RB ( std::string ", " std::array ", " std::vector ),
+.IR docs/NATIVE_PASSTHROUGH.md ,
+.IR docs/INLINE_ASSEMBLY_SUPPORT.md ,
+.I docs/VIRCON32_QUIRKS.md
+(every Vircon32 C difference and how it is handled) and
+.I docs/DESIGN_NOTES.md
+(internals and history).
+.PP
+v32io drivers, firmware and emulator patches:
+.I https://github.com/wedge1020/v32io
+.PP
 Project repository:
 .I https://github.com/wedge1020/v32cxx
 .SH BUGS
@@ -1165,9 +1267,11 @@ own destructor the way
 .BR break / continue / return
 already correctly do \(em there is no equivalent pass for
 .B goto
-yet. There is also no validation that a
+yet. A
 .B goto
-label actually exists anywhere in its function. Keep
+to a label that doesn't exist is not reported by
+.B v32c++
+(the Vircon32 compiler reports it). Keep
 .B goto
 to flat scopes with no destructible locals in play until this is
 addressed.
@@ -1191,30 +1295,26 @@ function, the generated
 parameter's own type \(em with real violations left for the downstream
 C/C++ compiler to catch.
 .PP
-A reference parameter's
-.I .member
-accesses and its forwarding to another reference parameter lower
-correctly, but a
-.I scalar
-reference
-.RI ( int& ", " float& )
-read or written directly
-.RI ( "y = b; b = 3;" ),
-or
-.I &ref
-of any reference, reads, writes, or takes the address of the
-underlying pointer instead. Use an explicit pointer parameter for
-primitive out-parameters until this is fixed.
+Two constructs are accepted but produce C the Vircon32 compiler rejects,
+instead of a clear error from
+.BR v32c++ :
+a call through an overloaded
+.B operator()
+.RI ( "f(1)"
+on a function object) is left as a plain call, and a reference class
+member
+.RI ( "int &r;" )
+is initialized as a pointer.
 .PP
-Two constructs are
-.I silently
-mistranslated rather than rejected: an in-class default member
-initializer
-.RI ( "int size = 5;"
-on a field declaration) is dropped, and a namespace-scope object
-direct-initialized with constructor arguments
-.RI ( "Counter g(100);" )
-produces an invalid initializer.
+Array
+.B new
+does not construct each element and
+.B delete[]
+destroys none;
+.B delete[]
+through a base pointer to an array of a derived class is undefined.
+Multi-dimensional arrays of objects are constructed but not destroyed
+at scope exit.
 .PP
 A class declared inside a namespace keeps its bare C name
 .RI ( v32::String
@@ -1237,11 +1337,9 @@ both include it produce the same
 .B #include
 line twice.
 .PP
-.PP
 Report issues, including anything this tool transpiles incorrectly or
 any real C++ feature you'd like to see prioritized, via the project
-repository above. This is genuinely early, actively developed
-software \(em see
+repository above. This is actively developed software \(em see
 .I docs/DESIGN_NOTES.md
 for the full history of what's been found and fixed so far, including
 real compiler bugs caught along the way.

@@ -351,3 +351,26 @@ void nop( void )
 5. `--target=standard` round trip of both dialects through gcc.
 6. asm inside a method (after this-injection) and inside a loop body — confirm  
  the statement walks pass it through.
+
+## In use: `v32/v32io.hpp` (20261009-dev)
+
+The keyboard/mouse header is the first `v32/` header to depend on inline
+assembly, inside a method. `v32::IoDevice` writes a 68-word machine-code
+routine into a member array in its constructor and calls it from
+`scan()`:
+
+```cpp
+entry = (int)(&routine[ 0 ]);
+asm
+{
+    "PUSH  R0"
+    "MOV   R0, {entry}"
+    "CALL  R0"
+    "POP   R0"
+}
+```
+
+`{entry}` is a local of the method, so the Vircon32 compiler's `{param}`
+interpolation resolves it (a member, `{this->...}`, would not be valid;
+hence the local). Checked end to end on the headless console by
+`tests/119sample.cpp`. See `docs/V32IO.md`.

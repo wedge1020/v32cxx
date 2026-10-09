@@ -11,7 +11,9 @@
 #      self-checking program: its cartridge is booted headless with the
 #      standard BIOS and a fresh memory card, run until the CPU halts, and
 #      the RAM word holding test_errors must read 0 (it starts at -1, so a
-#      program that crashes or never reaches the end also fails).
+#      program that crashes or never reaches the end also fails). A sample
+#      with a tests/NNsample.input next to it is played with that input
+#      script (v32peek) instead of no input (v32run) -- see 119sample.
 #
 #  Needs tools/vircon32/bin, built by tools/vircon32/build-tools.sh.
 #  Exit status: 0 if everything passed, 1 otherwise.
@@ -77,9 +79,19 @@ for src in "$ROOT"/tests/*sample.cpp "$ROOT"/tests/*sample.c; do
     fi
     addr=$(grep -m1 "%define global_test_errors " "$OUT/$n.asm" | awk '{print $3}')
     rm -f "$OUT/$n.memc"
-    result=$( cd "$OUT" && "$BIN/v32run" "$BIN/StandardBios.v32" "$n.v32" "$n.memc" "$addr" 1200 2> "$n.run.log" )
-    value=$(echo "$result" | sed -n 's/.*ram\[[0-9]*\]=\(-\{0,1\}[0-9]*\).*/\1/p')
-    halted=$(echo "$result" | sed -n 's/.*halted=\([01]\).*/\1/p')
+    input="$ROOT/tests/${num}sample.input"
+    if [ -e "$input" ]; then
+        # A sample with an input script (tests/NNsample.input: scripted
+        # gamepad presses, e.g. v32io keyboard/mouse traffic made by
+        # v32io-script.py) runs under v32peek, which plays the script.
+        result=$( cd "$OUT" && V32PEEK_CARD="$n.memc" "$BIN/v32peek" "$BIN/StandardBios.v32" "$n.v32" "$input" 6000 "$addr" 1 2> "$n.run.log" | tr '\n' ' ' )
+        value=$(echo "$result" | sed -n 's/.*ram\[[0-9]*\.\.[0-9]*\]: *[0-9]*: *\(-\{0,1\}[0-9]*\).*/\1/p')
+        halted=$(echo "$result" | grep -q " halted " && echo 1 || echo 0)
+    else
+        result=$( cd "$OUT" && "$BIN/v32run" "$BIN/StandardBios.v32" "$n.v32" "$n.memc" "$addr" 1200 2> "$n.run.log" )
+        value=$(echo "$result" | sed -n 's/.*ram\[[0-9]*\]=\(-\{0,1\}[0-9]*\).*/\1/p')
+        halted=$(echo "$result" | sed -n 's/.*halted=\([01]\).*/\1/p')
+    fi
     ran=$((ran + 1))
     if [ "$halted" = "1" ] && [ "$value" = "0" ]; then
         echo "pass (emulator) $n"

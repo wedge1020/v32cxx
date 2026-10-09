@@ -1,9 +1,9 @@
 #pragma once
 // *****************************************************************************
-//  v32/string.hpp — pilot C++ layer over Vircon32's "string.h"
+//  v32/string.hpp — thin C++ layer over Vircon32's "string.h"
 //
-//  Same consumption model as v32/video.hpp: inlined by v32pp into the
-//  user's translation unit; the "#include" lines below are pass-through and
+//  Same consumption model as v32/video.hpp: inlined by v32c++'s own
+//  include resolution into the user's translation unit; the "#include" lines below are pass-through and
 //  resolved by the downstream Vircon32 C compiler.
 //
 //  Design notes for the one-word param/return constraint:

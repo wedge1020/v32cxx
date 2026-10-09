@@ -329,8 +329,11 @@ via an earlier Space Invaders port, per the codegen notes).
 
 ## Expected-gap table
 
-See the table embedded at the bottom of `gap_probes.cpp` — all 22 probes
-with their expected outcome class (hard error vs leak risk).
+See the table embedded at the bottom of `gap_probes.cpp`. As of
+20261009 all 26 probes are closed: each transpiles, and compiles with the
+real Vircon32 compiler (once given a `main`; the harness itself is built
+with `-c`). New gaps found while writing `spyvsspy.c` get a probe of
+their own there.
 
 ## BIOS texture usage
 

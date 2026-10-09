@@ -66,7 +66,7 @@ These constructs transpile cleanly today and make a good regression suite:
 The Space Invaders program that exercised all of the above lives in the "Space Invaders (v32c++ subset)" canvas, split into banner-marked sections: `si_assets.h`, `si_core.h`, `si_platform.h`, `si_entities.h`, `si_game.h`, `si_main.cpp`.
 
 
-## Status, October 2026
+## Status, October 2026 (rechecked 20261009)
 
 The game this report was written from (`demos/cxx/space_invaders`) has
 since been rewritten against the current transpiler, as a multi-file
@@ -74,6 +74,9 @@ project. Where the numbered gaps above stand now:
 
 | #   | Gap                                              | Now                                                                 |
 | --- | ------------------------------------------------ | ------------------------------------------------------------------- |
+| 1   | `static`                                         | Locals and file-scope `static` work (20261009 check); members don't |
+| 2   | `explicit`                                       | Still a syntax error                                                |
+| 3   | `unsigned`/`short`/`long`/`signed`               | Accepted as the one `int` type (`unsigned` warns)                   |
 | 4   | Class-nested enums                               | Still open: the game's enums are namespace-level                    |
 | 5   | Pure virtual `= 0`                               | Supported (tests/112sample.cpp); the slot gets a do-nothing body    |
 | 6   | Class forward declarations                       | Supported                                                           |
@@ -83,8 +86,11 @@ project. Where the numbered gaps above stand now:
 | 10  | `Vec2(x, y)` as an expression                    | Supported (tests/107sample.cpp)                                     |
 | 11, 12 | Multi-word structs assigned, passed, returned | Rewritten to travel by hidden pointer; `Vec2` is two plain ints     |
 | 13  | Array dimensions must be literals                | Named constants and constant expressions work                       |
+| 15  | Default parameter values                         | Supported, including for constructors (tests/81sample.cpp)          |
+| 16  | `friend class X;` after X is defined             | Works                                                               |
 
-Static members (#1) remain unsupported. Not in the original list, and
+Static members (#1) remain unsupported. The current, verified list of
+what is missing is the README's "Known limitations". Not in the original list, and
 closed along the way: file-scope objects are constructed at the start
 of `main()`; member arrays of objects are constructed and destroyed;
 a hand-written `BombList` is replaced by `std::vector`.

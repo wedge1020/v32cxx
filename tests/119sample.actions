@@ -1,0 +1,36 @@
+# tests/119sample.actions -- keyboard and mouse input for tests/119sample.cpp
+# Turned into tests/119sample.input by:
+#   tools/vircon32/v32io-script.py tests/119sample.actions > tests/119sample.input
+# (kbd lines may not carry trailing comments: '#' is typeable)
+connect 1 1
+connect 2 1
+# the standard BIOS hands over to the cartridge around frame 250
+at 320
+# phase 1: every event read with next_event()
+kbd 1 type Hi!
+kbd 1 tap capslock
+kbd 1 type aB
+kbd 1 tap capslock
+kbd 1 tap l
+kbd 1 tap l
+kbd 1 press lctrl
+kbd 1 tap c
+kbd 1 release lctrl
+# phase 2: presses read with read()
+kbd 1 tap f1
+kbd 1 type x\n
+kbd 1 tap f12
+# the mouse, on its own port
+mouse 2 move 50 20
+mouse 2 move -12 -10
+mouse 2 click left
+mouse 2 move 3 0
+mouse 2 down right
+mouse 2 up right
+mouse 2 move 400 0
+wait 5
+kbd 1 tap escape
+# phase 3: nobody reads -- 70 events into a 64-event queue
+wait 3
+kbd 1 type qwertyuiopqwertyuiopqwertyuiopqwerty
+wait 40

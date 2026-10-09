@@ -1,9 +1,9 @@
 #pragma once
 // *****************************************************************************
-//  v32/time.hpp — pilot C++ veneer over Vircon32's "time.h"
+//  v32/time.hpp — thin C++ veneer over Vircon32's "time.h"
 //
 //  Same consumption model as v32/video.hpp and v32/input.hpp: inlined by
-//  v32pp into the user's translation unit; the "#include" below is a
+//  v32c++'s own include resolution into the user's translation unit; the "#include" below is a
 //  pass-through line resolved by the downstream Vircon32 C compiler.
 //  Nothing here re-implements hardware access — every counter read and
 //  every frame wait goes through the C API (get_cycle_counter,

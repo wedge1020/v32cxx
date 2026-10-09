@@ -1,10 +1,10 @@
 #pragma once
 // *****************************************************************************
-//  v32/input.hpp — pilot C++ veneer over Vircon32's "input.h"
+//  v32/input.hpp — thin C++ veneer over Vircon32's "input.h"
 //
 //  Consumption model: same as v32/video.hpp — this file is C++ source in the
-//  v32c++ subset, inlined into the user's translation unit by v32pp (or the
-//  transpiler's own include expansion). The "#include" below is a pass-through
+//  v32c++ subset, inlined into the user's translation unit by the
+//  transpiler's own include expansion. The "#include" below is a pass-through
 //  line: v32c++ re-emits it verbatim, and the downstream Vircon32 C compiler
 //  resolves the real input.h that provides every function called here. Nothing
 //  here touches hardware registers — the C header's asm blocks do that.
@@ -21,6 +21,7 @@
 // *****************************************************************************
 
 #include "input.h"
+#include "video.hpp"     // v32::Point, for direction()
 
 namespace v32
 {
@@ -139,11 +140,8 @@ namespace v32
 
     // int-taking overload: Vircon32 enums ARE ints downstream, so a loop
     // iterating b = 0..6 should not need a cast to reach the dispatcher.
-    // NOTE: this also works around a current transpiler limit -- a C-style
-    // cast with a QUALIFIED target, (v32::Button)b, does not parse,
-    // because the cast production only recognizes a bare TYPE_NAME token
-    // after '(' (the lexer's feedback sees "v32" as an identifier, not a
-    // type). Use this overload or the enum constants, never that cast.
+    // (A cast with a qualified target, (v32::Button)b, also works now; it
+    // didn't when this overload was written.)
     int button_frames_held( int button )
     {
         switch( button )
@@ -168,11 +166,9 @@ namespace v32
     //  D-pad direction as a Point, instead of the C API's two out-params.
     //
     //  Same out-param idiom as v32::screen_center(Point*): never return a
-    //  struct by value. We reuse v32::Point from video.hpp — input.hpp does
-    //  NOT re-declare it; include order is video.hpp before input.hpp (same
-    //  one-definition situation the two headers already have via #pragma
-    //  once in the real preprocessor; v32pp's canonical-path dedupe handles
-    //  the double include in the meantime).
+    //  struct by value. We reuse v32::Point from video.hpp, which input.hpp
+    //  includes itself (#pragma once keeps it to one copy when the program
+    //  includes video.hpp too, in either order).
     //
     //  The C gamepad_direction() writes -1/0/1 into each axis, matching
     //  Point's int members exactly, so this is a pure forwarding wrapper.
