@@ -49,8 +49,8 @@ Four audiences, one project:
    dialect for compilation, minimizing the learning curve for getting the
    development process started.
 
-It is **not** an attempt to support all of C++ — see
-[Deliberately out of scope](#deliberately-out-of-scope).
+It is **not** an attempt to support  all of C++ — see [Deliberately out
+of scope](#deliberately-out-of-scope).
 
 ## Contents
 
