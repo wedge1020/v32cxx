@@ -76,13 +76,47 @@ Symbol *symtab_insert(SymTab *st, Scope *scope, const char *name, SymbolKind kin
     return sym;
 }
 
-Symbol *symtab_lookup_in(Scope *scope, const char *name) {
+static Symbol *lookup_own(Scope *scope, const char *name);
+
+Symbol *symtab_lookup_own(Scope *scope, const char *name) {
     if (scope == NULL) return NULL;
+    return lookup_own(scope, name);
+}
+
+static Symbol *lookup_own(Scope *scope, const char *name) {
     unsigned long idx = hash_str(name) % SYMTAB_BUCKETS;
     for (Symbol *s = scope->buckets[idx]; s != NULL; s = s->next) {
         if (strcmp(s->name, name) == 0) return s;
     }
     return NULL;
+}
+
+/* A scope's own names first, then those of the namespaces its using-
+ * directives name (depth-limited: two namespaces may use each other). */
+static Symbol *lookup_with_usings(Scope *scope, const char *name, int depth) {
+    if (scope == NULL) return NULL;
+    Symbol *found = lookup_own(scope, name);
+    if (found != NULL || depth > 8) return found;
+    for (int i = 0; i < scope->using_count; i++) {
+        found = lookup_with_usings(scope->usings[i], name, depth + 1);
+        if (found != NULL) return found;
+    }
+    return NULL;
+}
+
+Symbol *symtab_lookup_in(Scope *scope, const char *name) {
+    return lookup_with_usings(scope, name, 0);
+}
+
+void symtab_add_using(Scope *into, Scope *ns) {
+    if (into == NULL || ns == NULL || into == ns) return;
+    for (int i = 0; i < into->using_count; i++)
+        if (into->usings[i] == ns) return;
+    if (into->using_count == into->using_cap) {
+        into->using_cap = into->using_cap ? into->using_cap * 2 : 4;
+        into->usings = realloc(into->usings, sizeof(Scope *) * (size_t)into->using_cap);
+    }
+    into->usings[into->using_count++] = ns;
 }
 
 Symbol *symtab_lookup(SymTab *st, const char *name) {

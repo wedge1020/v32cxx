@@ -778,7 +778,9 @@ static char *param_signature_str(const AstList *params) {
     }
     char *acc = strdup("");
     for (int i = 0; i < params->count; i++) {
-        char *part = type_signature_str(params->items[i]->type);
+        const AstNode *prm = params->items[i];
+        char *part = (prm->str2 != NULL && strcmp(prm->str2, "...") == 0)
+                         ? strdup("va") : type_signature_str(prm->type);
         size_t len = strlen(acc) + strlen(part) + 2;
         char *joined = malloc(len);
         if (i == 0) {
@@ -863,6 +865,19 @@ static char *mangle(const char *class_name, const char *method_name, const AstLi
     const char *name_part = method_name;
     if (method_name[0] == '~') {
         name_part = "dtor";
+    } else if (strncmp(method_name, "operator ", 9) == 0) {
+        /* a conversion operator, "operator Vec2*": op_to_Vec2_ptr */
+        static char conv[300];
+        size_t k = 0;
+        k += (size_t)snprintf(conv, sizeof conv, "op_to");
+        for (const char *p = method_name + 8; *p && k + 5 < sizeof conv; p++) {
+            if (*p == ' ' || *p == ':') { if (conv[k - 1] != '_') conv[k++] = '_'; }
+            else if (*p == '*') { k += (size_t)snprintf(conv + k, sizeof conv - k, "%sptr", conv[k - 1] == '_' ? "" : "_"); }
+            else if (*p == '&') { k += (size_t)snprintf(conv + k, sizeof conv - k, "%sref", conv[k - 1] == '_' ? "" : "_"); }
+            else conv[k++] = *p;
+        }
+        conv[k] = '\0';
+        name_part = conv;
     } else if (strncmp(method_name, "operator", 8) == 0) {
         name_part = mangle_operator_symbol(method_name);
     }
@@ -1951,11 +1966,67 @@ static void ns_pop(char *scope) {
     else scope[0] = '\0';
 }
 
+/* ---- using-directives and using-declarations ------------------------------
+ *
+ * `using namespace v32;` and `using v32::draw;`, recorded by the parser as
+ * it reads them (sema_note_using). For an unqualified call, C++ treats the
+ * names a using-directive brings in as if declared in the nearest
+ * namespace enclosing both -- in practice the file scope -- so when the
+ * search reaches the global level, the used namespaces' functions (all of
+ * them for a directive, the one name for a declaration) join the global
+ * candidates: `using namespace v32;` plus a global `minimum(int, int)` of
+ * your own makes `minimum(1, 2)` ambiguous, as in C++. A scope nearer the
+ * call that declares the name still hides them all. (The lexer side -- a
+ * used namespace's TYPES -- is properly block-scoped by the symbol table;
+ * here a directive anywhere counts for the whole file after parsing.) */
+typedef struct UsingEntry {
+    char *ns;                /* "v32", "outer::inner" */
+    char *name;              /* a using-declaration's one name; NULL: all */
+    struct UsingEntry *next;
+} UsingEntry;
+static UsingEntry *g_usings = NULL;
+
+void sema_note_using(const char *ns, const char *name) {
+    for (UsingEntry *e = g_usings; e != NULL; e = e->next)
+        if (strcmp(e->ns, ns) == 0 &&
+            ((e->name == NULL && name == NULL) ||
+             (e->name != NULL && name != NULL && strcmp(e->name, name) == 0))) return;
+    UsingEntry *e = calloc(1, sizeof(UsingEntry));
+    e->ns = strdup(ns);
+    e->name = name ? strdup(name) : NULL;
+    e->next = g_usings;
+    g_usings = e;
+}
+
+/* The used namespaces' functions called `name`, not already in *out. */
+static int collect_free_through_usings(const char *name, AstNode ***out, int *out_count, int *out_cap) {
+    int added = 0;
+    for (UsingEntry *u = g_usings; u != NULL; u = u->next) {
+        if (u->name != NULL && strcmp(u->name, name) != 0) continue;
+        for (FreeFuncRegEntry *e = g_free_func_registry; e != NULL; e = e->next) {
+            if (strcmp(e->func->str1, name) != 0 || strcmp(e->ns, u->ns) != 0) continue;
+            int dup = 0;
+            for (int i = 0; i < *out_count; i++) if ((*out)[i] == e->func) dup = 1;
+            if (dup) continue;
+            if (*out_count == *out_cap) {
+                *out_cap = *out_cap ? *out_cap * 2 : 4;
+                *out = realloc(*out, sizeof(AstNode *) * (size_t)(*out_cap));
+            }
+            (*out)[(*out_count)++] = e->func;
+            added++;
+        }
+    }
+    return added;
+}
+
 /* UNQUALIFIED lookup -- see "namespace-aware free-function lookup" above. */
 void collect_free_function_candidates(const char *name, AstNode ***out, int *out_count, int *out_cap) {
     char *scope = strdup(g_lookup_ns);
     for (;;) {
-        if (collect_free_in_ns(name, scope, out, out_count, out_cap) > 0) {
+        int added = collect_free_in_ns(name, scope, out, out_count, out_cap);
+        if (scope[0] == '\0')
+            added += collect_free_through_usings(name, out, out_count, out_cap);
+        if (added > 0) {
             free(scope);
             return;
         }
@@ -2039,8 +2110,29 @@ static int min_required_args(const AstNode *func) {
     int n = 0;
     for (; n < func->list.count; n++) {
         if (func->list.items[n]->a != NULL) break;
+        if (func->list.items[n]->str2 != NULL && strcmp(func->list.items[n]->str2, "...") == 0) break;
     }
     return n;
+}
+
+/* A variadic function (`...`): the parser gives it a last parameter
+ * `int *__v32_va` marked "..." (see parser.y), which the extra arguments
+ * travel in (see rewrite_variadic_calls in cmode.c). sema_va_fixed: the
+ * number of parameters before the `...`, or -1 if `func` is not variadic. */
+int sema_va_fixed(const AstNode *func) {
+    if (func == NULL || func->list.count == 0) return -1;
+    const AstNode *last = func->list.items[func->list.count - 1];
+    return (last->str2 != NULL && strcmp(last->str2, "...") == 0) ? func->list.count - 1 : -1;
+}
+
+/* How many arguments a call may pass, and how many of them are matched
+ * against declared parameter types. */
+static int max_args(const AstNode *func) {
+    return sema_va_fixed(func) >= 0 ? 1 << 20 : func->list.count;
+}
+static int typed_params(const AstNode *func) {
+    int fixed = sema_va_fixed(func);
+    return fixed >= 0 ? fixed : func->list.count;
 }
 
 static int g_enum_promotes = 0; /* see type_matches_param */
@@ -2104,6 +2196,153 @@ AstNode *sema_converting_ctor(const AstNode *class_type, const AstNode *arg_type
 }
 
 
+/* ---- conversion operators -------------------------------------------------
+ *
+ * `operator int() const`, `operator bool()`, `operator Vec2*()`: a class
+ * converting ITSELF to another type -- the other direction from a
+ * converting constructor above. Declared like any method (parser.y names
+ * it "operator <type>", its type is the target), and called wherever an
+ * object of the class is used as a value of that type:
+ *
+ *   int n = counter;            initialization (and `n = counter;`)
+ *   return counter;             from a function returning int
+ *   if (handle) ...             conditions: if / while / for / ?: / ! / && / ||
+ *   (int)counter, static_cast<int>(counter), int(counter)
+ *   set_volume(counter)         an argument for a non-class parameter (also
+ *                               used to choose between overloads, after
+ *                               exact matches)
+ *   counter + 1, counter < 10   arithmetic and comparison with no operator
+ *                               overload for the class
+ *   table[counter]              an index
+ *
+ * The object `x` becomes `x.operator int()` in place: an ordinary method
+ * call from there on. The operator is chosen by its target type: an exact
+ * match (through const and references) first; otherwise, for an
+ * arithmetic target (int, float, bool, char, an enum), the class's ONE
+ * arithmetic conversion, if it has exactly one -- with `operator int()`
+ * alone, `float f = counter;` and `if (counter)` both use it. A condition
+ * also accepts a single pointer conversion. More than one candidate and no
+ * exact match is an error (ambiguous). Inherited conversions count. */
+
+static AstNode *strip_cv_ref(const AstNode *t) {
+    for (;;) {
+        while (t != NULL && t->kind == AST_CONST_TYPE) t = t->a;
+        t = resolve_typedef_chain(t);
+        if (t != NULL && t->kind == AST_REFERENCE_TYPE) { t = t->a; continue; }
+        return (AstNode *)t;
+    }
+}
+
+static int is_arith_type(const AstNode *t) {
+    t = strip_cv_ref(t);
+    if (t == NULL || t->kind != AST_IDENT || t->str1 == NULL) return 0;
+    return strcmp(t->str1, "int") == 0 || strcmp(t->str1, "float") == 0 ||
+           strcmp(t->str1, "bool") == 0 || strcmp(t->str1, "char") == 0 ||
+           sema_is_enum_type(t);
+}
+
+static int is_conversion_op(const AstNode *m) {
+    return m != NULL && m->str1 != NULL && strncmp(m->str1, "operator ", 9) == 0;
+}
+
+/* Every conversion operator of `cls` and its bases (a derived class's own
+ * hides a base's of the same name). */
+static int collect_conversion_ops(AstNode *cls, AstNode **out, int max) {
+    int n = 0;
+    for (AstNode *c = cls; c != NULL && n < max; ) {
+        ClassLayout *layout = (ClassLayout *)c->sema_info;
+        if (layout == NULL) break;
+        for (int i = 0; i < layout->methods.count && n < max; i++) {
+            AstNode *m = layout->methods.items[i];
+            if (!is_conversion_op(m)) continue;
+            int hidden = 0;
+            for (int k = 0; k < n; k++) if (strcmp(out[k]->str1, m->str1) == 0) hidden = 1;
+            if (!hidden) out[n++] = m;
+        }
+        c = layout->base_class_decl;
+    }
+    return n;
+}
+
+/* The conversion operator of `cls` that converts to `target` (see above),
+ * or NULL. `as_condition`: target is a condition's bool, where a pointer
+ * conversion also does. *ambiguous is set when several equally fit. */
+static AstNode *find_conversion_op(AstNode *cls, const AstNode *target, int as_condition, int *ambiguous) {
+    AstNode *ops[32];
+    int n = collect_conversion_ops(cls, ops, 32);
+    *ambiguous = 0;
+    if (n == 0) return NULL;
+    const AstNode *want = strip_cv_ref(target);
+    for (int i = 0; i < n; i++)
+        if (want != NULL && types_equal(strip_cv_ref(ops[i]->type), want)) return ops[i];
+    if (!is_arith_type(want) && !as_condition) return NULL;
+    AstNode *found = NULL;
+    int count = 0;
+    for (int i = 0; i < n; i++) {
+        const AstNode *t = strip_cv_ref(ops[i]->type);
+        int fits = is_arith_type(t) || (as_condition && t != NULL && t->kind == AST_POINTER_TYPE);
+        if (fits) { found = ops[i]; count++; }
+    }
+    if (count > 1) { *ambiguous = 1; return NULL; }
+    return found;
+}
+
+static void resolve_call(AstNode *call, AstNode *current_class, LocalVarType *locals);
+
+/* If *slot is an object (not a pointer) of a class with a conversion to
+ * `target`, rewrites it into the call `obj.operator T()`. Returns 1 if it
+ * did. A class-typed target of the object's own class (a copy) is left. */
+static int apply_conversion_op(AstNode **slot, const AstNode *target, int as_condition,
+                               AstNode *current_class, LocalVarType *locals) {
+    AstNode *e = *slot;
+    if (e == NULL || target == NULL) return 0;
+    const AstNode *et = infer_expr_type(e, current_class, locals);
+    if (et == NULL) return 0;
+    AstNode *cls = value_class_of(et, 1);
+    if (cls == NULL) return 0;
+    AstNode *target_cls = value_class_of(target, 1);
+    if (target_cls == cls) return 0;
+    int ambiguous = 0;
+    AstNode *op = find_conversion_op(cls, target, as_condition, &ambiguous);
+    if (ambiguous) {
+        sema_error(e->line, "ambiguous conversion: '%s' has more than one conversion "
+                   "operator that could be used here", cls->str1);
+        return 0;
+    }
+    if (op == NULL) return 0;
+    AstNode *mem = ast_new(AST_MEMBER, e->line);
+    mem->file = e->file;
+    mem->str1 = strdup(".");
+    mem->str2 = strdup(op->str1);
+    mem->a = e;
+    AstNode *call = ast_new(AST_CALL, e->line);
+    call->file = e->file;
+    call->a = mem;
+    call->list = ast_list_new();
+    resolve_call(call, current_class, locals);
+    *slot = call;
+    return 1;
+}
+
+/* A condition (if / while / for / ?: / ! / && / ||): to bool. */
+static void convert_condition(AstNode **slot, AstNode *current_class, LocalVarType *locals) {
+    static AstNode *bool_type = NULL;
+    if (bool_type == NULL) bool_type = ast_ident("bool", 0);
+    apply_conversion_op(slot, bool_type, 1, current_class, locals);
+}
+
+/* Does an object of type `arg_type` convert to `param_type` through a
+ * conversion operator? (Overload resolution's later pass.) */
+static int converts_by_operator(const AstNode *param_type, const AstNode *arg_type) {
+    AstNode *cls = value_class_of(arg_type, 1);
+    if (cls == NULL || value_class_of(param_type, 1) == cls) return 0;
+    const AstNode *pt = param_type;
+    while (pt != NULL && pt->kind == AST_CONST_TYPE) pt = pt->a;
+    if (pt != NULL && pt->kind == AST_REFERENCE_TYPE) return 0; /* needs an lvalue */
+    int ambiguous = 0;
+    return find_conversion_op(cls, param_type, 0, &ambiguous) != NULL;
+}
+
 static int type_matches_param(const AstNode *param_type, const AstNode *arg_type) {
     if (types_equal(param_type, arg_type)) return 1;
     const AstNode *p = param_type;
@@ -2135,6 +2374,9 @@ static int type_matches_param(const AstNode *param_type, const AstNode *arg_type
      * parameter's class can be constructed from (sema_converting_ctor).
      * convert_call_arguments then builds the object. */
     if (g_enum_promotes >= 2 && sema_converting_ctor(param_type, arg_type) != NULL) return 1;
+    /* ...or an object whose class converts itself to the parameter's type
+     * (a conversion operator, see above); convert_call_arguments calls it. */
+    if (g_enum_promotes >= 2 && converts_by_operator(param_type, arg_type)) return 1;
     /* Also second-pass only: `char` and `int` stand in for each other,
      * directly and as what a pointer points to. On Vircon32 they are the
      * same one-word type, and a string literal is typed `int *` here
@@ -2246,8 +2488,15 @@ static void convert_call_arguments(AstNode *site, AstNode **args, int arg_count,
     if (cr == NULL || cr->resolved_target == NULL || args == NULL) return;
     if (args != site->list.items) return; /* operator operands: matched exactly or not at all */
     AstNode *target = cr->resolved_target;
-    for (int i = 0; i < arg_count && i < target->list.count; i++) {
+    for (int i = 0; i < arg_count && i < typed_params(target); i++) {
         AstNode *ptype = target->list.items[i]->type;
+        /* an object passed where its class converts itself to the
+         * parameter's (non-reference) type: `set_volume(counter)` */
+        if (strip_cv_ref(ptype) != NULL &&
+            !(ptype->kind == AST_REFERENCE_TYPE || (ptype->kind == AST_CONST_TYPE && ptype->a != NULL &&
+                                                   ptype->a->kind == AST_REFERENCE_TYPE)) &&
+            apply_conversion_op(&args[i], ptype, 0, current_class, locals))
+            continue;
         if (value_class_of(ptype, 1) == NULL) continue;
         AstNode *atype = infer_expr_type(args[i], current_class, locals);
         if (atype == NULL || sema_converting_ctor(ptype, atype) == NULL) continue;
@@ -2280,11 +2529,48 @@ static void resolve_overload_generic_impl(AstNode *site, const char *name, AstNo
                                       AstNode **args, int arg_count,
                                       AstNode *current_class, LocalVarType *locals);
 
+/* The extra arguments of a call through `...` each travel as one word
+ * (see rewrite_variadic_calls in cmode.c): an int, char, bool, enum,
+ * pointer or float. A float's bits are stored as they are (va_arg(ap,
+ * float) reads them back), so the call records which ones are floats. An
+ * object cannot be passed this way -- by value it is several words, and
+ * C++ leaves passing one through `...` to the implementation. */
+static void check_variadic_arguments(AstNode *site, const char *name, AstNode **args, int arg_count,
+                                     AstNode *current_class, LocalVarType *locals) {
+    CallResolution *cr = (CallResolution *)site->sema_info;
+    if (cr == NULL || cr->resolved_target == NULL) return;
+    int fixed = sema_va_fixed(cr->resolved_target);
+    if (fixed < 0 || site->kind != AST_CALL) return;
+    cr->va_fixed = fixed + 1;
+    int extra = arg_count - fixed;
+    if (extra <= 0) return;
+    cr->va_float = calloc((size_t)extra, 1);
+    for (int i = 0; i < extra; i++) {
+        const AstNode *t = infer_expr_type(args[fixed + i], current_class, locals);
+        while (t != NULL && t->kind == AST_CONST_TYPE) t = t->a;
+        t = resolve_typedef_chain(t);
+        if (t != NULL && t->kind == AST_REFERENCE_TYPE) {
+            t = t->a;
+            while (t != NULL && t->kind == AST_CONST_TYPE) t = t->a;
+            t = resolve_typedef_chain(t);
+        }
+        if (t == NULL) continue;
+        if (t->kind == AST_IDENT && t->str1 != NULL && strcmp(t->str1, "float") == 0)
+            cr->va_float[i] = 1;
+        else if (value_class_of(t, 1) != NULL)
+            sema_error(args[fixed + i]->line,
+                       "argument %d of '%s' is an object of class '%s', which cannot be passed "
+                       "through `...` -- pass a pointer to it (or, for a std::string, its "
+                       "c_str())", fixed + i + 1, name, value_class_of(t, 1)->str1);
+    }
+}
+
 static void resolve_overload_generic(AstNode *site, const char *name, AstNode **candidates, int count,
                                       AstNode **args, int arg_count,
                                       AstNode *current_class, LocalVarType *locals) {
     resolve_overload_generic_impl(site, name, candidates, count, args, arg_count, current_class, locals);
     convert_call_arguments(site, args, arg_count, current_class, locals);
+    check_variadic_arguments(site, name, args, arg_count, current_class, locals);
 }
 
 static void resolve_overload_generic_impl(AstNode *site, const char *name, AstNode **candidates, int count,
@@ -2315,10 +2601,13 @@ static void resolve_overload_generic_impl(AstNode *site, const char *name, AstNo
          * fill_default_args splices in the missing trailing arguments'
          * default-value expressions later, once this CallResolution
          * exists for it to consult. */
-        if (arg_count <= candidates[0]->list.count && arg_count >= min_required_args(candidates[0])) {
+        if (arg_count <= max_args(candidates[0]) && arg_count >= min_required_args(candidates[0])) {
             CallResolution *cr = calloc(1, sizeof(CallResolution));
             cr->resolved_target = candidates[0];
             site->sema_info = cr;
+        } else if (sema_va_fixed(candidates[0]) >= 0) {
+            sema_error(site->line, "'%s' expects at least %d argument(s), but %d were given",
+                       name, min_required_args(candidates[0]), arg_count);
         } else if (min_required_args(candidates[0]) == candidates[0]->list.count) {
             /* No default parameters at all on this candidate -- keep the
              * exact, pre-existing error message unchanged rather than
@@ -2368,7 +2657,7 @@ static void resolve_overload_generic_impl(AstNode *site, const char *name, AstNo
         AstNode *arity_match = NULL;
         int arity_match_count = 0;
         for (int i = 0; i < count; i++) {
-            if (arg_count <= candidates[i]->list.count &&
+            if (arg_count <= max_args(candidates[i]) &&
                 arg_count >= min_required_args(candidates[i])) {
                 arity_match = candidates[i];
                 arity_match_count++;
@@ -2388,13 +2677,14 @@ static void resolve_overload_generic_impl(AstNode *site, const char *name, AstNo
              * #define constants and C API call results as arguments. */
             AstNode *typed_match = NULL;
             int typed_match_count = 0;
-            for (int pass = 0; pass < 3 && typed_match_count == 0; pass++) {
-            g_enum_promotes = pass;   /* exact types first, then enum -> int */
+            for (int pass = 0; pass < 4 && typed_match_count == 0; pass++) {
+            g_enum_promotes = pass < 3 ? pass : 2; /* exact types first, then enum -> int */
             for (int i = 0; i < count; i++) {
-                if (!(arg_count <= candidates[i]->list.count &&
+                if (!(arg_count <= max_args(candidates[i]) &&
                       arg_count >= min_required_args(candidates[i]))) continue;
+                if ((sema_va_fixed(candidates[i]) >= 0) != (pass == 3)) continue; /* `...` last */
                 int viable = 1;
-                for (int j = 0; j < arg_count && viable; j++) {
+                for (int j = 0; j < arg_count && j < typed_params(candidates[i]) && viable; j++) {
                     if (arg_types[j] == NULL) continue;
                     if (!type_matches_param(candidates[i]->list.items[j]->type, arg_types[j]))
                         viable = 0;
@@ -2432,10 +2722,13 @@ static void resolve_overload_generic_impl(AstNode *site, const char *name, AstNo
 
     AstNode *match = NULL;
     int match_count = 0;
-    for (int pass = 0; pass < 3 && match_count == 0; pass++) {
-    g_enum_promotes = pass;   /* exact types first, then enum -> int */
+    /* Pass 3 is for variadic candidates alone: as in C++, matching
+     * through `...` ranks below every other conversion. */
+    for (int pass = 0; pass < 4 && match_count == 0; pass++) {
+    g_enum_promotes = pass < 3 ? pass : 2;   /* exact types first, then enum -> int */
     for (int i = 0; i < count; i++) {
         AstNode *cand = candidates[i];
+        if ((sema_va_fixed(cand) >= 0) != (pass == 3)) continue;
         /* Same widened-arity-range check as the single-candidate branch
          * above (see min_required_args's own doc comment) -- a
          * candidate with trailing default parameters can match a call
@@ -2447,9 +2740,9 @@ static void resolve_overload_generic_impl(AstNode *site, const char *name, AstNo
          * comparing: its own default expression is what will fill it
          * in later, unconditionally, not something overload resolution
          * needs to weigh in on). */
-        if (arg_count > cand->list.count || arg_count < min_required_args(cand)) continue;
+        if (arg_count > max_args(cand) || arg_count < min_required_args(cand)) continue;
         int ok = 1;
-        for (int j = 0; j < arg_count; j++) {
+        for (int j = 0; j < arg_count && j < typed_params(cand); j++) {
             if (!type_matches_param(cand->list.items[j]->type, arg_types[j])) { ok = 0; break; }
         }
         if (ok) { match = cand; match_count++; }
@@ -3010,6 +3303,25 @@ static void deduce_auto(AstNode *decl, AstNode *current_class, LocalVarType *loc
     decl->type = result;
 }
 
+/* A binary operation no operator overload took: an object operand whose
+ * class converts itself converts to the other operand's (non-class) type,
+ * or to its one arithmetic type; `&&` / `||` convert both to bool. */
+static void convert_binop_operands(AstNode *n, AstNode *current_class, LocalVarType *locals) {
+    if (n->str1 == NULL) return;
+    if (strcmp(n->str1, "&&") == 0 || strcmp(n->str1, "||") == 0) {
+        convert_condition(&n->a, current_class, locals);
+        convert_condition(&n->b, current_class, locals);
+        return;
+    }
+    static AstNode *int_type = NULL;
+    if (int_type == NULL) int_type = ast_ident("int", 0);
+    const AstNode *lt = infer_expr_type(n->a, current_class, locals);
+    const AstNode *rt = infer_expr_type(n->b, current_class, locals);
+    int lc = (value_class_of(lt, 1) != NULL), rc = (value_class_of(rt, 1) != NULL);
+    if (lc) apply_conversion_op(&n->a, (!rc && rt != NULL) ? rt : int_type, 0, current_class, locals);
+    if (rc) apply_conversion_op(&n->b, (!lc && lt != NULL) ? lt : int_type, 0, current_class, locals);
+}
+
 /* `a = b;` between two objects of one class that declares operator= only
  * for OTHER right-hand types (std::string has `= const char *` and
  * `= char`): the implicit copy assignment, a plain copy of the object.
@@ -3071,6 +3383,7 @@ static void check_node(AstNode *n, AstNode *current_class, LocalVarType **locals
             break;
         case AST_IF:
             check_node(n->a, current_class, locals);
+            convert_condition(&n->a, current_class, *locals);
             check_body(&n->b, current_class, locals);
             check_body(&n->c, current_class, locals);
             break;
@@ -3086,6 +3399,7 @@ static void check_node(AstNode *n, AstNode *current_class, LocalVarType **locals
         case AST_WHILE:
             g_conv_in_loop_header++;
             check_node(n->a, current_class, locals);
+            convert_condition(&n->a, current_class, *locals);
             g_conv_in_loop_header--;
             g_sema_loop_depth++;
             check_body(&n->b, current_class, locals);
@@ -3095,6 +3409,7 @@ static void check_node(AstNode *n, AstNode *current_class, LocalVarType **locals
             check_node(n->a, current_class, locals);
             g_conv_in_loop_header++;
             check_node(n->b, current_class, locals);
+            convert_condition(&n->b, current_class, *locals);
             check_node(n->c, current_class, locals);
             g_conv_in_loop_header--;
             g_sema_loop_depth++;
@@ -3145,6 +3460,12 @@ static void check_node(AstNode *n, AstNode *current_class, LocalVarType **locals
             break;
         case AST_RETURN: {
             check_node(n->a, current_class, locals);
+            /* `return counter;` from a function returning int: through
+             * the class's conversion operator */
+            if (n->a != NULL && g_current_function_being_checked != NULL &&
+                value_class_of(g_current_function_being_checked->type, 1) == NULL)
+                apply_conversion_op(&n->a, g_current_function_being_checked->type, 0,
+                                    current_class, *locals);
             /* `return "abc";` from a function that returns an object by
              * value: build the object from the value, then return it --
              *     { std::string __v32_conv0("abc"); return __v32_conv0; }
@@ -3206,6 +3527,9 @@ static void check_node(AstNode *n, AstNode *current_class, LocalVarType **locals
                              "'static_cast' here");
             }
             check_node(n->a, current_class, locals);
+            /* `(int)counter`, `static_cast<bool>(handle)`, `float(counter)` */
+            if (n->type != NULL && value_class_of(n->type, 1) == NULL)
+                apply_conversion_op(&n->a, n->type, 0, current_class, *locals);
             break;
         case AST_SIZEOF:
             /* Only one of type/a is ever set (see AST_SIZEOF's own doc
@@ -3243,6 +3567,14 @@ static void check_node(AstNode *n, AstNode *current_class, LocalVarType **locals
             }
             check_node(n->a, current_class, locals); /* initializer, if any */
             if (type_has_auto(n->type)) deduce_auto(n, current_class, *locals);
+            /* `int n = counter;` -- through the class's conversion operator */
+            if (n->a != NULL && n->a->kind != AST_DIRECT_INIT && n->a->kind != AST_INIT_LIST &&
+                value_class_of(n->type, 1) == NULL) {
+                const AstNode *vt = n->type;
+                while (vt != NULL && vt->kind == AST_CONST_TYPE) vt = vt->a;
+                if (vt == NULL || vt->kind != AST_REFERENCE_TYPE)
+                    apply_conversion_op(&n->a, n->type, 0, current_class, *locals);
+            }
             /* `std::string name = "abc";` -- an object initialized from a
              * value that is not an object of its class is constructed
              * FROM that value: the same as `std::string name("abc");`. */
@@ -3267,17 +3599,28 @@ static void check_node(AstNode *n, AstNode *current_class, LocalVarType **locals
             check_node(n->a, current_class, locals);
             check_node(n->b, current_class, locals);
             resolve_operator_use(n, binop_operator_name(n->str1), n->a, n->b, current_class, *locals);
+            if (n->sema_info == NULL) convert_binop_operands(n, current_class, *locals);
             break;
         case AST_ASSIGN:
             check_node(n->a, current_class, locals);
             check_node(n->b, current_class, locals);
             if (is_plain_copy_assignment(n, current_class, *locals)) break;
             resolve_operator_use(n, assign_operator_name(n->str1), n->a, n->b, current_class, *locals);
+            /* `n = counter;`, `total += counter;` into a non-class lvalue */
+            if (n->sema_info == NULL && value_class_of(infer_expr_type(n->a, current_class, *locals), 1) == NULL) {
+                const AstNode *lt = infer_expr_type(n->a, current_class, *locals);
+                if (lt != NULL) apply_conversion_op(&n->b, lt, 0, current_class, *locals);
+            }
             break;
         case AST_SUBSCRIPT:
             check_node(n->a, current_class, locals);
             check_node(n->b, current_class, locals);
             resolve_operator_use(n, "operator[]", n->a, n->b, current_class, *locals);
+            if (n->sema_info == NULL) { /* `table[counter]` */
+                static AstNode *int_type = NULL;
+                if (int_type == NULL) int_type = ast_ident("int", 0);
+                apply_conversion_op(&n->b, int_type, 0, current_class, *locals);
+            }
             break;
         case AST_UNOP:
             check_node(n->a, current_class, locals);
@@ -3295,6 +3638,14 @@ static void check_node(AstNode *n, AstNode *current_class, LocalVarType **locals
                 if (pcr == NULL || pcr->resolved_target == NULL) n->b = NULL;
             } else {
                 resolve_operator_use(n, unop_operator_name(n->str1), n->a, NULL, current_class, *locals);
+                if (n->sema_info == NULL && n->str1 != NULL) {
+                    if (strcmp(n->str1, "!") == 0) convert_condition(&n->a, current_class, *locals);
+                    else if (strcmp(n->str1, "neg") == 0) {
+                        static AstNode *int_type = NULL;
+                        if (int_type == NULL) int_type = ast_ident("int", 0);
+                        apply_conversion_op(&n->a, int_type, 0, current_class, *locals);
+                    }
+                }
             }
             break;
         case AST_TERNARY:
@@ -3308,6 +3659,7 @@ static void check_node(AstNode *n, AstNode *current_class, LocalVarType **locals
              * false-branch can each independently contain a call or
              * other construct needing its own resolution. */
             check_node(n->a, current_class, locals);
+            convert_condition(&n->a, current_class, *locals);
             check_node(n->b, current_class, locals);
             check_node(n->c, current_class, locals);
             break;

@@ -251,6 +251,7 @@ ALNUM   [A-Za-z0-9_]
 "private"    { g_last_ident_sym = NULL; return PRIVATE; }
 "protected"  { g_last_ident_sym = NULL; return PROTECTED; }
 "namespace"  { g_last_ident_sym = NULL; return NAMESPACE; }
+"using"      { g_last_ident_sym = NULL; return USING; }   /* `using namespace std;` / `using std::x;`: the rules below */
 "typedef"    { g_last_ident_sym = NULL; return TYPEDEF; }
 "native"     { g_last_ident_sym = NULL; return NATIVE; }
 "return"     { g_last_ident_sym = NULL; return RETURN; }
@@ -677,11 +678,14 @@ static int c_mode_identifier(void) {
 
 static int scan_token(void) {
     int tok = yylex_raw();
-    if (!g_c_mode) return tok;
+    if (!g_c_mode) {
+        if (tok == IDENTIFIER && strcmp(yylval.str, "va_arg") == 0) return VA_ARG;
+        return tok;
+    }
     switch (tok) {
         case CLASS: case NEW: case DELETE: case THIS: case VIRTUAL:
         case OPERATOR: case FRIEND: case PUBLIC: case PRIVATE: case PROTECTED:
-        case NAMESPACE: case NULLPTR_KW: case STATIC_CAST: case DYNAMIC_CAST:
+        case NAMESPACE: case USING: case NULLPTR_KW: case STATIC_CAST: case DYNAMIC_CAST:
         case CONST_CAST: case REINTERPRET_CAST:
             return c_mode_identifier();
         case IDENTIFIER:

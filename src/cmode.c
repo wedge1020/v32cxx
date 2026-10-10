@@ -12,7 +12,8 @@
  *                               { ... }` is one function, not two overloads
  *    cmode_drop_unused_args     arguments passed to a function defined `f()`
  *    cmode_lower_main_params    main(argc, argv, envp)
- *    cmode_rewrite_variadics    calls of `...` functions
+ *    rewrite_variadic_calls     calls of `...` functions (C and C++,
+ *                               after sema)
  *
  *  See docs/C_INPUT.md for the whole picture, including what lower.c and
  *  codegen.c do for C input further down the pipeline.
@@ -23,6 +24,7 @@
 #include "ast.h"
 #include "driver.h"
 #include "cmode.h"
+#include "sema.h"
 
 /* ---- a small set of names -------------------------------------------------- */
 
@@ -492,10 +494,23 @@ static void va_expr(AstNode **slot, VaCtx *cx, AstList *pre) {
     va_expr(&n->d, cx, pre);
     for (int i = 0; i < n->list.count; i++) va_expr(&n->list.items[i], cx, pre);
 
-    if (n->kind != AST_CALL || n->a == NULL || n->a->kind != AST_IDENT) return;
-    int at = name_set_find(cx->variadic, n->a->str1);
-    if (at < 0) return;
-    int fixed = cx->variadic->values[at];
+    if (n->kind != AST_CALL || n->a == NULL) return;
+    /* Which calls go through `...`: sema says, having resolved each call
+     * to its function (overloads, methods, namespaces); for a C call it
+     * could not resolve (through a prototype it never saw), the name. */
+    const CallResolution *cr = (const CallResolution *)n->sema_info;
+    int fixed;
+    const unsigned char *is_float = NULL;
+    if (cr != NULL && cr->resolved_target != NULL) {
+        if (cr->va_fixed == 0) return;
+        fixed = cr->va_fixed - 1;
+        is_float = cr->va_float;
+    } else {
+        if (n->a->kind != AST_IDENT || cx->variadic == NULL) return;
+        int at = name_set_find(cx->variadic, n->a->str1);
+        if (at < 0) return;
+        fixed = cx->variadic->values[at];
+    }
     int extra = n->list.count - fixed;
     if (extra < 0) return;                      /* too few: sema reports it */
     int line = n->line;
@@ -513,9 +528,20 @@ static void va_expr(AstNode **slot, VaCtx *cx, AstList *pre) {
         AstNode *element = ast_new(AST_SUBSCRIPT, line);
         element->a = ast_ident(name, line);
         element->b = va_int_lit(i, line);
-        AstNode *value = ast_new(AST_CAST, line);
-        value->type = ast_ident("int", line);
-        value->a = n->list.items[fixed + i];
+        AstNode *value;
+        if (is_float != NULL && is_float[i]) {
+            /* a float keeps its bits: ((float *)tmp)[i] = value, which
+             * va_arg(ap, float) reads back as they are */
+            AstNode *as_floats = ast_new(AST_CAST, line);
+            as_floats->type = ast_wrap_pointer(ast_ident("float", line), line);
+            as_floats->a = element->a;
+            element->a = as_floats;
+            value = n->list.items[fixed + i];
+        } else {
+            value = ast_new(AST_CAST, line);
+            value->type = ast_ident("int", line);
+            value->a = n->list.items[fixed + i];
+        }
         AstNode *assign = ast_new(AST_ASSIGN, line);
         assign->str1 = strdup("=");
         assign->a = element;
@@ -630,29 +656,41 @@ static void va_stmt(AstNode **slot, VaCtx *cx, AstList *pre) {
     }
 }
 
-int cmode_rewrite_variadics(AstList *decls) {
-    NameSet variadic = { NULL, NULL, 0, 0 };
+static void va_function(AstNode *f, const NameSet *variadic, int *errors) {
+    if (f->kind != AST_FUNC_DEF || f->a == NULL || f->a->kind != AST_BLOCK) return;
+    VaCtx cx = { variadic, ast_list_new(), 0, 0, 0 };
+    va_stmt_list(&f->a->list, &cx);
+    *errors += cx.errors;
+    if (cx.temps.count == 0) return;
+    AstList body = cx.temps;
+    for (int s = 0; s < f->a->list.count; s++) ast_list_append(&body, f->a->list.items[s]);
+    f->a->list = body;
+}
+
+/* Every function body: at file scope, in namespaces, and the methods of
+ * classes (nested ones too). */
+static void va_decls(AstList *decls, const NameSet *variadic, int *errors) {
     for (int i = 0; i < decls->count; i++) {
-        AstNode *f = decls->items[i];
-        if (!is_function(f) || f->list.count == 0) continue;
-        AstNode *last = f->list.items[f->list.count - 1];
-        if (last->str2 != NULL && strcmp(last->str2, "...") == 0)
-            name_set_add(&variadic, f->str1, f->list.count - 1);
+        AstNode *d = decls->items[i];
+        if (d == NULL) continue;
+        if (d->kind == AST_NAMESPACE_DECL || d->kind == AST_CLASS_DECL) va_decls(&d->list, variadic, errors);
+        else va_function(d, variadic, errors);
     }
-    int errors = 0;
-    if (variadic.count > 0) {
+}
+
+int rewrite_variadic_calls(AstList *decls) {
+    NameSet variadic = { NULL, NULL, 0, 0 };
+    if (g_c_mode) {
         for (int i = 0; i < decls->count; i++) {
             AstNode *f = decls->items[i];
-            if (f->kind != AST_FUNC_DEF || f->a == NULL || f->a->kind != AST_BLOCK) continue;
-            VaCtx cx = { &variadic, ast_list_new(), 0, 0, 0 };
-            va_stmt_list(&f->a->list, &cx);
-            errors += cx.errors;
-            if (cx.temps.count == 0) continue;
-            AstList body = cx.temps;
-            for (int s = 0; s < f->a->list.count; s++) ast_list_append(&body, f->a->list.items[s]);
-            f->a->list = body;
+            if (!is_function(f) || f->list.count == 0) continue;
+            AstNode *last = f->list.items[f->list.count - 1];
+            if (last->str2 != NULL && strcmp(last->str2, "...") == 0)
+                name_set_add(&variadic, f->str1, f->list.count - 1);
         }
     }
+    int errors = 0;
+    va_decls(decls, g_c_mode ? &variadic : NULL, &errors);
     name_set_free(&variadic);
     return errors;
 }

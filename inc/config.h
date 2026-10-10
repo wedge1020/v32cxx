@@ -10,7 +10,7 @@
 // #ifndef guard  so it can be  overridden at build time  without editing
 // this file, e.g.:
 //
-//     make CFLAGS="-Wall -Wextra -g -Iinc -MMD -MP -DV32CXX_INCLUDE_PATH='\"/opt/v32c++/include\"'"
+//     make CFLAGS="-Wall -Wextra -g -Iinc -MMD -MP -DV32CXX_INCLUDE_PATH='\"/opt/v32tools/include/v32c++\"'"
 //
 // Modeled on the sibling v32lua project's own config.h.
 //
@@ -41,8 +41,15 @@
 // their  own header  copies without  installing anything  system-wide. A
 // directory that doesn't exist is simply skipped.
 //
+//
+// The installed layout groups the community tools  under v32tools/, next
+// to the  Vircon32 DevTools:  v32tools/include/v32c++/ holds  v32/ (the
+// C++ headers) and libc/ (the C library  for C input, which C input also
+// searches,  as  V32CXX_INCLUDE_PATH/libc);  v32lua's  includes  go  in
+// v32tools/include/v32lua/ alongside.  The CMake  build sets  this from
+// its install prefix; `make sysinstall` installs to this path.
 #ifndef V32CXX_INCLUDE_PATH
-    #define V32CXX_INCLUDE_PATH "/usr/local/Vircon32/v32c++/include"
+    #define V32CXX_INCLUDE_PATH "/usr/local/Vircon32/v32tools/include/v32c++"
 #endif
 
 #ifndef V32CXX_INCLUDE_ENV_VAR

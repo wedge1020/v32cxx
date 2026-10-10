@@ -2,8 +2,9 @@
 
 `v32c++ program.c` transpiles **C**, not C++. The file's extension decides:
 a name ending in `.c` turns on C mode for the whole run (`g_c_mode`,
-`inc/driver.h`). Everything in this document applies to C input only; a
-`.cpp` file is read exactly as before, and its output is unchanged.
+`inc/driver.h`). Everything in this document applies to C input only --
+except *Variadic functions*, which now work in C++ too -- and a `.cpp`
+file is otherwise read exactly as before.
 
 v32c++ always read most of C, as a subset of C++. C mode is the rest:
 the places where C and C++ disagree, where old C says less than C++
@@ -29,7 +30,7 @@ covers tags used without their keyword, which only Vircon32 C accepts.
 | `main(int argc, char **argv, char **envp)`, no return type | `void main(void)` whose first statements declare `argc` (1), `argv` (`{"program", NULL}`) and `envp` (`{NULL}`). | `parser.y`, `cmode.c` |
 | `new_item(sizeof (THING))` where the definition is `new_item()` | The arguments are dropped, with a warning. | `cmode.c` |
 | a program-defined `char **v32_main_args(int *argc, char **argv)` | Called at the top of `main` (`argv = v32_main_args(&argc, argv);`): lets a title screen choose the program's command line. | `cmode.c` |
-| `int printf(char *fmt, ...)`, `va_start`, `va_arg`, `va_end` | See *Variadic functions* below. | `parser.y`, `cmode.c` |
+| `int printf(char *fmt, ...)`, `va_start`, `va_arg`, `va_end` | See *Variadic functions* below. | `parser.y`, `sema.c`, `cmode.c` |
 | `char **argv`, `char **a, *b;` | Pointers to pointers (up to three levels). | `parser.y` |
 | `void (*func)()` as a parameter, `(void (*)())fn` | Function pointer parameters and casts. | `parser.y` |
 | `thing == ptr` with a `void *ptr` | Compared as addresses. | `lower.c` phase 12 |
@@ -79,8 +80,21 @@ Where the assignments go matters:
   arguments in a `do ... while` condition, in the step of a `for`, or in
   a branch of `?:`.
 
-Every extra argument is stored as one word (`(int)` cast), so a struct
-passed by value through `...` is not supported.
+Every extra argument is stored as one word: an `(int)` cast for ints,
+chars, enums and pointers, and for a float its bits as they are
+(`((float *)__v32_va_tmp0)[1] = speed;`), which `va_arg(ap, float)`
+reads back. (Before this was done, a float was converted to an int on
+the way in.) A struct passed by value through `...` is not supported.
+
+The same works in C++ (`#include <cstdarg>` or `<stdarg.h>`), in free
+functions, namespaces and methods. The rewrite runs after semantic
+analysis, which says which calls go through `...` -- resolving overloads
+(a `...` overload ranks after every other, so `pick(1)` takes
+`pick(int)` over `pick(int, ...)`), methods and namespaces, and marking
+float arguments -- and rejects an object passed through `...` (pass a
+pointer to it, or a string's `c_str()`). A variadic function's mangled
+name ends in `va`: `Log__print__char_ptr_va`. In C, a call sema could
+not resolve is still recognised by the function's name.
 
 ## The null pointer
 
@@ -106,7 +120,9 @@ curses, written in C and transpiled with the program:
 
     v32c++ -I <v32c++>/libc ... program.c
 
-with `#include <v32libc.c>` (and `<v32curses.c>`) once in the program's
+(no `-I` once v32c++ is installed: C input also searches the installed
+header directory's `libc/`, `/usr/local/Vircon32/v32tools/include/v32c++/libc`
+by default), with `#include <v32libc.c>` (and `<v32curses.c>`) once in the program's
 one file. See `libc/v32libc.h`.
 
 | Part | What it gives a C program |
@@ -154,4 +170,3 @@ entries stand for `rogue`, `rogue -r` and `rogue -s`.
 - K&R parameter declarations (`f(a, b) int a; char *b; { }`) are not
   parsed; prototype-style definitions are.
 - Bit-fields: as for C++ (a warning, or `--reject-bit-fields`).
-- Variadic functions are C input only; `...` in a `.cpp` file is an error.

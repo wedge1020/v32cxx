@@ -769,10 +769,11 @@ static int expand_file_mode(const char *path, FILE *out,
                 free(line);
                 continue;
             }
-            else if (target != NULL && g_c_mode && angle && strcmp(target, "stdarg.h") == 0) {
-                /* <stdarg.h>: there is no such file. The transpiler does
-                 * variadic functions itself (see lower.c); all the header
-                 * has to provide is the type name. */
+            else if (target != NULL && angle && (strcmp(target, "stdarg.h") == 0 ||
+                                                 (!g_c_mode && strcmp(target, "cstdarg") == 0))) {
+                /* <stdarg.h> / <cstdarg>: there is no such file. The
+                 * transpiler does variadic functions itself (see cmode.c);
+                 * all the header has to provide is the type name. */
                 static int stdarg_done = 0;
                 if (!harvest && !stdarg_done) {
                     stdarg_done = 1;

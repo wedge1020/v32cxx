@@ -18,7 +18,10 @@ void cmode_separate_tags(AstList *decls);
 void cmode_unify_prototypes(AstList *decls);
 void cmode_drop_unused_args(AstList *decls);
 void cmode_lower_main_params(AstList *decls);
-/* Returns the number of errors it reported. */
-int  cmode_rewrite_variadics(AstList *decls);
+/* Calls through `...` (C and C++): each call's extra arguments become an
+ * array of words, passed as the variadic function's last parameter. Runs
+ * after sema (which says which calls these are) and before lowering.
+ * Returns the number of errors reported. */
+int  rewrite_variadic_calls(AstList *decls);
 
 #endif /* CMODE_H */

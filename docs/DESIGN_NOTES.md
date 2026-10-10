@@ -7728,6 +7728,94 @@ in C++). tests/123.
   no-bison path, .tar.gz and .deb) and by cross-compiling for Windows with
   llvm-mingw (zero warnings, .zip layout); not run on Windows itself.
 
+## 20261009-dev (third pass): the v32tools layout, `using`, conversion operators, `...` in C++
+
+### Installing under v32tools/
+
+The installed files now go beside the other community tools rather than
+in a folder of their own: `<prefix>/Vircon32/v32tools/include/v32c++`
+(the `v32/` headers and `libc/`) and `.../v32tools/docs/v32c++` on
+Linux/macOS, with the binary and the man page still in `<prefix>/bin`
+and `<prefix>/share/man/man1`; on Windows everything is under
+`C:/Program Files/Vircon32/v32tools` (the binary in it, the headers in
+`include/v32c++`, documents and the man page in `docs/v32c++`). v32lua's
+headers are meant for `v32tools/include/v32lua`. CMakeLists.txt was
+rewritten after v32opt's (in-source builds refused, status summary, the
+same cpack set), with `V32CXX_INSTALL_{BINDIR,MANDIR,INCLUDEDIR,DOCDIR}`
+cache variables; `cmake/cmake_uninstall.cmake.in` replaces
+`cmake/uninstall.cmake.in` and removes the directories it leaves empty,
+up to `v32tools` (and `Vircon32` on Unix), never one another tool still
+uses. `V32CXX_INCLUDE_PATH` (inc/config.h) defaults to the new header
+directory, and C input now also searches its `libc/`, so an installed
+transpiler needs no `-I` for either. `make sysinstall` / `sysuninstall`
+use the same layout. Verified by installing and uninstalling on Linux
+(with a stand-in `v32tools/include/v32lua` that survives the uninstall)
+and by cross-building and packaging for Windows.
+
+### `using`
+
+`using namespace N;` was a parse error except for `std`. It is now a
+real directive: each symbol-table Scope keeps a list of the scopes it
+uses (`symtab_add_using`), and lookup through a scope also looks
+through those (`lookup_with_usings`, depth-limited against cycles), so
+types, typedefs, enums, variables and classes resolve -- at file scope
+or in a block, where it ends with the block. Functions are found by
+sema, not the symbol table, so the parser also reports each directive
+to sema (`sema_note_using`), and `collect_free_function_candidates`
+merges the used namespaces' functions into the candidates of an
+unqualified call -- they overload with the global ones, as in C++.
+`using N::name;` inserts an alias symbol for a type and a single-name
+entry for a function; `using Name = type;` is a typedef. In C input
+`using` stays an identifier. tests/125.
+
+### Conversion operators
+
+`operator int() const`, `operator bool()`, `operator Vec2 *()`: a new
+func_header alternative (`OPERATOR type_spec pointer_opt '(' ')'`) and
+an out-of-line one, named `"operator <type>"` with the target as the
+function's type, mangled `Class__op_to_<type>__void`. sema rewrites an
+object used as a value of another type into the call
+`obj.operator T()` (`apply_conversion_op`): initializers, `=` and
+compound assignment to a non-class lvalue, returns, conditions (if,
+while, for, ?:, !, &&, ||), casts, subscripts, unary minus, arithmetic
+and comparison no operator overload took, and arguments -- where
+overload resolution's last pass also counts a conversion
+(`converts_by_operator`). The choice is an exact target match first,
+else the class's single arithmetic conversion (so `operator int()`
+serves `if (c)` and `float f = c;`), else an "ambiguous conversion"
+error. A conversion is never used to bind a reference parameter. No new
+grammar conflicts. tests/126.
+
+### Variadic functions in C++
+
+`...` had been C-only only because the call rewrite (cmode.c) worked by
+function NAME before sema ran: fine for C, where a name is one function,
+but not for overloads, methods, or namespaces. The rewrite
+(`rewrite_variadic_calls`) now runs after sema for both languages and
+asks each call's CallResolution, which sema fills in: `va_fixed` (the
+parameters before `...`) and `va_float` (which extra arguments are
+floats). In sema a variadic candidate accepts any number of arguments
+past its fixed ones and is tried only in a pass after every other
+candidate (C++'s ranking: `pick(1)` prefers `pick(int)` to
+`pick(int, ...)`); an object passed through `...` is an error. The `...`
+parameter mangles as `va`. The rewrite also walks method bodies and
+namespaces now. `va_start`, `va_end` and `va_arg` are recognized in C++,
+and `<cstdarg>` / `<stdarg.h>` provide `va_list`. A C call sema could
+not resolve still falls back to the name.
+
+That turned up a fault in the C side too: every extra argument was
+stored with an `(int)` cast, which CONVERTS a float, so
+`va_arg(ap, float)` read back an int's bits. A float's bits are now
+stored as they are (`((float *)__v32_va_tmpN)[i] = value`). tests/127
+(C++), tests/128 (the C fix).
+
+### Also
+
+- `P a(1), b(2, 3);` -- only a declaration's first object could take
+  constructor arguments; the later declarators accept `(args)` too
+  (`more_plain_declarators`, sharing `pointer_opt` with the other
+  alternatives so the conflict count is unchanged). tests/129.
+
 ## Archived: the README's "Current status" section (20261005-dev)
 
 

@@ -66,74 +66,75 @@ extern int yydebug;
     PROTECTED = 272,               /* PROTECTED  */
     NAMESPACE = 273,               /* NAMESPACE  */
     TYPEDEF = 274,                 /* TYPEDEF  */
-    RETURN = 275,                  /* RETURN  */
-    IF = 276,                      /* IF  */
-    ELSE = 277,                    /* ELSE  */
-    DO = 278,                      /* DO  */
-    WHILE = 279,                   /* WHILE  */
-    FOR = 280,                     /* FOR  */
-    BREAK = 281,                   /* BREAK  */
-    CONTINUE = 282,                /* CONTINUE  */
-    GOTO = 283,                    /* GOTO  */
-    SWITCH = 284,                  /* SWITCH  */
-    CASE = 285,                    /* CASE  */
-    DEFAULT = 286,                 /* DEFAULT  */
-    INT_KW = 287,                  /* INT_KW  */
-    FLOAT_KW = 288,                /* FLOAT_KW  */
-    VOID_KW = 289,                 /* VOID_KW  */
-    BOOL_KW = 290,                 /* BOOL_KW  */
-    CHAR_KW = 291,                 /* CHAR_KW  */
-    NEW = 292,                     /* NEW  */
-    DELETE = 293,                  /* DELETE  */
-    THIS = 294,                    /* THIS  */
-    VIRTUAL = 295,                 /* VIRTUAL  */
-    TRUE_KW = 296,                 /* TRUE_KW  */
-    FALSE_KW = 297,                /* FALSE_KW  */
-    NULLPTR_KW = 298,              /* NULLPTR_KW  */
-    OPERATOR = 299,                /* OPERATOR  */
-    SIZEOF = 300,                  /* SIZEOF  */
-    CONST = 301,                   /* CONST  */
-    FRIEND = 302,                  /* FRIEND  */
-    STATIC_CAST = 303,             /* STATIC_CAST  */
-    DYNAMIC_CAST = 304,            /* DYNAMIC_CAST  */
-    CONST_CAST = 305,              /* CONST_CAST  */
-    REINTERPRET_CAST = 306,        /* REINTERPRET_CAST  */
-    COLONCOLON = 307,              /* COLONCOLON  */
-    ARROW = 308,                   /* ARROW  */
-    EQ = 309,                      /* EQ  */
-    NE = 310,                      /* NE  */
-    LE = 311,                      /* LE  */
-    GE = 312,                      /* GE  */
-    ANDAND = 313,                  /* ANDAND  */
-    OROR = 314,                    /* OROR  */
-    PLUSEQ = 315,                  /* PLUSEQ  */
-    MINUSEQ = 316,                 /* MINUSEQ  */
-    STAREQ = 317,                  /* STAREQ  */
-    SLASHEQ = 318,                 /* SLASHEQ  */
-    INC = 319,                     /* INC  */
-    DEC = 320,                     /* DEC  */
-    SHL = 321,                     /* SHL  */
-    SHR = 322,                     /* SHR  */
-    ANDEQ = 323,                   /* ANDEQ  */
-    OREQ = 324,                    /* OREQ  */
-    XOREQ = 325,                   /* XOREQ  */
-    SHLEQ = 326,                   /* SHLEQ  */
-    SHREQ = 327,                   /* SHREQ  */
-    ASM = 328,                     /* ASM  */
-    VOLATILE = 329,                /* VOLATILE  */
-    NATIVE = 330,                  /* NATIVE  */
-    MODEQ = 331,                   /* MODEQ  */
-    STATIC = 332,                  /* STATIC  */
-    STD_ARRAY = 333,               /* STD_ARRAY  */
-    STD_VECTOR = 334,              /* STD_VECTOR  */
-    ELLIPSIS = 335,                /* ELLIPSIS  */
-    ANON_STRUCT = 336,             /* ANON_STRUCT  */
-    ANON_UNION = 337,              /* ANON_UNION  */
-    ANON_ENUM = 338,               /* ANON_ENUM  */
-    EXTERN = 339,                  /* EXTERN  */
-    VA_ARG = 340,                  /* VA_ARG  */
-    SIZEOF_TYPE_PREC = 341,        /* SIZEOF_TYPE_PREC  */
-    LOWER_THAN_ELSE = 342          /* LOWER_THAN_ELSE  */
+    USING = 275,                   /* USING  */
+    RETURN = 276,                  /* RETURN  */
+    IF = 277,                      /* IF  */
+    ELSE = 278,                    /* ELSE  */
+    DO = 279,                      /* DO  */
+    WHILE = 280,                   /* WHILE  */
+    FOR = 281,                     /* FOR  */
+    BREAK = 282,                   /* BREAK  */
+    CONTINUE = 283,                /* CONTINUE  */
+    GOTO = 284,                    /* GOTO  */
+    SWITCH = 285,                  /* SWITCH  */
+    CASE = 286,                    /* CASE  */
+    DEFAULT = 287,                 /* DEFAULT  */
+    INT_KW = 288,                  /* INT_KW  */
+    FLOAT_KW = 289,                /* FLOAT_KW  */
+    VOID_KW = 290,                 /* VOID_KW  */
+    BOOL_KW = 291,                 /* BOOL_KW  */
+    CHAR_KW = 292,                 /* CHAR_KW  */
+    NEW = 293,                     /* NEW  */
+    DELETE = 294,                  /* DELETE  */
+    THIS = 295,                    /* THIS  */
+    VIRTUAL = 296,                 /* VIRTUAL  */
+    TRUE_KW = 297,                 /* TRUE_KW  */
+    FALSE_KW = 298,                /* FALSE_KW  */
+    NULLPTR_KW = 299,              /* NULLPTR_KW  */
+    OPERATOR = 300,                /* OPERATOR  */
+    SIZEOF = 301,                  /* SIZEOF  */
+    CONST = 302,                   /* CONST  */
+    FRIEND = 303,                  /* FRIEND  */
+    STATIC_CAST = 304,             /* STATIC_CAST  */
+    DYNAMIC_CAST = 305,            /* DYNAMIC_CAST  */
+    CONST_CAST = 306,              /* CONST_CAST  */
+    REINTERPRET_CAST = 307,        /* REINTERPRET_CAST  */
+    COLONCOLON = 308,              /* COLONCOLON  */
+    ARROW = 309,                   /* ARROW  */
+    EQ = 310,                      /* EQ  */
+    NE = 311,                      /* NE  */
+    LE = 312,                      /* LE  */
+    GE = 313,                      /* GE  */
+    ANDAND = 314,                  /* ANDAND  */
+    OROR = 315,                    /* OROR  */
+    PLUSEQ = 316,                  /* PLUSEQ  */
+    MINUSEQ = 317,                 /* MINUSEQ  */
+    STAREQ = 318,                  /* STAREQ  */
+    SLASHEQ = 319,                 /* SLASHEQ  */
+    INC = 320,                     /* INC  */
+    DEC = 321,                     /* DEC  */
+    SHL = 322,                     /* SHL  */
+    SHR = 323,                     /* SHR  */
+    ANDEQ = 324,                   /* ANDEQ  */
+    OREQ = 325,                    /* OREQ  */
+    XOREQ = 326,                   /* XOREQ  */
+    SHLEQ = 327,                   /* SHLEQ  */
+    SHREQ = 328,                   /* SHREQ  */
+    ASM = 329,                     /* ASM  */
+    VOLATILE = 330,                /* VOLATILE  */
+    NATIVE = 331,                  /* NATIVE  */
+    MODEQ = 332,                   /* MODEQ  */
+    STATIC = 333,                  /* STATIC  */
+    STD_ARRAY = 334,               /* STD_ARRAY  */
+    STD_VECTOR = 335,              /* STD_VECTOR  */
+    ELLIPSIS = 336,                /* ELLIPSIS  */
+    ANON_STRUCT = 337,             /* ANON_STRUCT  */
+    ANON_UNION = 338,              /* ANON_UNION  */
+    ANON_ENUM = 339,               /* ANON_ENUM  */
+    EXTERN = 340,                  /* EXTERN  */
+    VA_ARG = 341,                  /* VA_ARG  */
+    SIZEOF_TYPE_PREC = 342,        /* SIZEOF_TYPE_PREC  */
+    LOWER_THAN_ELSE = 343          /* LOWER_THAN_ELSE  */
   };
   typedef enum yytokentype yytoken_kind_t;
 #endif
@@ -142,7 +143,7 @@ extern int yydebug;
 #if ! defined YYSTYPE && ! defined YYSTYPE_IS_DECLARED
 union YYSTYPE
 {
-#line 671 "src/parser.y"
+#line 763 "src/parser.y"
 
     AstNode *node;
     AstList list;
@@ -158,7 +159,7 @@ union YYSTYPE
      * on. */
     struct { int ival; double fval; char *macro; } lit;
 
-#line 162 "inc/parser.h"
+#line 163 "inc/parser.h"
 
 };
 typedef union YYSTYPE YYSTYPE;

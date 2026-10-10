@@ -217,6 +217,11 @@ test: all | $(OUT_DIR)
 	$(BIN)  -vvv    -o out/122program.c tests/122sample.cpp 1> out/122sample.txt 2>&1
 	$(BIN)  -vvv    -o out/123program.c tests/123sample.cpp 1> out/123sample.txt 2>&1
 	$(BIN)  -vvv    -o out/124program.c tests/124sample.cpp 1> out/124sample.txt 2>&1
+	$(BIN)  -vvv -I . -o out/125program.c tests/125sample.cpp 1> out/125sample.txt 2>&1
+	$(BIN)  -vvv    -o out/126program.c tests/126sample.cpp 1> out/126sample.txt 2>&1
+	$(BIN)  -vvv    -o out/127program.c tests/127sample.cpp 1> out/127sample.txt 2>&1
+	$(BIN)  -vvv    -o out/128program.c tests/128sample.c   1> out/128sample.txt 2>&1
+	$(BIN)  -vvv    -o out/129program.c tests/129sample.cpp 1> out/129sample.txt 2>&1
 # `-vvv` (this project's own verbosity flag, a later round -- see
 # main.c) is passed to every sample specifically so `make test`'s own
 # output still captures the full AST/semantic-analysis/lowering dumps
@@ -323,14 +328,15 @@ uninstall:
 	rm -f $(HOME)/bin/v32c++
 
 # System-wide install: the binary to /usr/local/bin, the man page to
-# /usr/local/share/man/man1, the v32/ C++ headers to V32CXX_INCLUDE_PATH
-# (inc/config.h; /usr/local/Vircon32/v32c++/include by default), so
-# <v32/math.hpp> resolves from any directory with no -I, and the C library
-# for C input next to them (/usr/local/Vircon32/v32c++/libc). The same
-# layout `cmake --install` produces with its default prefix (see
-# CMakeLists.txt). May need sudo. `make sysuninstall` removes it again.
-LIBCDIR := $(patsubst %/include,%/libc,$(INCPATH))
-V32ROOT := $(patsubst %/include,%,$(INCPATH))
+# /usr/local/share/man/man1, and, under V32CXX_INCLUDE_PATH (inc/config.h;
+# /usr/local/Vircon32/v32tools/include/v32c++ by default), the v32/ C++
+# headers -- so <v32/math.hpp> resolves from any directory with no -I --
+# and libc/, the C library C input finds there with no -I either. The
+# community tools share v32tools/ (v32lua's includes go in
+# v32tools/include/v32lua). The same layout `cmake --install` produces
+# with its default prefix (see CMakeLists.txt), minus the documents. May
+# need sudo. `make sysuninstall` removes it again.
+LIBCDIR := $(INCPATH)/libc
 MANDIR  := /usr/local/share/man/man1
 
 sysinstall: all
@@ -343,13 +349,20 @@ sysinstall: all
 	@echo "Installed v32c++ to /usr/local/bin, its man page to $(MANDIR),"
 	@echo "the C++ headers to $(INCPATH)/v32 and the C library to $(LIBCDIR)"
 
+# Removes exactly what sysinstall put down, then each directory that leaves
+# empty -- v32tools/include, v32tools and Vircon32 only if nothing else
+# (v32opt, v32lua, the DevTools) is in them.
 sysuninstall:
 	rm -f /usr/local/bin/v32c++ $(MANDIR)/v32c++.1
 	rm -f $(addprefix $(INCPATH)/v32/,$(notdir $(wildcard v32/*.hpp)))
 	rm -f $(addprefix $(LIBCDIR)/,$(notdir $(wildcard libc/*.h libc/*.c)))
 	rm -f $(addprefix $(LIBCDIR)/sys/,$(notdir $(wildcard libc/sys/*.h)))
-	-rmdir $(INCPATH)/v32 $(INCPATH) $(LIBCDIR)/sys $(LIBCDIR) $(V32ROOT) $(dir $(V32ROOT)) 2>/dev/null
-	@# (the last two only if empty: the Vircon32 DevTools may share the parent)
+	-@for d in $(INCPATH)/v32 $(LIBCDIR)/sys $(LIBCDIR) $(INCPATH) \
+	          $(patsubst %/,%,$(dir $(INCPATH))) \
+	          $(patsubst %/,%,$(dir $(patsubst %/,%,$(dir $(INCPATH))))) \
+	          $(patsubst %/,%,$(dir $(patsubst %/,%,$(dir $(patsubst %/,%,$(dir $(INCPATH))))))); do \
+	    rmdir "$$d" 2>/dev/null && echo "removed empty $$d"; \
+	done; true
 
 put: clean
 	@mkdir -p put

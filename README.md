@@ -101,6 +101,15 @@ of scope](#deliberately-out-of-scope).
   `operator++()` / `operator++(int)`), as members or free functions, used
   with natural syntax (`a + b`, `list[i]->draw()`, `++it`, `it++`).
 
+- **Conversion operators**  (`operator int()  const`, `operator  bool()`,
+  `operator Vec2  *()`), inline  or out  of line,  inherited too:  called
+  wherever the object is  used as a value of that  type — an initializer,
+  an assignment, a return, a  condition (`if (handle)`, `!handle`, `&&`),
+  a cast, an  argument (also choosing between  overloads), arithmetic and
+  comparison, an index. An `operator int()`  alone also serves a float or
+  bool target;  with several candidates and  no exact one, it  reports an
+  ambiguity.
+
 - **`override` and `final`** on member functions, and `final` on a class,
   checked  as C++  checks  them (an  `override`  that overrides  nothing,
   overriding a  `final` function  and deriving from  a `final`  class are
@@ -123,8 +132,11 @@ of scope](#deliberately-out-of-scope).
 
 ### The rest of the language
 
-- Namespaces (nested, qualified calls,  namespaced C names for functions:
-  `v32::draw(int,int,int)` becomes `v32__draw__int_int_int`).
+- Namespaces (nested, qualified calls, namespaced  C names for functions:
+  `v32::draw(int,int,int)`    becomes   `v32__draw__int_int_int`),    and
+  `using`: `using  namespace v32;` at  file scope  or in a  block, `using
+  v32::Keyboard;`, and `using  Points = int;`. Functions  found through a
+  directive overload with the ones in scope, as in C++.
 
 - `auto`  locals  and  range-based   `for`  (over  arrays,  `std::array`,
   `std::vector`, and any class with `begin()`/`end()`).
@@ -135,17 +147,24 @@ of scope](#deliberately-out-of-scope).
   per   element   type.    See   [`docs/STRING.md`](docs/STRING.md)   and
   [`docs/GENERICS.md`](docs/GENERICS.md).
 
-- The  whole   C  statement   and  expression  language:   `switch`  with
-  real  fall-through,  `do`/`while`,  `goto`, the  ternary  operator  and
-  the  comma  operator   (both  rewritten  for  Vircon32   C,  which  has
-  neither),  bitwise  operators  at  C's  precedence,  `sizeof`,  C-style
-  and  C++-style  casts  (`dynamic_cast`  with a  warning:  there  is  no
-  RTTI),  `enum`,  `union`,  `typedef`,  function  pointers  in  standard
-  **or** Vircon32  declarator syntax  (output is  always what  the target
-  needs), multi-dimensional arrays  with constant-expression sizes, brace
-  initializers,  hex/octal/  binary  literals with  suffixes,  `nullptr`,
-  adjacent  string  concatenation,  multiple  declarators  (`int  a,  *b,
-  c[4];`).
+- The  whole C  statement  and expression  language:  `switch` with  real
+  fall-through, `do`/`while`, `goto`, the ternary  operator and the comma
+  operator (both  rewritten for Vircon32  C, which has  neither), bitwise
+  operators  at C's  precedence, `sizeof`,  C-style  and C++-style  casts
+  (`dynamic_cast` with  a warning:  there is  no RTTI),  `enum`, `union`,
+  `typedef`,  function pointers  in standard  **or** Vircon32  declarator
+  syntax  (output is  always what  the  target needs),  multi-dimensional
+  arrays with  constant-expression sizes, brace  initializers, hex/octal/
+  binary   literals    with   suffixes,   `nullptr`,    adjacent   string
+  concatenation, multiple declarators  (`int a, *b, c[4];`,  and objects:
+  `Point a(1, 2), b(3, 4);`).
+
+- **Variadic functions**: `...` with  `va_list`, `va_start`, `va_arg` and
+  `va_end` from `<cstdarg>`,  in free functions, namespaces  and methods,
+  as in C (see [`docs/C_INPUT.md`](docs/C_INPUT.md)). Each extra argument
+  is one word: an int, char, bool, enum,  pointer or float — an object is
+  an error  (pass a pointer, or  a string's `c_str()`). A  `...` overload
+  ranks after every other, as in C++.
 
 - `static` locals  (moved to file  scope under unique  names), file-scope
   `static`,   `extern`,  `volatile`,   `inline`,  `register`   (accepted;
@@ -172,10 +191,10 @@ Before parsing, v32c++ does what a C++ preprocessor would:
 - `#include`  of  `.hpp`/`.cpp`  files   is  inlined,  recursively,  with
   `#pragma once`.  Quote form looks next  to the including file,  then in
   each `-I` directory, then the current directory; angle form only in the
-  `-I`  directories. Both  then fall  back to  `$V32CXX_INCLUDE` and  the
-  installed  header  directory  (`/usr/local/Vircon32/v32c++/include`  by
-  default, [`inc/config.h`](inc/config.h)). Multi-file  projects work the
-  usual way, and errors name the file they are in.
+  `-I` directories. Both  then fall back to `$V32CXX_INCLUDE`  and to the
+  installed headers in `/usr/local/Vircon32/v32tools/include/v32c++` (the
+  default,  set in  [`inc/config.h`](inc/config.h)). Multi-file  projects
+  work the usual way, and errors name the file they are in.
 - `#define`/`#undef`   (object-like   and   function-like,   `#`,   `##`,
   `__VA_ARGS__`),   `-D`/`-U`,   predefined   `__V32CXX__`,   `__FILE__`,
   `__LINE__`;  `#if`/`#ifdef`/`#elif`/...   with  `defined()`;  `#error`,
@@ -275,9 +294,8 @@ Checked against  the current  transpiler and  the real  Vircon32 compiler
 
 - `static` class members.
 
-- `enum  class`,  `constexpr`,  lambdas,  `using  namespace`,  `mutable`,
-  conversion operators (`operator int()`), nested classes and class-scope
-  enums, stacked declarators like `T *&`.
+- `enum  class`,  `constexpr`,  lambdas, `mutable`,  nested  classes  and
+  class-scope enums, stacked declarators like `T *&`.
 
 - A two-dimensional array parameter (`void f(int g[4][4])`).
 - Templates, exceptions, RTTI and multiple inheritance: never (see below)
@@ -573,7 +591,7 @@ demos/          example programs, C (demos/c) and C++ (demos/cxx)
 docs/           the documents listed above
 man/            v32c++.1, the manual page (`man ./man/v32c++.1`)
 CMakeLists.txt  the CMake build, install and packaging (see "With CMake")
-cmake/          uninstall.cmake.in, for CMake's `uninstall` target
+cmake/          cmake_uninstall.cmake.in, for CMake's `uninstall` target
 tools/
   embed-header.sh   regenerates src/stdstring.c from lib/string
   vircon32/         build-tools.sh (the real Vircon32 toolchain and the
@@ -583,16 +601,19 @@ tools/
 
 ## Installing
 
-A system-wide install puts everything  where a Vircon32 setup expects it,
-next to the DevTools:
+A system-wide install puts everything where  a Vircon32 setup expects it.
+The binary and  the man page go  where commands and manual  pages go; the
+headers, the C library and the documents go under `v32tools/`, the folder
+the  community  tools share  (v32opt's  files,  and v32lua's  headers  in
+`v32tools/include/v32lua`), next to the official `DevTools/`:
 
 | | Linux / macOS | Windows (CMake) |
 | --- | --- | --- |
-| transpiler | `/usr/local/bin/v32c++` | `C:\Program Files\Vircon32\v32c++\v32c++.exe` |
-| man page | `/usr/local/share/man/man1/v32c++.1` | `...\v32c++\doc\v32c++.1` |
-| C++ headers (`v32/`) | `/usr/local/Vircon32/v32c++/include/v32` | `...\v32c++\include\v32` |
-| C library (`libc/`) | `/usr/local/Vircon32/v32c++/libc` | `...\v32c++\libc` |
-| documentation | `/usr/local/share/doc/v32c++` (CMake) | `...\v32c++\doc` |
+| transpiler | `/usr/local/bin/v32c++` | `C:\Program Files\Vircon32\v32tools\v32c++.exe` |
+| man page | `/usr/local/share/man/man1/v32c++.1` | `...\v32tools\docs\v32c++\v32c++.1` |
+| C++ headers (`v32/`) | `/usr/local/Vircon32/v32tools/include/v32c++/v32` | `...\v32tools\include\v32c++\v32` |
+| C library (`libc/`) | `/usr/local/Vircon32/v32tools/include/v32c++/libc` | `...\v32tools\include\v32c++\libc` |
+| documentation | `/usr/local/Vircon32/v32tools/docs/v32c++` (CMake) | `...\v32tools\docs\v32c++` |
 
 Either build does it:
 
@@ -606,12 +627,14 @@ sudo cmake --build build --target uninstall   #   or C:/Program Files/Vircon32)
 
 The  header  directory   is  compiled  into  the   transpiler,  so  after
 installing,  `#include  <v32/video.hpp>` (or  `<v32/keyboard.hpp>`,  ...)
-works   from   any  directory   without   `-I`.   With  CMake,   pick   a
-different   location  at   configure   time  (`cmake   -S   .  -B   build
--DCMAKE_INSTALL_PREFIX=/opt/vircon32`)  and  the   transpiler  will  look
-there. For  C input,  add `-I`  with the  installed `libc`  directory. On
-Windows, add  `C:\Program Files\Vircon32\v32c++`  to your `PATH`,  as for
-the DevTools.
+works from  any directory without `-I`,  and C input finds  the installed
+`libc` the same  way. With CMake, pick a different  location at configure
+time (`cmake -S . -B build -DCMAKE_INSTALL_PREFIX=/opt/vircon32`) and the
+transpiler  will   look  there;   `-DV32CXX_INSTALL_INCLUDEDIR=...`  (and
+`BINDIR`, `MANDIR`, `DOCDIR`)  move one part alone.  Uninstalling removes
+only  v32c++'s own  files, and  then `v32tools/`  (and on  Linux /  macOS
+`Vircon32/`)  only  if nothing  else  is  left  in  it. On  Windows,  add
+`C:\Program Files\Vircon32\v32tools` to your `PATH`, as for the DevTools.
 
 `make  install`  / `make  uninstall`  instead  copy  just the  binary  to
 `~/bin`.  Installation  defaults  for  the  Makefile  build  (the  header
@@ -620,7 +643,7 @@ directory,  the  environment  variable  names,  a  few  limits)  live  in
 it when building:
 
 ```sh
-make CFLAGS="-Wall -Wextra -g -Iinc -MMD -MP -DV32CXX_INCLUDE_PATH='\"/opt/v32c++/include\"'"
+make CFLAGS="-Wall -Wextra -g -Iinc -MMD -MP -DV32CXX_INCLUDE_PATH='\"/opt/v32tools/include/v32c++\"'"
 ```
 
 ## Versioning

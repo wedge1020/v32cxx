@@ -50,6 +50,8 @@
 #include "generic.h"
 #include "cmode.h"
 
+void sema_note_using(const char *ns, const char *name);   /* sema.c */
+
 /* Expand a string literal's stored inner text (quotes already stripped
  * by lexer.l's STRING_LITERAL rule; escape sequences still raw
  * backslash pairs -- the lexer's own comment on that rule flags
@@ -379,6 +381,96 @@ static AstNode *decl_group_new(int line) {
     return ast_new(AST_VAR_DECL_GROUP, line);
 }
 
+/* The name a conversion operator is stored under: "operator " + its target
+ * type as written (`operator int`, `operator Vec2*`, `operator const
+ * char*`) -- unique per target type, which is all that out-of-line
+ * matching and sema's lookup need; sema.c mangles it to C (op_to_...). */
+static void conversion_type_text(const AstNode *t, char *buf, size_t size) {
+    size_t used = strlen(buf);
+    if (t == NULL || used + 1 >= size) return;
+    switch (t->kind) {
+        case AST_CONST_TYPE:
+            strncat(buf, "const ", size - used - 1);
+            conversion_type_text(t->a, buf, size);
+            break;
+        case AST_POINTER_TYPE:
+            conversion_type_text(t->a, buf, size);
+            strncat(buf, "*", size - strlen(buf) - 1);
+            break;
+        case AST_REFERENCE_TYPE:
+            conversion_type_text(t->a, buf, size);
+            strncat(buf, "&", size - strlen(buf) - 1);
+            break;
+        case AST_QUALIFIED_ID:
+            for (int i = 0; i < t->list.count; i++) {
+                if (i > 0) strncat(buf, "::", size - strlen(buf) - 1);
+                strncat(buf, t->list.items[i]->str1, size - strlen(buf) - 1);
+            }
+            break;
+        default:
+            if (t->str1 != NULL) strncat(buf, t->str1, size - used - 1);
+            break;
+    }
+}
+
+static char *conversion_operator_name(const AstNode *type) {
+    char buf[256] = "operator ";
+    conversion_type_text(type, buf, sizeof buf);
+    return strdup(buf);
+}
+
+/* The namespace a `using` names (`outer::inner`), looked up from the
+ * current scope outward for its first component, then member by member.
+ * NULL (after an error message) if a component isn't a namespace. */
+static Symbol *using_resolve_namespace(const AstList *path, int line) {
+    Symbol *ns = NULL;
+    for (int i = 0; i < path->count; i++) {
+        const char *part = path->items[i]->str1;
+        Symbol *s = (i == 0) ? symtab_lookup(g_symtab, part)
+                             : symtab_lookup_in(ns->inner_scope, part);
+        if (s == NULL || s->kind != SYM_NAMESPACE || s->inner_scope == NULL) {
+            fprintf(stderr, "%s:%d: error: '%s' is not a namespace\n",
+                    g_current_filename, line, part);
+            g_parse_errors++;
+            return NULL;
+        }
+        ns = s;
+    }
+    return ns;
+}
+
+/* `using namespace a::b;` */
+static int using_namespace(const AstList *path, int line) {
+    Symbol *ns = using_resolve_namespace(path, line);
+    if (ns == NULL) return 0;
+    symtab_add_using(g_symtab->current, ns->inner_scope);
+    sema_note_using(ns->qualified_name, NULL);
+    return 1;
+}
+
+/* `using a::b::name;` -- a type gets an alias symbol in the current scope
+ * (so it lexes as a type here); a function or variable is noted for sema. */
+static int using_name(const AstList *path, const char *name, int line) {
+    Symbol *ns = using_resolve_namespace(path, line);
+    if (ns == NULL) return 0;
+    Symbol *m = symtab_lookup_in(ns->inner_scope, name);
+    if (m == NULL) {
+        fprintf(stderr, "%s:%d: error: no '%s' is declared in namespace '%s'\n",
+                g_current_filename, line, name, ns->qualified_name);
+        g_parse_errors++;
+        return 0;
+    }
+    if (m->kind == SYM_CLASS || m->kind == SYM_TYPEDEF || m->kind == SYM_ENUM ||
+        m->kind == SYM_UNION || m->kind == SYM_NAMESPACE) {
+        Symbol *alias = symtab_insert(g_symtab, g_symtab->current, name, m->kind);
+        free(alias->qualified_name);
+        alias->qualified_name = strdup(m->qualified_name);
+        alias->inner_scope = m->inner_scope;
+    }
+    sema_note_using(ns->qualified_name, name);
+    return 1;
+}
+
 /* Make `name` lex as TYPE_NAME from here on, unless it already does. */
 static void declare_type_name(const char *name, SymbolKind kind) {
     if (g_c_mode && kind != SYM_TYPEDEF) {         /* a tag: its own namespace */
@@ -688,7 +780,7 @@ static AstNode *finish_declarators(AstNode *first, AstNode *base, AstList more, 
 %token CLASS_FINAL   /* `final` in a class head: `class D final : public B` (see yylex) */
 %token <lit> INT_LITERAL CHAR_LITERAL FLOAT_LITERAL
 
-%token CLASS STRUCT ENUM UNION PUBLIC PRIVATE PROTECTED NAMESPACE TYPEDEF
+%token CLASS STRUCT ENUM UNION PUBLIC PRIVATE PROTECTED NAMESPACE TYPEDEF USING
 %token RETURN IF ELSE DO WHILE FOR BREAK CONTINUE GOTO
 %token SWITCH CASE DEFAULT
 %token INT_KW FLOAT_KW VOID_KW BOOL_KW CHAR_KW
@@ -702,7 +794,7 @@ static AstNode *finish_declarators(AstNode *first, AstNode *base, AstList more, 
 %token STD_ARRAY STD_VECTOR
 %token ELLIPSIS ANON_STRUCT ANON_UNION ANON_ENUM EXTERN VA_ARG
 
-%type <node> program top_decl namespace_decl class_decl member
+%type <node> program top_decl namespace_decl class_decl member using_decl using_alias
 %type <node> braced_init init_item
 %type <list> init_items
 %type <node> func_decl func_def func_header var_decl typedef_decl tag_typedef_decl out_of_line_def native_decl
@@ -775,6 +867,8 @@ top_decl_list:
 
 top_decl:
       namespace_decl     { $$ = $1; }
+    | using_decl         { $$ = $1; }
+    | using_alias        { $$ = $1; }
     | class_decl ';'     { $$ = $1; }
     | enum_decl ';'      { $$ = $1; }
     | union_decl ';'     { $$ = $1; }
@@ -877,7 +971,7 @@ namespace_decl:
              * "namespace member set" the way real compilers do, so a
              * namespace could be legally reopened at different points
              * without corrupting the scope-pop parent chain. */
-            Symbol *nsym = symtab_lookup_in(g_symtab->current, $2);
+            Symbol *nsym = symtab_lookup_own(g_symtab->current, $2);
             if (nsym == NULL) {
                 nsym = symtab_insert(g_symtab, g_symtab->current, $2, SYM_NAMESPACE);
             }
@@ -894,6 +988,56 @@ namespace_decl:
             $$ = ast_new(AST_NAMESPACE_DECL, @1.first_line);
             $$->str1 = strdup($2);
             $$->list = $5;
+        }
+    ;
+
+/* ---- using -----------------------------------------------------------
+ *
+ *   using namespace v32;            every name in v32 visible unqualified
+ *   using namespace outer::inner;
+ *   using v32::Keyboard;            one name (a type, function, variable)
+ *   using Score = int;              C++11 alias: a typedef
+ *
+ * A directive is attached to the symbol-table scope it is written in (file,
+ * namespace or block), so the lexer sees the namespace's TYPES from there
+ * on; sema_note_using tells sema, for unqualified function calls (see
+ * sema.c, "using-directives and using-declarations"). A using-declaration
+ * of a type makes an alias symbol for it here. `std` is not a namespace in
+ * this project -- `using namespace std;` / `using std::x;` are handled by
+ * the lexer (they enable `array<T, N>` / `vector<T>` without `std::`) and
+ * never reach these rules. Emits no C: namespace members already have
+ * file-scope C names. */
+
+using_decl:
+      USING NAMESPACE name_tok ';'
+        {
+            AstList path = ast_list_new();
+            ast_list_append(&path, ast_ident($3, @3.first_line));
+            if (!using_namespace(&path, @3.first_line)) YYERROR;
+            $$ = decl_group_new(@1.first_line);
+        }
+    | USING NAMESPACE qname_prefix name_tok ';'
+        {
+            AstList path = $3;   /* a copy: GLR semantic values are const here */
+            ast_list_append(&path, ast_ident($4, @4.first_line));
+            if (!using_namespace(&path, @3.first_line)) YYERROR;
+            $$ = decl_group_new(@1.first_line);
+        }
+    | USING qname_prefix name_tok ';'
+        {
+            if (!using_name(&$2, $3, @3.first_line)) YYERROR;
+            $$ = decl_group_new(@1.first_line);
+        }
+    ;
+
+using_alias:
+    USING name_tok '=' type_spec pointer_opt ';'
+        {
+            /* `using Name = Type;` is `typedef Type Name;` */
+            symtab_insert(g_symtab, g_symtab->current, $2, SYM_TYPEDEF);
+            $$ = ast_new(AST_TYPEDEF_DECL, @2.first_line);
+            $$->str1 = strdup($2);
+            $$->type = apply_ptr($4, $5, @4.first_line);
         }
     ;
 
@@ -1347,6 +1491,20 @@ func_header:
             $$->type = NULL;
             $$->list = $4;
         }
+    | OPERATOR type_spec pointer_opt '(' { symtab_push_scope(g_symtab, NULL, 0); } ')' opt_const
+        {
+            /* A conversion operator, `operator int() const`: no return
+             * type is written -- the target type IS the return type. Named
+             * "operator <type>" (conversion_operator_name); sema.c inserts
+             * the call wherever an object of the class is used as that
+             * type (see "conversion operators" there). */
+            $$ = ast_new(AST_FUNC_DECL, @1.first_line);
+            $$->type = apply_ptr($2, $3, @2.first_line);
+            $$->str1 = conversion_operator_name($$->type);
+            $$->list = ast_list_new();
+            $$->virt_spec = $7 & (VIRT_SPEC_OVERRIDE | VIRT_SPEC_FINAL);
+            $$->str2 = ($7 & 1) ? strdup("const") : NULL;
+        }
     | '~' TYPE_NAME '(' ')'
         {
             symtab_push_scope(g_symtab, NULL, 0); /* kept for symmetry with the pop in func_decl/func_def */
@@ -1499,6 +1657,24 @@ out_of_line_def:
             $$->a = $10;
             $$->b = ast_new(AST_QUALIFIED_ID, @3.first_line);
             $$->b->list = $3;
+            symtab_pop_scope(g_symtab);
+        }
+    | qname_prefix OPERATOR type_spec pointer_opt '(' { symtab_push_scope(g_symtab, NULL, 0); } ')' opt_const block
+        {
+            /* An out-of-line conversion operator: `Counter::operator int() const { ... }` */
+            $$ = ast_new(AST_FUNC_DEF, @1.first_line);
+            $$->type = apply_ptr($3, $4, @3.first_line);
+            $$->str1 = conversion_operator_name($$->type);
+            $$->list = ast_list_new();
+            if ($8 & (VIRT_SPEC_OVERRIDE | VIRT_SPEC_FINAL)) {
+                yyerror("'override' and 'final' belong on the declaration "
+                        "inside the class, not on an out-of-line definition");
+                g_parse_errors++;
+            }
+            $$->str2 = ($8 & 1) ? strdup("const") : NULL;
+            $$->a = $9;
+            $$->b = ast_new(AST_QUALIFIED_ID, @1.first_line);
+            $$->b->list = $1;
             symtab_pop_scope(g_symtab);
         }
     | qualified_type '(' { symtab_push_scope(g_symtab, NULL, 0); } opt_param_list ')' opt_member_init_list block
@@ -1668,13 +1844,8 @@ param:
     | ELLIPSIS
         {
             /* `...`: the extra arguments arrive as one pointer to an array
-             * of words, which lower.c builds at each call (see va_rewrite
-             * there). str2 marks the parameter. */
-            if (!g_c_mode) {
-                yyerror("variadic functions (`...`) are supported for C input only "
-                        "(a .c file); in C++ use overloads or default arguments");
-                g_parse_errors++;
-            }
+             * of words, which cmode.c builds at each call (see
+             * rewrite_variadic_calls there). str2 marks the parameter. */
             symtab_insert(g_symtab, g_symtab->current, "__v32_va", SYM_PARAM);
             $$ = ast_new(AST_PARAM, @1.first_line);
             $$->str1 = strdup("__v32_va");
@@ -1915,7 +2086,7 @@ var_decl:
 
             $$ = finish_declarators(first, $1, $5, @1.first_line);
         }
-    | type_spec IDENTIFIER '(' arg_list ')'
+    | type_spec IDENTIFIER '(' arg_list ')' more_plain_declarators
         {
             /* Direct-initialization with constructor arguments on a
              * stack-allocated local -- `Shape shape(7);` -- a real,
@@ -1968,12 +2139,14 @@ var_decl:
              * see its own doc comment in ast.h for the full mechanism
              * and why it isn't just AST_NEW reused). */
             symtab_insert(g_symtab, g_symtab->current, $2, SYM_VAR);
-            $$ = ast_new(AST_VAR_DECL, @2.first_line);
-            $$->str1 = strdup($2);
-            $$->type = $1;
+            AstNode *first = ast_new(AST_VAR_DECL, @2.first_line);
+            first->str1 = strdup($2);
+            first->type = $1;
             AstNode *direct_init = ast_new(AST_DIRECT_INIT, @3.first_line);
             direct_init->list = $4;
-            $$->a = direct_init;
+            first->a = direct_init;
+            /* further declarators: `Handle a(&x), b(nullptr);` */
+            $$ = finish_declarators(first, $1, $6, @1.first_line);
         }
     | type_spec pointer_opt IDENTIFIER array_bracket_list opt_array_initializer more_plain_declarators
         {
@@ -2131,6 +2304,25 @@ more_plain_declarators:
             spec->str1 = strdup($4);
             spec->ival = $3;
             spec->a = $5;
+            ast_list_append(&$$, spec);
+        }
+    | more_plain_declarators ',' pointer_opt IDENTIFIER '(' arg_list ')'
+        {
+            /* `Handle a(&x), b(nullptr);` -- each object constructed
+             * from its own arguments. (pointer_opt only so this shares
+             * its prefix with the alternatives above; a pointer is not
+             * constructed.) */
+            if ($3 != 0) {
+                yyerror("a pointer cannot be initialized with `(...)` here -- use `= value`");
+                g_parse_errors++;
+            }
+            $$ = $1;
+            AstNode *spec = ast_new(AST_VAR_DECL, @4.first_line);
+            spec->str1 = strdup($4);
+            spec->ival = 0;
+            AstNode *direct_init = ast_new(AST_DIRECT_INIT, @5.first_line);
+            direct_init->list = $6;
+            spec->a = direct_init;
             ast_list_append(&$$, spec);
         }
     | more_plain_declarators ',' pointer_opt IDENTIFIER array_bracket_list opt_array_initializer
@@ -2804,6 +2996,12 @@ stmt:
         {
             $$ = ast_new(AST_EXPR_STMT, @1.first_line);
         }
+    | using_decl
+        {
+            /* block scope: the directive lasts until the block's end (the
+             * symbol table pops it with the block's scope) */
+            $$ = ast_new(AST_EXPR_STMT, @1.first_line);
+        }
     ;
 
 /* `for (` -- shared by the classic and the range-based form, so the
@@ -2955,7 +3153,7 @@ postfix_expr:
             $$ = ast_new(AST_CALL, @1.first_line);
             $$->a = $1;
             $$->list = $3;
-            if (g_c_mode && $1->kind == AST_IDENT && $3.count >= 1 &&
+            if ($1->kind == AST_IDENT && $3.count >= 1 &&
                 (strcmp($1->str1, "va_start") == 0 || strcmp($1->str1, "va_end") == 0)) {
                 /* va_start(ap, last): ap = the pointer `...` arrived as.
                  * va_end(ap): ap = 0. */

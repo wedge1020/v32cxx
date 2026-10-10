@@ -117,6 +117,16 @@ static int build_system_include_dirs(char **dirs, int max) {
     if (V32CXX_INCLUDE_PATH[0] != '\0') {
         if (n >= max) return -1;
         dirs[n++] = strdup(V32CXX_INCLUDE_PATH);
+        /* C input: the installed C library (libc/, installed inside the
+         * header directory) is searched too, so an installed v32c++
+         * finds <v32libc.c>, <curses.h>, ... with no -I. */
+        if (g_c_mode) {
+            if (n >= max) return -1;
+            size_t len = strlen(V32CXX_INCLUDE_PATH) + sizeof("/libc");
+            char *libc_dir = malloc(len);
+            snprintf(libc_dir, len, "%s/libc", V32CXX_INCLUDE_PATH);
+            dirs[n++] = libc_dir;
+        }
     }
     return n;
 }
@@ -435,7 +445,6 @@ int  main (int  argc, char **argv)
             cmode_unify_prototypes(&g_program->list);
             cmode_drop_unused_args(&g_program->list);
             cmode_lower_main_params(&g_program->list);
-            if (cmode_rewrite_variadics(&g_program->list) != 0) rc = 1;
         }
         hoist_static_locals(&g_program->list);
         merge_tentative_globals(&g_program->list);
@@ -485,7 +494,9 @@ int  main (int  argc, char **argv)
              * come back clean -- see lower_run()'s precondition in
              * lower.h. */
             if (verbosity >= 1) printf("stage 3: running lowering\n");
-            int lower_errors = lower_run(g_program);
+            /* calls through `...`, now that sema has said which they are */
+            int lower_errors = rewrite_variadic_calls(&g_program->list);
+            if (lower_errors == 0) lower_errors = lower_run(g_program);
             if (verbosity >= 3) {
                 lower_dump(g_program);
                 lower_notes_print();

@@ -214,7 +214,18 @@ typedef struct CallResolution {
                                 * an explicit argument when rewriting this
                                 * into a real call), 0 if it's a free
                                 * function (no implicit receiver at all). */
+    int va_fixed;              /* a call of a variadic function (`...`):
+                                * 1 + the number of parameters before the
+                                * `...`; 0 for any other call. */
+    unsigned char *va_float;   /* for such a call, one flag per extra
+                                * argument: 1 if it is a float (its bits
+                                * are stored, not converted). NULL if
+                                * there are no extra arguments. */
 } CallResolution;
+
+/* The number of parameters before a variadic function's `...`; -1 if the
+ * function is not variadic. */
+int sema_va_fixed(const AstNode *func);
 
 typedef struct FuncSemaInfo {
     char *mangled_name;   /* e.g. "Player__update__void" for a no-arg
@@ -321,6 +332,10 @@ LocalVarType *find_local(LocalVarType *locals, const char *name);
  * ancestor of `class_decl`), needed by callers (access-control's
  * legality check, this-injection's rewriting) to know whether a
  * reference is to this class's own member or an inherited one. */
+/* Records `using namespace ns;` (name NULL) or `using ns::name;` -- called
+ * by the parser; see sema.c. */
+void sema_note_using(const char *ns, const char *name);
+
 AstNode *find_member_in_hierarchy(AstNode *class_decl, const char *name, AstNode **owner_out);
 
 /* Infers which class (if any) an expression's static type resolves to --

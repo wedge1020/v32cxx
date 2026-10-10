@@ -1,4 +1,4 @@
-.TH V32C++ 1 "October 2026" "v32c++ 20261009-dev" "User Commands"
+.TH V32C++ 1 "October 2026" "v32c++ 20261010-dev" "User Commands"
 .SH NAME
 v32c++ \- transpile a subset of C++ to Vircon32 C
 .SH SYNOPSIS
@@ -546,6 +546,24 @@ function objects (a call through
 prefix and postfix
 .BR operator++ / operator\-\-
 .RI ( "operator++()" " and " "operator++(int)" );
+conversion operators
+.RI ( "operator int() const" ", " "operator bool()" ", " "operator Vec2 *()" ),
+called wherever the object is used as a value of that type (an
+initializer, an assignment, a return, a condition, a cast, an argument,
+arithmetic, an index), an exact match first, else the class's one
+arithmetic conversion, else an error for an ambiguity;
+variadic functions
+.RB ( ... ,
+.BR va_list ", " va_start ", " va_arg ", " va_end
+from
+.IR <cstdarg> ),
+as for C input (see
+.B C INPUT
+below), in free functions, namespaces and methods, where a
+.B ...
+overload ranks after every other and an object passed through
+.B ...
+is an error (pass a pointer);
 .BR override " and " final
 on member functions and
 .B final
@@ -622,9 +640,7 @@ class members;
 .BR "enum class" ,
 .BR constexpr ,
 lambdas,
-.BR "using namespace" ,
 .BR mutable ,
-conversion operators,
 nested classes and class-scope enums, and stacked declarators such as
 .IR "T *&" ;
 a two-dimensional array parameter.
@@ -658,7 +674,8 @@ is one function, and names are not mangled; variadic functions
 .BR va_start ,
 .BR va_arg ,
 .BR va_end )
-are supported; the null pointer is 0, as C says, rather than Vircon32
+are supported (also in C++), each extra argument travelling as one word
+\(em an int, a pointer, or a float, whose bits are kept; the null pointer is 0, as C says, rather than Vircon32
 C's -1;
 .B main
 may take
@@ -802,6 +819,15 @@ elsewhere. A qualified call
 considers only functions in that namespace, and is an error if there
 are none. An unqualified call inside a namespace finds that
 namespace's functions before those of enclosing scopes.
+.PP
+.B "using namespace N;"
+(at file scope or in a block, to the end of the block) makes N's names
+visible unqualified: variables, enums, typedefs, classes, and
+functions, which overload with the ones already in scope.
+.B "using N::name;"
+brings in one name, and
+.B "using Name = type;"
+is a typedef.
 .PP
 An overloaded call whose arguments include a macro from an SDK
 .I .h
@@ -1249,9 +1275,11 @@ The transpiler.
 .I /usr/local/share/man/man1/v32c++.1
 This manual page.
 .TP
-.I /usr/local/Vircon32/v32c++/include
+.I /usr/local/Vircon32/v32tools/include/v32c++
 The installed header directory, holding
-.IR v32/ ,
+.I v32/
+and
+.IR libc/ ,
 searched last for
 .I .hpp
 and
@@ -1263,17 +1291,31 @@ needs no
 Compiled into the transpiler: by
 .I inc/config.h
 for the Makefile build, from the install prefix for the CMake build.
+Its
+.I libc/
+(the C library and curses) is searched for C input the same way, with
+no
+.BR \-I .
 .TP
-.I /usr/local/Vircon32/v32c++/libc
-The C library and curses for C input (add it with
-.BR \-I ).
+.I /usr/local/Vircon32/v32tools/docs/v32c++
+The documents (CMake install only).
 .PP
-On Windows, the CMake install puts the transpiler, the headers
-.RI ( include/v32 ),
+.I v32tools/
+is shared by the community Vircon32 tools: v32lua's headers go in
+.IR v32tools/include/v32lua ,
+beside these. On Windows, the CMake install (default prefix
+.IR "C:\eProgram Files\eVircon32" )
+puts the transpiler in
+.IR v32tools ,
+the headers and
 .I libc
-and the documentation under
-.IR "C:\eProgram Files\eVircon32\ev32c++" ,
-next to the Vircon32 DevTools; add that directory to
+in
+.I v32tools\einclude\ev32c++
+and the documents and this page in
+.IR v32tools\edocs\ev32c++ ,
+next to the Vircon32 DevTools; add
+.I v32tools
+to
 .BR PATH .
 .SH SEE ALSO
 .BR v32lua (1),

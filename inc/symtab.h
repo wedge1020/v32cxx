@@ -55,6 +55,12 @@ typedef struct Scope {
     struct Scope *parent;   /* enclosing lexical scope; NULL at the global/TU scope */
     char *owner_name;       /* namespace/class name this scope belongs to, or NULL */
     int is_class_scope;     /* true for class/struct bodies */
+    /* `using namespace N;` written in this scope: lookups that reach this
+     * scope also look in each of these namespaces' member scopes (and,
+     * transitively, in the namespaces THEY use), as C++ does. */
+    struct Scope **usings;
+    int using_count;
+    int using_cap;
 } Scope;
 
 typedef struct SymTab {
@@ -87,6 +93,14 @@ Symbol *symtab_lookup(SymTab *st, const char *name);
 
 /* Lookup restricted to exactly one scope, no walking up to parents. */
 Symbol *symtab_lookup_in(Scope *scope, const char *name);
+
+/* `using namespace N;` in `into` (see Scope.usings). Adding the same
+ * namespace twice is harmless. */
+void symtab_add_using(Scope *into, Scope *ns);
+
+/* Only the names declared in `scope` itself -- no using-directives. For
+ * "is this already declared HERE" checks (reopening a namespace). */
+Symbol *symtab_lookup_own(Scope *scope, const char *name);
 
 /* Used by the lexer: is `name` currently visible as a class or typedef?
  * Honors pending_qualifier (and clears it after use) so that
