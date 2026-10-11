@@ -1,0 +1,117 @@
+.TH V32\-MATH.HPP 3v32 "October 11, 2026" "v32c++ 20261010-dev" "v32c++ Library"
+.SH NAME
+v32/math.hpp \- C++ overloads and helpers for Vircon32 math
+.SH SYNOPSIS
+.nf
+.B #include <v32/math.hpp>
+.PP
+.B namespace v32 {
+.PP
+.BI "int   minimum( int " a ", int " b " );"
+.BI "float minimum( float " a ", float " b " );"
+.BI "int   maximum( int " a ", int " b " );"
+.BI "float maximum( float " a ", float " b " );"
+.BI "int   absolute( int " a " );"
+.BI "float absolute( float " x " );"
+.BI "int   clamp( int " value ", int " low ", int " high " );"
+.BI "float clamp( float " value ", float " low ", float " high " );"
+.BI "int   sign( int " value " );"
+.BI "float sign( float " value " );"
+.PP
+.BI "float to_radians( float " degrees " );"
+.BI "float to_degrees( float " radians " );"
+.BI "float lerp( float " a ", float " b ", float " t " );"
+.BI "float distance( float " x1 ", float " y1 ", float " x2 ", float " y2 " );"
+.BI "float distance_squared( float " x1 ", float " y1 ", float " x2 ", float " y2 " );"
+.PP
+.B }
+.fi
+.SH DESCRIPTION
+.I v32/math.hpp
+includes the SDK's
+.I math.h
+(see
+.BR math.h (3v32)),
+whose functions and constants
+.RB ( pi ", " INT_MIN ", " INT_MAX )
+stay available, and adds one overloaded name for each operation the
+SDK spells differently by type.
+.TP
+.BR minimum ", " maximum ", " absolute
+The SDK's
+.BR min / fmin ,
+.BR max / fmax
+and
+.BR abs / fabs ,
+chosen by the type of the arguments.
+.TP
+.B clamp
+.I value
+limited to
+.IR low " .. " high .
+When
+.I low
+is greater than
+.IR high ,
+the result is
+.IR low .
+.TP
+.B sign
+\-1, 0 or 1 (\-1.0, 0.0 or 1.0).
+.TP
+.BR to_radians ", " to_degrees
+Angle conversion. The SDK's trigonometric functions and
+.BR set_drawing_angle (3v32)
+use radians.
+.TP
+.B lerp
+Linear interpolation:
+.I a
+when
+.I t
+is 0,
+.I b
+when it is 1.
+.TP
+.BR distance ", " distance_squared
+The distance between two points, and its square (no square root, so
+cheaper: compare it with
+.IR r * r ).
+.SH NOTES
+An overloaded call needs at least one argument whose type
+.BR v32c++ (1)
+knows. A call whose arguments are all results of SDK functions or SDK
+macros
+.RB ( "v32::absolute( rand() )" )
+cannot be resolved and is an error; store the value in a typed
+variable first.
+.B v32::clamp( x, 0, screen_width )
+is fine when
+.I x
+is an
+.BR int .
+.SH EXAMPLES
+.RS
+.nf
+#include <v32/math.hpp>
+#include <v32/video.hpp>
+
+int ship_x = 320;
+
+void move_ship( int dx )
+{
+    ship_x = v32::clamp( ship_x + dx, 16, screen_width \- 16 );
+}
+
+float aim( float from_x, float from_y, float to_x, float to_y )
+{
+    float degrees = v32::to_degrees( atan2( to_y \- from_y, to_x \- from_x ) );
+    return v32::lerp( 0.0, degrees, 0.5 );
+}
+.fi
+.RE
+.SH SEE ALSO
+.BR math.h (3v32),
+.BR v32c++\-headers (3v32)
+.SH AUTHOR
+Matthew Haas

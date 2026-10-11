@@ -1,0 +1,160 @@
+.TH V32C++\-ARRAY 3v32 "October 11, 2026" "v32c++ 20261010-dev" "v32c++ Library"
+.SH NAME
+v32c++\-array \- std::array in v32c++, a fixed-size container
+.SH SYNOPSIS
+.nf
+.B #include <array>
+.PP
+.BI "std::array< " T ", " N " > " name ;
+.BI "std::array< " T ", " N " > " name " = { " "value, ..." " };"
+.PP
+.BI "T&   operator[]( int " i " );"
+.BI "T&   at( int " i " );"
+.B  "T&   front();"
+.B  "T&   back();"
+.B  "int  size();"
+.B  "int  max_size();"
+.B  "bool empty();"
+.B  "T*   data();"
+.B  "T*   begin();"
+.B  "T*   end();"
+.BI "void fill( const T& " value " );"
+.fi
+.SH DESCRIPTION
+v32c++ does not implement templates. It offers
+.B std::array
+(and
+.BR std::vector ,
+see
+.BR v32c++\-vector (3v32))
+as built-in generic types instead: for every distinct
+.BI std::array< T ", " N >
+a program names, the transpiler writes one ordinary class with the
+element type and length filled in, named
+.BI array_ T _ N
+in the generated C
+.RB ( std::array<Enemy,\ 8>
+becomes
+.BR array_Enemy_8 ;
+.B ::
+and
+.B *
+are spelled
+.B _
+and
+.BR _ptr ).
+.B #include <array>
+switches the feature on; no file is read and the line does not reach
+the generated C.
+.PP
+.I T
+may be
+.BR int ,
+.BR float ,
+.BR bool ,
+.BR char ,
+any struct, class, union or enum (qualified or not), a pointer to any
+of those, or another
+.BR std::array .
+.I N
+is an integer literal, a
+.B #define
+constant, or a named constant such as an enum constant.
+.PP
+Elements of a class type are constructed when the array is, and
+destroyed with it.
+.SS Members
+.TP
+.BR operator[] ", " at ", " front ", " back
+References to elements.
+.B at
+does not check its index: there are no exceptions.
+.TP
+.BR size ", " max_size ", " empty
+.IR N ,
+.I N
+and false.
+.TP
+.BR data ", " begin ", " end
+Plain
+.B T*
+pointers;
+.B end
+points one past the last element.
+.TP
+.B fill
+Set every element to
+.IR value .
+.PP
+Aggregate initialization
+.RB ( "= { 1, 2, 3 }" )
+works for local and global arrays, and
+.B "b = a"
+copies the whole array. Range-based
+.B for
+works over an array
+.RB ( "for( Enemy &e : enemies )" ),
+and so does
+.B "using namespace std;"
+with the bare spelling
+.BR array<T,\ N> .
+.PP
+Accessors are written out in place in the generated C
+.RB ( v[i]
+becomes
+.BR v.m_data[i] ,
+.B v.size()
+becomes the constant) unless
+.B \-\-no\-inline\-containers
+is given to
+.BR v32c++ (1).
+.SH EXAMPLES
+.RS
+.nf
+#include <array>
+
+struct Bunker { int x; int health; };
+
+std::array< Bunker, 4 > bunkers;
+std::array< int, 3 > speeds = { 1, 2, 4 };
+
+void main()
+{
+    for( int i = 0; i < bunkers.size(); i++ )
+    {
+        bunkers[ i ].x = 80 + 160 * i;
+        bunkers[ i ].health = 10;
+    }
+    for( Bunker &b : bunkers )
+      b.health \-= speeds.back();
+}
+.fi
+.RE
+.SH BUGS
+Lengths are compared by name:
+.B std::array<int,\ MAX>
+and
+.B std::array<int,\ 8>
+are different types even when
+.B MAX
+is an enum constant equal to 8 (a
+.B #define
+is expanded first, so it is not affected).
+.PP
+There is no
+.B ::iterator
+type name (iterators are
+.BR T* ;
+.B "auto it = a.begin();"
+works), and range-based
+.B for
+does not work over a plain C array.
+.SH SEE ALSO
+.BR v32c++\-vector (3v32),
+.BR v32c++\-string (3v32),
+.BR v32c++ (1)
+.PP
+.I docs/GENERICS.md
+in the v32c++ source distribution.
+.SH AUTHOR
+Matthew Haas

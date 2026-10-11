@@ -1,0 +1,221 @@
+.TH V32C++\-STRING 3v32 "October 11, 2026" "v32c++ 20261010-dev" "v32c++ Library"
+.SH NAME
+v32c++\-string \- std::string in v32c++, a fixed-capacity string
+.SH SYNOPSIS
+.nf
+.BR "#define V32_STRING_CAPACITY 63" "    (the default)"
+.B #include <string>
+.PP
+.B namespace std {
+.PP
+.B class string {
+.B "    string();"
+.BI "    string( const char* " text " );"
+.BI "    string( const char* " text ", int " count " );"
+.BI "    string( int " count ", char " c " );"
+.BI "    string( const string& " other ", int " pos ", int " count " = \-1 );"
+.PP
+.B "    int  size(), length(), capacity(), max_size();"
+.B "    bool empty();"
+.B "    void clear();"
+.BI "    void resize( int " count ", char " c " = 0 );"
+.BI "    void reserve( int " n " );"
+.B "    void shrink_to_fit();"
+.PP
+.BI "    char& operator[]( int " i " );"
+.BI "    char& at( int " i " );"
+.B "    char& front(), back();"
+.B "    const char* c_str(), data();"
+.B "    char* begin(), end();"
+.PP
+.BI "    void push_back( char " c " );"
+.B "    void pop_back();"
+.B "    string& append( ... );       \fR// text, text+count, string,"
+.B "                                 \fR// substring, count+char"
+.B "    string& operator+=( ... );   \fR// string, text, char"
+.B "    string& operator=( ... );    \fR// string, text, char"
+.B "    string& assign( ... );       \fR// text, string, count+char"
+.BI "    string& erase( int " pos " = 0, int " count " = \-1 );"
+.BI "    string& insert( int " pos ", ... );   " "// text, string, count+char"
+.BI "    string& replace( int " pos ", int " count ", ... );   " "// text, string"
+.PP
+.BI "    int  find( ... , int " pos " = 0 );    " "// text, string, char"
+.B "    int  rfind( ... );                 \fR// text, string, char"
+.BI "    int  find_first_of( const char* " set ", int " pos " = 0 );"
+.BI "    int  find_first_not_of( const char* " set ", int " pos " = 0 );"
+.BI "    int  find_last_of( const char* " set " );"
+.BI "    int  find_last_not_of( const char* " set " );"
+.B "    bool starts_with( ... ), ends_with( ... );   \fR// text, string"
+.BI "    string substr( int " pos " = 0, int " count " = \-1 );"
+.B "    int  compare( ... );               \fR// text, string"
+.B "    bool operator==, !=, <, >, <=, >=;   \fR// against a string or text"
+.B "    string operator+( ... );           \fR// string, text, char"
+.B };
+.PP
+.B "std::string::npos     \fR// \-1"
+.PP
+.BI "string operator+( const char* " text ", const string& " s " );"
+.BI "bool   operator==( const char* " text ", const string& " s " );"
+.BI "bool   operator!=( const char* " text ", const string& " s " );"
+.BI "string to_string( int " value " );"
+.BI "string to_string( float " value " );"
+.BI "int    stoi( const string& " s " );"
+.BI "float  stof( const string& " s " );"
+.PP
+.B }
+.fi
+.SH DESCRIPTION
+.B #include <string>
+gives a program
+.BR std::string .
+There is no such file: the class is built into
+.BR v32c++ (1)
+and transpiled with the program like any other class.
+.PP
+The members behave as in standard C++, with these differences.
+.SS Fixed capacity
+The characters are kept inside the object, in an array of
+.B V32_STRING_CAPACITY
++ 1 words. The string never allocates, which is what makes copying it
+safe: v32c++ has no copy constructors and copies objects word by word,
+so a string pointing at heap memory would be freed twice. Strings can
+therefore be assigned, passed and returned by value, and stored in
+classes and in
+.BR std::vector .
+.PP
+The capacity is 63 characters unless
+.B V32_STRING_CAPACITY
+is defined before the include, or on the command line
+.RB ( "v32c++ \-D V32_STRING_CAPACITY=127" ).
+It is one setting for the whole program. Every string occupies
+capacity + 2 words whatever its length, so pass strings as
+.B "const std::string &"
+where possible and keep the capacity no larger than needed.
+.PP
+Text that would make a string longer than its capacity is dropped
+silently;
+.B size()
+never exceeds
+.BR capacity() .
+.B reserve
+and
+.B shrink_to_fit
+do nothing.
+.SS No exceptions
+Sizes and positions are
+.BR int ,
+and
+.B std::string::npos
+is \-1.
+.BR at ,
+.BR front ,
+.B back
+and
+.B operator[]
+do not check their index. Out-of-range positions are clamped where
+that is cheap
+.RB ( substr ,
+.BR erase ,
+.BR insert );
+otherwise the index is used as given.
+.SS Conversions
+A string literal converts to a
+.B std::string
+wherever C++ would convert it: an initialization, an argument by value
+or by
+.BR "const &" ,
+a return value, a constructor argument,
+.BR push_back
+into a vector of strings. The one exception is a conversion in a
+loop's condition or step
+.RB ( "while( count( \(dqx\(dq ) < n )" ),
+which is an error: build the string in a variable before the loop.
+.PP
+.B c_str()
+and
+.B data()
+return
+.BR "const char *" ;
+v32c++ drops the
+.B const
+when the pointer is passed to a C function, so
+.B print_at( 10, 10, s.c_str() )
+works as written.
+.SS Numbers
+.TP
+.B to_string( int )
+The decimal digits, with a minus sign when negative.
+.TP
+.B to_string( float )
+Always six decimals, like C++
+.RB ( 2.500000 ).
+.TP
+.BR stoi ", " stof
+Skip leading spaces, read an optional sign and the digits (and, for
+.BR stof ,
+a decimal point and decimals), and stop at anything else. They take no
+position or base arguments and return 0 when there are no digits.
+.SS Other
+Range-based
+.B for
+walks the characters
+.RB ( "for( char c : name )" ).
+.B "using namespace std;"
+or
+.B "using std::string;"
+allows writing
+.BR string ;
+the latter makes every name in
+.B std
+visible, not only
+.BR string .
+Iterators are
+.BR "char *" ;
+there is no
+.B string::iterator
+type name, no reverse iterator, no
+.BR size_t .
+There are no streams,
+.BR getline ,
+.BR string_view ,
+wide strings or
+.BR std::swap .
+.SH EXAMPLES
+.RS
+.nf
+#include <string>
+#include "video.h"
+
+std::string label( int score )
+{
+    std::string text = "SCORE ";
+    text += std::to_string( score );
+    return text;
+}
+
+void main()
+{
+    std::string name = "PLAYER 1";
+    if( name.starts_with( "PLAYER" ) )
+      name.replace( 0, 6, "P" );            // "P 1"
+
+    print_at( 10, 10, label( 1500 ).c_str() );
+    print_at( 10, 40, name.c_str() );
+}
+.fi
+.RE
+.SH BUGS
+.B to_string( float )
+converts the whole part to an
+.BR int ,
+so values of 2147483648 or more come out wrong.
+.SH SEE ALSO
+.BR v32c++\-vector (3v32),
+.BR v32\-string.hpp (3v32),
+.BR string.h (3v32),
+.BR v32c++ (1)
+.PP
+.I docs/STRING.md
+in the v32c++ source distribution.
+.SH AUTHOR
+Matthew Haas

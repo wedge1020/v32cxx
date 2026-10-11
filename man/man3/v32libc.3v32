@@ -1,0 +1,330 @@
+.TH V32LIBC 3v32 "October 11, 2026" "v32c++ 20261010-dev" "v32c++ Library"
+.SH NAME
+v32libc \- standard C library functions for C programs transpiled by v32c++
+.SH SYNOPSIS
+.nf
+.B #include <stdio.h>
+.RB "(or " stdlib.h ", " ctype.h ", " errno.h ", " limits.h ", " memory.h ", " signal.h ,
+.RB " " stddef.h ", " unistd.h ", " fcntl.h ", " sys/types.h ", " sys/stat.h ")"
+.PP
+.B #include <v32libc.c>      \fR/* once, in the program's one source file */
+.PP
+.B v32c++ \-I \fI<v32c++>\fB/libc program.c\fR      (no \fB\-I\fR once v32c++ is installed)
+.fi
+.SH DESCRIPTION
+A C program transpiled by
+.BR v32c++ (1)
+from a
+.I .c
+file can use the part of the standard C library listed below, written
+for the console and transpiled together with the program. Every one of
+the standard-named headers in
+.I libc/
+includes the same declarations header,
+.IR v32libc.h ,
+so a program keeps its
+.B #include
+lines as they are. Because Vircon32 programs are one translation unit
+with no linker, the code itself is brought in by including
+.I v32libc.c
+once.
+.PP
+.I v32libc.h
+also includes the SDK's
+.IR video.h ,
+.IR input.h ,
+.IR time.h ,
+.I string.h
+and
+.IR misc.h .
+Where an SDK function already behaves as C says, it is used as it is:
+.BR strlen ,
+.BR strcmp ,
+.BR strncmp ,
+.BR isdigit ,
+.BR isalpha ,
+.BR isupper ,
+.BR islower ,
+.BR isspace ,
+.BR tolower ,
+.BR toupper ,
+.BR memset ,
+.BR memcpy ,
+.BR memcmp ,
+.B rand
+and
+.BR srand .
+Where it does not, the standard name is a macro for a conforming
+.B v32_
+function (see
+.BR "STANDARD NAMES REDIRECTED" ).
+.PP
+.BR <string.h> ", " <time.h> ", " <math.h>
+and the other SDK header names always reach the SDK's own headers, never
+this library; the declarations below come with any of the
+.I libc/
+headers.
+.SS Words and the null pointer
+Everything is one 32-bit word:
+.BR char ,
+.BR short ,
+.BR int ,
+.B long
+and every pointer, so
+.B "sizeof(char) == sizeof(int) == 1"
+and a string is an array of words. Code that writes \(lqthe 4 bytes of
+an int\(rq
+.RB ( "fwrite( &n, 1, 4, f )" )
+touches three words too many and must say
+.B sizeof n
+instead.
+.PP
+The null pointer is 0, as in C; v32c++ rewrites null pointers and
+pointer tests in C input to make it so. The SDK, however, uses \-1 for
+\(lqno pointer\(rq: do not pass a C null pointer to an SDK function
+directly.
+.SH STANDARD NAMES REDIRECTED
+.TP
+.BR malloc ", " calloc ", " realloc ", " free
+Return 0 on failure, accept
+.B free(NULL)
+and
+.BR realloc(NULL,\ n) ,
+over the SDK's allocator (see
+.BR misc.h (3v32)).
+.TP
+.BR strcpy ", " strcat ", " strncpy ", " strncat
+Return their destination, as C's do.
+.B strncpy
+writes exactly
+.I n
+words, padding with zeros, and leaves no terminator when the source is
+.I n
+characters or longer.
+.TP
+.B exit
+See
+.BR "PROGRAM FLOW" .
+.SH STDIO
+.TP
+.BR printf ", " fprintf ", " sprintf ", " vsprintf
+Formatted output. Conversions:
+.BR %d ", " %i ", " %u ", " %x ", " %X ", " %o ", " %c ", " %s
+and
+.BR %% ,
+with the
+.B \-
+and
+.B 0
+flags, a width and a precision (either may be
+.BR * ),
+and the
+.B h
+and
+.B l
+length modifiers, which change nothing since every integer is one word.
+There are no floating-point conversions.
+.TP
+.BR putchar ", " puts ", " fputs ", " fputc ", " putc
+Character and line output.
+.TP
+.BR getchar ", " fgets
+Read from the on-screen keyboard (or the program's own key source; see
+.BR v32term (3v32)),
+echoing to the screen.
+.B fgets
+reads only from
+.BR stdin ;
+Backspace deletes, and Escape or Enter ends the line.
+.TP
+.B sscanf
+.BR %d ", " %u ", " %x ", " %c ", " %s ,
+with the
+.B h
+and
+.B l
+modifiers and a width.
+.TP
+.BR fflush ", " setbuf
+Output is not buffered;
+.B fflush
+on a memory-card file writes it back.
+.B setbuf
+does nothing.
+.TP
+.BR fopen ", " fclose ", " fread ", " fwrite ", " fgetc ", " getc ,
+.TQ
+.BR fseek ", " ftell ", " rewind ", " feof ", " ferror ", " remove ", " rename
+Files on the memory card; see
+.BR v32file (3v32).
+.TP
+.B perror
+Print a message and
+.B strerror(errno)
+to the screen.
+.PP
+.BR stdout " and " stderr
+write to the 80\(mu24 text screen of
+.BR v32term (3v32),
+and
+.B stdin
+reads its keyboard.
+.SH STRINGS AND CHARACTERS
+.TP
+.BR strchr ", " strrchr ", " strstr
+Search a string.
+.TP
+.BR isprint ", " isalnum ", " ispunct ", " iscntrl ", " toascii
+Character classes missing from the SDK (ASCII).
+.TP
+.BR atoi ", " abs
+Conversion and absolute value
+.RB ( abs
+only when the SDK's
+.I math.h
+is not included).
+.SH ERRORS AND SIGNALS
+.TP
+.B errno
+Set by the file functions:
+.B ENOENT
+(no such file),
+.B ENOMEM
+(out of memory),
+.B EACCES
+(the memory card holds another game's data),
+.B ENODEV
+(no memory card),
+.B EMFILE
+(too many open files),
+.B ENOSPC
+(the memory card is full).
+.TP
+.B strerror
+A message for each of those.
+.TP
+.B signal
+There are no signals on a console:
+.B signal
+remembers nothing and returns
+.BR SIG_DFL .
+The
+.B SIG
+constants exist so that programs compile.
+.SH TIME
+.TP
+.B time
+A number that changes every second: the console's date and time of day
+combined. It is not the number of seconds since 1970, but it serves as
+a random seed and as input to
+.BR localtime .
+Compiling with
+.B \-DV32LIBC_FIXED_TIME=\fIn\fP
+makes it always return
+.I n
+(for reproducible test runs).
+.TP
+.B localtime
+The console's current date and time as a
+.BR "struct tm" ,
+whatever its argument.
+.B tm_wday
+is always 0.
+.SH ENVIRONMENT AND PROGRAM FLOW
+.TP
+.B getenv
+Always
+.BR NULL ;
+.B environ
+is empty.
+.TP
+.B main( argc, argv )
+v32c++ calls
+.B main
+with
+.I argc
+1 and
+.I argv
+.RB { \(dqprogram\(dq ", " NULL }.
+A program that defines
+.B "char **v32_main_args( int *argc, char **argv )"
+has it called at the top of
+.BR main ,
+and can choose its own command line there (from a title screen, for
+example).
+.TP
+.BR exit ", " abort
+Show
+.B v32_exit_prompt
+(\(lq[Press START to play again]\(rq), wait for Start on gamepad 1,
+clear the screen and restart the program from the beginning, with RAM
+cleared and globals initialized again. If
+.B v32_exit_hook
+is set, it is called first with the exit status.
+.SH LIMITS
+.BR INT_MAX ,
+.BR INT_MIN ,
+.BR LONG_MAX ,
+.BR LONG_MIN ,
+.B SHRT_MAX
+and
+.B PATH_MAX
+(256) are defined;
+.B UINT_MAX
+equals
+.B INT_MAX
+and
+.B CHAR_BIT
+is 32. The types
+.BR size_t ,
+.BR time_t ,
+.BR off_t ,
+.BR pid_t ,
+.BR uid_t ,
+.B gid_t
+and
+.B mode_t
+are
+.BR int .
+.SH EXAMPLES
+.RS
+.nf
+#include <stdio.h>
+#include <stdlib.h>
+#include <v32libc.c>
+
+int main( int argc, char **argv )
+{
+    char name[ 32 ];
+
+    printf( "What is your name? " );
+    fgets( name, sizeof name, stdin );
+    printf( "Hello, %s", name );
+    printf( "%d arguments, first is %s\en", argc, argv[ 0 ] );
+    printf( "[%5d] [%\-5d] [%05x]\en", 42, 42, 255 );
+    exit( 0 );
+}
+.fi
+.RE
+.SH FILES
+.TP
+.I <installed include dir>/libc/
+.IR v32libc.h ", " v32libc.c ", " v32file.c ", " v32term.h ", " v32term.c ,
+.IR curses.h ", " v32curses.c ,
+and the standard-named headers. The installed include directory is
+.I /usr/local/Vircon32/v32tools/include/v32c++
+by default; C input searches its
+.I libc/
+automatically.
+.SH SEE ALSO
+.BR v32file (3v32),
+.BR v32term (3v32),
+.BR v32curses (3v32),
+.BR v32c++\-headers (3v32),
+.BR misc.h (3v32),
+.BR v32c++ (1)
+.PP
+.I docs/C_INPUT.md
+in the v32c++ source distribution.
+.SH AUTHOR
+Matthew Haas

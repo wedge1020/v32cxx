@@ -1,0 +1,233 @@
+.TH V32C++\-HEADERS 3v32 "October 11, 2026" "v32c++ 20261010-dev" "v32c++ Library"
+.SH NAME
+v32c++\-headers \- the C++ headers and the C library that come with v32c++
+.SH SYNOPSIS
+.nf
+C++ input:
+.PP
+.B #include <v32/video.hpp>
+.B #include <v32/input.hpp>
+.B #include <v32/audio.hpp>
+.B #include <v32/time.hpp>
+.B #include <v32/math.hpp>
+.B #include <v32/string.hpp>
+.B #include <v32/misc.hpp>
+.B #include <v32/memcard.hpp>
+.B #include <v32/keyboard.hpp>
+.B #include <v32/mouse.hpp>
+.B #include <v32/v32io.hpp>
+.PP
+.B #include <string>
+.B #include <array>
+.B #include <vector>
+.B #include <cstdarg>
+.PP
+C input:
+.PP
+.B #include <stdio.h>
+.RB "(and " stdlib.h ", " ctype.h ", " unistd.h ", " curses.h ", ...)"
+.B #include <v32libc.c>
+.B #include <v32curses.c>
+.fi
+.SH DESCRIPTION
+.BR v32c++ (1)
+translates C++ (or, for a
+.I .c
+file, C) into the C dialect of the Vircon32 console, compiled by
+.BR compile (1).
+Three groups of headers come with it.
+.SS The v32 headers
+.I v32/*.hpp
+is a C++ layer over the Vircon32 SDK headers described in
+.BR vircon32 (3v32).
+Each one includes its SDK header (the
+.B #include
+line passes through to the generated C) and adds, in namespace
+.BR v32 ,
+what C cannot express: typed enums for the SDK's
+.BR #define s,
+overload sets, scope-guard classes that restore the console's
+\(lqselected\(rq texture, gamepad, sound or channel when they go out of
+scope, and small handle classes. Nothing in them touches the hardware
+directly; every port access is a call into the SDK.
+.PP
+.TS
+l l.
+\fBv32\-video.hpp\fR(3v32)	BlendMode, TextureScope, Point, draw helpers
+\fBv32\-input.hpp\fR(3v32)	bool readers, Button, GamepadScope
+\fBv32\-audio.hpp\fR(3v32)	Channel, SoundScope, ChannelScope
+\fBv32\-time.hpp\fR(3v32)	Date, TimeOfDay, Stopwatch, FrameScope
+\fBv32\-math.hpp\fR(3v32)	minimum, maximum, absolute, clamp, lerp, ...
+\fBv32\-string.hpp\fR(3v32)	String, a fixed-capacity string class
+\fBv32\-misc.hpp\fR(3v32)	random ranges, word helpers, HeapBlock
+\fBv32\-memcard.hpp\fR(3v32)	MemoryCard, a signature-checked save slot
+.TE
+.PP
+Three more give programs a keyboard and a mouse through the v32io
+protocol, which needs either the v32io hardware adaptor or a modified
+emulator:
+.PP
+.TS
+l l.
+\fBv32\-v32io.hpp\fR(3v32)	IoDevice, the common core
+\fBv32\-keyboard.hpp\fR(3v32)	Keyboard
+\fBv32\-mouse.hpp\fR(3v32)	Mouse
+.TE
+.SS Built-in standard headers
+.BR <string> ,
+.B <array>
+and
+.B <vector>
+have no files: the transpiler provides
+.BR std::string ,
+.B std::array
+and
+.B std::vector
+itself (see
+.BR v32c++\-string (3v32),
+.BR v32c++\-array (3v32)
+and
+.BR v32c++\-vector (3v32)).
+.B <cstdarg>
+(or
+.BR <stdarg.h> )
+provides
+.B va_list
+and the
+.B va_
+macros for variadic functions.
+.SS The C library
+For C input,
+.I libc/
+holds the part of the standard C library that ordinary C programs
+expect, plus curses, written for the console in C and transpiled with
+the program. Its standard-named headers
+.RB ( stdio.h ", " stdlib.h ", " ctype.h ", " errno.h ", " limits.h ,
+.BR memory.h ", " signal.h ", " stddef.h ", " unistd.h ", " fcntl.h ,
+.BR sys/types.h ", " sys/stat.h )
+all include one declarations header,
+.IR v32libc.h ,
+and the code is brought in by
+including
+.I v32libc.c
+(and
+.I v32curses.c
+for curses) once, since Vircon32 programs are a single translation
+unit.
+.PP
+.TS
+l l.
+\fBv32libc\fR(3v32)	stdio, stdlib, string, ctype, errno, signal, time
+\fBv32file\fR(3v32)	files on the memory card
+\fBv32term\fR(3v32)	80\(mu24 text screen, gamepad, on-screen keyboard
+\fBv32curses\fR(3v32)	curses
+.TE
+.SH SEARCH PATH
+An
+.B #include
+of a
+.I .hpp
+or
+.I .cpp
+file, and in C input of any
+.I .h
+or
+.I .c
+file other than the eight SDK header names, is resolved and read by
+.B v32c++
+itself. The quoted form looks in the including file's directory, each
+.B \-I
+directory, the current directory, each directory of
+.BR $V32CXX_INCLUDE ,
+and the installed header directory, in that order; the angle-bracket
+form skips the first and third. The installed directory is
+.I /usr/local/Vircon32/v32tools/include/v32c++
+by default (it holds
+.I v32/
+and
+.IR libc/ ,
+so
+.B #include <v32/video.hpp>
+works from anywhere), and C input also searches its
+.I libc/
+subdirectory.
+.PP
+An SDK header
+.RB ( video.h ", " input.h ", " audio.h ", " time.h ", " math.h ,
+.BR string.h ", " misc.h ", " memcard.h )
+is not expanded, in C input as in C++, so
+.B #include <string.h>
+and
+.B #include <time.h>
+in a C program reach the SDK's headers, not the C library's: its
+.B #include
+line passes through to the generated C, where
+.BR compile (1)
+finds it. When
+.B v32c++
+can find the header too \(em on the search path, in
+.BR $V32CXX_SDK_INCLUDE ,
+next to a
+.B compile
+on
+.BR $PATH ,
+or in
+.I /usr/local/Vircon32/DevTools/include
+\(em it reads it, so that its macros and its struct and typedef names
+can be used from C++.
+.SH CONVENTIONS
+.IP \(bu 2
+A wrapper never has the same name as the SDK function it wraps
+.RB ( v32::minimum ,
+not
+.BR v32::min ),
+so the SDK's C functions stay available unchanged and an unqualified
+call inside the namespace cannot find the wrapper instead.
+.IP \(bu 2
+Every parameter and return value is one word, as Vircon32 C requires:
+results that need more come back through a pointer argument
+.RB ( v32::screen_center(Point*) ),
+and classes are passed by pointer or reference.
+.IP \(bu 2
+Scope guards and handle classes are meant to be local variables; their
+destructors run at the end of the block, on every path out of it.
+There are no exceptions.
+.IP \(bu 2
+As in the SDK, sizes are in 32-bit words and a character is a word.
+.IP \(bu 2
+A function in a namespace is emitted under a C name that includes the
+namespace and parameter types
+.RI ( v32::draw(int,int,int)
+becomes
+.IR v32__draw__int_int_int );
+a class keeps its bare name in the C.
+.SH FILES
+.TP
+.I /usr/local/Vircon32/v32tools/include/v32c++/v32/
+The v32 headers.
+.TP
+.I /usr/local/Vircon32/v32tools/include/v32c++/libc/
+The C library.
+.SH ENVIRONMENT
+.TP
+.B V32CXX_INCLUDE
+Colon-separated directories searched before the installed header
+directory.
+.TP
+.B V32CXX_SDK_INCLUDE
+Colon-separated directories searched for the SDK's
+.I .h
+headers.
+.SH SEE ALSO
+.BR v32c++ (1),
+.BR vircon32 (3v32),
+.BR compile (1)
+.PP
+In the source distribution:
+.IR docs/V32IO.md ,
+.IR docs/C_INPUT.md ,
+.IR docs/STRING.md ,
+.IR docs/GENERICS.md ,
+.IR docs/NATIVE_PASSTHROUGH.md .
+.SH AUTHOR
+Matthew Haas

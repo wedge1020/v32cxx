@@ -1,0 +1,143 @@
+.TH V32\-AUDIO.HPP 3v32 "October 11, 2026" "v32c++ 20261010-dev" "v32c++ Library"
+.SH NAME
+v32/audio.hpp \- C++ helpers for the Vircon32 SPU: channels and sounds
+.SH SYNOPSIS
+.nf
+.B #include <v32/audio.hpp>
+.PP
+.B namespace v32 {
+.PP
+.B "enum ChannelState { ChannelStopped = 0x40, ChannelPaused = 0x41,"
+.B "                    ChannelPlaying = 0x42 };"
+.B "enum AudioLimits  { SoundChannels = 16 };"
+.B "enum PlayResult   { NoFreeChannel = \-1 };"
+.PP
+.BI "void  set_sound_looping( int " sound_id ", bool " enabled " );"
+.BI "void  set_sound_loop_points( int " sound_id ","
+.BI "                             int " start_sample ", int " end_sample " );"
+.BI "int   play_any( int " sound_id " );"
+.B  "void  pause_all();"
+.B  "void  resume_all();"
+.B  "void  stop_all();"
+.BI "void  set_master_volume( float " volume " );"
+.B  "float master_volume();"
+.PP
+.B class Channel {
+.BI "    Channel( int " channel_id " );"
+.B  "    int   number();"
+.BI "    void  assign( int " sound_id " );"
+.B  "    void  play();"
+.BI "    void  play( int " sound_id " );"
+.B  "    void  pause();"
+.B  "    void  stop();"
+.BI "    void  set_volume( float " volume " );"
+.BI "    void  set_speed( float " speed " );"
+.BI "    void  set_position( int " position " );"
+.BI "    void  set_looping( bool " enabled " );"
+.B  "    float speed();"
+.B  "    int   position();"
+.B  "    int   state();"
+.B  "    bool  is_playing();"
+.B  "    bool  is_paused();"
+.B  "    bool  is_stopped();"
+.B };
+.PP
+.B class SoundScope   { SoundScope( int \fIsound_id\fP ); ~SoundScope(); };
+.B class ChannelScope { ChannelScope( int \fIchannel_id\fP ); ~ChannelScope(); };
+.PP
+.B }
+.fi
+.SH DESCRIPTION
+.I v32/audio.hpp
+includes the SDK's
+.I audio.h
+(see
+.BR audio.h (3v32)).
+The SDK configures \(lqthe selected\(rq sound or channel, and several of
+its functions change the selection as a side effect. Everything in this
+header leaves the selection as it found it.
+.SS Functions
+.TP
+.BR set_sound_looping ", " set_sound_loop_points
+Set a sound's default looping, or the part of it that loops (in
+samples from its start), without changing the selected sound.
+.TP
+.B play_any
+Play a sound in the first stopped channel and return the channel's
+number, or
+.B NoFreeChannel
+if all 16 are busy.
+.TP
+.BR pause_all ", " resume_all ", " stop_all
+All channels at once.
+.TP
+.BR set_master_volume ", " master_volume
+The volume of the whole mix, 0.0 to 2.0 (1.0 is neutral).
+.SS Channel
+A handle for one of the 16 channels, holding only its number; every
+method selects the channel, acts, and restores the previous selection.
+.TP
+.B number
+The channel's number.
+.TP
+.B assign
+Assign a sound without playing it.
+.TP
+.B play
+Play the assigned sound (a paused channel resumes, a playing one starts
+over), or, given a
+.IR sound_id ,
+assign it and play it.
+.TP
+.BR pause ", " stop
+Pause keeping the position, or stop and rewind.
+.TP
+.BR set_volume ", " set_speed ", " set_position ", " set_looping
+Volume (1.0 normal), speed (1.0 normal), position in samples, and
+looping of what is playing now.
+.TP
+.BR speed ", " position ", " state
+The current values;
+.B state
+is one of the
+.B ChannelState
+values.
+.TP
+.BR is_playing ", " is_paused ", " is_stopped
+Tests of
+.BR state .
+.SS SoundScope, ChannelScope
+Scope guards: the constructor remembers the selected sound (or channel)
+and selects the one given; the destructor selects the remembered one
+again. Use them around direct calls to the SDK's selection-based
+functions.
+.SH EXAMPLES
+.RS
+.nf
+#include <v32/audio.hpp>
+
+#define SOUND_MUSIC 0
+#define SOUND_SHOT  1
+
+void main()
+{
+    v32::Channel music( 0 );
+    music.play( SOUND_MUSIC );
+    music.set_looping( true );
+    music.set_volume( 0.5 );
+
+    int channel = v32::play_any( SOUND_SHOT );
+    if( channel != v32::NoFreeChannel )
+    {
+        v32::Channel shot( channel );
+        shot.set_speed( 1.2 );
+    }
+}
+.fi
+.RE
+.SH SEE ALSO
+.BR audio.h (3v32),
+.BR wav2vircon (1),
+.BR v32c++\-headers (3v32)
+.SH AUTHOR
+Matthew Haas

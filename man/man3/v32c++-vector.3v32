@@ -1,0 +1,176 @@
+.TH V32C++\-VECTOR 3v32 "October 11, 2026" "v32c++ 20261010-dev" "v32c++ Library"
+.SH NAME
+v32c++\-vector \- std::vector in v32c++, a growable container
+.SH SYNOPSIS
+.nf
+.B #include <vector>
+.PP
+.BI "std::vector< " T " > " name ;
+.PP
+.BI "void push_back( const T& " value " );"
+.B  "void pop_back();"
+.B  "int  size();"
+.B  "int  capacity();"
+.B  "bool empty();"
+.BI "T&   operator[]( int " i " );"
+.BI "T&   at( int " i " );"
+.B  "T&   front();"
+.B  "T&   back();"
+.B  "T*   data();"
+.B  "T*   begin();"
+.B  "T*   end();"
+.BI "void reserve( int " n " );"
+.B  "void clear();"
+.BI "void resize( int " n " );"
+.BI "void resize( int " n ", const T& " value " );"
+.BI "T*   erase( T* " pos " );"
+.BI "T*   insert( T* " pos ", const T& " value " );"
+.fi
+.SH DESCRIPTION
+Like
+.B std::array
+(see
+.BR v32c++\-array (3v32)),
+.B std::vector
+is a built-in generic type: for each element type a program names, the
+transpiler writes one ordinary class,
+.BI vector_ T
+in the generated C
+.RB ( std::vector<int>
+is
+.BR vector_int ).
+.B #include <vector>
+switches the feature on; no file is read. The element types allowed
+are those of
+.BR std::array .
+.PP
+The storage comes from the SDK's
+.B malloc
+and
+.B free
+(see
+.BR misc.h (3v32)).
+.SS Members
+.TP
+.BR push_back ", " pop_back
+Add an element at the end, or remove the last. The capacity starts at
+4 and doubles when full.
+.TP
+.BR size ", " capacity ", " empty
+The number of elements, the room allocated, and whether there are no
+elements.
+.TP
+.BR operator[] ", " at ", " front ", " back
+References to elements; no bounds checking.
+.TP
+.BR data ", " begin ", " end
+Plain
+.B T*
+pointers.
+.TP
+.BR reserve ", " clear
+Make room for
+.I n
+elements; remove all elements, keeping the storage.
+.TP
+.B resize
+Change the number of elements; new elements are zero-filled, or copies
+of
+.IR value .
+.TP
+.BR erase ", " insert
+Remove the element at
+.IR pos ,
+or insert
+.I value
+before it.
+.I pos
+is a pointer:
+.BR "v.begin() + i" .
+.PP
+.B "a = b"
+copies the elements. Range-based
+.B for
+works over a vector, and accessors are written out in place in the
+generated C unless
+.B \-\-no\-inline\-containers
+is given to
+.BR v32c++ (1).
+.SS Differences from C++
+.IP \(bu 2
+Elements are raw memory: they are copied in with plain assignment, and
+the vector never runs an element's constructor or destructor. Numbers,
+pointers, plain structs and classes whose constructor only sets fields
+behave as expected, virtual functions included. A class with a
+destructor gets a warning; hold pointers to such objects instead.
+.IP \(bu 2
+Copies other than
+.B "a = b"
+are errors:
+.BR "std::vector<T> b = a;" ,
+passing a vector by value and returning one by value would leave two
+vectors owning one buffer. Pass
+.BR "std::vector<T> &" .
+.IP \(bu 2
+Running out of memory is not reported. Call
+.B reserve
+when the size is known; growing copies every element.
+.IP \(bu 2
+A reference or pointer into a vector is invalid once the vector grows,
+as in C++.
+.IP \(bu 2
+A vector of vectors needs a space between the closing brackets
+.RB ( "std::vector<std::vector<int> >" ),
+and its inner vectors are raw memory like any other element: they are
+not constructed.
+.IP \(bu 2
+A file-scope vector is constructed at the top of
+.BR main .
+.SH EXAMPLES
+.RS
+.nf
+#include <vector>
+
+struct Bullet { int x; int y; int dy; };
+
+std::vector< Bullet > bullets;
+
+void fire( int x, int y )
+{
+    Bullet b;
+    b.x = x;
+    b.y = y;
+    b.dy = \-4;
+    bullets.push_back( b );
+}
+
+void update()
+{
+    for( int i = 0; i < bullets.size(); )
+    {
+        bullets[ i ].y += bullets[ i ].dy;
+        if( bullets[ i ].y < 0 )
+          bullets.erase( bullets.begin() + i );
+        else
+          i++;
+    }
+}
+
+void main()
+{
+    bullets.reserve( 32 );
+    fire( 100, 300 );
+    update();
+}
+.fi
+.RE
+.SH SEE ALSO
+.BR v32c++\-array (3v32),
+.BR v32c++\-string (3v32),
+.BR misc.h (3v32),
+.BR v32c++ (1)
+.PP
+.I docs/GENERICS.md
+in the v32c++ source distribution.
+.SH AUTHOR
+Matthew Haas

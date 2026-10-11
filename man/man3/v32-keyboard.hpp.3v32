@@ -1,0 +1,194 @@
+.TH V32\-KEYBOARD.HPP 3v32 "October 11, 2026" "v32c++ 20261010-dev" "v32c++ Library"
+.SH NAME
+v32/keyboard.hpp \- v32::Keyboard, a v32io keyboard on a gamepad port
+.SH SYNOPSIS
+.nf
+.B #include <v32/keyboard.hpp>
+.PP
+.B namespace v32 {
+.PP
+.B "enum Key {"
+.B "    KeyNone = 0, KeyUp = 1, KeyDown = 2, KeyLeft = 3, KeyRight = 4,"
+.B "    KeyCapsLock = 5, KeyLShift = 6, KeyRShift = 7, KeyBackspace = 8,"
+.B "    KeyTab = 9, KeyLCtrl = 10, KeyRCtrl = 11, KeyLAlt = 12, KeyEnter = 13,"
+.B "    KeyF1 = 14, ... KeyF12 = 25, KeyRAlt = 26, KeyEscape = 27,"
+.B "    KeyLGui = 28, KeyRGui = 29, KeyDelete = 127"
+.B "};"
+.PP
+.B "struct KeyEvent { int key; int symbol; bool pressed; };"
+.PP
+.B class Keyboard {
+.BI "    Keyboard( int " gamepad " );"
+.B  "    bool probe();"
+.B  "    int  read();"
+.BI "    int  read_event( bool* " pressed " );"
+.BI "    bool next_event( KeyEvent* " out " );"
+.B  "    int  pending();"
+.B  "    void flush();"
+.BI "    bool is_down( int " key " );"
+.B  "    bool shift_down();"
+.B  "    bool ctrl_down();"
+.B  "    bool alt_down();"
+.B  "    bool gui_down();"
+.B  "    bool caps_lock_on();"
+.BI "    int  symbol( int " key " );"
+.B  "    int  last_event();"
+.B  "    int  dropped();"
+.B  "    bool connected();"
+.B  "    int  port();"
+.B  "    IoDevice* device();"
+.B };
+.PP
+.B }
+.fi
+.SH DESCRIPTION
+.B v32::Keyboard
+decodes a v32io keyboard (the
+.B v32kbd
+protocol) attached to a gamepad port. It needs a v32io device \(em the
+hardware adaptor or a modified emulator \(em as described in
+.BR v32\-v32io.hpp (3v32),
+which this header includes. Call
+.B probe
+once on every frame.
+.SS Key codes
+Codes identify keys, not characters. A key that types a character
+reports that character as typed without shift on a US layout:
+.BR \(aqa\(aq " to " \(aqz\(aq ,
+.BR \(aq0\(aq " to " \(aq9\(aq ,
+space, and
+.B \` \- = [ ] \e ; \(aq , . /
+\(em compare those with character literals. Other keys use the
+.B Key
+constants; the function keys are consecutive
+.RB ( "KeyF1 + n \- 1" ),
+and the numeric keypad reports the same codes as the main keyboard.
+Code 0 is never reported.
+.SS Reading keys
+Events wait in a queue of 64 inside the object.
+.BR read ,
+.B read_event
+and
+.B next_event
+all take from the same queue: use one style per keyboard.
+.TP
+.B probe
+Read the device and queue its new key event, if any. Returns true when
+an event arrived. When the queue is full the event is still applied to
+.B is_down
+and caps lock, but is not queued (see
+.BR dropped ).
+.TP
+.B read
+The next key press, as the character it types \(em shift and caps lock
+applied, compatible with the BIOS font \(em or, for keys that type
+none, its key code (below 32, or 127). Releases are skipped. Returns 0
+when the queue is empty.
+.TP
+.B read_event
+The next event, press or release, as its key code (no shift applied);
+.I *pressed
+is set to true for a press, unless
+.I pressed
+is
+.BR NULL .
+Returns 0 when the queue is empty.
+.TP
+.B next_event
+The next event with its key code, its typed character (shift and caps
+lock as they were when it was pressed) and whether it was a press.
+Returns false, leaving
+.I *out
+alone, when the queue is empty.
+.TP
+.BR pending ", " flush
+The number of queued events; discard them all (held keys stay held).
+.SS Held keys
+.TP
+.B is_down
+Whether a key is held now, by key code
+.RB ( \(aqw\(aq ", " v32::KeyLeft ", " v32::KeyLShift ", ...)."
+For game controls and modifiers.
+.TP
+.BR shift_down ", " ctrl_down ", " alt_down ", " gui_down
+Either key of the pair is held.
+.TP
+.B caps_lock_on
+The caps lock state, toggled by each press of Caps Lock.
+.TP
+.B symbol
+The character a key code types with the current shift and caps lock
+state (US layout). Caps lock affects only letters, where it inverts
+shift.
+.SS Other
+.TP
+.B last_event
+The frame counter value of the latest key event, or \-1 before the
+first.
+.TP
+.B dropped
+The number of events lost to a full queue.
+.TP
+.BR connected ", " port ", " device
+The gamepad's connection, its port, and the underlying
+.BR IoDevice .
+.SH PROTOCOL
+The device reports at most one key event per frame and holds it until
+the next. Left and Right form a strobe that alternates with each event,
+so a new event is recognized even when the same key is pressed twice in
+a row. Up means a press and Down a release; Start, A, B, X, Y, L and R
+carry the 7-bit key code, Start being the lowest bit. A keyboard
+created while the device already shows an event takes that state as
+its starting point, so an old event is not read as a new one after a
+reset.
+.SH EXAMPLES
+A line editor on gamepad 2 (port 1):
+.PP
+.RS
+.nf
+#include <v32/keyboard.hpp>
+#include <v32/string.hpp>
+
+v32::Keyboard keyboard( v32::SecondGamepadPort );
+int line[ 64 ];
+int length = 0;
+
+void main()
+{
+    line[ 0 ] = 0;
+    while( true )
+    {
+        keyboard.probe();                       // every frame
+        int key = keyboard.read();
+        while( key > 0 )
+        {
+            if( key == v32::KeyBackspace && length > 0 )
+              length\-\-;
+            else if( key >= 32 && key < 127 && length < 63 )
+            {
+                line[ length ] = key;
+                length++;
+            }
+            line[ length ] = 0;
+            key = keyboard.read();
+        }
+
+        clear_screen( color_black );
+        if( !keyboard.connected() )
+          print_at( 10, 10, "No keyboard on gamepad 2" );
+        print_at( 10, 40, line );
+        end_frame();
+    }
+}
+.fi
+.RE
+.SH SEE ALSO
+.BR v32\-v32io.hpp (3v32),
+.BR v32\-mouse.hpp (3v32),
+.BR Vircon32 (1),
+.BR v32c++\-headers (3v32)
+.PP
+.I docs/V32IO.md
+in the v32c++ source distribution.
+.SH AUTHOR
+Matthew Haas

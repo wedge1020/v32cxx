@@ -1,0 +1,100 @@
+.TH V32\-INPUT.HPP 3v32 "October 11, 2026" "v32c++ 20261010-dev" "v32c++ Library"
+.SH NAME
+v32/input.hpp \- C++ helpers for the Vircon32 gamepads
+.SH SYNOPSIS
+.nf
+.B #include <v32/input.hpp>
+.PP
+.B namespace v32 {
+.PP
+.B "enum Button { ButtonA, ButtonB, ButtonX, ButtonY, ButtonL, ButtonR, ButtonStart };"
+.PP
+.B "bool connected();"
+.B "bool left();"
+.B "bool right();"
+.B "bool up();"
+.B "bool down();"
+.B "bool button_a();"
+.B "bool button_b();"
+.B "bool button_x();"
+.B "bool button_y();"
+.B "bool button_l();"
+.B "bool button_r();"
+.B "bool button_start();"
+.PP
+.BI "bool pressed( Button " button " );"
+.BI "int  button_frames_held( Button " button " );"
+.BI "int  button_frames_held( int " button " );"
+.BI "void direction( Point* " out " );"
+.PP
+.B class GamepadScope {
+.BI "    GamepadScope( int " gamepad_id " );"
+.B "    ~GamepadScope();"
+.B };
+.PP
+.B }
+.fi
+.SH DESCRIPTION
+.I v32/input.hpp
+includes the SDK's
+.I input.h
+(see
+.BR input.h (3v32))
+and
+.IR v32/video.hpp ,
+for
+.BR v32::Point .
+All the readers apply to the selected gamepad.
+.TP
+.B connected
+Whether a controller is connected to the selected port.
+.TP
+.BR left ", " right ", " up ", " down ", " button_a " ... " button_start
+Whether the control is held right now. The SDK's functions, which
+return frame counts, remain available for timing: a count of 1 means
+\(lqjust pressed\(rq.
+.TP
+.B pressed
+Whether a
+.B Button
+is held.
+.TP
+.B button_frames_held
+The SDK's frame count for a button: positive while held, negative
+while released (see
+.BR input.h (3v32)).
+The
+.B int
+overload takes the numeric value of a
+.BR Button ,
+so a loop over 0 to 6 needs no cast. A value outside 0 to 6 returns 0.
+.TP
+.B direction
+Store the D-pad direction in
+.IR *out :
+\-1, 0 or 1 on each axis, left and up negative.
+.SS GamepadScope
+A scope guard: the constructor remembers the selected gamepad and
+selects
+.IR gamepad_id ;
+the destructor selects the remembered one again.
+.SH EXAMPLES
+.RS
+.nf
+#include <v32/input.hpp>
+
+void read_player( int gamepad, v32::Point* move, bool* fire )
+{
+    v32::GamepadScope pad( gamepad );
+    v32::direction( move );
+    *fire = v32::button_frames_held( v32::ButtonA ) == 1;
+}
+.fi
+.RE
+.SH SEE ALSO
+.BR input.h (3v32),
+.BR v32\-video.hpp (3v32),
+.BR v32\-keyboard.hpp (3v32),
+.BR v32c++\-headers (3v32)
+.SH AUTHOR
+Matthew Haas

@@ -315,8 +315,8 @@ realcheck: test
 # Run after changing VERSION, before a release.
 version:
 	@echo "v32c++ $(VERSION)"
-	@sed 's/^\.TH V32C++ 1 "[^"]*" "v32c++ [^"]*"/.TH V32C++ 1 "$(MONTH)" "v32c++ $(VERSION)"/' man/v32c++.1 > man/v32c++.1.tmp && mv man/v32c++.1.tmp man/v32c++.1
-	@grep -H "^\.TH" man/v32c++.1
+	@sed 's/^\.TH V32C++ 1 "[^"]*" "v32c++ [^"]*"/.TH V32C++ 1 "$(MONTH)" "v32c++ $(VERSION)"/' man/man1/v32c++.1 > man/man1/v32c++.1.tmp && mv man/man1/v32c++.1.tmp man/man1/v32c++.1
+	@grep -H "^\.TH" man/man1/v32c++.1
 
 install: all
 	mkdir -p $(HOME)/bin
@@ -327,22 +327,24 @@ install: all
 uninstall:
 	rm -f $(HOME)/bin/v32c++
 
-# System-wide install: the binary to /usr/local/bin, the man page to
-# /usr/local/share/man/man1, and, under V32CXX_INCLUDE_PATH (inc/config.h;
-# /usr/local/Vircon32/v32tools/include/v32c++ by default), the v32/ C++
-# headers -- so <v32/math.hpp> resolves from any directory with no -I --
-# and libc/, the C library C input finds there with no -I either. The
-# community tools share v32tools/ (v32lua's includes go in
-# v32tools/include/v32lua). The same layout `cmake --install` produces
-# with its default prefix (see CMakeLists.txt), minus the documents. May
+# System-wide install:  the binary  to /usr/local/bin,  the man  pages to
+# /usr/local/share/man/man1  and  man3/, and,  under  V32CXX_INCLUDE_PATH
+# (inc/config.h; /usr/local/Vircon32/v32tools/include/v32c++ by default),
+# the v32/ C++  headers -- so <v32/math.hpp> resolves  from any directory
+# with no -I --  and libc/, the C library C input finds  there with no -I
+# either. The  community tools share  v32tools/ (v32lua's includes  go in
+# v32tools/include/v32lua).  The same  layout `cmake  --install` produces
+# with its default prefix (see  CMakeLists.txt), minus the documents. May
 # need sudo. `make sysuninstall` removes it again.
+
 LIBCDIR := $(INCPATH)/libc
-MANDIR  := /usr/local/share/man/man1
+MANDIR  := /usr/local/share/man/
 
 sysinstall: all
 	install -d /usr/local/bin $(MANDIR) $(INCPATH)/v32 $(LIBCDIR)/sys
 	install -m 755 $(BIN) /usr/local/bin/v32c++
-	install -m 644 man/v32c++.1 $(MANDIR)/v32c++.1
+	install -m 644 man/man1/v32c++.1 $(MANDIR)/man1/v32c++.1
+	install -m 644 man/man3/*.3v32 $(MANDIR)/man3/
 	install -m 644 v32/*.hpp $(INCPATH)/v32/
 	install -m 644 libc/*.h libc/*.c $(LIBCDIR)/
 	install -m 644 libc/sys/*.h $(LIBCDIR)/sys/
@@ -353,7 +355,7 @@ sysinstall: all
 # empty -- v32tools/include, v32tools and Vircon32 only if nothing else
 # (v32opt, v32lua, the DevTools) is in them.
 sysuninstall:
-	rm -f /usr/local/bin/v32c++ $(MANDIR)/v32c++.1
+	rm -f /usr/local/bin/v32c++ $(MANDIR)/man/v32c++.1
 	rm -f $(addprefix $(INCPATH)/v32/,$(notdir $(wildcard v32/*.hpp)))
 	rm -f $(addprefix $(LIBCDIR)/,$(notdir $(wildcard libc/*.h libc/*.c)))
 	rm -f $(addprefix $(LIBCDIR)/sys/,$(notdir $(wildcard libc/sys/*.h)))

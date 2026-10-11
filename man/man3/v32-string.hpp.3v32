@@ -1,0 +1,110 @@
+.TH V32\-STRING.HPP 3v32 "October 11, 2026" "v32c++ 20261010-dev" "v32c++ Library"
+.SH NAME
+v32/string.hpp \- v32::String, a fixed-capacity string over the Vircon32 SDK
+.SH SYNOPSIS
+.nf
+.B #include <v32/string.hpp>
+.PP
+.B namespace v32 {
+.PP
+.B class String {
+.B "public:"
+.B "    String();"
+.BI "    String( int* " text " );"
+.B "    int  length();"
+.B "    int* c_str();"
+.BI "    int  at( int " index " );"
+.BI "    void assign( int* " text " );"
+.BI "    void append( int* " text " );"
+.BI "    void append_int( int " value ", int " base " );"
+.BI "    void append_float( float " value " );"
+.BI "    void operator+=( int* " text " );"
+.BI "    void operator=( int* " text " );"
+.BI "    bool equals( int* " text " );"
+.BI "    bool operator==( int* " text " );"
+.BI "    bool operator!=( int* " text " );"
+.BI "    void print_at_xy( int " x ", int " y " );"
+.B "    void print_current_point();"
+.B };
+.PP
+.B }
+.fi
+.SH DESCRIPTION
+.B v32::String
+holds up to 127 characters in a 128-word array inside the object, so it
+needs no heap and can be copied safely. It is built on the SDK's
+.I string.h
+and
+.I video.h
+(see
+.BR string.h (3v32)),
+which this header includes.
+.PP
+The built-in
+.B std::string
+(see
+.BR v32c++\-string (3v32))
+is an alternative with the standard C++ interface, which can also be
+passed and returned by value.
+.TP
+.BR String() ", " String( text )
+An empty string, or a copy of
+.IR text .
+.TP
+.BR length ", " c_str
+The length, and the characters as a plain zero-terminated
+.B int*
+for the SDK's functions.
+.TP
+.B at
+The character at
+.IR index ,
+or 0 when
+.I index
+is out of range.
+.TP
+.BR assign ", " operator=
+Replace the contents.
+.TP
+.BR append ", " operator+=
+Append text.
+.TP
+.B append_int
+Append a number in base 2 to 16, as
+.BR itoa (3v32)
+writes it.
+.TP
+.B append_float
+Append a number with up to 5 decimals, as
+.BR ftoa (3v32)
+writes it.
+.TP
+.BR equals ", " operator== ", " operator!=
+Compare with text.
+.TP
+.BR print_at_xy ", " print_current_point
+Draw the string with the BIOS font, as
+.BR print_at (3v32).
+.SH EXAMPLES
+.RS
+.nf
+#include <v32/string.hpp>
+
+void show_score( int score )
+{
+    v32::String s( "SCORE " );
+    s.append_int( score, 10 );
+    s += " PTS";
+    s.print_at_xy( 10, 10 );
+}
+.fi
+.RE
+.SH BUGS
+Nothing checks the capacity: text that makes the string longer than
+127 characters overruns the object.
+.SH SEE ALSO
+.BR string.h (3v32),
+.BR v32c++\-string (3v32),
+.BR v32c++\-headers (3v32)
+.SH AUTHOR
+Matthew Haas

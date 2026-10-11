@@ -1,0 +1,181 @@
+.TH V32\-MOUSE.HPP 3v32 "October 11, 2026" "v32c++ 20261010-dev" "v32c++ Library"
+.SH NAME
+v32/mouse.hpp \- v32::Mouse, a v32io mouse on a gamepad port
+.SH SYNOPSIS
+.nf
+.B #include <v32/mouse.hpp>
+.PP
+.B namespace v32 {
+.PP
+.B "enum MouseButton { MouseLeft = 1, MouseRight = 2, MouseMiddle = 4, MouseAny = 7 };"
+.PP
+.BI "int mouse_counter( int " raw ", int " negative ", int " positive ","
+.BI "                   int " high ", int " low " );"
+.BI "int mouse_steps( int " before ", int " after " );"
+.BI "int mouse_buttons( int " raw " );"
+.PP
+.B class Mouse {
+.BI "    Mouse( int " gamepad " );"
+.B  "    bool probe();"
+.B  "    int  x();"
+.B  "    int  y();"
+.BI "    void position( int* " out_x ", int* " out_y " );"
+.B  "    int  dx();"
+.B  "    int  dy();"
+.BI "    void delta( int* " out_dx ", int* " out_dy " );"
+.B  "    int  steps_x();"
+.B  "    int  steps_y();"
+.BI "    void set_position( int " new_x ", int " new_y " );"
+.BI "    void set_bounds( int " min_x ", int " min_y ", int " max_x ", int " max_y " );"
+.BI "    void set_scale( int " scale " );"
+.B  "    int  scale();"
+.BI "    bool is_down( int " button " );"
+.BI "    bool pressed( int " button " );"
+.BI "    bool released( int " button " );"
+.B  "    int  buttons();"
+.B  "    int  last_event();"
+.B  "    bool connected();"
+.B  "    int  port();"
+.B  "    IoDevice* device();"
+.B };
+.PP
+.B }
+.fi
+.SH DESCRIPTION
+.B v32::Mouse
+decodes a v32io mouse (the
+.B v32mouse
+protocol) attached to a gamepad port, and keeps a pointer position
+from its movement. It needs a v32io device \(em the hardware adaptor or
+a modified emulator \(em as described in
+.BR v32\-v32io.hpp (3v32),
+which this header includes. Call
+.B probe
+once on every frame.
+.PP
+The pointer starts at the center of the screen, moves 2 pixels per
+step of the device and stays within the screen, unless changed with
+.BR set_position ,
+.B set_scale
+and
+.BR set_bounds .
+There is no scroll wheel; the middle button is the wheel's click.
+.SS Members
+.TP
+.B probe
+Read the device: work out the movement since the last probe, move the
+pointer, and update the buttons. Returns true if the mouse moved or a
+button changed. On the frame the gamepad becomes connected no movement
+is taken.
+.TP
+.BR x ", " y ", " position
+The pointer.
+.B position
+stores both, skipping a
+.B NULL
+pointer.
+.TP
+.BR dx ", " dy ", " delta
+The movement in the latest probe, in pixels (steps times scale),
+reported even when the pointer was stopped by its bounds, which suits
+\(lqmouse look\(rq controls.
+.TP
+.BR steps_x ", " steps_y
+The same movement in device steps, \-5 to 5.
+.TP
+.B set_position
+Place the pointer, within its bounds.
+.TP
+.B set_bounds
+The rectangle the pointer moves in, inclusive; the pointer is moved
+inside it at once.
+.TP
+.BR set_scale ", " scale
+Pixels per step; values below 1 are ignored.
+.TP
+.B is_down
+Whether any button in the mask is held
+.RB ( MouseLeft ,
+.BR MouseAny ,
+\&...).
+.TP
+.BR pressed ", " released
+Whether any button in the mask went down, or up, in the latest probe.
+The device holds every button change for at least 25 ms, so even a
+quick click lasts more than a frame.
+.TP
+.B buttons
+All held buttons, as
+.B MouseButton
+bits.
+.TP
+.B last_event
+The frame counter value of the latest movement or button change, or
+\-1 before any.
+.TP
+.BR connected ", " port ", " device
+The gamepad's connection, its port, and the underlying
+.BR IoDevice .
+.SS Decoding functions
+.TP
+.B mouse_counter
+The position, 0 to 11, of one movement counter in the packed controls,
+given the masks of its four controls; \-1 if they do not form a valid
+position.
+.TP
+.B mouse_steps
+The movement from one counter position to another, \-5 to 5. A jump of
+6, which cannot be told from \-6, and unknown positions count as no
+movement.
+.TP
+.B mouse_buttons
+The
+.B MouseButton
+bits held in the packed controls.
+.SH PROTOCOL
+Movement is sent not as distances but as two counters, one per axis,
+each going round a cycle of 12 positions; each step changes exactly one
+control. A counter is a 2-bit Gray code (X and Y for the horizontal
+counter, L and R for the vertical one) together with a three-state
+value on a pair of opposite directions (Left and Right, Up and Down;
+never both pressed). The buttons are Start (middle), A (left) and B
+(right). Because movement is measured by comparing two frames, at most
+5 steps per axis can be seen per frame.
+.SH EXAMPLES
+.RS
+.nf
+#include <v32/mouse.hpp>
+#include <v32/video.hpp>
+
+v32::Mouse mouse( v32::SecondGamepadPort );
+
+void main()
+{
+    select_texture( \-1 );
+    while( true )
+    {
+        mouse.probe();                          // every frame
+
+        if( mouse.pressed( v32::MouseLeft ) )
+          clear_screen( color_black );
+
+        if( mouse.is_down( v32::MouseLeft ) )
+        {
+            select_region( 20 );                // a solid block
+            draw_region_at( mouse.x(), mouse.y() );
+        }
+        end_frame();
+    }
+}
+.fi
+.RE
+.SH SEE ALSO
+.BR v32\-v32io.hpp (3v32),
+.BR v32\-keyboard.hpp (3v32),
+.BR Vircon32 (1),
+.BR v32c++\-headers (3v32)
+.PP
+.I docs/V32IO.md
+in the v32c++ source distribution.
+.SH AUTHOR
+Matthew Haas

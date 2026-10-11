@@ -1,0 +1,233 @@
+.TH V32TERM 3v32 "October 11, 2026" "v32c++ 20261010-dev" "v32c++ Library"
+.SH NAME
+v32term \- an 80\(mu24 text screen, gamepad polling and on-screen keyboard
+.SH SYNOPSIS
+.nf
+.B #include <v32term.h>     \fR/* also brought in by v32libc.c and curses.h */
+.B #include <v32libc.c>
+.PP
+.B "#define V32TERM_COLS 80"
+.B "#define V32TERM_ROWS 24"
+.B "#define V32TERM_REVERSE  0x0100"
+.B "#define V32TERM_INK(n)   ((n) << 12)"
+.PP
+.B "void v32term_init( void );"
+.B "void v32term_clear( void );"
+.BI "void v32term_set( int " y ", int " x ", int " cell " );"
+.BI "int  v32term_get( int " y ", int " x " );"
+.BI "int  v32term_find( char *" text ", int " first_row ", int " last_row " );"
+.B "void v32term_flush( void );"
+.B "void v32term_redraw( void );"
+.B "void v32term_frame( void );"
+.PP
+.BI "void v32term_goto( int " y ", int " x " );"
+.BI "void v32term_attr( int " attr " );"
+.BI "void v32term_putc( int " c " );"
+.BI "void v32term_puts( char *" s " );"
+.PP
+.BI "void v32term_text( int " y ", int " x ", char *" s ", int " attr " );"
+.BI "void v32term_fill( int " y ", int " x ", int " h ", int " w ", int " cell " );"
+.BI "void v32term_box( int " y ", int " x ", int " h ", int " w ", int " attr " );"
+.BI "void v32term_save( int *" buffer " );"
+.BI "void v32term_restore( int *" buffer " );"
+.PP
+.B "void v32pad_poll( void );"
+.BI "int  v32pad_hit( int " button " );"
+.BI "int  v32pad_down( int " button " );"
+.BI "int  v32pad_held_frames( int " button " );"
+.B "int  v32pad_any_hit( void );"
+.PP
+.B "extern int (*v32term_key_source)( void );"
+.B "int  v32term_getkey( void );"
+.B "int  v32osk_getkey( void );"
+.BI "int  v32osk_getkey_titled( char *" title " );"
+.fi
+.SH DESCRIPTION
+.SS The screen
+The console's 640\(mu360 screen and the BIOS font's 10\(mu20 characters
+give only 64\(mu18 characters. This terminal uses cells of 8\(mu15
+pixels instead, so that 80 columns by 24 rows \(em the size terminal
+programs assume \(em fill the screen exactly. The BIOS glyphs are
+fitted into the smaller cells without losing strokes.
+.PP
+A cell is one word: the character in its low 8 bits, plus attribute
+bits:
+.B V32TERM_REVERSE
+(black on the color) and
+.BI V32TERM_INK( n )
+for a color from the palette:
+.BR V32INK_DEFAULT ,
+.BR RED ,
+.BR GREEN ,
+.BR YELLOW ,
+.BR BLUE ,
+.BR MAGENTA ,
+.BR CYAN ,
+.BR WHITE ,
+.BR GRAY ,
+.BR ORANGE ,
+.BR BROWN ,
+.B DIM
+and
+.B DKGREEN
+(0 to 12, each name prefixed with
+.BR V32INK_ ).
+Characters 17 to 20 are the BIOS font's shade blocks, from a quarter
+of the pixels lit to solid
+.RB ( V32TERM_SHADE_LIGHT ", " _HALF ", " _DARK ", " _SOLID ).
+.PP
+The terminal keeps what it last drew and repaints only the cells that
+changed, since the console keeps the screen between frames. Changes
+appear on the next
+.BR v32term_flush ,
+which happens whenever the program waits for a key or a frame.
+.TP
+.BR v32term_init ", " v32term_clear
+Set up the font regions (done automatically on first use); blank every
+cell.
+.TP
+.BR v32term_set ", " v32term_get
+Write or read one cell (row
+.IR y ,
+column
+.IR x ).
+.TP
+.B v32term_find
+1 if
+.I text
+appears on any row from
+.I first_row
+to
+.IR last_row ,
+otherwise 0.
+.TP
+.BR v32term_flush ", " v32term_redraw ", " v32term_frame
+Draw the changed cells; forget what is on screen so the next flush
+paints everything; flush and wait for the next frame.
+.SS Teletype output
+What
+.B printf
+and
+.B putchar
+write to: a cursor that wraps at the right edge and scrolls at the
+bottom.
+.BR \en ,
+.BR \er ,
+.B \eb
+(back one column) and
+.B \et
+(to the next multiple of 8) are honored; other control characters are
+ignored.
+.TP
+.BR v32term_goto ", " v32term_attr
+Move the cursor; set the attributes of what is written from now on.
+.TP
+.BR v32term_putc ", " v32term_puts
+Write a character or a string at the cursor.
+.SS Direct drawing
+For menus and pop-up windows.
+.TP
+.B v32term_text
+Write a string at a position, with attributes, without moving the
+cursor.
+.TP
+.BR v32term_fill ", " v32term_box
+Fill a rectangle of
+.I h
+rows by
+.I w
+columns with one cell; draw a box of
+.BR + ,
+.B \-
+and
+.B |
+around a blank rectangle.
+.TP
+.BR v32term_save ", " v32term_restore
+Copy all 1920 cells to or from
+.I buffer
+(of
+.B V32TERM_CELLS
+words), to put back what a pop-up covered.
+.SS Gamepad
+.B v32pad_poll
+flushes the screen, ends the frame and reads gamepad 1 (port 0). The
+other functions report on the latest poll, for the buttons
+.BR V32PAD_LEFT ", " RIGHT ", " UP ", " DOWN ", " A ", " B ", " X ", " Y ,
+.BR L ", " R " and " START
+(each prefixed with
+.BR V32PAD_ ).
+.TP
+.B v32pad_hit
+True on the first poll that finds the button down, and, for the four
+directions, again at a steady rate while it stays down (auto-repeat).
+.TP
+.BR v32pad_down ", " v32pad_held_frames
+Whether the button is down; how many polls in a row it has been down
+(0 when up).
+.TP
+.B v32pad_any_hit
+True when any button other than a direction was just pressed.
+.SS Keys
+Programs read keys through
+.BR v32term_getkey ,
+which flushes the screen and calls
+.BR v32term_key_source .
+By default that is the on-screen keyboard; a program with its own idea
+of how the gamepad should type (a game mapping buttons to commands)
+points it at its own function, and can still call
+.B v32osk_getkey
+for the cases it does not handle.
+.TP
+.BR v32osk_getkey ", " v32osk_getkey_titled
+Pop up the on-screen keyboard, with an optional title on its border,
+and return one character: the D-pad moves, A types the highlighted
+key, B is Escape, X Backspace, Y Space, L Shift and R Ctrl for the next
+key, and Start is Enter
+.RB ( V32KEY_ESC ", " V32KEY_BACKSPACE ", " V32KEY_ENTER ).
+.SH EXAMPLES
+A menu driven by the D-pad:
+.PP
+.RS
+.nf
+#include <stdio.h>
+#include <v32libc.c>
+
+char *items[ 3 ] = { "New game", "Load game", "Quit" };
+
+int menu( void )
+{
+    int choice = 0;
+    int i;
+
+    for( ;; )
+    {
+        for( i = 0; i < 3; i++ )
+            v32term_text( 10 + i, 30, items[ i ],
+                          i == choice ? V32TERM_REVERSE : 0 );
+        v32pad_poll();
+        if( v32pad_hit( V32PAD_UP ) && choice > 0 )
+            choice\-\-;
+        if( v32pad_hit( V32PAD_DOWN ) && choice < 2 )
+            choice++;
+        if( v32pad_hit( V32PAD_A ) || v32pad_hit( V32PAD_START ) )
+            return choice;
+    }
+}
+
+int main( void )
+{
+    v32term_clear();
+    v32term_box( 8, 26, 7, 20, V32TERM_INK( V32INK_CYAN ) );
+    printf( "You chose %d\en", menu() );
+    return 0;
+}
+.fi
+.RE
+.SH SEE ALSO
+.BR v32libc (3v32),
+.BR v32curses (3v32),
+.BR video.h (3v32),
+.BR input.h (3v32)
+.SH AUTHOR
+Matthew Haas

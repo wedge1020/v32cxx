@@ -1,0 +1,126 @@
+.TH V32\-MEMCARD.HPP 3v32 "October 11, 2026" "v32c++ 20261010-dev" "v32c++ Library"
+.SH NAME
+v32/memcard.hpp \- v32::MemoryCard, a signature-checked save slot
+.SH SYNOPSIS
+.nf
+.B #include <v32/memcard.hpp>
+.PP
+.B namespace v32 {
+.PP
+.B "enum MemoryCardLayout {"
+.B "    CardWords = 262144, SignatureWords = 20, CardDataWords = 262124"
+.B "};"
+.PP
+.B  "bool card_present();"
+.B  "bool card_blank();"
+.BI "bool card_matches( int* " signature " );"
+.BI "void read_card_signature( int* " out_signature " );"
+.BI "void write_card_signature( int* " signature " );"
+.PP
+.B class MemoryCard {
+.BI "    MemoryCard( int* " game_signature_words " );"
+.B  "    bool connected();"
+.B  "    bool is_blank();"
+.B  "    bool is_ours();"
+.B  "    bool claim();"
+.BI "    bool load( int* " destination ", int " offset ", int " words " );"
+.BI "    bool save( int* " source ", int " offset ", int " words " );"
+.B };
+.PP
+.B }
+.fi
+.SH DESCRIPTION
+.I v32/memcard.hpp
+includes the SDK's
+.I memcard.h
+(see
+.BR memcard.h (3v32)).
+Signatures are passed as plain arrays of 20
+.BR int s;
+a string literal initializer fills one, padding with zeros:
+.PP
+.RS
+.nf
+int signature[ 20 ] = "SPACEGAME\-SAVE\-1";
+.fi
+.RE
+.SS Functions
+.TP
+.B card_present
+Whether a card is inserted.
+.TP
+.B card_blank
+Whether the card's signature is all zeros (no game has claimed it).
+.TP
+.B card_matches
+Whether the card carries the given signature.
+.TP
+.BR read_card_signature ", " write_card_signature
+Read or write the card's signature.
+.SS MemoryCard
+A save area for one game, identified by its signature. Only a pointer
+to the signature array is kept, so the array must outlive the object.
+Every method checks again that a card is connected, since it can be
+removed at any time.
+.PP
+Unlike the SDK's
+.BR card_read_data " and " card_write_data ,
+whose offsets count from the start of the card (signature included),
+.B load
+and
+.B save
+count from the first word after the signature, 0 to
+.BR CardDataWords \-1,
+so game data cannot overwrite the signature.
+.TP
+.B connected
+Whether a card is inserted.
+.TP
+.B is_blank
+A card is inserted and no game has claimed it.
+.TP
+.B is_ours
+A card is inserted and carries this game's signature.
+.TP
+.B claim
+Write this game's signature on a blank card. Returns false, writing
+nothing, when the card belongs to another game; true when the card was
+blank or was already this game's.
+.TP
+.BR load ", " save
+Copy
+.I words
+words between RAM and the card's data area at
+.IR offset .
+They return false, without touching anything, unless the card is this
+game's and the range lies inside the data area.
+.SH EXAMPLES
+.RS
+.nf
+#include <v32/memcard.hpp>
+#include <v32/misc.hpp>
+
+int signature[ 20 ] = "SPACEGAME\-SAVE\-1";
+int progress[ 4 ];
+
+void main()
+{
+    v32::MemoryCard card( signature );
+
+    if( card.is_blank() )
+      card.claim();
+
+    if( !card.load( progress, 0, 4 ) )
+      v32::fill_words( progress, 0, 4 );
+
+    progress[ 0 ] += 1;            // times played
+    card.save( progress, 0, 4 );
+}
+.fi
+.RE
+.SH SEE ALSO
+.BR memcard.h (3v32),
+.BR v32\-misc.hpp (3v32),
+.BR v32c++\-headers (3v32)
+.SH AUTHOR
+Matthew Haas

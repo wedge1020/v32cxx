@@ -1,0 +1,179 @@
+.TH V32CURSES 3v32 "October 11, 2026" "v32c++ 20261010-dev" "v32c++ Library"
+.SH NAME
+v32curses \- classic curses on the Vircon32 text screen
+.SH SYNOPSIS
+.nf
+.B #include <curses.h>
+.B #include <v32libc.c>
+.B #include <v32curses.c>
+.PP
+.B "WINDOW *stdscr, *curscr;"
+.B "int LINES, COLS;"
+.PP
+.B "WINDOW *initscr( void );"
+.B "int     endwin( void );"
+.B "int     isendwin( void );"
+.BI "WINDOW *newwin( int " lines ", int " cols ", int " begin_y ", int " begin_x " );"
+.BI "WINDOW *subwin( WINDOW *" parent ", int " lines ", int " cols ","
+.BI "                int " begin_y ", int " begin_x " );"
+.BI "int     delwin( WINDOW *" win " );"
+.BI "int     mvwin( WINDOW *" win ", int " y ", int " x " );"
+.PP
+.BI "int wmove( WINDOW *" win ", int " y ", int " x " );"
+.BI "int waddch( WINDOW *" win ", chtype " ch " );"
+.BI "int waddstr( WINDOW *" win ", char *" s " );"
+.BI "int wprintw( WINDOW *" win ", char *" fmt ", ... );"
+.BI "int mvwprintw( WINDOW *" win ", int " y ", int " x ", char *" fmt ", ... );"
+.BI "int printw( char *" fmt ", ... );"
+.BI "int mvprintw( int " y ", int " x ", char *" fmt ", ... );"
+.BI "chtype winch( WINDOW *" win " );"
+.BI "int wclear( WINDOW *" win " );   " "werase(), wclrtoeol(), wclrtobot() likewise"
+.BI "int wstandout( WINDOW *" win " );   " "wstandend() likewise"
+.BI "int wattron( WINDOW *" win ", int " attrs " );   " "wattroff() likewise"
+.BI "int wrefresh( WINDOW *" win " );"
+.BI "int touchwin( WINDOW *" win " );"
+.BI "int clearok( WINDOW *" win ", int " flag " );"
+.BI "int box( WINDOW *" win ", chtype " vertical ", chtype " horizontal " );"
+.BI "int wgetch( WINDOW *" win " );"
+.BI "int wgetnstr( WINDOW *" win ", char *" buf ", int " n " );"
+.BI "int mvwaddch(), mvwaddstr();  chtype mvwinch();"
+.PP
+.BI "char *unctrl( chtype " ch " );"
+.B "int mvcur(), beep(), flushinp(), baudrate(), erasechar(), killchar();"
+.PP
+.RB "and the " stdscr " macros: " move ", " addch ", " addstr ", " inch ", " clear ", " erase ,
+.BR clrtoeol ", " clrtobot ", " standout ", " standend ", " attron ", " attroff ", " refresh ,
+.BR getch ", " getstr ", " getnstr ", " mvaddch ", " mvaddstr ", " mvinch ;
+.BR getyx ", " getmaxyx ", " getmaxy ", " getmaxx ", " getbegyx .
+.fi
+.SH DESCRIPTION
+This is the classic (4.3BSD and System V) curses that terminal programs
+are written against: windows of characters, a cursor in each, and
+.B wrefresh
+to make the screen match. The screen is the 80\(mu24 grid of
+.BR v32term (3v32),
+so
+.B LINES
+is 24 and
+.B COLS
+80, and keys come from the gamepad through
+.B v32term_key_source
+\(em the on-screen keyboard, unless the program installs its own
+mapping. Include
+.I v32curses.c
+once, after
+.IR v32libc.c .
+.PP
+The functions behave as in curses, with these differences:
+.IP \(bu 2
+A
+.B chtype
+is the character plus
+.B A_STANDOUT
+(also spelled
+.BR A_REVERSE ;
+reverse video) and an optional color,
+.BI A_INK( n )
+with a
+.B V32INK_
+index from
+.BR v32term (3v32).
+.B A_BOLD
+and
+.B A_NORMAL
+are 0.
+.IP \(bu 2
+The terminal-mode calls
+.RB ( raw ,
+.BR noraw ,
+.BR cbreak ,
+.BR nocbreak ,
+.BR crmode ,
+.BR echo ,
+.BR noecho ,
+.BR nl ,
+.BR nonl ,
+.BR keypad ,
+.BR idlok ,
+.BR leaveok ,
+.BR scrollok ,
+.BR nodelay ,
+.BR typeahead ,
+.BR halfdelay )
+have nothing to do on a console; they do nothing and return
+.BR OK .
+.IP \(bu 2
+.B getstr
+reads at most 1024 characters.
+.IP \(bu 2
+There are no color pairs, no
+.BR KEY_ *
+codes beyond
+.B KEY_BACKSPACE
+and
+.BR KEY_ENTER ,
+and no pads or panels.
+.SS Additions
+.TP
+.B curses_shown
+The window whose refresh last changed the screen: what the player is
+looking at, for code that needs to know whether a pop-up is up.
+.TP
+.B curses_ink_hook
+When set,
+.BI "int (*curses_ink_hook)( WINDOW *" win ", int " y ", int " x ", int " ch " )"
+chooses the color of every character a refresh puts on the screen:
+return a
+.B V32INK_
+index, or \-1 to keep the character's own. It gives an old monochrome
+program color without touching its drawing code.
+.SH EXAMPLES
+.RS
+.nf
+#include <curses.h>
+#include <v32libc.c>
+#include <v32curses.c>
+
+int ink( WINDOW *win, int y, int x, int ch )
+{
+    if( ch == \(aq@\(aq )
+        return V32INK_YELLOW;
+    if( ch == \(aq#\(aq )
+        return V32INK_GRAY;
+    return \-1;
+}
+
+int main( void )
+{
+    WINDOW *status;
+
+    initscr();
+    curses_ink_hook = ink;
+    status = newwin( 1, COLS, LINES \- 1, 0 );
+
+    box( stdscr, \(aq|\(aq, \(aq\-\(aq );
+    mvaddstr( 5, 10, "####" );
+    mvaddch( 6, 12, \(aq@\(aq );
+    refresh();
+
+    wstandout( status );
+    mvwprintw( status, 0, 0, "Level %d", 1 );
+    wstandend( status );
+    wrefresh( status );
+
+    getch();
+    endwin();
+    return 0;
+}
+.fi
+.RE
+.SH SEE ALSO
+.BR v32term (3v32),
+.BR v32libc (3v32),
+.BR v32c++ (1)
+.PP
+The Rogue demo,
+.IR demos/c/rogue ,
+in the v32c++ source distribution.
+.SH AUTHOR
+Matthew Haas

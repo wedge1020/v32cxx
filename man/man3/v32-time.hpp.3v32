@@ -1,0 +1,129 @@
+.TH V32\-TIME.HPP 3v32 "October 11, 2026" "v32c++ 20261010-dev" "v32c++ Library"
+.SH NAME
+v32/time.hpp \- C++ helpers for Vircon32 timing, date and time
+.SH SYNOPSIS
+.nf
+.B #include <v32/time.hpp>
+.PP
+.B namespace v32 {
+.PP
+.B "enum FrameTiming { FramesPerSecond = 60 };"
+.PP
+.BI "float frames_to_seconds( int " frames " );"
+.BI "int   seconds_to_frames( float " seconds " );"
+.BI "void  wait_seconds( float " seconds " );"
+.PP
+.B class Date {
+.B "public:"
+.B "    int year, month, day;"
+.B "    Date();"
+.B "    void set_now();"
+.BI "    void set_from( int " date_value " );"
+.B };
+.PP
+.B class TimeOfDay {
+.B "public:"
+.B "    int hours, minutes, seconds;"
+.B "    TimeOfDay();"
+.B "    void set_now();"
+.BI "    void set_from( int " seconds_of_day " );"
+.B };
+.PP
+.B class Stopwatch {
+.B "    Stopwatch();"
+.B "    void  restart();"
+.B "    int   elapsed_frames();"
+.B "    float elapsed_seconds();"
+.B };
+.PP
+.B class FrameScope {
+.B "    FrameScope();"
+.B "    ~FrameScope();"
+.B };
+.PP
+.B }
+.fi
+.SH DESCRIPTION
+.I v32/time.hpp
+includes the SDK's
+.I time.h
+(see
+.BR time.h (3v32)).
+.SS Functions
+.TP
+.BR frames_to_seconds ", " seconds_to_frames
+Convert at 60 frames per second;
+.B seconds_to_frames
+truncates.
+.TP
+.B wait_seconds
+Wait about
+.I seconds
+seconds (whole frames, truncated), calling
+.B end_frame
+on each.
+.SS Date
+The calendar date.
+.B set_now
+reads the console's clock;
+.B set_from
+decodes a value from
+.BR get_date (3v32).
+.I month
+runs from 1 to 12 and
+.I day
+from 1. A new
+.B Date
+holds year 0, January 1.
+.SS TimeOfDay
+.B set_now
+reads the console's clock;
+.B set_from
+decodes a number of seconds since midnight, as
+.BR get_time (3v32)
+returns.
+.SS Stopwatch
+Measures time in frames from its construction or its last
+.BR restart .
+.SS FrameScope
+A guard whose destructor calls
+.BR end_frame .
+Declared at the top of a main loop's body, it ends the frame at the
+closing brace, including on
+.BR continue .
+.SH EXAMPLES
+.RS
+.nf
+#include <v32/time.hpp>
+#include <v32/video.hpp>
+
+void main()
+{
+    v32::Stopwatch round_timer;
+
+    while( true )
+    {
+        v32::FrameScope frame;
+
+        if( round_timer.elapsed_seconds() > 30.0 )
+        {
+            clear_screen( color_red );
+            round_timer.restart();
+            continue;               // the frame still ends here
+        }
+
+        clear_screen( color_black );
+    }
+}
+.fi
+.RE
+.SH NOTES
+The leap-year rule in
+.B Date
+is the SDK's: divisible by 4 but not by 100, so the year 2000 comes out
+one day off.
+.SH SEE ALSO
+.BR time.h (3v32),
+.BR v32c++\-headers (3v32)
+.SH AUTHOR
+Matthew Haas

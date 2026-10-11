@@ -1,0 +1,178 @@
+.TH V32\-V32IO.HPP 3v32 "October 11, 2026" "v32c++ 20261010-dev" "v32c++ Library"
+.SH NAME
+v32/v32io.hpp \- v32::IoDevice, a gamepad port read as v32io data
+.SH SYNOPSIS
+.nf
+.B #include <v32/v32io.hpp>
+.PP
+.B namespace v32 {
+.PP
+.B "enum GamepadPort { FirstGamepadPort = 0, SecondGamepadPort = 1,"
+.B "                   ThirdGamepadPort = 2, FourthGamepadPort = 3 };"
+.PP
+.B "enum IoControl {"
+.B "    IoLeft = 1,    IoRight = 2,  IoUp = 4,   IoDown = 8,"
+.B "    IoStart = 16,  IoA = 32,     IoB = 64,   IoX = 128,"
+.B "    IoY = 256,     IoL = 512,    IoR = 1024, IoAll = 2047"
+.B "};"
+.PP
+.B class IoDevice {
+.BI "    IoDevice( int " gamepad " );"
+.B  "    int  port();"
+.B  "    bool probe();"
+.B  "    int  read();"
+.B  "    int  read_previous();"
+.B  "    int  changed();"
+.BI "    bool is_down( int " mask " );"
+.B  "    bool connected();"
+.B  "    bool plugged();"
+.B  "    int  scan();"
+.B };
+.PP
+.B }
+.fi
+.SH DESCRIPTION
+The Vircon32 console has no keyboard or mouse port.
+.I v32io
+connects them through a gamepad port instead: the console sees a
+gamepad, but its 11 controls carry keyboard or mouse data, which the
+drivers in
+.BR v32\-keyboard.hpp (3v32)
+and
+.BR v32\-mouse.hpp (3v32)
+decode.
+.B IoDevice
+is the core they share: it reads a gamepad's 11 controls and packs them
+into one
+.BR int ,
+one bit per control
+.RB ( IoControl ),
+in the order of the console's input ports. Use it directly to write a
+driver of your own or to look at what a device is sending.
+.PP
+This is a C++ port of the v32io C drivers
+.RI ( https://github.com/wedge1020/v32io ),
+using the same protocols and decoding. It does not need the C library,
+and the two are not meant to be mixed in one program.
+.SS Requirements
+A v32io device must be attached; without one this header does nothing
+useful. Either:
+.IP \(bu 2
+the v32io hardware adaptor, which presents a USB keyboard or mouse to
+the computer as a joystick named
+.B v32io:kbd
+or
+.BR v32io:mouse ,
+mapped in any Vircon32 emulator with a joystick profile that sends
+button
+.I n
+to control
+.IR n ;
+or
+.IP \(bu 2
+a modified Vircon32 emulator with the
+.B v32kbd
+and
+.B v32mouse
+devices in its
+.B Gamepads
+menu (see
+.BR Vircon32 (1)).
+.PP
+The stock emulator's
+.B Keyboard
+device is not a v32io keyboard: it maps a few keys to gamepad buttons,
+and reads as garbage here. Port ids count from 0; the emulator's menus
+count gamepads from 1.
+.SS The rule
+Call
+.B probe
+once on
+.B every
+frame, for every device, before
+.BR end_frame .
+The console updates the gamepads only between frames, and a keyboard
+reports at most one key event per frame, so a skipped frame can lose a
+key or misread mouse movement. Extra calls in the same frame do
+nothing.
+.SS Members
+.TP
+.B IoDevice( gamepad )
+Read gamepad port
+.I gamepad
+(0 to 3). The constructor writes a small machine-code routine into the
+object that reads all 11 ports in one call, and takes what the device
+shows right now as the starting state.
+.TP
+.B port
+The gamepad port.
+.TP
+.B probe
+Read the controls, keeping the previous reading. Returns true when the
+packed controls changed. A second call in the same frame returns false
+and reads nothing.
+.TP
+.BR read ", " read_previous
+The packed controls from the latest probe, and from the one before.
+.TP
+.B changed
+The controls that changed in the latest probe, as
+.B IoControl
+bits.
+.TP
+.B is_down
+Whether any control in
+.I mask
+was held at the latest probe.
+.TP
+.B connected
+Whether the gamepad was connected at the latest probe.
+.TP
+.B plugged
+Whether the gamepad became connected at the latest probe. A newly
+connected gamepad shows every control released whatever the device
+holds, so protocols that depend on history start over.
+.TP
+.B scan
+Read the controls now, without touching the probe history. Drivers use
+.B probe
+instead.
+.PP
+Every method restores the previously selected gamepad.
+.SH EXAMPLES
+Show the raw bits a device sends on gamepad 2 (port 1):
+.PP
+.RS
+.nf
+#include <v32/v32io.hpp>
+#include <v32/string.hpp>
+
+v32::IoDevice device( v32::SecondGamepadPort );
+
+void main()
+{
+    while( true )
+    {
+        device.probe();
+
+        v32::String bits( "" );
+        bits.append_int( device.read(), 2 );
+        clear_screen( color_black );
+        bits.print_at_xy( 10, 10 );
+        end_frame();
+    }
+}
+.fi
+.RE
+.SH SEE ALSO
+.BR v32\-keyboard.hpp (3v32),
+.BR v32\-mouse.hpp (3v32),
+.BR input.h (3v32),
+.BR Vircon32 (1),
+.BR v32c++\-headers (3v32)
+.PP
+.I docs/V32IO.md
+in the v32c++ source distribution, and the v32io repository,
+.IR https://github.com/wedge1020/v32io .
+.SH AUTHOR
+Matthew Haas
