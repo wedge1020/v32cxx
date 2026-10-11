@@ -18,12 +18,18 @@ BISON   = bison
 FLEX    = flex
 
 # The transpiler version: inc/v32cxx.h's VERSION is the single source.
-# `make version` shows it and stamps it into the other file that prints it
-# (the man page's .TH header); `v32c++ --version` reads it from the header
-# directly. Portable between GNU and BSD/macOS tools: no `sed -i` (BSD sed
-# takes the script as the backup suffix), no \t in brackets, no `date +%-d`.
+# `make version` shows it and stamps it, with today's date, into the .TH
+# header of every manual page (see the target below); `v32c++ --version`
+# reads it from the header directly. Portable between GNU and BSD/macOS
+# tools: no `sed -i` (BSD sed takes the script as the backup suffix), no
+# \t in brackets, no `date +%-d` (the day's leading zero is cut by sed).
 VERSION := $(shell sed -n 's/^\#define[[:space:]]*VERSION[[:space:]]*"\(.*\)".*/\1/p' $(INC_DIR)/v32cxx.h)
-MONTH   := $(shell LC_ALL=C date +"%B %Y")
+MANDATE := $(shell LC_ALL=C date +"%B %d, %Y" | sed 's/ 0\([1-9]\),/ \1,/')
+# The manual pages: man/man1 (v32c++.1) and man/man3 (the headers, in
+# section 3v32). A page that is only `.so <other page>` is an alias and
+# has no .TH line of its own.
+MAN1    := $(wildcard man/man1/*.1)
+MAN3    := $(wildcard man/man3/*.3v32)
 # The installed-header directory, from inc/config.h (same single-source
 # idea): `make sysinstall` puts the v32/ veneer headers there.
 INCPATH := $(shell sed -n 's/^[[:space:]]*\#[[:space:]]*define[[:space:]]*V32CXX_INCLUDE_PATH[[:space:]]*"\(.*\)".*/\1/p' $(INC_DIR)/config.h)
@@ -311,12 +317,24 @@ test: all | $(OUT_DIR)
 realcheck: test
 	tools/vircon32/check.sh
 
-# Show the version (from inc/v32cxx.h) and stamp it into the man page.
-# Run after changing VERSION, before a release.
+# Show the version (from inc/v32cxx.h) and stamp it, with today's date,
+# into every manual page that belongs to v32c++: a .TH line whose fourth
+# field is "v32c++ <anything>" becomes
+#     .TH <title> <section> "<Month day, year>" "v32c++ <VERSION>" ...
+# (title, section and the fifth field are kept). Alias pages (.so) and any
+# page whose .TH names something else are left alone. A page is rewritten
+# only when its line actually changes, so its mtime says when it was last
+# stamped. Run after changing VERSION, before a release.
 version:
-	@echo "v32c++ $(VERSION)"
-	@sed 's/^\.TH V32C++ 1 "[^"]*" "v32c++ [^"]*"/.TH V32C++ 1 "$(MONTH)" "v32c++ $(VERSION)"/' man/man1/v32c++.1 > man/man1/v32c++.1.tmp && mv man/man1/v32c++.1.tmp man/man1/v32c++.1
-	@grep -H "^\.TH" man/man1/v32c++.1
+	@echo "v32c++ $(VERSION) ($(MANDATE))"
+	@for f in $(MAN1) $(MAN3); do \
+	    grep -q '^\.TH .* "v32c++ [^"]*"' "$$f" || continue; \
+	    sed 's/^\(\.TH [^ ]* [^ ]*\) "[^"]*" "v32c++ [^"]*"/\1 "$(MANDATE)" "v32c++ $(VERSION)"/' \
+	        "$$f" > "$$f.tmp" || exit 1; \
+	    if cmp -s "$$f" "$$f.tmp"; then rm -f "$$f.tmp"; \
+	    else mv "$$f.tmp" "$$f"; echo "stamped $$f"; fi; \
+	done
+	@grep -h '^\.TH' $(MAN1) $(MAN3) | sed 's/^\.TH \([^ ]*\) \([^ ]*\) \("[^"]*" "[^"]*"\).*/  \1(\2) \3/'
 
 install: all
 	mkdir -p $(HOME)/bin
@@ -327,35 +345,38 @@ install: all
 uninstall:
 	rm -f $(HOME)/bin/v32c++
 
-# System-wide install:  the binary  to /usr/local/bin,  the man  pages to
-# /usr/local/share/man/man1  and  man3/, and,  under  V32CXX_INCLUDE_PATH
-# (inc/config.h; /usr/local/Vircon32/v32tools/include/v32c++ by default),
-# the v32/ C++  headers -- so <v32/math.hpp> resolves  from any directory
-# with no -I --  and libc/, the C library C input finds  there with no -I
-# either. The  community tools share  v32tools/ (v32lua's includes  go in
-# v32tools/include/v32lua).  The same  layout `cmake  --install` produces
-# with its default prefix (see  CMakeLists.txt), minus the documents. May
+# System-wide install: the binary to /usr/local/bin, the manual pages to
+# /usr/local/share/man/man1 (v32c++.1) and man3 (the 3v32 header pages and
+# their aliases), and, under V32CXX_INCLUDE_PATH (inc/config.h;
+# /usr/local/Vircon32/v32tools/include/v32c++ by default), the v32/ C++
+# headers -- so <v32/math.hpp> resolves from any directory with no -I --
+# and libc/, the C library C input finds there with no -I either. The
+# community tools share v32tools/ (v32lua's includes go in
+# v32tools/include/v32lua). The same layout `cmake --install` produces
+# with its default prefix (see CMakeLists.txt), minus the documents. May
 # need sudo. `make sysuninstall` removes it again.
-
 LIBCDIR := $(INCPATH)/libc
-MANDIR  := /usr/local/share/man/
+MANROOT := /usr/local/share/man
 
 sysinstall: all
-	install -d /usr/local/bin $(MANDIR) $(INCPATH)/v32 $(LIBCDIR)/sys
+	install -d /usr/local/bin $(MANROOT)/man1 $(MANROOT)/man3 $(INCPATH)/v32 $(LIBCDIR)/sys
 	install -m 755 $(BIN) /usr/local/bin/v32c++
-	install -m 644 man/man1/v32c++.1 $(MANDIR)/man1/v32c++.1
-	install -m 644 man/man3/*.3v32 $(MANDIR)/man3/
+	install -m 644 $(MAN1) $(MANROOT)/man1/
+	install -m 644 $(MAN3) $(MANROOT)/man3/
 	install -m 644 v32/*.hpp $(INCPATH)/v32/
 	install -m 644 libc/*.h libc/*.c $(LIBCDIR)/
 	install -m 644 libc/sys/*.h $(LIBCDIR)/sys/
-	@echo "Installed v32c++ to /usr/local/bin, its man page to $(MANDIR),"
+	-@command -v mandb >/dev/null 2>&1 && mandb -q 2>/dev/null; true
+	@echo "Installed v32c++ to /usr/local/bin, its manual pages to $(MANROOT),"
 	@echo "the C++ headers to $(INCPATH)/v32 and the C library to $(LIBCDIR)"
 
 # Removes exactly what sysinstall put down, then each directory that leaves
 # empty -- v32tools/include, v32tools and Vircon32 only if nothing else
 # (v32opt, v32lua, the DevTools) is in them.
 sysuninstall:
-	rm -f /usr/local/bin/v32c++ $(MANDIR)/man/v32c++.1
+	rm -f /usr/local/bin/v32c++
+	rm -f $(addprefix $(MANROOT)/man1/,$(notdir $(MAN1)))
+	rm -f $(addprefix $(MANROOT)/man3/,$(notdir $(MAN3)))
 	rm -f $(addprefix $(INCPATH)/v32/,$(notdir $(wildcard v32/*.hpp)))
 	rm -f $(addprefix $(LIBCDIR)/,$(notdir $(wildcard libc/*.h libc/*.c)))
 	rm -f $(addprefix $(LIBCDIR)/sys/,$(notdir $(wildcard libc/sys/*.h)))
@@ -370,7 +391,7 @@ put: clean
 	@mkdir -p put
 	@rm -f put/*
 	@cp inc/*.h src/*.c docs/* v32/* README.md c_api/*.h lib/* libc/* put/
-	@cp man/v32c++.1  put/v32c++.1.txt
+	@cp man/man1/v32c++.1  put/v32c++.1.txt
 	@cp src/lexer.l   put/lexer.l.txt
 	@cp src/parser.y  put/parser.y.txt
 

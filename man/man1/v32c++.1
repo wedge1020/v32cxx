@@ -1,4 +1,4 @@
-.TH V32C++ 1 "October 2026" "v32c++ 20261010-dev" "User Commands"
+.TH V32C++ 1 "October 11, 2026" "v32c++ 20261011-dev" "User Commands"
 .SH NAME
 v32c++ \- transpile a subset of C++ to Vircon32 C
 .SH SYNOPSIS
@@ -256,8 +256,8 @@ either way under
 .BR \-\-target=standard ,
 since both are Vircon32-platform concepts with no meaning outside it.
 One real behavioral difference, not just a syntax swap:
-.B main
-'s own return type \(em Vircon32 mode always forces
+.BR main \(aqs
+own return type \(em Vircon32 mode always forces
 .IR "void main(void)" ,
 discarding whatever the source declared; standard mode honors it
 (typically
@@ -781,7 +781,6 @@ An array dimension may be any integer constant expression: a literal,
 a macro, an enum constant, or arithmetic on those
 .RI ( "int grid[ROWS][COLS];" ).
 .SH HEADERS AND C TYPES
-.PP
 The
 .I v32/
 directory of the source distribution holds C++ headers for the
@@ -1379,7 +1378,6 @@ function, the generated
 .I this
 parameter's own type \(em with real violations left for the downstream
 C/C++ compiler to catch.
-
 .PP
 Array
 .B new

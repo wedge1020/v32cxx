@@ -458,7 +458,7 @@ v32c++ -I path/to/v32c++ -o obj/game.c game.cpp
 
 It is  silent on success, like  the Vircon32 compiler and  v32lua; errors
 and warnings go  to standard error with  the file and line,  and the exit
-status is non-zero  on any error. The manual  page (`man ./man/v32c++.1`)
+status is non-zero  on any error. The manual  page (`man ./man/man1/v32c++.1`)
 describes every option in full.
 
 **`-vv`** sprinkles comments  into the generated `.c`  where the C++-to-C
@@ -531,7 +531,8 @@ when it is installed).
 
 | Document | What it covers |
 | -------- | -------------- |
-| [`man/v32c++.1`](man/v32c++.1) | the manual page: every option, the language, the preprocessor, packaging |
+| [`man/man1/v32c++.1`](man/man1/v32c++.1) | the manual page: every option, the language, the preprocessor, packaging |
+| [`man/man3/`](man/man3) | section 3v32 pages for the headers: `v32c++-headers(3v32)` to start, then `v32-video.hpp`, ..., `v32c++-string`, `v32libc`, `v32curses`, ... |
 | [`docs/V32IO.md`](docs/V32IO.md) | keyboard and mouse support (`v32/keyboard.hpp`, `v32/mouse.hpp`) |
 | [`docs/C_INPUT.md`](docs/C_INPUT.md) | transpiling C, and the `libc/` C library |
 | [`docs/STRING.md`](docs/STRING.md) | the built-in `std::string` |
@@ -589,7 +590,9 @@ tests/          NNsample.cpp / .c inputs run by `make test` (some
                 v32io input
 demos/          example programs, C (demos/c) and C++ (demos/cxx)
 docs/           the documents listed above
-man/            v32c++.1, the manual page (`man ./man/v32c++.1`)
+man/            man1/v32c++.1, the manual page (`man ./man/man1/v32c++.1`);
+                man3/*.3v32, the header pages and their aliases
+                (`man -M man 3v32 v32libc`)
 CMakeLists.txt  the CMake build, install and packaging (see "With CMake")
 cmake/          cmake_uninstall.cmake.in, for CMake's `uninstall` target
 tools/
@@ -610,7 +613,7 @@ the  community  tools share  (v32opt's  files,  and v32lua's  headers  in
 | | Linux / macOS | Windows (CMake) |
 | --- | --- | --- |
 | transpiler | `/usr/local/bin/v32c++` | `C:\Program Files\Vircon32\v32tools\v32c++.exe` |
-| man page | `/usr/local/share/man/man1/v32c++.1` | `...\v32tools\docs\v32c++\v32c++.1` |
+| man pages | `/usr/local/share/man/man1/v32c++.1`, `/usr/local/share/man/man3/*.3v32` | `...\v32tools\docs\v32c++\man1`, `...\man3` |
 | C++ headers (`v32/`) | `/usr/local/Vircon32/v32tools/include/v32c++/v32` | `...\v32tools\include\v32c++\v32` |
 | C library (`libc/`) | `/usr/local/Vircon32/v32tools/include/v32c++/libc` | `...\v32tools\include\v32c++\libc` |
 | documentation | `/usr/local/Vircon32/v32tools/docs/v32c++` (CMake) | `...\v32tools\docs\v32c++` |
@@ -652,7 +655,9 @@ The   version   is   `YYYYMMDD-status`  (`-dev`   or   `-release`),   the
 same  scheme   as  v32lua,   and  lives  in   one  place:   `VERSION`  in
 [`inc/v32cxx.h`](inc/v32cxx.h),  which  `v32c++   --version`  prints.  To
 change it,  edit it there and  run `make version`, which  stamps it (with
-the current month) into the man page header.
+today's date)  into the  `.TH` header  of every  manual page  in `man/man1`
+and `man/man3` that names v32c++. Alias pages and pages of other projects
+are left alone, and a page already up to date is not rewritten.
 
 ## AI Collaboration
 

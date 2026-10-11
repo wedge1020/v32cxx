@@ -107,7 +107,8 @@ Open the *Gamepads* menu, pick the gamepad your program expects, and select
   device, and vice versa: both need the host keyboard.
 - Emulator hotkeys (Esc, F2, F4, F5 and the Ctrl shortcuts) keep working,
   and are also sent to the program.
-- With `v32mouse`, focusing the emulator window **captures the pointer**.
+- With `v32mouse`, a **left click on the game screen captures the pointer**
+  (the click itself is not sent to the program).
   Press **left Ctrl + left Alt** to release it (the *left* Alt, to stay
   clear of AltGr layouts).
 

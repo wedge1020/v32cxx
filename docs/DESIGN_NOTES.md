@@ -7816,6 +7816,37 @@ stored as they are (`((float *)__v32_va_tmpN)[i] = value`). tests/127
   (`more_plain_declarators`, sharing `pointer_opt` with the other
   alternatives so the conflict count is unchanged). tests/129.
 
+## 20261010-dev: manual pages for the headers, `make version` for all of them
+
+`man/` is now a manual tree: `man/man1/v32c++.1`, and `man/man3/` with a
+page for every header that comes with v32c++, in section `3v32` (shared
+with the Vircon32 SDK pages kept with ComputerSoftware: `vircon32(3v32)`,
+`video.h(3v32)`, ...). The suffix keeps `string.h`, `time.h`, `sleep`
+and friends from shadowing the system's pages. Overview:
+`v32c++-headers(3v32)`; one page per `v32/*.hpp`; `v32c++-string`,
+`-array`, `-vector` for the built-ins; `v32libc`, `v32file`, `v32term`,
+`v32curses` for C input. Alias pages (`.so`) cover every `v32::` class and
+function and every `v32_`/`v32term_`/`v32pad_`/`v32osk_`/`v32file_` name;
+standard C and curses names get none, so `man printf` still finds the
+system's page. Every example in them goes through v32c++ and the real
+compiler and assembler; the card, terminal and printf ones were run on
+the console core.
+
+`make version` used to stamp only `v32c++.1`, with the month. It now stamps
+every page whose `.TH` names v32c++ (fourth field `"v32c++ ..."`), with the
+full date (`October 11, 2026`, the form mandoc accepts without warning),
+keeping each page's title, section and fifth field; it rewrites a page only
+when its line changes. `make sysinstall`/`sysuninstall` and CMake install
+`man/man1/*.1` and `man/man3/*.3v32` (CMake's `V32CXX_INSTALL_MANDIR`,
+which named `man1`, is replaced by `V32CXX_INSTALL_MANROOT`, the tree's
+root, so an old cache can't misplace pages; on Windows the pages go under
+`docs/v32c++/man1` and `man3`, which uninstall prunes).
+
+Linting the moved `v32c++.1` with `mandoc -Tlint` found one real loss: a
+line beginning `'s own return type` (after `.B main`) is a roff control
+line, so the whole line was silently dropped from the rendered page. Now
+`.BR main \(aqs`. Two cosmetic warnings fixed with it.
+
 ## Archived: the README's "Current status" section (20261005-dev)
 
 
