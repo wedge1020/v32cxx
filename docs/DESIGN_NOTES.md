@@ -7847,6 +7847,36 @@ line beginning `'s own return type` (after `.B main`) is a roff control
 line, so the whole line was silently dropped from the rendered page. Now
 `.BR main \(aqs`. Two cosmetic warnings fixed with it.
 
+### Installed pages: gzipped, readable, and renamed
+
+The C++ header pages are now named after the header, `audio.hpp(3v32)`
+rather than `v32-audio.hpp(3v32)` (`man 3v32 audio.hpp`); the `v32::`
+alias names (`man v32::Channel`) are unchanged, and nothing collides with
+the SDK's `audio.h(3v32)`.
+
+`make sysinstall` installs every page `gzip -9 -n`'d, mode 0644, and each
+alias page as a symbolic link to its target's `.gz` (as Debian's
+dh_installman does: a `.so` inside a compressed page isn't followed by
+every man(1)). Installing removes uncompressed copies left by an earlier
+install and the old `v32-<name>.hpp` pages; `sysuninstall` removes the
+`.gz` pages and links, and either kind of leftover. A first `sudo make
+sysinstall` reportedly left pages unreadable to ordinary users. GNU
+`install` here gets the modes right even under umask 077, so the cause
+wasn't reproduced; permissions are now explicit regardless: `umask 022` for
+the install, `chmod 0644` on each page, and `go+rX` (added, never removed)
+on the header tree, the Vircon32/v32tools/include folders above it, and
+the man folders.
+
+CMake matches it: target `manpages` (in ALL) gzips into `<build>/man`,
+alias links are made at configure time and installed as links (so they
+are in the manifest and `uninstall` removes them), and an install-time step
+adds `go+rX` to everything v32c++ installs into. That step was needed:
+under umask 077 the directories `cmake --install` creates came out 0700
+despite `CMAKE_INSTALL_DEFAULT_DIRECTORY_PERMISSIONS` (mkdir's mode is
+masked by the umask), which would make the headers and pages unreadable
+in exactly the way reported. Verified under umask 077, with and without
+DESTDIR, by reading every page as `nobody` through a man front end.
+
 ## Archived: the README's "Current status" section (20261005-dev)
 
 

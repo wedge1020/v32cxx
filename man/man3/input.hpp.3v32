@@ -1,4 +1,4 @@
-.TH V32\-INPUT.HPP 3v32 "October 11, 2026" "v32c++ 20261011-dev" "v32c++ Library"
+.TH INPUT.HPP 3v32 "October 11, 2026" "v32c++ 20261010-dev" "v32c++ Library"
 .SH NAME
 v32/input.hpp \- C++ helpers for the Vircon32 gamepads
 .SH SYNOPSIS
@@ -93,8 +93,8 @@ void read_player( int gamepad, v32::Point* move, bool* fire )
 .RE
 .SH SEE ALSO
 .BR input.h (3v32),
-.BR v32\-video.hpp (3v32),
-.BR v32\-keyboard.hpp (3v32),
+.BR video.hpp (3v32),
+.BR keyboard.hpp (3v32),
 .BR v32c++\-headers (3v32)
 .SH AUTHOR
 Matthew Haas

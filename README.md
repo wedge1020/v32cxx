@@ -532,7 +532,7 @@ when it is installed).
 | Document | What it covers |
 | -------- | -------------- |
 | [`man/man1/v32c++.1`](man/man1/v32c++.1) | the manual page: every option, the language, the preprocessor, packaging |
-| [`man/man3/`](man/man3) | section 3v32 pages for the headers: `v32c++-headers(3v32)` to start, then `v32-video.hpp`, ..., `v32c++-string`, `v32libc`, `v32curses`, ... |
+| [`man/man3/`](man/man3) | section 3v32 pages for the headers: `v32c++-headers(3v32)` to start, then `video.hpp`, ..., `v32c++-string`, `v32libc`, `v32curses`, ... |
 | [`docs/V32IO.md`](docs/V32IO.md) | keyboard and mouse support (`v32/keyboard.hpp`, `v32/mouse.hpp`) |
 | [`docs/C_INPUT.md`](docs/C_INPUT.md) | transpiling C, and the `libc/` C library |
 | [`docs/STRING.md`](docs/STRING.md) | the built-in `std::string` |
@@ -613,7 +613,7 @@ the  community  tools share  (v32opt's  files,  and v32lua's  headers  in
 | | Linux / macOS | Windows (CMake) |
 | --- | --- | --- |
 | transpiler | `/usr/local/bin/v32c++` | `C:\Program Files\Vircon32\v32tools\v32c++.exe` |
-| man pages | `/usr/local/share/man/man1/v32c++.1`, `/usr/local/share/man/man3/*.3v32` | `...\v32tools\docs\v32c++\man1`, `...\man3` |
+| man pages | `/usr/local/share/man/man1/v32c++.1.gz`, `/usr/local/share/man/man3/*.3v32.gz` (gzipped; aliases are symbolic links) | `...\v32tools\docs\v32c++\man1`, `...\man3` |
 | C++ headers (`v32/`) | `/usr/local/Vircon32/v32tools/include/v32c++/v32` | `...\v32tools\include\v32c++\v32` |
 | C library (`libc/`) | `/usr/local/Vircon32/v32tools/include/v32c++/libc` | `...\v32tools\include\v32c++\libc` |
 | documentation | `/usr/local/Vircon32/v32tools/docs/v32c++` (CMake) | `...\v32tools\docs\v32c++` |

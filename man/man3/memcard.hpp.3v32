@@ -1,4 +1,4 @@
-.TH V32\-MEMCARD.HPP 3v32 "October 11, 2026" "v32c++ 20261011-dev" "v32c++ Library"
+.TH MEMCARD.HPP 3v32 "October 11, 2026" "v32c++ 20261010-dev" "v32c++ Library"
 .SH NAME
 v32/memcard.hpp \- v32::MemoryCard, a signature-checked save slot
 .SH SYNOPSIS
@@ -120,7 +120,7 @@ void main()
 .RE
 .SH SEE ALSO
 .BR memcard.h (3v32),
-.BR v32\-misc.hpp (3v32),
+.BR misc.hpp (3v32),
 .BR v32c++\-headers (3v32)
 .SH AUTHOR
 Matthew Haas

@@ -1,4 +1,4 @@
-.TH V32C++\-STRING 3v32 "October 11, 2026" "v32c++ 20261011-dev" "v32c++ Library"
+.TH V32C++\-STRING 3v32 "October 11, 2026" "v32c++ 20261010-dev" "v32c++ Library"
 .SH NAME
 v32c++\-string \- std::string in v32c++, a fixed-capacity string
 .SH SYNOPSIS
@@ -211,7 +211,7 @@ converts the whole part to an
 so values of 2147483648 or more come out wrong.
 .SH SEE ALSO
 .BR v32c++\-vector (3v32),
-.BR v32\-string.hpp (3v32),
+.BR string.hpp (3v32),
 .BR string.h (3v32),
 .BR v32c++ (1)
 .PP

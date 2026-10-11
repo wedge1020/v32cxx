@@ -1,4 +1,4 @@
-.TH V32C++\-HEADERS 3v32 "October 11, 2026" "v32c++ 20261011-dev" "v32c++ Library"
+.TH V32C++\-HEADERS 3v32 "October 11, 2026" "v32c++ 20261010-dev" "v32c++ Library"
 .SH NAME
 v32c++\-headers \- the C++ headers and the C library that come with v32c++
 .SH SYNOPSIS
@@ -53,14 +53,14 @@ directly; every port access is a call into the SDK.
 .PP
 .TS
 l l.
-\fBv32\-video.hpp\fR(3v32)	BlendMode, TextureScope, Point, draw helpers
-\fBv32\-input.hpp\fR(3v32)	bool readers, Button, GamepadScope
-\fBv32\-audio.hpp\fR(3v32)	Channel, SoundScope, ChannelScope
-\fBv32\-time.hpp\fR(3v32)	Date, TimeOfDay, Stopwatch, FrameScope
-\fBv32\-math.hpp\fR(3v32)	minimum, maximum, absolute, clamp, lerp, ...
-\fBv32\-string.hpp\fR(3v32)	String, a fixed-capacity string class
-\fBv32\-misc.hpp\fR(3v32)	random ranges, word helpers, HeapBlock
-\fBv32\-memcard.hpp\fR(3v32)	MemoryCard, a signature-checked save slot
+\fBvideo.hpp\fR(3v32)	BlendMode, TextureScope, Point, draw helpers
+\fBinput.hpp\fR(3v32)	bool readers, Button, GamepadScope
+\fBaudio.hpp\fR(3v32)	Channel, SoundScope, ChannelScope
+\fBtime.hpp\fR(3v32)	Date, TimeOfDay, Stopwatch, FrameScope
+\fBmath.hpp\fR(3v32)	minimum, maximum, absolute, clamp, lerp, ...
+\fBstring.hpp\fR(3v32)	String, a fixed-capacity string class
+\fBmisc.hpp\fR(3v32)	random ranges, word helpers, HeapBlock
+\fBmemcard.hpp\fR(3v32)	MemoryCard, a signature-checked save slot
 .TE
 .PP
 Three more give programs a keyboard and a mouse through the v32io
@@ -69,9 +69,9 @@ emulator:
 .PP
 .TS
 l l.
-\fBv32\-v32io.hpp\fR(3v32)	IoDevice, the common core
-\fBv32\-keyboard.hpp\fR(3v32)	Keyboard
-\fBv32\-mouse.hpp\fR(3v32)	Mouse
+\fBv32io.hpp\fR(3v32)	IoDevice, the common core
+\fBkeyboard.hpp\fR(3v32)	Keyboard
+\fBmouse.hpp\fR(3v32)	Mouse
 .TE
 .SS Built-in standard headers
 .BR <string> ,

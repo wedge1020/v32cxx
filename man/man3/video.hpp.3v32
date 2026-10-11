@@ -1,4 +1,4 @@
-.TH V32\-VIDEO.HPP 3v32 "October 11, 2026" "v32c++ 20261011-dev" "v32c++ Library"
+.TH VIDEO.HPP 3v32 "October 11, 2026" "v32c++ 20261010-dev" "v32c++ Library"
 .SH NAME
 v32/video.hpp \- C++ helpers for the Vircon32 GPU
 .SH SYNOPSIS
@@ -121,8 +121,8 @@ void main()
 .RE
 .SH SEE ALSO
 .BR video.h (3v32),
-.BR v32\-input.hpp (3v32),
-.BR v32\-string.hpp (3v32),
+.BR input.hpp (3v32),
+.BR string.hpp (3v32),
 .BR v32c++\-headers (3v32),
 .BR v32c++ (1)
 .SH AUTHOR

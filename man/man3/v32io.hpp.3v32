@@ -1,4 +1,4 @@
-.TH V32\-V32IO.HPP 3v32 "October 11, 2026" "v32c++ 20261011-dev" "v32c++ Library"
+.TH V32IO.HPP 3v32 "October 11, 2026" "v32c++ 20261010-dev" "v32c++ Library"
 .SH NAME
 v32/v32io.hpp \- v32::IoDevice, a gamepad port read as v32io data
 .SH SYNOPSIS
@@ -37,9 +37,9 @@ The Vircon32 console has no keyboard or mouse port.
 connects them through a gamepad port instead: the console sees a
 gamepad, but its 11 controls carry keyboard or mouse data, which the
 drivers in
-.BR v32\-keyboard.hpp (3v32)
+.BR keyboard.hpp (3v32)
 and
-.BR v32\-mouse.hpp (3v32)
+.BR mouse.hpp (3v32)
 decode.
 .B IoDevice
 is the core they share: it reads a gamepad's 11 controls and packs them
@@ -165,8 +165,8 @@ void main()
 .fi
 .RE
 .SH SEE ALSO
-.BR v32\-keyboard.hpp (3v32),
-.BR v32\-mouse.hpp (3v32),
+.BR keyboard.hpp (3v32),
+.BR mouse.hpp (3v32),
 .BR input.h (3v32),
 .BR Vircon32 (1),
 .BR v32c++\-headers (3v32)

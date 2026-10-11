@@ -1,4 +1,4 @@
-.TH V32\-TIME.HPP 3v32 "October 11, 2026" "v32c++ 20261011-dev" "v32c++ Library"
+.TH TIME.HPP 3v32 "October 11, 2026" "v32c++ 20261010-dev" "v32c++ Library"
 .SH NAME
 v32/time.hpp \- C++ helpers for Vircon32 timing, date and time
 .SH SYNOPSIS

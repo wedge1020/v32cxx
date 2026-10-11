@@ -355,37 +355,67 @@ uninstall:
 # v32tools/include/v32lua). The same layout `cmake --install` produces
 # with its default prefix (see CMakeLists.txt), minus the documents. May
 # need sudo. `make sysuninstall` removes it again.
+#
+# Manual pages are installed gzip -9'd (page.3v32.gz), mode 0644. An alias
+# page (a one-line `.so man3/<page>`) becomes a symbolic link to its
+# target's .gz instead -- what Debian's dh_installman does -- since a .so
+# inside a compressed page is not followed by every man(1). Permissions are
+# set explicitly (umask 022, chmod), never left to the umask sudo runs
+# with. Earlier installs' uncompressed pages, and the v32-<name>.hpp page
+# names used before the rename to <name>.hpp, are removed on the way.
 LIBCDIR := $(INCPATH)/libc
 MANROOT := /usr/local/share/man
+# Vircon32/, v32tools/ and include/ above the header directory: each gets
+# go+rx (added, never taken away) so that ordinary users can reach the
+# headers whatever umask created them.
+INCPARENTS := $(patsubst %/,%,$(dir $(INCPATH))) \
+              $(patsubst %/,%,$(dir $(patsubst %/,%,$(dir $(INCPATH))))) \
+              $(patsubst %/,%,$(dir $(patsubst %/,%,$(dir $(patsubst %/,%,$(dir $(INCPATH)))))))
 
 sysinstall: all
-	install -d /usr/local/bin $(MANROOT)/man1 $(MANROOT)/man3 $(INCPATH)/v32 $(LIBCDIR)/sys
+	umask 022; install -d /usr/local/bin $(MANROOT)/man1 $(MANROOT)/man3 $(INCPATH)/v32 $(LIBCDIR)/sys
 	install -m 755 $(BIN) /usr/local/bin/v32c++
-	install -m 644 $(MAN1) $(MANROOT)/man1/
-	install -m 644 $(MAN3) $(MANROOT)/man3/
 	install -m 644 v32/*.hpp $(INCPATH)/v32/
 	install -m 644 libc/*.h libc/*.c $(LIBCDIR)/
 	install -m 644 libc/sys/*.h $(LIBCDIR)/sys/
+	chmod -R go+rX $(INCPATH)
+	chmod go+rx $(INCPARENTS) $(MANROOT) $(MANROOT)/man1 $(MANROOT)/man3
+	rm -f $(MANROOT)/man3/v32-*.hpp.3v32 $(MANROOT)/man3/v32-*.hpp.3v32.gz
+	@umask 022; for f in $(MAN1) $(MAN3); do \
+	    case "$$f" in *.1) sec=man1 ;; *) sec=man3 ;; esac; \
+	    dest="$(MANROOT)/$$sec/$${f##*/}"; \
+	    rm -f "$$dest" "$$dest.gz"; \
+	    if head -n 1 "$$f" | grep -q '^\.so '; then \
+	        target=`sed -n '1s|^\.so [^/]*/||p' "$$f"`; \
+	        ln -s "$$target.gz" "$$dest.gz" || exit 1; \
+	    else \
+	        gzip -9 -n -c "$$f" > "$$dest.gz" || exit 1; \
+	        chmod 0644 "$$dest.gz" || exit 1; \
+	    fi; \
+	done
 	-@command -v mandb >/dev/null 2>&1 && mandb -q 2>/dev/null; true
-	@echo "Installed v32c++ to /usr/local/bin, its manual pages to $(MANROOT),"
-	@echo "the C++ headers to $(INCPATH)/v32 and the C library to $(LIBCDIR)"
+	@echo "Installed v32c++ to /usr/local/bin, its manual pages (gzipped) to"
+	@echo "$(MANROOT)/man1 and man3, the C++ headers to $(INCPATH)/v32"
+	@echo "and the C library to $(LIBCDIR)"
 
-# Removes exactly what sysinstall put down, then each directory that leaves
-# empty -- v32tools/include, v32tools and Vircon32 only if nothing else
-# (v32opt, v32lua, the DevTools) is in them.
+# Removes exactly what sysinstall put down -- the manual pages as .gz (and
+# any uncompressed copy or old v32-<name>.hpp name an earlier install left)
+# -- then each directory that leaves empty: v32tools/include, v32tools and
+# Vircon32 only if nothing else (v32opt, v32lua, the DevTools) is in them.
 sysuninstall:
 	rm -f /usr/local/bin/v32c++
-	rm -f $(addprefix $(MANROOT)/man1/,$(notdir $(MAN1)))
-	rm -f $(addprefix $(MANROOT)/man3/,$(notdir $(MAN3)))
+	@for f in $(MAN1) $(MAN3); do \
+	    case "$$f" in *.1) sec=man1 ;; *) sec=man3 ;; esac; \
+	    rm -f "$(MANROOT)/$$sec/$${f##*/}" "$(MANROOT)/$$sec/$${f##*/}.gz"; \
+	done
+	rm -f $(MANROOT)/man3/v32-*.hpp.3v32 $(MANROOT)/man3/v32-*.hpp.3v32.gz
 	rm -f $(addprefix $(INCPATH)/v32/,$(notdir $(wildcard v32/*.hpp)))
 	rm -f $(addprefix $(LIBCDIR)/,$(notdir $(wildcard libc/*.h libc/*.c)))
 	rm -f $(addprefix $(LIBCDIR)/sys/,$(notdir $(wildcard libc/sys/*.h)))
-	-@for d in $(INCPATH)/v32 $(LIBCDIR)/sys $(LIBCDIR) $(INCPATH) \
-	          $(patsubst %/,%,$(dir $(INCPATH))) \
-	          $(patsubst %/,%,$(dir $(patsubst %/,%,$(dir $(INCPATH))))) \
-	          $(patsubst %/,%,$(dir $(patsubst %/,%,$(dir $(patsubst %/,%,$(dir $(INCPATH))))))); do \
+	-@for d in $(INCPATH)/v32 $(LIBCDIR)/sys $(LIBCDIR) $(INCPATH) $(INCPARENTS); do \
 	    rmdir "$$d" 2>/dev/null && echo "removed empty $$d"; \
 	done; true
+	-@command -v mandb >/dev/null 2>&1 && mandb -q 2>/dev/null; true
 
 put: clean
 	@mkdir -p put

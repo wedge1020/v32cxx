@@ -1,4 +1,4 @@
-.TH V32\-KEYBOARD.HPP 3v32 "October 11, 2026" "v32c++ 20261011-dev" "v32c++ Library"
+.TH KEYBOARD.HPP 3v32 "October 11, 2026" "v32c++ 20261010-dev" "v32c++ Library"
 .SH NAME
 v32/keyboard.hpp \- v32::Keyboard, a v32io keyboard on a gamepad port
 .SH SYNOPSIS
@@ -47,7 +47,7 @@ decodes a v32io keyboard (the
 .B v32kbd
 protocol) attached to a gamepad port. It needs a v32io device \(em the
 hardware adaptor or a modified emulator \(em as described in
-.BR v32\-v32io.hpp (3v32),
+.BR v32io.hpp (3v32),
 which this header includes. Call
 .B probe
 once on every frame.
@@ -183,8 +183,8 @@ void main()
 .fi
 .RE
 .SH SEE ALSO
-.BR v32\-v32io.hpp (3v32),
-.BR v32\-mouse.hpp (3v32),
+.BR v32io.hpp (3v32),
+.BR mouse.hpp (3v32),
 .BR Vircon32 (1),
 .BR v32c++\-headers (3v32)
 .PP
