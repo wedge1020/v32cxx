@@ -8781,3 +8781,54 @@ later.
 
 This is genuinely still growing — expect rough edges, and expect this
 README to need updating again as things change.
+
+## Round: ftoa carry fix, the Vircon32 manual pages in-tree, and CI — 20261014-dev
+
+- **`VERSION` → `20261014-dev`** (`inc/v32cxx.h`, then `make version`
+  for the manual pages).
+- **The SDK's `ftoa()` rounding-carry fix.** The new `string.h` carries
+  a rounding that reaches 100000 into the whole part (0.999999 used to
+  print as `0.1`). The project's `c_api/string.h` already was the fixed
+  file; the toolchain `build-tools.sh` builds, however, pins a DevTools
+  commit whose `string.h` still has the bug, so `realcheck` was testing
+  against the old header. `build-tools.sh` now installs `c_api/string.h`
+  over it. Measured with the real compiler and the emulator's console
+  core, old vs new header: 0.999999 → `0.1` vs `1`; 1.999999 → `1.1`
+  vs `2`; everything else identical. **Not fixed upstream:** a value
+  outside the int range (2147483648 and up, below -2147483648, and
+  2147483647.0, which a float rounds up) does not make `ftoa()` print
+  garbage, as the old man page said, it makes it never return: the
+  leading-zeroes loop runs on a negative `decimal_aux` that wraps to 0
+  and writes `'0'` forever, past the buffer (13,000 words after 3000
+  frames). And `-0.000001` prints `-0`.
+- **C++ side.** `v32::String::append_float` is `ftoa()` and inherited the
+  carry fix; it now also guards the range (`overflow` / `-overflow`)
+  instead of handing such a value to a function that hangs.
+  `std::to_string(float)` (the built-in `<string>`, `lib/string` →
+  `src/stdstring.c`) was a separate implementation with the same class
+  of bug: it truncated the sixth decimal instead of rounding and had no
+  carry (0.9999996 printed `0.999999`, not `1.000000`). It now rounds to
+  millionths and carries into the whole part. Its whole part is still an
+  `int` (documented under BUGS). Tests: `tests/114sample.cpp` (to_string,
+  fails with the old code: test_errors 4) and the new
+  `tests/130sample.cpp` (append_float; fails with the old header:
+  test_errors 1).
+- **Vircon32 manual pages in the tree** (`man/vircon32/man1`, `man3`,
+  `README.md`), apart from v32c++'s so they keep their own version
+  (`make version` skips them; their `.TH` names the DevTools). They
+  install beside v32c++'s into the same `man1`/`man3` (no page name is
+  shared; the workflow checks that): `make sysinstall`/`sysuninstall`
+  (`VMAN1`/`VMAN3`) and CMake (`V32CXX_VMAN1`/`V32CXX_VMAN3`, appended
+  to the lists the gzip/symlink logic already walks). Checked against
+  the headers: only `string.h` differs from the pinned DevTools ones,
+  so only `string.h.3v32` changed (ftoa description and BUGS).
+- **`.github/workflows/release-builds.yml`**, adapted from v32lua's, with
+  `scripts/stage_package.sh` (the zip layout, manual pages included) and
+  `scripts/smoke_test.sh`. v32c++ finds its headers through a path
+  compiled in from `inc/config.h`, not next to its own executable as
+  v32lua does, so the smoke test points `$V32CXX_INCLUDE` at the staged
+  package, and the Windows jobs compile in the `Program Files` location.
+  See README, "Releases and automated builds". The OpenBSD and Haiku
+  jobs compile every `src/*.c` directly (no GNU make there) and are
+  optional, as in v32lua; they, and the Windows jobs, have not run on
+  GitHub from here.

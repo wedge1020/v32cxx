@@ -94,6 +94,12 @@ int numbers()
     if (std::stoi("17") != 17) return 4;
     float f = std::stof("2.5");
     if (f < 2.49 || f > 2.51) return 4;
+    // to_string(float): six decimals, rounded, with the rounding carried into
+    // the whole part (as the SDK's ftoa() had to be fixed to do)
+    if (std::to_string(2.5) != "2.500000" || std::to_string(-1.5) != "-1.500000") return 4;
+    if (std::to_string(3.0) != "3.000000" || std::to_string(0.25) != "0.250000") return 4;
+    if (std::to_string(0.9999996) != "1.000000" || std::to_string(1.9999996) != "2.000000") return 4;
+    if (std::to_string(0.0000004) != "0.000000" || std::to_string(0.0000006) != "0.000001") return 4;
     std::string c = "abc";
     if (c.find('z') != std::string::npos || c.find("zz") != -1) return 4;
     return 0;

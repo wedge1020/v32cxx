@@ -1,0 +1,116 @@
+.TH TIME.H 3v32 "October 11, 2026" "Vircon32 DevTools 26.04.24" "Vircon32 C Library"
+.SH NAME
+time.h \- Vircon32 timer: frames, date, time of day, waiting
+.SH SYNOPSIS
+.nf
+.B #include \(dqtime.h\(dq
+.PP
+.B "#define frames_per_second  60"
+.B "#define frame_time         (1.0 / frames_per_second)"
+.PP
+.B "struct date_info { int year; int month; int day; };"
+.B "struct time_info { int hours; int minutes; int seconds; };"
+.PP
+.B "int  get_cycle_counter();"
+.B "int  get_frame_counter();"
+.B "int  get_date();"
+.B "int  get_time();"
+.BI "void translate_date( int " date ", date_info* " translated " );"
+.BI "void translate_time( int " time ", time_info* " translated " );"
+.PP
+.B "void end_frame();"
+.BI "void sleep( int " frames " );"
+.fi
+.SH DESCRIPTION
+.TP
+.B get_cycle_counter
+The number of CPU cycles elapsed in the current frame, 0 to 249999.
+Emulators do not promise accurate timing of the cycles within a frame,
+but the count is the usual measure of how much of a frame's CPU time a
+program uses.
+.TP
+.B get_frame_counter
+The number of frames since the console was powered on or reset.
+.TP
+.B get_date
+Today's date in one word: the year in the upper 16 bits and the day of
+the year, counted from 0 for January 1, in the lower 16. Decode it with
+.BR translate_date .
+.TP
+.B get_time
+The time of day, in seconds since midnight. Decode it with
+.BR translate_time .
+.TP
+.B translate_date
+Fill
+.I *translated
+with the year, the month (1 to 12) and the day of the month (from 1).
+.TP
+.B translate_time
+Fill
+.I *translated
+with hours (0 to 23), minutes and seconds (0 to 59).
+.TP
+.B end_frame
+Wait until the current frame ends and the next one begins (the
+.B WAIT
+instruction). Every main loop calls it once per iteration: it is what
+keeps a game at 60 frames per second and what lets the gamepad state
+update.
+.TP
+.B sleep
+Wait for
+.I frames
+frames (not seconds, unlike the standard C function of the same name).
+.SH NOTES
+.B translate_date
+treats a year as a leap year when it is divisible by 4 but not by 100,
+so it is one day off in years divisible by 400, such as 2000.
+.SH EXAMPLES
+Show the date, and measure how much of the frame the game logic takes:
+.PP
+.RS
+.nf
+#include "time.h"
+#include "video.h"
+#include "string.h"
+
+void show_date()
+{
+    date_info today;
+    int[ 12 ] text;
+
+    translate_date( get_date(), &today );
+    itoa( today.year, text, 10 );
+    print_at( 10, 10, text );
+}
+
+void update_game()
+{
+}
+
+void main()
+{
+    int[ 12 ] text;
+
+    while( true )
+    {
+        update_game();
+
+        clear_screen( color_black );
+        show_date();
+        itoa( get_cycle_counter() * 100 / 250000, text, 10 );
+        print_at( 10, 40, text );    // percent of the frame used
+        end_frame();
+    }
+}
+.fi
+.RE
+.SH SEE ALSO
+.BR vircon32 (3v32),
+.BR input.h (3v32),
+.BR time.hpp (3v32)
+.SH AUTHOR
+The Vircon32 standard library was written by Javier Carracedo
+.RI ( Carra ).
+This manual page was written by Matthew Haas for the v32c++ project.

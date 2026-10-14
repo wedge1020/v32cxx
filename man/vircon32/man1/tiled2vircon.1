@@ -1,0 +1,105 @@
+.TH TILED2VIRCON 1 "October 11, 2026" "Vircon32 DevTools 26.04.24" "Vircon32 Development Tools"
+.SH NAME
+tiled2vircon \- convert Tiled tile map layers into Vircon32 data files
+.SH SYNOPSIS
+.B tiled2vircon
+.RB [ \-o
+.IR folder/ ]
+.RB [ \-v ]
+.I map.tmx
+.br
+.B tiled2vircon
+.B \-\-help
+.br
+.B tiled2vircon
+.B \-\-version
+.SH DESCRIPTION
+.B tiled2vircon
+reads a tile map saved by the Tiled map editor
+.RI ( https://www.mapeditor.org )
+in its XML format
+.RI ( .tmx )
+and writes every tile layer to its own binary file,
+.IR LayerName.vmap ,
+named after the layer. A
+.I .vmap
+file has no header: it is the layer's tiles as little-endian 32-bit
+integers, row by row from the top-left, which is exactly the memory
+layout of a C array
+.BI int[ height ][ width ]\c
+\&. A program includes it in the cartridge with the C compiler's
+.B embedded
+declaration:
+.PP
+.RS
+.nf
+embedded int[ 30 ][ 40 ] level1 = "obj/Ground.vmap";
+\&...
+int tile = level1[ y ][ x ];
+.fi
+.RE
+.PP
+Each tile is stored as its index within the map's first tileset: the
+Tiled tile id minus that tileset's
+.BR firstgid ,
+so the tileset's first tile is 0. The map must store its layers in
+.B CSV
+encoding (Tiled's
+.I "Tile Layer Format: CSV"
+map property); other encodings are not decoded.
+.PP
+.B tiled2vircon
+prints a line for every layer it saves, even without
+.BR \-v ,
+and a warning when a layer holds a different number of tiles than the
+map's width times its height.
+.SH OPTIONS
+.TP
+.BI \-o " folder/"
+Write the files into
+.IR folder .
+The folder must already exist, and its name must end with a path
+separator: the layer name is appended to it as given, so
+.B "\-o obj"
+writes
+.IR objGround.vmap .
+Without
+.BR \-o ,
+the files go into the current directory.
+.TP
+.B \-v
+Verbose: report the output folder.
+.TP
+.B \-\-help
+Print a usage summary and exit.
+.TP
+.B \-\-version
+Print the version and author, and exit.
+.SH EXIT STATUS
+.TP
+.B 0
+All layers were written.
+.TP
+.B 1
+Any error, printed as
+.IR "tiled2vircon: error: description" .
+.SH SEE ALSO
+.BR compile (1),
+.BR joinpngs (1),
+.BR png2vircon (1)
+.SH BUGS
+An empty cell (Tiled id 0) is written as 0, the same value as the
+tileset's first tile. Reserve the first tile as a blank one if empty
+cells must be told apart.
+.PP
+Tiles flipped or rotated in Tiled carry flag bits in the top of their
+id, which are not decoded; such tiles do not come out as their tile
+index. Only the first
+tileset's
+.B firstgid
+is used, so maps with several tilesets get one continuous numbering
+from the first.
+.SH AUTHOR
+The Vircon32 Tiled importer was written by Javier Carracedo
+.RI ( Carra ).
+This manual page was written by Matthew Haas for the v32c++ project.

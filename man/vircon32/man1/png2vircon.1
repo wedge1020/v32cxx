@@ -1,0 +1,75 @@
+.TH PNG2VIRCON 1 "October 11, 2026" "Vircon32 DevTools 26.04.24" "Vircon32 Development Tools"
+.SH NAME
+png2vircon \- convert a PNG image into a Vircon32 texture
+.SH SYNOPSIS
+.B png2vircon
+.RB [ \-o
+.IR output.vtex ]
+.RB [ \-v ]
+.I input.png
+.br
+.B png2vircon
+.B \-\-help
+.br
+.B png2vircon
+.B \-\-version
+.SH DESCRIPTION
+.B png2vircon
+converts a PNG image into a VTEX texture, the format
+.BR packrom (1)
+puts into a cartridge. Every kind of PNG is accepted: palette,
+grayscale, RGB, with or without alpha, at 1 to 16 bits per channel. The
+pixels are converted to 8-bit RGBA; an image without an alpha channel
+becomes fully opaque, and a palette's transparent color becomes
+transparent.
+.PP
+The Vircon32 GPU holds textures of up to 1024 by 1024 pixels.
+.B png2vircon
+itself does not check the size, but
+.B packrom
+rejects a larger texture. A texture is drawn through regions (see
+.BR video.h (3v32));
+to put many small images into one texture, use
+.BR joinpngs (1)
+first.
+.SH OPTIONS
+.TP
+.BI \-o " output.vtex"
+Write the texture to
+.IR output.vtex .
+Without
+.BR \-o ,
+the output path is the input path with its extension replaced by
+.IR .vtex .
+.TP
+.B \-v
+Verbose: report each step.
+.TP
+.B \-\-help
+Print a usage summary and exit.
+.TP
+.B \-\-version
+Print the version and author, and exit.
+.SH OUTPUT FORMAT
+A VTEX file is a 16-byte header \(em the 8 characters
+.BR V32\-VTEX ,
+then the width and height in pixels as little-endian 32-bit integers
+\(em followed by the pixels, row by row from the top, 4 bytes each in
+the order red, green, blue, alpha.
+.SH EXIT STATUS
+.TP
+.B 0
+The texture was written.
+.TP
+.B 1
+Any error, printed as
+.IR "png2vircon: error: description" .
+.SH SEE ALSO
+.BR vircon2png (1),
+.BR joinpngs (1),
+.BR packrom (1),
+.BR video.h (3v32)
+.SH AUTHOR
+The Vircon32 PNG importer was written by Javier Carracedo
+.RI ( Carra ).
+This manual page was written by Matthew Haas for the v32c++ project.

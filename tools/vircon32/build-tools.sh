@@ -97,6 +97,14 @@ $CXX -O2 -std=c++17 -w -I$CL -I$SRC/DesktopEmulator "$HERE/v32peek.cpp" $CL/*.cp
 
 rm -rf "$BIN/include"
 cp -r "$DT/Data/include" "$BIN/include"
+# The pinned commit's string.h predates the ftoa() rounding-carry fix
+# (0.999999 came out as "0.1"). The project's c_api/string.h is the fixed
+# one, so the real toolchain is tested with it (tests/130sample.cpp needs
+# it); once the pinned commit includes the fix this copy is a no-op.
+if [ -f "$HERE/../../c_api/string.h" ] && ! cmp -s "$HERE/../../c_api/string.h" "$BIN/include/string.h"; then
+    cp "$HERE/../../c_api/string.h" "$BIN/include/string.h"
+    echo "installed the project's c_api/string.h (ftoa carry fix) into $BIN/include"
+fi
 cp "$SRC/DesktopEmulator/Data/Bios/StandardBios.v32" "$BIN/StandardBios.v32"
 
 echo "done: $BIN"

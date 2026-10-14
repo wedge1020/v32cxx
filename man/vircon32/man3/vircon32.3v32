@@ -1,0 +1,241 @@
+.TH VIRCON32 3v32 "October 11, 2026" "Vircon32 DevTools 26.04.24" "Vircon32 C Library"
+.SH NAME
+vircon32 \- the Vircon32 C standard library and console programming model
+.SH SYNOPSIS
+.nf
+.B #include \(dqvideo.h\(dq
+.B #include \(dqinput.h\(dq
+.B #include \(dqaudio.h\(dq
+.B #include \(dqtime.h\(dq
+.B #include \(dqmath.h\(dq
+.B #include \(dqstring.h\(dq
+.B #include \(dqmisc.h\(dq
+.B #include \(dqmemcard.h\(dq
+.fi
+.SH DESCRIPTION
+The Vircon32 C compiler,
+.BR compile (1),
+comes with eight library headers. They are installed in the
+.I include
+directory next to the compiler
+.RI ( /usr/local/Vircon32/DevTools/include
+by default on Linux and macOS), where
+.B #include \(dq...\(dq
+finds them. Only the quoted form of
+.B #include
+exists.
+.PP
+There is no separate library to link: each header contains the full
+definitions of its functions, and the compiler emits only the ones a
+program calls. Most functions are a few lines of inline assembly that
+read or write one of the console's I/O ports, so they cost a call and
+a handful of cycles.
+.TP
+.BR video.h (3v32)
+The GPU: textures, regions, drawing, colors, blending, text with the
+BIOS font.
+.TP
+.BR input.h (3v32)
+The gamepads: directions and buttons.
+.TP
+.BR audio.h (3v32)
+The SPU: sounds, channels, playback and volume.
+.TP
+.BR time.h (3v32)
+The timer: frames, the clock and date, waiting for the next frame.
+.TP
+.BR math.h (3v32)
+Arithmetic, rounding, trigonometry and exponentials on the CPU's own
+instructions.
+.TP
+.BR string.h (3v32)
+Character classification and conversion, strings, and conversion of
+numbers to text.
+.TP
+.BR misc.h (3v32)
+Memory copying and filling, dynamic memory, random numbers, halting.
+.TP
+.BR memcard.h (3v32)
+The memory card: game signatures, reading and writing saved data.
+.SH THE PROGRAMMING MODEL
+.SS Words
+The CPU addresses memory in 32-bit words, and every scalar C type
+.RB ( int ,
+.BR float ,
+.BR bool ,
+pointers, and
+.BR char ,
+which is an
+.BR int )
+is one word.
+.B sizeof
+counts words, and so do all the sizes taken by this library
+.RB ( memcpy ,
+.BR malloc ,
+.BR card_read_data ,
+\&...). A string is an array of words, one character per word,
+ending with 0; the library declares strings as
+.BR int* .
+.SS Frames
+The console runs at 60 frames per second, and the CPU executes 250000
+instructions per frame (15 million per second), one per cycle. A game's
+main loop does one frame of work and then calls
+.BR end_frame (3v32),
+which waits for the next frame to begin; gamepad state is updated
+between frames. The screen is not cleared automatically: what was drawn
+stays until it is drawn over.
+.SS Selection
+The GPU and SPU are programmed through \(lqselected\(rq objects: a
+texture and a region within it, a sound, a channel; the input
+controller likewise has a selected gamepad. Many functions act on
+whatever is currently selected
+.RB ( set_channel_volume ,
+.BR define_region ,
+.BR gamepad_button_a ,
+\&...), and some change the selection as a side effect (the
+.B *_channel
+functions that take a channel id,
+.BR play_sound ,
+.BR draw_region_at
+through the drawing point,
+.BR print_at
+through the region). Each header's page says which.
+.SS Out-of-range values
+Writing an invalid value to a port (a texture or sound id that does not
+exist, a channel outside 0\-15) is ignored and leaves the previous
+value. Numeric parameters are clamped to their range (drawing points to
+\-1000 .. screen size + 1000, scale factors to \-1024 .. 1024, region
+corners to 0 .. 1023, channel volume to 0 .. 8, channel speed to
+0 .. 128, global volume to 0 .. 2).
+.SS GPU capacity
+In each frame the GPU can draw at most 9 times the pixels of the
+screen. Clearing the screen costs half a screen; a region costs its
+on-screen area (limited to the screen size), times 1.15 when zoomed,
+1.25 when rotated, or 1.4 when both. A request that does not fit in
+what is left of the frame is dropped, and so is every other drawing
+request until the next frame.
+.SS Hardware errors
+Division or remainder by zero (integer or float), an arc cosine,
+arc tangent, logarithm or power outside its domain, a stack overflow or
+underflow,
+and reading or writing an address or port that does not exist stop the
+program: the CPU jumps to the BIOS, which shows an error screen with
+the error and the instruction address. The library's comments mark
+the functions that can do this.
+.SS The null pointer
+.B NULL
+is a keyword of Vircon32 C and its value is \-1, not 0.
+.B malloc
+(see
+.BR misc.h (3v32))
+returns
+.B NULL
+(\-1) when it fails.
+.SH MEMORY MAP
+.TS
+l l l.
+0x00000000	RAM	4194304 words
+0x10000000	BIOS program ROM	up to 1048576 words
+0x20000000	cartridge program ROM	up to 134217728 words
+0x30000000	memory card	262144 words
+.TE
+.PP
+Global variables are placed at the start of RAM and the stack starts at
+the top, growing down;
+.B malloc
+(see
+.BR misc.h (3v32))
+by default uses the middle half.
+.SH I/O PORTS
+Ports are read with the
+.B IN
+instruction and written with
+.BR OUT ;
+see
+.BR assemble (1)
+for their names.
+.TS
+l l.
+0x000	timer (TIM_*)
+0x100	random number generator (RNG_*)
+0x200	GPU (GPU_*)
+0x300	SPU (SPU_*)
+0x400	gamepads (INP_*)
+0x500	cartridge (CAR_*)
+0x600	memory card (MEM_*)
+.TE
+.SH NOTES
+Several functions have the same names as standard C functions
+.RB ( memcpy ,
+.BR malloc ,
+.BR strlen ,
+.BR sin ,
+.BR sleep ,
+\&...) but not always the same behavior; their pages say where they
+differ. On a system with the standard C manual pages installed, ask for
+this library's page explicitly:
+.B man 3v32 string.h
+or
+.BR "man 3v32 strcpy" .
+.PP
+The SDK headers can also be used from C++ through
+.BR v32c++ (1),
+which passes their
+.B #include
+lines through to the C compiler; see
+.BR v32c++\-headers (3v32)
+for the C++ wrappers built on them.
+.SH EXAMPLES
+A complete program that moves a square with the D-pad:
+.PP
+.RS
+.nf
+#include "video.h"
+#include "input.h"
+#include "time.h"
+
+void main()
+{
+    int x = 320;
+    int y = 180;
+    int dx;
+    int dy;
+
+    select_gamepad( 0 );
+    select_texture( \-1 );          // the BIOS texture
+    select_region( 20 );           // a solid block character
+
+    while( true )
+    {
+        gamepad_direction( &dx, &dy );
+        x += 2 * dx;
+        y += 2 * dy;
+
+        clear_screen( color_black );
+        set_multiply_color( color_green );
+        draw_region_at( x, y );
+        end_frame();
+    }
+}
+.fi
+.RE
+.SH SEE ALSO
+.BR compile (1),
+.BR assemble (1),
+.BR packrom (1),
+.BR Vircon32 (1),
+.BR audio.h (3v32),
+.BR input.h (3v32),
+.BR math.h (3v32),
+.BR memcard.h (3v32),
+.BR misc.h (3v32),
+.BR string.h (3v32),
+.BR time.h (3v32),
+.BR video.h (3v32)
+.PP
+The Vircon32 specification and tutorials:
+.I https://www.vircon32.com
+.SH AUTHOR
+The Vircon32 standard library was written by Javier Carracedo
+.RI ( Carra ).
+This manual page was written by Matthew Haas for the v32c++ project.

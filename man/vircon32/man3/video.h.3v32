@@ -1,0 +1,281 @@
+.TH VIDEO.H 3v32 "October 11, 2026" "Vircon32 DevTools 26.04.24" "Vircon32 C Library"
+.SH NAME
+video.h \- Vircon32 GPU: textures, regions, drawing and text
+.SH SYNOPSIS
+.nf
+.B #include \(dqvideo.h\(dq
+.PP
+.B "#define screen_width   640"
+.B "#define screen_height  360"
+.PP
+.B "#define color_black      0xFF000000"
+.B "#define color_white      0xFFFFFFFF"
+.B "#define color_gray       0xFF808080"
+.B "#define color_darkgray   0xFF404040"
+.B "#define color_lightgray  0xFFC0C0C0"
+.B "#define color_red        0xFF0000FF"
+.B "#define color_green      0xFF00FF00"
+.B "#define color_blue       0xFFFF0000"
+.B "#define color_yellow     0xFF00FFFF"
+.B "#define color_magenta    0xFFFF00FF"
+.B "#define color_cyan       0xFFFFFF00"
+.B "#define color_orange     0xFF0080FF"
+.B "#define color_brown      0xFF204080"
+.PP
+.B "#define blending_alpha     0x20"
+.B "#define blending_add       0x21"
+.B "#define blending_subtract  0x22"
+.PP
+.B "#define bios_character_width   10"
+.B "#define bios_character_height  20"
+.PP
+.BI "int  make_gray( int " brightness " );"
+.BI "int  make_color_rgb( int " r ", int " g ", int " b " );"
+.BI "int  make_color_rgba( int " r ", int " g ", int " b ", int " a " );"
+.BI "int  get_color_red( int " color " );"
+.BI "int  get_color_green( int " color " );"
+.BI "int  get_color_blue( int " color " );"
+.BI "int  get_color_alpha( int " color " );"
+.PP
+.BI "void select_texture( int " texture_id " );"
+.B  "int  get_selected_texture();"
+.BI "void select_region( int " region_id " );"
+.B  "int  get_selected_region();"
+.PP
+.BI "void define_region( int " min_x ", int " min_y ", int " max_x ", int " max_y ,
+.BI "                    int " hotspot_x ", int " hotspot_y " );"
+.BI "void define_region_topleft( int " min_x ", int " min_y ", int " max_x ", int " max_y " );"
+.BI "void define_region_center( int " min_x ", int " min_y ", int " max_x ", int " max_y " );"
+.BI "void define_region_matrix( int " first_id ,
+.BI "                    int " first_min_x ", int " first_min_y ,
+.BI "                    int " first_max_x ", int " first_max_y ,
+.BI "                    int " first_hotspot_x ", int " first_hotspot_y ,
+.BI "                    int " elements_x ", int " elements_y ", int " gap " );"
+.BI "void set_region_hotspot( int " hotspot_x ", int " hotspot_y " );"
+.PP
+.BI "void set_multiply_color( int " color " );"
+.BI "void set_drawing_point( int " drawing_x ", int " drawing_y " );"
+.BI "void set_drawing_scale( float " scale_x ", float " scale_y " );"
+.BI "void set_drawing_angle( float " angle " );"
+.BI "void set_blending_mode( int " mode " );"
+.B  "int   get_multiply_color();"
+.BI "void  get_drawing_point( int* " drawing_x ", int* " drawing_y " );"
+.BI "void  get_drawing_scale( float* " scale_x ", float* " scale_y " );"
+.B  "float get_drawing_angle();"
+.B  "int   get_blending_mode();"
+.PP
+.BI "void clear_screen( int " color " );"
+.B  "void draw_region();"
+.BI "void draw_region_at( int " drawing_x ", int " drawing_y " );"
+.B  "void draw_region_zoomed();"
+.BI "void draw_region_zoomed_at( int " drawing_x ", int " drawing_y " );"
+.B  "void draw_region_rotated();"
+.BI "void draw_region_rotated_at( int " drawing_x ", int " drawing_y " );"
+.B  "void draw_region_rotozoomed();"
+.BI "void draw_region_rotozoomed_at( int " drawing_x ", int " drawing_y " );"
+.PP
+.BI "void print_at( int " drawing_x ", int " drawing_y ", int* " text " );"
+.BI "void print( int* " text " );"
+.fi
+.SH DESCRIPTION
+The Vircon32 GPU draws rectangular pieces of textures onto a
+640\(mu360 screen whose origin is the top-left corner, with
+.I y
+growing downwards. The screen keeps its contents between frames.
+.SS Colors
+A color is one word holding red, green, blue and alpha bytes, red in
+the lowest byte. Written as a hexadecimal literal it reads
+.BR 0x AABBGGRR,
+so opaque red is
+.BR 0xFF0000FF .
+An alpha of 255 is opaque and 0 fully transparent.
+.TP
+.BR make_gray ", " make_color_rgb ", " make_color_rgba
+Build a color from components in the range 0 to 255. The first two
+make it opaque. Values outside the range are not checked and spill into
+the neighboring components.
+.TP
+.BR get_color_red ", " get_color_green ", " get_color_blue ", " get_color_alpha
+Extract one component, 0 to 255.
+.SS Textures and regions
+A cartridge holds up to 256 textures, with ids from 0 in the order of
+its ROM definition (see
+.BR packrom (1)).
+The BIOS texture, id \-1, holds the BIOS font and is always available.
+.PP
+A texture is never drawn whole. Each texture has 4096 regions, ids 0 to
+4095: rectangles given by their corners
+.RI ( min_x ", " min_y )
+and
+.RI ( max_x ", " max_y ),
+both included, in texture pixels from 0 to 1023, plus a
+.I hotspot
+\(em the point of the region placed at the drawing point, and the
+center of rotation and scaling. The hotspot may lie outside the
+region. Regions keep their definition until redefined, so a program
+defines them once at start-up. In the BIOS texture, region
+.I n
+is the glyph for character
+.IR n .
+.TP
+.BR select_texture ", " get_selected_texture
+Select the texture that region definition and drawing apply to. An id
+that does not exist is ignored.
+.TP
+.BR select_region ", " get_selected_region
+Select a region of the selected texture.
+.TP
+.B define_region
+Define the selected region with an explicit hotspot.
+.TP
+.B define_region_topleft
+Define the selected region with its hotspot at
+.RI ( min_x ", " min_y ).
+.TP
+.B define_region_center
+Define the selected region with its hotspot at its center (rounded
+down).
+.TP
+.B define_region_matrix
+Define
+.IR elements_x " \(mu " elements_y
+regions with consecutive ids starting at
+.IR first_id ,
+laid out as a grid of equal frames, row by row. The coordinates and
+hotspot are those of the top-left frame; the others are offset by the
+frame size plus
+.I gap
+pixels. Leaves the last region of the grid selected.
+.TP
+.B set_region_hotspot
+Move the hotspot of the selected region.
+.SS Drawing state
+.TP
+.B set_multiply_color
+Every drawn pixel is multiplied by this color, component by component,
+as with OpenGL's glColor: white (the default) leaves the texture as it
+is, other colors tint it, and its alpha fades it.
+.TP
+.B set_drawing_point
+The screen position where the next region's hotspot is placed.
+.TP
+.B set_drawing_scale
+Scale factors for the zoomed drawing commands. Negative factors flip
+the region horizontally or vertically.
+.TP
+.B set_drawing_angle
+Rotation, in radians, for the rotated drawing commands. Because
+.I y
+grows downwards, positive angles turn clockwise.
+.TP
+.B set_blending_mode
+How drawn pixels combine with the screen:
+.B blending_alpha
+(the default; alpha is transparency),
+.B blending_add
+(the colors are added: light effects) or
+.B blending_subtract
+(the colors are subtracted: shadows). It stays in effect until changed.
+.TP
+.BR get_multiply_color ", " get_drawing_point ", " get_drawing_scale ", " get_drawing_angle ", " get_blending_mode
+Read back the current values.
+.SS Drawing
+.TP
+.B clear_screen
+Fill the whole screen with
+.IR color .
+It also becomes the GPU's clear color.
+.TP
+.BR draw_region ", " draw_region_at
+Draw the selected region with its hotspot at the drawing point, at its
+natural size, ignoring scale and angle. The
+.B _at
+form sets the drawing point first.
+.TP
+.BR draw_region_zoomed ", " draw_region_zoomed_at
+The same, applying the drawing scale.
+.TP
+.BR draw_region_rotated ", " draw_region_rotated_at
+The same, applying the drawing angle.
+.TP
+.BR draw_region_rotozoomed ", " draw_region_rotozoomed_at
+The same, applying both scale and angle.
+.PP
+The GPU draws at most nine screens' worth of pixels per frame; see
+.BR vircon32 (3v32)
+for how the cost is counted and what happens past the limit.
+.SS Text
+.TP
+.B print_at
+Draw a zero-terminated string with the BIOS font, its first character's
+top-left corner at
+.RI ( drawing_x ", " drawing_y ).
+Characters are 10 pixels wide and 20 high
+.RB ( bios_character_width ", " bios_character_height ).
+A
+.B \(aq\en\(aq
+moves to the next line, back to
+.IR drawing_x .
+The current multiply color and blending mode apply. The selected
+texture is restored afterwards, but the selected region and the
+drawing point are left changed.
+.TP
+.B print
+Like
+.BR print_at ,
+starting at the current drawing point.
+.SH NOTES
+The drawing point, scale and angle persist until changed. Drawing
+points are clamped to \-1000 .. 1640 and \-1000 .. 1360, and scale
+factors to \-1024 .. 1024.
+.PP
+The BIOS font's glyph positions changed between BIOS versions. Draw
+characters through their regions, as
+.B print_at
+does, rather than with hard-coded texture coordinates.
+.SH EXAMPLES
+Define a 4-frame walking animation stored left to right in texture 0,
+32\(mu48 pixels per frame with a 1-pixel gap, and draw it scaled and
+tinted:
+.PP
+.RS
+.nf
+#include "video.h"
+#include "time.h"
+
+#define walk_first 10
+
+void main()
+{
+    select_texture( 0 );
+    define_region_matrix( walk_first,
+                          0, 0, 31, 47,  // first frame
+                          16, 47,        // its hotspot
+                          4, 1, 1 );     // 4 x 1, gap 1
+
+    while( true )
+    {
+        clear_screen( make_gray( 40 ) );
+
+        select_region( walk_first + (get_frame_counter() / 8) % 4 );
+        set_drawing_scale( 2.0, 2.0 );
+        set_multiply_color( make_color_rgb( 255, 200, 200 ) );
+        draw_region_zoomed_at( 320, 300 );
+
+        set_multiply_color( color_white );
+        print_at( 10, 10, "Walking" );
+        end_frame();
+    }
+}
+.fi
+.RE
+.SH SEE ALSO
+.BR vircon32 (3v32),
+.BR time.h (3v32),
+.BR png2vircon (1),
+.BR joinpngs (1),
+.BR packrom (1)
+.SH AUTHOR
+The Vircon32 standard library was written by Javier Carracedo
+.RI ( Carra ).
+This manual page was written by Matthew Haas for the v32c++ project.

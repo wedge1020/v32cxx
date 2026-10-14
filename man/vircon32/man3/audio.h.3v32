@@ -1,0 +1,167 @@
+.TH AUDIO.H 3v32 "October 11, 2026" "Vircon32 DevTools 26.04.24" "Vircon32 C Library"
+.SH NAME
+audio.h \- Vircon32 SPU: sounds, channels and playback
+.SH SYNOPSIS
+.nf
+.B #include \(dqaudio.h\(dq
+.PP
+.B "#define sound_channels    16"
+.B "#define channel_stopped   0x40"
+.B "#define channel_paused    0x41"
+.B "#define channel_playing   0x42"
+.PP
+.BI "void  select_sound( int " sound_id " );"
+.B  "int   get_selected_sound();"
+.BI "void  select_channel( int " channel_id " );"
+.B  "int   get_selected_channel();"
+.PP
+.BI "void  set_sound_loop( bool " enabled " );"
+.BI "void  set_sound_loop_start( int " position " );"
+.BI "void  set_sound_loop_end( int " position " );"
+.PP
+.BI "void  set_channel_volume( float " volume " );"
+.BI "void  set_channel_speed( float " speed " );"
+.BI "void  set_channel_position( int " position " );"
+.BI "void  set_channel_loop( bool " enabled " );"
+.BI "void  assign_channel_sound( int " channel_id ", int " sound_id " );"
+.PP
+.BI "float get_channel_speed( int " channel_id " );"
+.BI "int   get_channel_position( int " channel_id " );"
+.BI "int   get_channel_state( int " channel_id " );"
+.PP
+.BI "void  set_global_volume( float " volume " );"
+.B  "float get_global_volume();"
+.PP
+.BI "void  play_channel( int " channel_id " );"
+.BI "void  pause_channel( int " channel_id " );"
+.BI "void  stop_channel( int " channel_id " );"
+.B  "void  pause_all_channels();"
+.B  "void  stop_all_channels();"
+.B  "void  resume_all_channels();"
+.PP
+.BI "void  play_sound_in_channel( int " sound_id ", int " channel_id " );"
+.BI "int   play_sound( int " sound_id " );"
+.fi
+.SH DESCRIPTION
+The Vircon32 SPU mixes 16 channels, ids 0 to 15, into one stereo
+output at 44100 samples per second. A
+.I sound
+is audio data in the cartridge, with ids from 0 in the order of its
+ROM definition (see
+.BR packrom (1));
+a
+.I channel
+plays one sound at a time. Positions and lengths are counted in
+samples (1/44100 s).
+.SS Selection
+Sound configuration applies to the selected sound, and channel
+configuration to the selected channel. The functions that take a
+.I channel_id
+argument select that channel themselves and leave it selected.
+.TP
+.BR select_sound ", " get_selected_sound
+Select a sound. Sound id \-1 is the BIOS sound.
+.TP
+.BR select_channel ", " get_selected_channel
+Select a channel. An id outside 0 to 15 is ignored.
+.SS Sounds
+Loop settings belong to the sound and are copied into a channel each
+time the sound starts playing in it.
+.TP
+.B set_sound_loop
+Whether the sound loops by default.
+.TP
+.BR set_sound_loop_start ", " set_sound_loop_end
+The part of the sound that repeats, in samples from its start. Both are
+clamped to the sound's length, and the end is kept at or after the
+start.
+.SS Channels
+.TP
+.B set_channel_volume
+Volume of the selected channel: 1.0 is the sound as recorded, 0 is
+silent; clamped to 0 .. 8.
+.TP
+.B set_channel_speed
+Playback speed of the selected channel: 1.0 is normal, 2.0 twice as
+fast and an octave higher; clamped to 0 .. 128.
+.TP
+.B set_channel_position
+Move the selected channel's playback position, in samples.
+.TP
+.B set_channel_loop
+Turn looping on or off for what the selected channel is playing now,
+overriding the sound's setting.
+.TP
+.B assign_channel_sound
+Assign a sound to a channel without starting it.
+.TP
+.BR get_channel_speed ", " get_channel_position
+The channel's current speed and position.
+.TP
+.B get_channel_state
+.BR channel_stopped ,
+.B channel_paused
+or
+.BR channel_playing .
+.TP
+.BR set_global_volume ", " get_global_volume
+The volume of the whole mix, 0 .. 2 (1.0 is neutral).
+.SS Playback
+.TP
+.B play_channel
+Play the channel's assigned sound. A paused channel resumes; a playing
+one starts over.
+.TP
+.B pause_channel
+Pause the channel, keeping its position.
+.TP
+.B stop_channel
+Stop the channel and rewind it to the start of its sound.
+.TP
+.BR pause_all_channels ", " stop_all_channels ", " resume_all_channels
+The same for all channels at once;
+.B resume_all_channels
+restarts only the channels that were paused.
+.TP
+.B play_sound_in_channel
+Assign a sound to a channel and play it.
+.TP
+.B play_sound
+Play a sound in the first channel that is stopped, and return that
+channel's id, or \-1 if all 16 channels are busy (the sound does not
+play). The chosen channel is left selected.
+.SH EXAMPLES
+Music on channel 0, looping, with sound effects on any free channel:
+.PP
+.RS
+.nf
+#include "audio.h"
+
+#define sound_music  0
+#define sound_jump   1
+
+void start_music()
+{
+    select_sound( sound_music );
+    set_sound_loop( true );
+    play_sound_in_channel( sound_music, 0 );
+    set_channel_volume( 0.6 );       // channel 0 is still selected
+}
+
+void jump()
+{
+    int channel = play_sound( sound_jump );
+    if( channel >= 0 )
+      set_channel_speed( 1.1 );      // a slightly higher jump sound
+}
+.fi
+.RE
+.SH SEE ALSO
+.BR vircon32 (3v32),
+.BR wav2vircon (1),
+.BR packrom (1),
+.BR audio.hpp (3v32)
+.SH AUTHOR
+The Vircon32 standard library was written by Javier Carracedo
+.RI ( Carra ).
+This manual page was written by Matthew Haas for the v32c++ project.

@@ -1,4 +1,4 @@
-.TH MEMCARD.HPP 3v32 "October 11, 2026" "v32c++ 20261010-dev" "v32c++ Library"
+.TH MEMCARD.HPP 3v32 "October 14, 2026" "v32c++ 20261014-dev" "v32c++ Library"
 .SH NAME
 v32/memcard.hpp \- v32::MemoryCard, a signature-checked save slot
 .SH SYNOPSIS

@@ -1,0 +1,166 @@
+.TH MISC.H 3v32 "October 11, 2026" "Vircon32 DevTools 26.04.24" "Vircon32 C Library"
+.SH NAME
+misc.h \- Vircon32 memory operations, dynamic memory, random numbers
+.SH SYNOPSIS
+.nf
+.B #include \(dqmisc.h\(dq
+.PP
+.BI "void  memset( void* " destination ", int " value ", int " size " );"
+.BI "void  memcpy( void* " destination ", void* " source ", int " size " );"
+.BI "int   memcmp( void* " region1 ", void* " region2 ", int " size " );"
+.PP
+.BI "void* malloc( int " size " );"
+.BI "void* calloc( int " number ", int " size " );"
+.BI "void* realloc( void* " ptr ", int " size " );"
+.BI "void  free( void* " ptr " );"
+.PP
+.B "void* malloc_start_address;"
+.B "void* malloc_end_address;"
+.PP
+.B "int   rand();"
+.BI "void  srand( int " seed " );"
+.PP
+.B "void  exit();"
+.fi
+.SH DESCRIPTION
+All sizes are in words (the unit of
+.BR sizeof ).
+.SS Memory
+.BR memset ,
+.B memcpy
+and
+.B memcmp
+are each a single string instruction of the CPU, processing one word
+per cycle.
+.TP
+.B memset
+Set
+.I size
+words at
+.I destination
+to
+.IR value .
+Unlike C's, it fills whole words and returns nothing.
+.TP
+.B memcpy
+Copy
+.I size
+words from
+.I source
+to
+.IR destination ,
+first to last; returns nothing.
+.TP
+.B memcmp
+Compare
+.I size
+words, returning 0 if they are all equal, or else the first difference
+.RI ( region1 " word minus " region2
+word).
+.SS Dynamic memory
+A first-fit allocator over a block of RAM, from
+.B malloc_start_address
+to
+.B malloc_end_address
+(both included). By default these are words 1048576 to 3145727, the
+middle half of RAM: the first quarter is left for global variables and
+the last for the stack. A program may change them before its first call
+to
+.BR malloc ;
+later changes have no effect.
+.TP
+.B malloc
+Allocate
+.I size
+words. Returns
+.B NULL
+(\-1 on Vircon32) when there is no free block large enough, or when
+.I size
+is 0 or less.
+.TP
+.B calloc
+Allocate
+.IR number " \(mu " size
+words, set to 0.
+.TP
+.B realloc
+Resize a block, in place when it can, otherwise by allocating a new
+block, copying and freeing the old one. With a
+.B NULL
+.I ptr
+it acts as
+.BR malloc ;
+with a
+.I size
+of 0 or less it frees the block and returns
+.BR NULL .
+If a new block is needed and cannot be allocated, it returns
+.B NULL
+and the old block stays valid.
+.TP
+.B free
+Release a block. Freeing
+.B NULL
+does nothing; freeing anything else that did not come from these
+functions corrupts the allocator.
+.SS Random numbers
+.TP
+.B rand
+The next value of the console's random number generator, from 1 to
+2147483646 (a Lehmer generator, the same as C++11's
+.BR minstd_rand ).
+.TP
+.B srand
+Seed the generator: only the low 31 bits of
+.I seed
+are kept, and the next
+.B rand
+returns that value itself before the sequence moves on. A seed of 0 is
+ignored. The console is seeded with 1 at power-on and on reset, so a
+program that never seeds it gets the same sequence every time; seeding
+from
+.BR get_time (3v32)
+or from the frame on which the player pressed Start varies it.
+.SS Program flow
+.TP
+.B exit
+Halt the CPU (the
+.B HLT
+instruction). The screen and sound stay as they are; only a reset
+restarts the program. It takes no status: Vircon32 programs have no
+exit codes.
+.SH NOTES
+.BR memset ,
+.BR memcpy ,
+.BR malloc ,
+.BR calloc ,
+.BR realloc ,
+.BR free ,
+.BR rand ,
+.B srand
+and
+.B exit
+share their names with standard C functions but differ from them as
+described above. For C programs transpiled by
+.BR v32c++ (1),
+its C library provides standard versions of the allocator functions
+and of
+.B exit
+(see
+.BR v32libc (3v32)).
+.PP
+A seed whose low 31 bits are all 0 or all 1, such as
+.B INT_MIN
+or \-1, makes
+.B rand
+return 0 from then on.
+.PP
+The allocator keeps a 4-word header before each block.
+.SH SEE ALSO
+.BR vircon32 (3v32),
+.BR time.h (3v32),
+.BR misc.hpp (3v32)
+.SH AUTHOR
+The Vircon32 standard library was written by Javier Carracedo
+.RI ( Carra ).
+This manual page was written by Matthew Haas for the v32c++ project.

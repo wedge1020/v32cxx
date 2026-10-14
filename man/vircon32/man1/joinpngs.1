@@ -1,0 +1,108 @@
+.TH JOINPNGS 1 "October 11, 2026" "Vircon32 DevTools 26.04.24" "Vircon32 Development Tools"
+.SH NAME
+joinpngs \- pack a folder of PNG images into one texture image
+.SH SYNOPSIS
+.B joinpngs
+.RB [ \-g
+.IR gap ]
+.RB [ \-hx
+.BR left | center | right ]
+.RB [ \-hy
+.BR top | center | bottom ]
+.RB [ \-v ]
+.I input\-folder
+.I output.png
+.br
+.B joinpngs
+.B \-\-help
+.br
+.B joinpngs
+.B \-\-version
+.SH DESCRIPTION
+.B joinpngs
+loads every
+.I .png
+file in
+.I input\-folder
+(not in its subfolders) and arranges them, without overlapping, into
+one image no larger than a Vircon32 texture (1024 by 1024 pixels),
+written to
+.IR output.png .
+Drawing many images from one texture is much faster on the console
+than switching between many small textures.
+.PP
+Next to the image it writes
+.I output.xml
+(the output path with its extension replaced), a project file for the
+Vircon32 texture region editor (distributed separately). It describes
+where each image ended up as a named region, with its hotspot; from the
+editor, hotspots can be adjusted visually and C or assembly
+definitions of the regions exported for a program to use with
+.BR define_region (3v32).
+.PP
+Each region is named after its file, without the extension and with
+spaces replaced by underscores. A file whose name ends with three
+numbers,
+.IB name _ columns _ rows _ gap .png\c
+, is taken as a matrix of equally sized frames (an animation, a set of
+tiles):
+.I walk_4_2_1.png
+is a grid of 4 by 2 frames separated by 1 pixel, with no border around
+the grid. A matrix is kept in one piece and described in the XML as a
+matrix of regions, which the editor and
+.BR define_region_matrix (3v32)
+understand.
+.PP
+Wider images are placed first (then taller, then by name). If the
+images do not all fit in 1024 by 1024 pixels,
+.B joinpngs
+fails.
+.SH OPTIONS
+.TP
+.BI \-g " gap"
+Leave
+.I gap
+pixels (0 to 10, default 1) between neighboring images, so that scaled
+or rotated drawing does not bleed pixels from one region into the next.
+.TP
+.BR \-hx " left|center|right"
+Horizontal position of each region's hotspot in the XML (default
+.BR left ).
+.TP
+.BR \-hy " top|center|bottom"
+Vertical position of each region's hotspot in the XML (default
+.BR top ).
+.TP
+.B \-v
+Verbose: report each step.
+.TP
+.B \-\-help
+Print a usage summary and exit.
+.TP
+.B \-\-version
+Print the version and author, and exit.
+.SH EXIT STATUS
+.TP
+.B 0
+The image and the XML were written.
+.TP
+.B 1
+Any error \(em an image larger than 1024 pixels on a side, a matrix
+name whose numbers don't match the image size, images that don't fit
+\(em printed as
+.IR "joinpngs: error: description" .
+.SH EXAMPLES
+.RS
+.nf
+joinpngs \-g 2 \-hx center \-hy bottom sprites/ obj/sprites.png
+png2vircon obj/sprites.png \-o obj/sprites.vtex
+.fi
+.RE
+.SH SEE ALSO
+.BR png2vircon (1),
+.BR packrom (1),
+.BR video.h (3v32)
+.SH AUTHOR
+The Vircon32 PNG joiner was written by Javier Carracedo
+.RI ( Carra ).
+This manual page was written by Matthew Haas for the v32c++ project.

@@ -1,0 +1,144 @@
+.TH MATH.H 3v32 "October 11, 2026" "Vircon32 DevTools 26.04.24" "Vircon32 C Library"
+.SH NAME
+math.h \- Vircon32 arithmetic, rounding, trigonometric and exponential functions
+.SH SYNOPSIS
+.nf
+.B #include \(dqmath.h\(dq
+.PP
+.B "#define pi       3.1415926"
+.B "#define INT_MIN  0x80000000"
+.B "#define INT_MAX  2147483647"
+.PP
+.BI "int   min( int " a ", int " b " );"
+.BI "int   max( int " a ", int " b " );"
+.BI "int   abs( int " a " );"
+.BI "float fmin( float " x ", float " y " );"
+.BI "float fmax( float " x ", float " y " );"
+.BI "float fabs( float " x " );"
+.BI "float fmod( float " x ", float " y " );"
+.PP
+.BI "float floor( float " x " );"
+.BI "float ceil( float " x " );"
+.BI "float round( float " x " );"
+.PP
+.BI "float sin( float " angle " );"
+.BI "float cos( float " angle " );"
+.BI "float tan( float " angle " );"
+.BI "float asin( float " x " );"
+.BI "float acos( float " x " );"
+.BI "float atan2( float " y ", float " x " );"
+.PP
+.BI "float sqrt( float " x " );"
+.BI "float pow( float " x ", float " y " );"
+.BI "float exp( float " x " );"
+.BI "float log( float " x " );"
+.fi
+.SH DESCRIPTION
+Each function is one or a few of the CPU's own instructions, so they
+are cheap, but they are single-precision (32-bit
+.BR float )
+and some stop the program with a hardware error where the standard C
+functions would return NaN or infinity (see
+.BR "HARDWARE ERRORS" ).
+Angles are in radians.
+.TP
+.BR min ", " max ", " fmin ", " fmax
+The smaller or larger of two values, for
+.B int
+and
+.B float
+respectively. (Standard C has
+.B fmin
+and
+.B fmax
+but no
+.B min
+or
+.BR max .)
+.TP
+.BR abs ", " fabs
+Absolute value.
+.TP
+.B fmod
+The remainder of
+.IR x / y ,
+with the sign of
+.IR x .
+.TP
+.BR floor ", " ceil ", " round
+Round down, up, or to the nearest whole number, returning a
+.BR float .
+Convert to
+.B int
+with a cast or an assignment, which truncates toward zero.
+.TP
+.BR sin ", " cos ", " tan
+Sine, cosine and tangent.
+.B cos
+is computed as
+.IR sin(angle + pi/2) ,
+and
+.B tan
+as their quotient.
+.TP
+.BR asin ", " acos
+Arc sine and arc cosine, for
+.I x
+from \-1 to 1.
+.TP
+.B atan2
+The angle of the vector
+.RI ( x ", " y ),
+from \-pi to pi.
+.TP
+.B sqrt
+Square root, computed as
+.IR pow(x,\ 0.5) .
+.TP
+.BR pow ", " exp
+.I x
+raised to
+.IR y ,
+and
+.I e
+raised to
+.IR x .
+.TP
+.B log
+Natural logarithm.
+.SH HARDWARE ERRORS
+These calls stop the program with a hardware error (see
+.BR vircon32 (3v32)):
+.BR fmod "(x, 0),"
+.B tan
+where the computed cosine is exactly 0,
+.BR asin " and " acos
+of values outside \-1 to 1,
+.BR atan2 "(0, 0),"
+.B sqrt
+of a negative number,
+.B pow
+of a negative number to a non-integer power,
+.B log
+of 0 or a negative number.
+.SH NOTES
+.B INT_MIN
+is written in hexadecimal because the compiler would read
+.I \-2147483648
+as the negation of a number too large for an
+.BR int .
+.PP
+Division by zero with the
+.B /
+operator (on integers or floats) or the
+.B %
+operator (integers only; use
+.B fmod
+for floats) also stops the program.
+.SH SEE ALSO
+.BR vircon32 (3v32),
+.BR math.hpp (3v32)
+.SH AUTHOR
+The Vircon32 standard library was written by Javier Carracedo
+.RI ( Carra ).
+This manual page was written by Matthew Haas for the v32c++ project.

@@ -1,0 +1,105 @@
+.TH MEMCARD.H 3v32 "October 11, 2026" "Vircon32 DevTools 26.04.24" "Vircon32 C Library"
+.SH NAME
+memcard.h \- Vircon32 memory cards: game signatures and saved data
+.SH SYNOPSIS
+.nf
+.B #include \(dqmemcard.h\(dq
+.PP
+.B "typedef int[ 20 ] game_signature;"
+.PP
+.B "bool card_is_connected();"
+.B "bool card_is_empty();"
+.BI "void card_read_signature( game_signature* " signature " );"
+.BI "void card_write_signature( game_signature* " signature " );"
+.BI "bool card_signature_matches( game_signature* " expected_signature " );"
+.PP
+.BI "void card_read_data( void* " destination ", int " offset_in_card ", int " size " );"
+.BI "void card_write_data( void* " source ", int " offset_in_card ", int " size " );"
+.fi
+.SH DESCRIPTION
+A memory card holds 262144 words, mapped into the CPU's address space
+at
+.BR 0x30000000 .
+By convention its first 20 words are a
+.I game signature
+that says which game the saved data belongs to; a card whose signature
+is all zeros is empty. A game checks the signature before reading or
+writing, claims an empty card by writing its own, and leaves a card
+with another game's signature alone. The emulator can create a separate
+card for every game (see
+.BR Vircon32 (1)),
+but programs should not rely on that.
+.PP
+Writes go straight to the card; there is nothing to flush.
+.TP
+.B card_is_connected
+Whether a card is inserted. A card can be removed at any time, so check
+before each access: reading or writing a missing card is a hardware
+error.
+.TP
+.B card_is_empty
+Whether the card's signature is all zeros.
+.TP
+.BR card_read_signature ", " card_write_signature
+Copy the card's 20-word signature into
+.IR *signature ,
+or write
+.I *signature
+to the card.
+.TP
+.B card_signature_matches
+Whether the card's signature equals
+.IR *expected_signature .
+.TP
+.BR card_read_data ", " card_write_data
+Copy
+.I size
+words between the card and RAM, like
+.B memcpy
+(see
+.BR misc.h (3v32)).
+.I offset_in_card
+counts from the very start of the card,
+.B including
+the signature: game data conventionally starts at offset 20, and a
+write at offset 0 overwrites the signature.
+.SH EXAMPLES
+.RS
+.nf
+#include "memcard.h"
+
+game_signature my_signature = "MYGAME\-SAVE\-V1";
+int[ 8 ] progress;
+
+bool load_progress()
+{
+    if( !card_is_connected() )
+      return false;
+    if( !card_signature_matches( &my_signature ) )
+      return false;
+    card_read_data( progress, 20, 8 );
+    return true;
+}
+
+bool save_progress()
+{
+    if( !card_is_connected() )
+      return false;
+    if( card_is_empty() )
+      card_write_signature( &my_signature );
+    if( !card_signature_matches( &my_signature ) )
+      return false;    // another game's card
+    card_write_data( progress, 20, 8 );
+    return true;
+}
+.fi
+.RE
+.SH SEE ALSO
+.BR vircon32 (3v32),
+.BR misc.h (3v32),
+.BR memcard.hpp (3v32),
+.BR v32file (3v32)
+.SH AUTHOR
+The Vircon32 standard library was written by Javier Carracedo
+.RI ( Carra ).
+This manual page was written by Matthew Haas for the v32c++ project.

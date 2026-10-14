@@ -98,8 +98,27 @@ namespace v32
                 strcat( buffer, digits );
             }
 
+            // append a float: up to 5 decimals, rounded (a rounding that
+            // carries into the whole part is handled: 0.999999 -> "1"),
+            // trailing zeros dropped, no exponent. ftoa() converts the
+            // whole part to an int, and for a value outside the int range
+            // it never returns (it keeps writing '0' past the end of its
+            // buffer), so such a value appends "overflow" / "-overflow"
+            // instead of being handed to it.
             void append_float( float value )
             {
+                if( value >= 2147483648.0 )
+                {
+                    strcat( buffer, "overflow" );
+                    return;
+                }
+
+                if( value <= -2147483648.0 )
+                {
+                    strcat( buffer, "-overflow" );
+                    return;
+                }
+
                 int digits[ 32 ];
                 ftoa( value, digits );
                 strcat( buffer, digits );

@@ -1,0 +1,476 @@
+.TH COMPILE 1 "October 11, 2026" "Vircon32 DevTools 26.04.24" "Vircon32 Development Tools"
+.SH NAME
+compile \- Vircon32 C compiler
+.SH SYNOPSIS
+.B compile
+.RB [ \-o
+.IR output.asm ]
+.RB [ \-b ]
+.RB [ \-v ]
+.RB [ \-g ]
+.RB [ \-w ]
+.RB [ \-\-debugmode ]
+.I input.c
+.br
+.B compile
+.B \-\-help
+.br
+.B compile
+.B \-\-version
+.SH DESCRIPTION
+.B compile
+translates one C source file, written in the Vircon32 dialect of C
+(see
+.BR LANGUAGE ,
+below), into Vircon32 assembly. The assembly is then turned into a
+machine-code binary by
+.BR assemble (1),
+and the binary is packed together with its textures and sounds into a
+cartridge by
+.BR packrom (1).
+.PP
+There is no linker. A Vircon32 program is always a single translation
+unit: every other source file it needs, including the standard
+library, is brought in with
+.BR #include .
+The standard library headers
+.RB ( video.h ", " input.h ", " audio.h ", " time.h ,
+.BR math.h ", " string.h ", " misc.h ", " memcard.h )
+contain the full definitions of their functions, not just
+declarations; only the functions a program actually uses are emitted.
+See
+.BR vircon32 (3v32).
+.PP
+Compilation runs in five stages: lexer, preprocessor, parser, semantic
+analyzer and emitter. Each stage stops the compilation if it found any
+error. Nothing is printed on success unless
+.B \-v
+is given.
+.PP
+Exactly one input file is accepted. Options and the input file may
+appear in any order.
+.SH OPTIONS
+.TP
+.BI \-o " output.asm"
+Write the assembly to
+.IR output.asm .
+Without
+.BR \-o ,
+the output path is the input path with its extension replaced by
+.IR .asm ,
+so
+.I game.c
+becomes
+.IR game.asm .
+.TP
+.B \-b
+Compile the program as a BIOS instead of a cartridge program. Besides
+.BR main ,
+a BIOS must define
+.BR "void error_handler()" ,
+which the console runs when the CPU raises a hardware error, and its
+code is placed at the BIOS program ROM address
+.RB ( 0x10000000 )
+instead of the cartridge one
+.RB ( 0x20000000 ).
+Ordinary games never need this.
+.TP
+.B \-v
+Verbose: report the output path chosen (when
+.B \-o
+was not given), each compilation stage as it starts, and the final
+result.
+.TP
+.B \-g
+Also write a debug information file,
+.IR output.asm.debug ,
+which relates the generated assembly to the C source: source file and
+line for each statement, and the functions they belong to. It is meant
+for debuggers and profilers, not for people.
+.TP
+.B \-w
+Inhibit all warnings.
+.TP
+.B \-\-debugmode
+Write the results of the internal stages next to the output file:
+.I output.asm.lexer.log
+(the token stream after preprocessing) and
+.I output.asm.parser.log
+(the syntax tree, as XML). Intended for debugging the compiler itself.
+.TP
+.B \-\-help
+Print a usage summary and exit.
+.TP
+.B \-\-version
+Print the compiler version and author, and exit.
+.TP
+.BR \-Wall ", " \-c ", " \-s ", " \-O1 ", " \-O2 ", " \-O3
+Accepted for compatibility with other compilers and build scripts, but
+they have no effect. In particular there is no optimizer; see
+.BR v32opt (1)
+for an external one.
+.PP
+Any other argument that starts with
+.B \-
+is an error.
+.SH LANGUAGE
+The compiler accepts a C dialect that is close to C89/C99 but differs
+from it in many places. The most important differences:
+.SS Data types
+.IP \(bu 2
+The machine is word-addressed: every scalar type is one 32-bit word,
+and
+.B sizeof
+counts words.
+.BR char ,
+.B short
+and
+.B long
+are accepted but silently become
+.BR int ,
+and
+.B double
+becomes
+.BR float .
+There are no
+.BR unsigned ,
+.BR signed ,
+.BR static ,
+.B volatile
+or
+.B register
+keywords.
+.IP \(bu 2
+The types are
+.BR void ,
+.B bool
+(with literals
+.B true
+and
+.BR false ),
+.BR int ,
+.BR float ,
+pointers, arrays,
+.BR struct ,
+.B union
+and
+.BR enum ,
+plus
+.BR typedef .
+A string is an array of words, one character per word, terminated by
+0; string literals have type
+.BR int* .
+.IP \(bu 2
+Arrays are declared with the size before the name:
+.RS
+.IP
+.nf
+int[ 10 ] scores;
+int[ 4 ][ 8 ] grid;
+.fi
+.RE
+.IP
+The standard spelling
+.I int scores[10]
+is rejected with a message saying so. Sizes may be constant expressions
+(macros, enum constants, arithmetic).
+.IP \(bu 2
+Function pointer types put the parameter list before the
+.BR * :
+.RS
+.IP
+.nf
+int( int, int )* operation;
+operation = &add;
+.fi
+.RE
+.IP \(bu 2
+.B struct
+appears only in a structure's definition or forward declaration
+.RI ( "struct Node;" ).
+Everywhere else the structure is named on its own:
+.IR "Node* next;" .
+.IP \(bu 2
+.B NULL
+is a keyword, and its value is \-1, not 0. A pointer cannot be
+assigned the integer 0; use
+.BR NULL .
+.SS Functions
+.IP \(bu 2
+The program's entry point is
+.BR "void main()" ;
+it takes no arguments and returns nothing.
+.IP \(bu 2
+Every parameter and every return value must be exactly one word. A
+structure, union or array larger than that cannot be passed or
+returned by value; pass a pointer instead.
+.IP \(bu 2
+A prototype must name its parameters
+.RI ( "void move( int dx, int dy );" ),
+and every function declared must also be defined somewhere in the
+translation unit.
+.SS Statements and expressions
+.IP \(bu 2
+There is no conditional operator
+.RB ( ?: )
+and no comma operator.
+.IP \(bu 2
+A variable cannot be declared directly in a
+.B switch
+body after the first
+.B case
+or
+.B default
+label (inside a nested block it can).
+.IP \(bu 2
+Float literals have no exponent form
+.RI ( 1e5
+is an error) and need a digit before the point
+.RI ( 0.5 ,
+not
+.IR .5 ).
+.IP \(bu 2
+The escapes accepted are
+.BR \en ", " \er ", " \et ", " \e\e ", " \e\(aq ", " \e\(dq
+and
+.BI \ex HH
+with exactly two hex digits. There are no octal escapes and no
+.BR \e0 ;
+write
+.B \ex00
+instead.
+.IP \(bu 2
+Right shift of a negative value does not extend the sign.
+.IP \(bu 2
+A compound assignment
+.RI ( "a[i++] += 1" )
+evaluates its target expression twice.
+.IP \(bu 2
+An array converts to a pointer only when assigned, used as an
+initializer, or passed as an argument; as an operand of
+.BR + ,
+.BR \- ,
+.B ==
+or unary
+.B *
+it is an error. Take
+.I &array[0]
+explicitly.
+.IP \(bu 2
+Reading a
+.B const
+value into a plain variable by assignment, as an argument or as a
+return value is rejected ("discards const qualifier"); an initializer,
+or an explicit cast to the same type, is accepted.
+.SS Global data
+.IP \(bu 2
+Global variables live in RAM and are initialized when the program
+starts.
+.B extern
+declares a global that is fully defined elsewhere in the same
+translation unit (there is no other kind).
+.IP \(bu 2
+.B embedded
+places the contents of a binary file in the cartridge program ROM and
+names it as a read-only global:
+.RS
+.IP
+.nf
+embedded int[ 64 ][ 48 ] level1 = "maps/level1.vmap";
+.fi
+.RE
+.IP
+It is allowed only at file scope. The file is read by
+.BR assemble (1),
+relative to the directory the assembler is run from, and its size must
+be a multiple of 4 bytes. Tile maps made by
+.BR tiled2vircon (1)
+are the usual use.
+.SS Inline assembly
+An
+.B asm
+block holds assembly lines, one string literal per line, which are
+copied into the output. A variable of one word can be named inside a
+line in braces; the compiler substitutes its location:
+.PP
+.RS
+.nf
+int get_frame()
+{
+    asm
+    {
+        "in R0, TIM_FrameCounter"
+    }
+}
+
+void set_x( int x )
+{
+    asm
+    {
+        "mov R0, {x}"
+        "out GPU_DrawingPointX, R0"
+    }
+}
+.fi
+.RE
+.PP
+A function's return value is whatever is in
+.B R0
+when it returns, so an
+.B asm
+block that leaves its result in
+.B R0
+needs no
+.B return
+statement. Registers other than
+.B R0
+must be preserved
+.RB ( push / pop ).
+See
+.BR assemble (1)
+for the assembly language.
+.SH PREPROCESSOR
+Supported directives:
+.BR #include ,
+.BR #define ,
+.BR #undef ,
+.BR #ifdef ,
+.BR #ifndef ,
+.BR #else ,
+.BR #endif ,
+.B #error
+and
+.BR #warning .
+A backslash at the end of a line continues it.
+.PP
+.B #define
+creates object-like macros and function-like macros with arguments. A
+macro body cannot contain the
+.B #
+character, so there is no stringizing or token pasting, and an
+object-like macro cannot refer to itself.
+.PP
+There is no
+.BR #if ,
+.BR #elif ,
+.BR #pragma ,
+.BR #line ,
+and no
+.BR defined() ;
+any other directive is an error.
+.PP
+Only the quoted form of
+.B #include
+exists:
+.PP
+.RS
+.nf
+#include "video.h"
+.fi
+.RE
+.PP
+The angle-bracket form
+.RI ( "#include <video.h>" )
+is rejected. A file is searched for first in the directory of the file
+containing the
+.B #include
+line, then in the
+.I include
+directory next to the
+.B compile
+executable itself, which holds the standard library headers.
+Includes may nest up to 20 levels deep.
+.SH DIAGNOSTICS
+Errors and warnings are written to standard error as
+.PP
+.RS
+.nf
+file:line:column: error: description
+file:line:column: warning: description
+file:line:column: fatal error: description
+.fi
+.RE
+.PP
+A fatal error stops the compilation at once. A failed compilation ends
+with a final line such as
+.PP
+.RS
+.nf
+compile: error: compilation terminated
+compile: error: parser finished with errors
+.fi
+.RE
+.PP
+naming the stage that failed. The compiler stops after 15 errors. At most 10
+warnings are shown; after that it reports
+.I "warning: maximum warnings have been reached"
+and stays quiet.
+.SH EXIT STATUS
+.TP
+.B 0
+The program compiled and the assembly was written (or
+.BR \-\-help / \-\-version
+was given).
+.TP
+.B 1
+Any error: a bad command line, an unreadable input, or a compilation
+error in any stage.
+.SH EXAMPLES
+Build a cartridge from a C program, a texture and a sound:
+.PP
+.RS
+.nf
+compile game.c \-o obj/game.asm
+assemble obj/game.asm \-o obj/game.vbin
+png2vircon sprites.png \-o obj/sprites.vtex
+wav2vircon jump.wav \-o obj/jump.vsnd
+packrom game.xml \-o game.v32
+.fi
+.RE
+.PP
+where
+.I game.xml
+is the ROM definition described in
+.BR packrom (1).
+.SH FILES
+.TP
+.I <DevTools>/include/
+The standard library headers, found next to the
+.B compile
+executable. With the default installation
+.I <DevTools>
+is
+.I /usr/local/Vircon32/DevTools
+on Linux and macOS.
+.TP
+.IR output.asm.debug ", " output.asm.lexer.log ", " output.asm.parser.log
+Written only with
+.B \-g
+and
+.BR \-\-debugmode .
+.SH SEE ALSO
+.BR assemble (1),
+.BR packrom (1),
+.BR disassemble (1),
+.BR Vircon32 (1),
+.BR vircon32 (3v32),
+.BR v32c++ (1),
+.BR v32opt (1)
+.PP
+The Vircon32 website,
+.IR https://www.vircon32.com ,
+has the full C language and library documentation.
+.SH BUGS
+.B \-Wall
+is listed as enabling all warnings, but it does nothing; neither does
+.BR \-c .
+.PP
+A file named on an
+.B embedded
+line is read relative to the assembler's working directory, not to the
+C source file, so the program builds only from the directory its build
+script expects.
+.SH AUTHOR
+The Vircon32 C compiler was written by Javier Carracedo
+.RI ( Carra ).
+This manual page was written by Matthew Haas for the v32c++ project.

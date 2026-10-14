@@ -1,0 +1,67 @@
+.TH DISASSEMBLE 1 "October 11, 2026" "Vircon32 DevTools 26.04.24" "Vircon32 Development Tools"
+.SH NAME
+disassemble \- turn a Vircon32 binary back into assembly
+.SH SYNOPSIS
+.B disassemble
+.RB [ \-o
+.IR output.asm ]
+.RB [ \-b ]
+.RB [ \-v ]
+.I input.vbin
+.br
+.B disassemble
+.B \-\-help
+.br
+.B disassemble
+.B \-\-version
+.SH DESCRIPTION
+.B disassemble
+reads a VBIN program binary \(em as written by
+.BR assemble (1),
+or extracted from a cartridge by
+.BR unpackrom (1)
+\(em and writes the corresponding assembly. Jump and call targets are
+given generated label names
+.RI ( _label1 ", " _label2 ", ...)." The tool focuses on the program code: data
+stored in the binary (strings, tables, embedded files) comes out as the
+instructions those words would decode to, and references to it stay as
+plain addresses.
+.SH OPTIONS
+.TP
+.BI \-o " output.asm"
+Write the assembly to
+.IR output.asm .
+Without
+.BR \-o ,
+the output path is the input path with its extension replaced by
+.IR .asm .
+.TP
+.B \-b
+Treat the binary as a BIOS, whose code starts at address
+.B 0x10000000
+instead of the cartridge's
+.BR 0x20000000 .
+.TP
+.B \-v
+Verbose: report the output path chosen.
+.TP
+.B \-\-help
+Print a usage summary and exit.
+.TP
+.B \-\-version
+Print the version and author, and exit.
+.SH EXIT STATUS
+.TP
+.B 0
+The assembly was written.
+.TP
+.B 1
+Any error, printed as
+.IR "disassemble: error: description" .
+.SH SEE ALSO
+.BR assemble (1),
+.BR unpackrom (1)
+.SH AUTHOR
+The Vircon32 disassembler was written by Javier Carracedo
+.RI ( Carra ).
+This manual page was written by Matthew Haas for the v32c++ project.

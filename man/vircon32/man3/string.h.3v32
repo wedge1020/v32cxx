@@ -1,0 +1,184 @@
+.TH STRING.H 3v32 "October 14, 2026" "Vircon32 DevTools 26.04.24" "Vircon32 C Library"
+.SH NAME
+string.h \- Vircon32 characters, strings and number formatting
+.SH SYNOPSIS
+.nf
+.B #include \(dqstring.h\(dq
+.PP
+.BI "bool isdigit( int " c " );"
+.BI "bool isxdigit( int " c " );"
+.BI "bool isalpha( int " c " );"
+.BI "bool isalphanum( int " c " );"
+.BI "bool isascii( int " c " );"
+.BI "bool islower( int " c " );"
+.BI "bool isupper( int " c " );"
+.BI "bool isspace( int " c " );"
+.BI "int  tolower( int " c " );"
+.BI "int  toupper( int " c " );"
+.PP
+.BI "int  strlen( int* " text " );"
+.BI "int  strcmp( int* " text1 ", int* " text2 " );"
+.BI "int  strncmp( int* " text1 ", int* " text2 ", int " max_characters " );"
+.BI "void strcpy( int* " dest_text ", int* " src_text " );"
+.BI "void strncpy( int* " dest_text ", int* " src_text ", int " max_characters " );"
+.BI "void strcat( int* " initial_text ", int* " added_text " );"
+.BI "void strncat( int* " initial_text ", int* " added_text ", int " max_characters " );"
+.PP
+.BI "void itoa( int " value ", int* " result_text ", int " base " );"
+.BI "void ftoa( float " value ", int* " result_text " );"
+.fi
+.SH DESCRIPTION
+A Vircon32 string is an array of words, one character per word,
+terminated by a 0 word; it is passed as an
+.BR int* .
+Character codes 0 to 255 follow Windows-1252, the encoding of the BIOS
+font. None of these functions checks the size of the buffer it writes
+to.
+.SS Characters
+.TP
+.BR isdigit ", " isxdigit
+Decimal digit; hexadecimal digit (either case).
+.TP
+.BR isalpha ", " isalphanum
+ASCII letter; ASCII letter or digit.
+.RB ( isalphanum
+is this library's name for C's
+.BR isalnum .)
+.TP
+.B isascii
+A code from 0 to 127.
+.TP
+.BR islower ", " isupper
+A lowercase or uppercase letter, including the accented letters of
+Windows-1252 (codes 224 to 254 and 192 to 222, except 247 and 215).
+.TP
+.B isspace
+Space, newline, carriage return or tab.
+.TP
+.BR tolower ", " toupper
+Convert the case of a letter, accented ones included; any other code
+is returned unchanged.
+.SS Strings
+.TP
+.B strlen
+The number of characters before the terminator.
+.TP
+.BR strcmp ", " strncmp
+Compare two strings (at most
+.I max_characters
+characters for
+.BR strncmp ),
+returning 0 when equal, or the difference between the first two
+characters that differ (negative when
+.I text1
+sorts first).
+.B strncmp
+with
+.I max_characters
+below 1 returns 0.
+.TP
+.B strcpy
+Copy
+.I src_text
+with its terminator into
+.IR dest_text .
+Returns nothing (C's returns
+.IR dest_text ).
+.TP
+.B strncpy
+Copy at most
+.I max_characters
+characters, then always write a terminator: up to
+.IR max_characters "+1"
+words are written. This differs from C, which writes exactly
+.I max_characters
+words, padding with zeros and leaving the result unterminated when the
+source is too long. Does nothing when
+.I max_characters
+is below 1.
+.TP
+.B strcat
+Append
+.I added_text
+to
+.IR initial_text .
+.TP
+.B strncat
+Append at most
+.I max_characters
+characters, then a terminator.
+.SS Numbers
+.TP
+.B itoa
+Write
+.I value
+as text in base 2 to 16 (digits above 9 are uppercase letters). Only
+in base 10 is the value taken as signed: other bases show the 32-bit
+pattern, so
+.B itoa( \-1, text, 16 )
+writes
+.BR FFFFFFFF .
+A base outside 2 to 16 writes nothing. At most 33 words are written
+(32 binary digits and the terminator).
+.TP
+.B ftoa
+Write
+.I value
+in decimal with up to 5 decimals, rounded, and without trailing zeros
+.RB ( 2.5 ", " \-0.125 ", " 3 ).
+A rounding that carries into the whole part is handled
+.RB ( 0.999999
+writes
+.BR 1 ).
+There is no exponent notation. The value must be within the range of an
+.B int
+(see BUGS).
+.SH NOTES
+There are no
+.BR strchr ,
+.BR strstr ,
+.BR atoi ,
+.BR sprintf
+or other standard string functions here; v32c++'s C library adds them
+for C programs (see
+.BR v32libc (3v32)).
+.SH SEE ALSO
+.BR vircon32 (3v32),
+.BR video.h (3v32),
+.BR string.hpp (3v32)
+.SH BUGS
+.B ftoa
+converts the whole part of the value to an
+.BR int .
+A value of 2147483648 or more, or below \-2147483648, cannot be
+converted, and
+.B ftoa
+does not return: it writes
+.BR \-2147483648.
+and then keeps appending
+.B 0
+characters without end, far past the buffer. A
+.B float
+cannot hold 2147483647 exactly, so
+.B 2147483647.0
+is 2147483648.0 and hangs too. Compare the value against that range first.
+.PP
+A negative value that rounds to zero keeps its sign:
+.B ftoa( \-0.000001, text )
+writes
+.BR \-0 .
+.PP
+Headers before the 2026 fix, including the one in the DevTools 26.04.24
+sources, get the carry wrong:
+.B ftoa( 0.999999, text )
+writes
+.BR 0.1 ,
+and 1.999999 writes
+.BR 1.1 .
+This page describes the fixed header
+.RB ( string.h ,
+file version still 2025/04/08).
+.SH AUTHOR
+The Vircon32 standard library was written by Javier Carracedo
+.RI ( Carra ).
+This manual page was written by Matthew Haas for the v32c++ project.

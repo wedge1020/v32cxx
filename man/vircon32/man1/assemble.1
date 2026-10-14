@@ -1,0 +1,357 @@
+.TH ASSEMBLE 1 "October 11, 2026" "Vircon32 DevTools 26.04.24" "Vircon32 Development Tools"
+.SH NAME
+assemble \- Vircon32 assembler
+.SH SYNOPSIS
+.B assemble
+.RB [ \-o
+.IR output.vbin ]
+.RB [ \-b ]
+.RB [ \-v ]
+.RB [ \-w ]
+.RB [ \-g
+.IR program | vbin | v32 ]
+.I input.asm
+.br
+.B assemble
+.B \-\-help
+.br
+.B assemble
+.B \-\-version
+.SH DESCRIPTION
+.B assemble
+converts one Vircon32 assembly source file into a machine-code
+binary in the VBIN format, ready to be packed into a cartridge by
+.BR packrom (1).
+Its input is usually the output of
+.BR compile (1),
+but assembly can also be written by hand.
+.PP
+Assembly runs in four stages: lexer, preprocessor, parser and emitter.
+Nothing is printed on success unless
+.B \-v
+is given. Exactly one input file is accepted.
+.PP
+Labels resolve to addresses in the cartridge program ROM, which starts
+at
+.B 0x20000000
+(or in the BIOS program ROM at
+.B 0x10000000
+with
+.BR \-b ).
+.SH OPTIONS
+.TP
+.BI \-o " output.vbin"
+Write the binary to
+.IR output.vbin .
+Without
+.BR \-o ,
+the output path is the input path with its extension replaced by
+.IR .vbin .
+.TP
+.B \-b
+Assemble the code as a BIOS: addresses start at the BIOS program ROM
+.RB ( 0x10000000 ).
+.TP
+.B \-v
+Verbose: report the output path, each stage, and the size of the
+produced binary in words and bytes.
+.TP
+.B \-w
+Inhibit all warnings.
+.TP
+.BI \-g " reference"
+Also write a debug information file,
+.IR output.vbin.debug ,
+relating every ROM position to its source file and line, and listing
+the labels. The
+.I reference
+says how addresses in it are given:
+.RS
+.TP
+.B program
+in words, relative to the start of the program;
+.TP
+.B vbin
+in bytes, relative to the start of the VBIN file;
+.TP
+.B v32
+in bytes, relative to the start of the packed cartridge file.
+.RE
+.TP
+.B \-\-help
+Print a usage summary and exit.
+.TP
+.B \-\-version
+Print the assembler version and author, and exit.
+.TP
+.B \-s
+Accepted for compatibility; has no effect.
+.PP
+Any other argument that starts with
+.B \-
+is an error.
+.SH ASSEMBLY LANGUAGE
+.SS Lines
+Each line holds one instruction, one data directive, one label
+declaration or one preprocessor directive. Everything from a
+.B ;
+to the end of the line is a comment. Instruction names, register
+names and directive keywords are not case-sensitive.
+.SS Labels
+A label is a name that starts with an underscore. It is declared with a
+colon and used as an operand, where it stands for the address of what
+follows its declaration:
+.PP
+.RS
+.nf
+_loop:
+    wait
+    jmp _loop
+.fi
+.RE
+.SS Literals
+Integers are written in decimal or in hexadecimal with
+.B 0x
+(a leading
+.B \-
+negates); floats have a decimal point
+.RI ( 1.5 ,
+.IR \-0.25 ;
+no exponent); characters in single quotes
+.RI ( \(aqA\(aq )
+are their code;
+.B true
+and
+.B false
+are 1 and 0. Strings, in double quotes, are allowed only in
+.B string
+and
+.B datafile
+directives. Escapes in characters and strings are
+.BR \en ", " \er ", " \et ", " \e\e ", " \e\(aq ", " \e\(dq
+and
+.BI \ex HH\c
+\&.
+.SS Registers
+.B R0
+to
+.BR R15 ,
+all general purpose. Five have alternate names that reflect what
+some instructions use them for:
+.PP
+.RS
+.TS
+l l l.
+CR	R11	count register (string instructions)
+SR	R12	source register (string instructions)
+DR	R13	destination register (string instructions)
+BP	R14	base pointer (stack frames)
+SP	R15	stack pointer
+.TE
+.RE
+.SS Memory operands
+A memory operand is written in brackets:
+.BI [ address ]\c
+,
+.BI [ register ]\c
+, or
+.BI [ register + offset ]
+.RB ( \- " is also allowed)."
+Memory is addressed in 32-bit words.
+.SS Instructions
+Every instruction takes one cycle; the CPU runs 250000 cycles per
+frame (15 million per second). Comparisons and conversions overwrite
+their first operand with the result: there are no flags.
+.I reg
+is a register,
+.I imm
+an immediate value or label,
+.I mem
+a memory operand.
+.PP
+.TS
+lb l l.
+HLT		stop the CPU
+WAIT		wait for the next frame
+JMP	imm | reg	jump
+CALL	imm | reg	push return address, jump
+RET		return from a CALL
+JT	reg, imm | reg	jump if reg is not 0
+JF	reg, imm | reg	jump if reg is 0
+IEQ INE IGT IGE ILT ILE	reg, imm | reg	integer compare: reg = 1/0
+FEQ FNE FGT FGE FLT FLE	reg, imm | reg	float compare: reg = 1/0
+MOV	reg, imm | reg | mem	load
+MOV	mem, reg	store
+LEA	reg, [reg+offset]	load the address itself
+PUSH	reg	push onto the stack
+POP	reg	pop from the stack
+IN	reg, port	read an I/O port
+OUT	port, imm | reg	write an I/O port
+MOVS		copy CR words [SR] to [DR]
+SETS		set CR words at [DR] to SR
+CMPS	reg	compare CR words
+CIF CFI	reg	int to float, float to int
+CIB CFB	reg	int or float to bool 0/1
+NOT	reg	bitwise not
+AND OR XOR	reg, imm | reg	bitwise and, or, xor
+BNOT	reg	boolean not
+SHL	reg, imm | reg	shift left (< 0: right)
+IADD ISUB IMUL	reg, imm | reg	integer + \- \(mu
+IDIV IMOD	reg, imm | reg	integer / and %
+IMIN IMAX	reg, imm | reg	integer min, max
+ISGN IABS	reg	integer negate, absolute
+FADD FSUB FMUL	reg, imm | reg	float + \- \(mu
+FDIV FMOD	reg, imm | reg	float / and remainder
+FMIN FMAX	reg, imm | reg	float min, max
+FSGN FABS	reg	float negate, absolute
+FLR CEIL ROUND	reg	round down, up, nearest
+SIN ACOS	reg	sine, arc cosine
+ATAN2	reg, reg	arc tangent of reg1/reg2
+LOG	reg	natural logarithm
+POW	reg, reg	reg1 to the power reg2
+.TE
+.PP
+.BR MOVS ,
+.B SETS
+and
+.B CMPS
+repeat until
+.B CR
+reaches 0, advancing
+.B SR
+and
+.B DR
+one word per cycle;
+.B CMPS
+stops early at the first difference, leaving
+.I reg
+as the difference between the two words ([DR] minus [SR]),
+or 0 when all are equal. Division by zero, an arc cosine
+or logarithm outside its domain, a stack overflow or underflow, and an
+access to a nonexistent address or port raise a hardware error, which
+stops the program and makes the BIOS show an error screen.
+.SS Ports
+.B IN
+and
+.B OUT
+take an I/O port by name:
+.BR TIM_ *
+(timer),
+.B RNG_CurrentValue
+(random generator),
+.BR GPU_ *,
+.BR SPU_ *,
+.BR INP_ *
+(gamepads),
+.BR CAR_ *
+(cartridge) and
+.B MEM_Connected
+(memory card) \(em for example
+.BR GPU_DrawingPointX " or " INP_GamepadButtonA .
+A numeric port number is accepted with a warning. The values with
+special meaning for
+.B OUT
+have names too:
+.BR GPUCommand_ *
+.RB ( GPUCommand_ClearScreen ,
+.BR GPUCommand_DrawRegion ,
+\&...),
+.BR GPUBlendingMode_ *,
+.BR SPUCommand_ *
+and
+.BR SPUChannelState_ *.
+.SS Data directives
+.TP
+.BI integer " value" ", ..."
+One word per value.
+.TP
+.BI float " value" ", ..."
+One word per value.
+.TP
+.BI string " \(dqtext\(dq"
+One word per character, plus a terminating 0.
+.TP
+.BI pointer " label" ", ..."
+The address of each label.
+.TP
+.BI datafile " \(dqpath\(dq"
+The contents of a binary file, whose size must be a multiple of 4
+bytes. The path is used as written, so a relative path is relative to
+the directory
+.B assemble
+is run from.
+.SS Preprocessor
+Directives begin with
+.BR % :
+.TP
+.BI %include " \(dqpath\(dq"
+Insert another assembly file, looked for in the directory of the
+including file.
+.TP
+.BI %define " name value"
+Replace every later occurrence of
+.I name
+with the rest of the line.
+.TP
+.BI %undef " name"
+.TP
+.BR %ifdef ", " %ifndef ", " %else ", " %endif
+Conditional assembly on whether a name is defined.
+.TP
+.BR %error ", " %warning
+Stop with an error, or print a warning, with the given message.
+.SH OUTPUT FORMAT
+A VBIN file is a 12-byte header \(em the 8 characters
+.B V32\-VBIN
+followed by the number of 32-bit words as a little-endian integer
+\(em and then the words themselves.
+.SH DIAGNOSTICS
+Problems are reported on standard error with the file and line they
+were found at, and a failed run ends with
+.PP
+.RS
+.nf
+assemble: error: description
+.fi
+.RE
+.SH EXIT STATUS
+.TP
+.B 0
+The binary was written (or
+.BR \-\-help / \-\-version
+was given).
+.TP
+.B 1
+Any error.
+.SH EXAMPLES
+.RS
+.nf
+compile game.c \-o obj/game.asm
+assemble obj/game.asm \-o obj/game.vbin
+.fi
+.RE
+.PP
+With an optimizer in between:
+.PP
+.RS
+.nf
+compile game.c \-o obj/game.asm
+v32opt obj/game.asm \-o obj/gameOpt.asm \-O1
+assemble obj/gameOpt.asm \-o obj/game.vbin
+.fi
+.RE
+.SH SEE ALSO
+.BR compile (1),
+.BR disassemble (1),
+.BR packrom (1),
+.BR v32opt (1),
+.BR vircon32 (3v32)
+.SH BUGS
+The usage summary lists a
+.B \-\-debugmode
+option, but the assembler does not recognize it and stops with
+\(lqunrecognized command line option\(rq.
+.SH AUTHOR
+The Vircon32 assembler was written by Javier Carracedo
+.RI ( Carra ).
+This manual page was written by Matthew Haas for the v32c++ project.

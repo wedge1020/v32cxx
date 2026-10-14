@@ -1,0 +1,77 @@
+.TH WAV2VIRCON 1 "October 11, 2026" "Vircon32 DevTools 26.04.24" "Vircon32 Development Tools"
+.SH NAME
+wav2vircon \- convert a WAV sound into a Vircon32 sound
+.SH SYNOPSIS
+.B wav2vircon
+.RB [ \-o
+.IR output.vsnd ]
+.RB [ \-r
+.IR rate ]
+.RB [ \-v ]
+.I input.wav
+.br
+.B wav2vircon
+.B \-\-help
+.br
+.B wav2vircon
+.B \-\-version
+.SH DESCRIPTION
+.B wav2vircon
+converts a WAV file into a VSND sound, the format
+.BR packrom (1)
+puts into a cartridge. The input may be any WAV that SDL2's loader
+accepts (integer PCM, float and the common compressed encodings, mono
+or stereo, at any sample rate); it is
+converted to the console's own format: signed 16-bit stereo samples at
+44100 Hz.
+.SH OPTIONS
+.TP
+.BI \-o " output.vsnd"
+Write the sound to
+.IR output.vsnd .
+Without
+.BR \-o ,
+the output path is the input path with its extension replaced by
+.IR .vsnd .
+.TP
+.BI \-r " rate"
+Resample to
+.I rate
+samples per second instead of 44100, or keep the input's own rate when
+.I rate
+is 0. Accepted range: 1000 to 100000, or 0. The console always plays
+sounds at 44100 Hz, so a sound stored at any other rate plays faster or
+slower (and higher or lower) than the original unless the program sets
+the channel speed to compensate (see
+.BR audio.h (3v32)).
+.TP
+.B \-v
+Verbose: report each step.
+.TP
+.B \-\-help
+Print a usage summary and exit.
+.TP
+.B \-\-version
+Print the version and author, and exit.
+.SH OUTPUT FORMAT
+A VSND file is a 12-byte header \(em the 8 characters
+.BR V32\-VSND ,
+then the number of samples as a little-endian 32-bit integer \(em
+followed by the samples, 4 bytes each: the left and then the right
+channel as little-endian signed 16-bit values.
+.SH EXIT STATUS
+.TP
+.B 0
+The sound was written.
+.TP
+.B 1
+Any error, printed as
+.IR "wav2vircon: error: description" .
+.SH SEE ALSO
+.BR vircon2wav (1),
+.BR packrom (1),
+.BR audio.h (3v32)
+.SH AUTHOR
+The Vircon32 WAV importer was written by Javier Carracedo
+.RI ( Carra ).
+This manual page was written by Matthew Haas for the v32c++ project.

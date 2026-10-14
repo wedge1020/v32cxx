@@ -1,7 +1,7 @@
 # v32c++ library manual pages (English)
 
 Section  3  manual  pages  for   the  headers  that  come  with  `v32c++`
-(`20261011-dev`): the `v32/` C++  headers (including the `v32io` keyboard
+(`20261014-dev`): the `v32/` C++  headers (including the `v32io` keyboard
 and mouse libraries), the  built-in `<string>`, `<array>` and `<vector>`,
 and the C-mode library in  `libc/`. They complement `man/v32c++.1`. Every
 example was run through v32c++, the real Vircon32 compiler and assembler;
@@ -38,10 +38,13 @@ Plus  alias   pages  (`.so`)  for   every  `v32::`  class   and  function
 (`printf`, `fopen`, `initscr`,  ...) have no alias, so  they never shadow
 the system's pages.
 
-The  section is  `3v32`, shared  with the  Vircon32 SDK  pages (installed
-from  the separate  ComputerSoftware  set, which  these  pages refer  to:
-`vircon32(3v32)`, `video.h(3v32)`,  ...). No  page name  is used  by both
-sets.
+The  section is  `3v32`, shared  with the  Vircon32 SDK  pages, which
+these pages refer to (`vircon32(3v32)`, `video.h(3v32)`, ...) and which
+live in [`vircon32/`](vircon32/README.md): the emulator and DevTools
+commands (section 1) and the C library headers (section 3v32). They are
+kept apart because they document the SDK, not v32c++, and carry its
+version (`make version` does not stamp them). They are installed with
+these. No page name is used by both sets.
 
 ## Installing
 
@@ -49,5 +52,5 @@ sets.
     sudo install -m 644 man3/*.3v32 /usr/local/share/man/man3/
     sudo mandb -q            # Linux (man-db); macOS needs nothing
 
-To install them  with v32c++ itself, the Makefile's  `sysinstall` and the
-CMake `install()` rules would copy `man/man3/*.3v32` next to `v32c++.1`.
+`make sysinstall` and `cmake --install` install both sets (gzipped, mode
+0644, aliases as symbolic links) into the same `man1` and `man3`.

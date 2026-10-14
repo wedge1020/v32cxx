@@ -1,4 +1,4 @@
-.TH STRING.HPP 3v32 "October 11, 2026" "v32c++ 20261010-dev" "v32c++ Library"
+.TH STRING.HPP 3v32 "October 14, 2026" "v32c++ 20261014-dev" "v32c++ Library"
 .SH NAME
 v32/string.hpp \- v32::String, a fixed-capacity string over the Vircon32 SDK
 .SH SYNOPSIS
@@ -77,7 +77,15 @@ writes it.
 .B append_float
 Append a number with up to 5 decimals, as
 .BR ftoa (3v32)
-writes it.
+writes it (0.999999 is
+.BR 1 ).
+A value of 2147483648 or more, or below \-2147483648, which
+.B ftoa
+cannot format and hangs on, appends
+.B overflow
+or
+.B \-overflow
+instead.
 .TP
 .BR equals ", " operator== ", " operator!=
 Compare with text.

@@ -11,49 +11,296 @@ on:
         options:
           - 'test'
           - 'release'
+  # Every push and pull request also runs the checks (version, manual pages,
+  # tests against the real Vircon32 toolchain, CMake build); only a manual
+  # run builds the packages.
+  push:
+    branches: [main, master]
+  pull_request:
 
 permissions:
   contents: write
 
 # =========================================================================
-# CHANGE THIS SINGLE VARIABLE TO DEPLOY THIS WORKFLOW TO ANOTHER REPOSITORY
+# CHANGE THESE TWO VARIABLES TO DEPLOY THIS WORKFLOW TO ANOTHER REPOSITORY
+#   PROJECT_NAME    the program's name: the binary, and the zips' names
+#   PROJECT_HEADER  the header in inc/ that holds '#define VERSION "..."'
 # =========================================================================
 env:
-  PROJECT_NAME: v32cxx
+  PROJECT_NAME: v32c++
+  PROJECT_HEADER: v32cxx
 
 jobs:
+  # Reads the version once, for every build job and the release. The
+  # '#define VERSION "..."' line itself is parsed (anchored, as the base
+  # Makefile and CMakeLists.txt do): a plain `grep -i VERSION | head -1`
+  # takes the first line that merely mentions the word -- a comment, say
+  # -- and names every zip and the release tag after its garbage.
+  #
+  # It also checks the manual pages, which are deployed with every package
+  # and install:
+  #   - every v32c++ page (a .TH line whose fourth field is "v32c++ ...")
+  #     must be stamped with that version by `make version`: a mismatch is
+  #     a warning on test builds and an error on release builds;
+  #   - the Vircon32 SDK's pages (man/vircon32/) carry the DevTools version
+  #     and are not stamped, but must not share a name with a v32c++ page
+  #     (both sets install into the same man1 and man3);
+  #   - every alias page (`.so man3/<page>`) must point at a page that
+  #     exists in the same set.
+  version:
+    name: Read Version and Check Manual Pages
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.parse.outputs.version }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Parse and Check Version
+        id: parse
+        shell: bash
+        run: |
+          HEADER_FILE="inc/${{ env.PROJECT_HEADER }}.h"
+          VERSION=$(sed -n 's/^#define[[:space:]]*VERSION[[:space:]]*"\(.*\)".*/\1/p' "$HEADER_FILE" | head -n 1)
+          if [ -z "$VERSION" ]; then
+            echo "::error file=$HEADER_FILE::could not read VERSION from $HEADER_FILE"
+            exit 1
+          fi
+          case "$VERSION" in
+            *[!A-Za-z0-9._+-]*)
+              echo "::error file=$HEADER_FILE::VERSION '$VERSION' has characters unsafe for file names and tags"
+              exit 1 ;;
+          esac
+          echo "Version: $VERSION"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+
+          if [ "${{ inputs.build_type }}" = "release" ]; then LEVEL=error; else LEVEL=warning; fi
+          STALE=0
+
+          # v32c++'s own pages are stamped; aliases (.so) have no .TH
+          for page in man/man1/*.1 man/man3/*.3v32; do
+            [ -f "$page" ] || continue
+            grep -q '^\.TH .* "v32c++ [^"]*"' "$page" || continue
+            if ! grep -q "^\.TH .*\"v32c++ $VERSION\"" "$page"; then
+              echo "::$LEVEL file=$page::$page is not stamped with $VERSION (run 'make version')"
+              STALE=1
+            fi
+          done
+          if [ "$STALE" = 1 ] && [ "$LEVEL" = error ]; then exit 1; fi
+
+      - name: Check Manual Page Sets
+        shell: bash
+        run: |
+          FAIL=0
+          # no page name shared between v32c++'s set and the Vircon32 SDK's
+          for section in man1 man3; do
+            for page in man/vircon32/$section/*; do
+              [ -f "$page" ] || continue
+              if [ -e "man/$section/$(basename "$page")" ]; then
+                echo "::error file=$page::$(basename "$page") exists in both man/$section and man/vircon32/$section"
+                FAIL=1
+              fi
+            done
+          done
+          # every alias page points at a page that exists, in its own set
+          for root in man man/vircon32; do
+            for page in $root/man1/* $root/man3/*; do
+              [ -f "$page" ] || continue
+              first=$(head -n 1 "$page")
+              case "$first" in
+                ".so "*)
+                  target=${first#.so }
+                  if [ ! -f "$root/$target" ]; then
+                    echo "::error file=$page::alias $page points at $root/$target, which does not exist"
+                    FAIL=1
+                  fi ;;
+              esac
+            done
+          done
+          exit $FAIL
+
+      # Advisory: mandoc's lint warnings are shown, but do not fail the run.
+      - name: Lint Manual Pages (advisory)
+        shell: bash
+        continue-on-error: true
+        run: |
+          sudo apt-get update && sudo apt-get install -y mandoc
+          mandoc -Tlint -Wwarning man/man1/*.1 man/man3/*.3v32 man/vircon32/man1/*.1 man/vircon32/man3/*.3v32 || true
+
+  # The transpiler against the real Vircon32 toolchain: the base Makefile's
+  # `make test` transpiles every sample, then `make realcheck` runs the
+  # generated programs through the real compiler, assembler and packer, and
+  # boots each self-checking sample (tests/NNNsample with `int test_errors`)
+  # on the emulator's own console core, which must end with test_errors == 0.
+  # That also covers the SDK's string.h (ftoa) fix, which build-tools.sh
+  # installs into the toolchain from c_api/string.h.
+  verify:
+    name: Test Against the Vircon32 Toolchain
+    needs: version
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      # See the build job: keep make from running bison and flex.
+      - name: Use the Committed Parser and Lexer
+        shell: bash
+        run: |
+          touch src/parser.c inc/parser.h
+          sleep 1
+          touch src/lexer.c
+
+      - name: Build the Vircon32 Toolchain Cache
+        id: toolchain-cache
+        uses: actions/cache@v4
+        with:
+          path: tools/vircon32/bin
+          key: vircon32-toolchain-${{ hashFiles('tools/vircon32/build-tools.sh', 'tools/vircon32/*.cpp', 'tools/vircon32/shim/**', 'c_api/string.h') }}
+
+      - name: Build the Vircon32 Toolchain
+        if: steps.toolchain-cache.outputs.cache-hit != 'true'
+        run: sh tools/vircon32/build-tools.sh
+
+      - name: Build, Test and Check With the Real Toolchain
+        run: make realcheck
+
+      - name: Keep the Test Output on Failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.PROJECT_HEADER }}-verify-out
+          path: out/
+          retention-days: 3
+
+  # The CMake build and install: configure, build, run the ctest suite, then
+  # install into a scratch directory and check what a user would get --
+  # the binary, the headers, and the manual pages (v32c++'s and the Vircon32
+  # SDK's) gzipped into man1 and man3, with every alias a symbolic link to a
+  # page that is there.
+  cmake:
+    name: CMake Build, Test and Install (${{ matrix.os }})
+    needs: version
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      # macOS's bison is 2.3 (too old); CMake then falls back to the
+      # committed parser and lexer, as on every runner here. Touching them
+      # keeps that choice stable.
+      - name: Use the Committed Parser and Lexer
+        shell: bash
+        run: |
+          touch src/parser.c inc/parser.h
+          sleep 1
+          touch src/lexer.c
+
+      - name: Configure, Build and Test
+        shell: bash
+        run: |
+          cmake -S . -B build
+          cmake --build build --parallel
+          ctest --test-dir build --output-on-failure
+
+      - name: Install and Check the Layout
+        shell: bash
+        run: |
+          STAGE="$PWD/stage"
+          DESTDIR="$STAGE" cmake --install build
+          BIN=$(find "$STAGE" -name 'v32c++' -type f | head -n 1)
+          [ -n "$BIN" ] || { echo "::error::no v32c++ binary was installed"; exit 1; }
+          MAN=$(find "$STAGE" -type d -path '*/share/man' | head -n 1)
+          [ -n "$MAN" ] || { echo "::error::no manual tree was installed"; exit 1; }
+
+          WANT1=$(ls man/man1/*.1 man/vircon32/man1/*.1 | wc -l | tr -d ' ')
+          WANT3=$(ls man/man3/*.3v32 man/vircon32/man3/*.3v32 | wc -l | tr -d ' ')
+          GOT1=$(ls "$MAN"/man1/*.1.gz | wc -l | tr -d ' ')
+          GOT3=$(ls "$MAN"/man3/*.3v32.gz | wc -l | tr -d ' ')
+          echo "man1: $GOT1 of $WANT1 pages; man3: $GOT3 of $WANT3 pages"
+          [ "$GOT1" = "$WANT1" ] && [ "$GOT3" = "$WANT3" ] || { echo "::error::not every manual page was installed"; exit 1; }
+
+          # both sets are there: a v32c++ page, a Vircon32 command page, and
+          # the Vircon32 header page the ftoa alias leads to
+          for page in man1/v32c++.1.gz man1/compile.1.gz man3/string.h.3v32.gz man3/string.hpp.3v32.gz; do
+            [ -f "$MAN/$page" ] || { echo "::error::$page was not installed"; exit 1; }
+          done
+          [ "$(readlink "$MAN/man3/ftoa.3v32.gz")" = "string.h.3v32.gz" ] || { echo "::error::ftoa(3v32) is not a link to string.h.3v32.gz"; exit 1; }
+
+          # no dangling aliases
+          for link in "$MAN"/man1/*.gz "$MAN"/man3/*.gz; do
+            if [ -L "$link" ] && [ ! -e "$link" ]; then
+              echo "::error::$link is a dangling link"; exit 1
+            fi
+          done
+          sh scripts/smoke_test.sh "$BIN" "${{ needs.version.outputs.version }}"
+
   build:
     name: Build (${{ matrix.os }}-${{ matrix.arch }})
+    needs: [version, verify, cmake]
+    # The packages are built on a manual run only.
+    if: github.event_name == 'workflow_dispatch'
     runs-on: ${{ matrix.os-runner }}
-    
+
+    # The OpenBSD and Haiku targets are a nice extra, not a requirement:
+    # if one of them fails, the job still counts as passed, so the release
+    # job below goes ahead with every package that did build.
+    continue-on-error: ${{ matrix.optional == true }}
+
     defaults:
       run:
         shell: ${{ matrix.os == 'windows' && 'msys2 {0}' || 'bash' }}
 
+    env:
+      VERSION: ${{ needs.version.outputs.version }}
+      # The base Makefile's flags, optimized. (Passing CFLAGS replaces the
+      # Makefile's own, so -Iinc -MMD -MP are repeated.)
+      BUILD_CFLAGS: -Wall -Wextra -O2 -Iinc -MMD -MP
+
     strategy:
       fail-fast: false
       matrix:
+        # smoke: the binary runs on the runner itself (not cross-compiled),
+        # so scripts/smoke_test.sh can check the package layout, that the
+        # headers are found from it, and the manual page aliases. (The
+        # OpenBSD and Haiku builds are tested inside their virtual machines
+        # instead.)
         include:
           # Windows Targets
+          #   x86_64: MSYS2 UCRT64 (gcc) on the regular x64 runner.
+          #   arm64:  MSYS2 CLANGARM64 (clang) on GitHub's native Windows
+          #           ARM64 runner (free for public repositories).
           - os: windows
             arch: x86_64
             os-runner: windows-latest
+            msystem: UCRT64
+            msys-packages: mingw-w64-ucrt-x86_64-gcc mingw-w64-ucrt-x86_64-make zip unzip
+            smoke: true
           - os: windows
             arch: arm64
-            os-runner: windows-latest
-          
-          # macOS Targets
+            os-runner: windows-11-arm
+            msystem: CLANGARM64
+            msys-packages: mingw-w64-clang-aarch64-clang make zip unzip
+            smoke: true
+
+          # macOS Targets (macos-latest is an Apple Silicon runner; the
+          # x86_64 binary is cross-compiled there)
           - os: macos
             arch: x86_64
             os-runner: macos-latest
           - os: macos
             arch: arm64
             os-runner: macos-latest
+            smoke: true
 
           # Linux Core Targets
           - os: linux
             arch: x86_64
             os-runner: ubuntu-latest
+            smoke: true
           - os: linux
             arch: arm64
             os-runner: ubuntu-latest
@@ -66,23 +313,54 @@ jobs:
             arch: armv8-rpi
             os-runner: ubuntu-latest
 
+          # OpenBSD and Haiku Targets (optional): built inside a QEMU
+          # virtual machine on a Linux runner by cross-platform-actions.
+          # The arm64 OpenBSD guest is emulated, so it is the slowest job.
+          - os: openbsd
+            arch: x86_64
+            os-runner: ubuntu-latest
+            vm-arch: x86-64
+            vm-version: '7.9'
+            optional: true
+          - os: openbsd
+            arch: arm64
+            os-runner: ubuntu-latest
+            vm-arch: arm64
+            vm-version: '7.9'
+            optional: true
+          - os: haiku
+            arch: x86_64
+            os-runner: ubuntu-latest
+            vm-arch: x86-64
+            vm-version: 'r1beta5'
+            optional: true
+
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+
+      # The parser and lexer are generated from src/parser.y and src/lexer.l
+      # and committed (src/parser.c, inc/parser.h, src/lexer.c). A fresh
+      # checkout gives every file the same arbitrary timestamp, so make
+      # could decide they're out of date and run bison and flex -- which
+      # the Windows and VM environments don't have, and macOS's bison 2.3
+      # is too old for. Mark the generated files newer than their sources,
+      # in dependency order, so the committed ones are always used.
+      - name: Use the Committed Parser and Lexer
+        shell: bash
+        run: |
+          touch src/parser.c inc/parser.h
+          sleep 1
+          touch src/lexer.c
 
       # --- ENVIRONMENT TOOLCHAIN SETUP ---
       - name: Setup MSYS2 Toolchain (Windows)
         if: matrix.os == 'windows'
         uses: msys2/setup-msys2@v2
         with:
-          msystem: UCRT64
+          msystem: ${{ matrix.msystem }}
           update: true
-          install: >-
-            mingw-w64-ucrt-x86_64-gcc
-            mingw-w64-ucrt-x86_64-clang
-            mingw-w64-ucrt-x86_64-lld
-            mingw-w64-ucrt-x86_64-make
-            zip
+          install: ${{ matrix.msys-packages }}
       - name: Setup Linux ARM Cross-Compilers
         if: matrix.os == 'linux'
         shell: bash
@@ -92,106 +370,150 @@ jobs:
           elif [ "${{ matrix.arch }}" = "armv7-rpi" ]; then
             sudo apt-get update && sudo apt-get install -y gcc-arm-linux-gnueabihf
           fi
+
+      # The transpiler looks for its headers where they are installed, a
+      # path compiled in from inc/config.h. The packages are meant to be
+      # unpacked into <Program Files>/Vircon32/v32tools, so a Windows build
+      # gets that location (the Unix default already matches the package's
+      # /usr/local/Vircon32/v32tools). The editing happens in this
+      # checkout only.
+      - name: Set the Windows Install Locations
+        if: matrix.os == 'windows'
+        run: |
+          sed -i \
+            -e 's|"/usr/local/Vircon32/v32tools/include/v32c++"|"C:/Program Files/Vircon32/v32tools/include/v32c++"|' \
+            -e 's|"/usr/local/Vircon32/DevTools/include"|"C:/Program Files/Vircon32/DevTools/include"|' \
+            inc/config.h
+          grep -n 'Program Files' inc/config.h
+
       # --- BUILD EXECUTABLES & STRIP SYMBOLS ---
+      # (The Makefile links bin/v32c++; on Windows the compiler adds .exe.)
       - name: Compile and Strip (Windows)
         if: matrix.os == 'windows'
         run: |
           if [ "${{ matrix.arch }}" = "arm64" ]; then
-            mingw32-make CC="clang -target aarch64-w64-windows-gnu -fuse-ld=lld"
-            strip bin/*
+            make CC="clang" CFLAGS="$BUILD_CFLAGS"
+            llvm-strip bin/*
           else
-            mingw32-make CC="gcc"
+            mingw32-make CC="gcc -static" CFLAGS="$BUILD_CFLAGS"
             strip bin/*
           fi
       - name: Compile and Strip (macOS)
         if: matrix.os == 'macos'
         shell: bash
         run: |
-          make CC="clang -arch ${{ matrix.arch }}"
+          make CC="clang -arch ${{ matrix.arch }}" CFLAGS="$BUILD_CFLAGS"
           strip bin/*
       - name: Compile and Strip (Linux)
         if: matrix.os == 'linux'
         shell: bash
         run: |
           if [ "${{ matrix.arch }}" = "arm64" ] || [ "${{ matrix.arch }}" = "armv8-rpi" ]; then
-            make CC="aarch64-linux-gnu-gcc"
+            make CC="aarch64-linux-gnu-gcc" CFLAGS="$BUILD_CFLAGS"
             aarch64-linux-gnu-strip bin/*
           elif [ "${{ matrix.arch }}" = "armv7-rpi" ]; then
-            make CC="arm-linux-gnueabihf-gcc"
+            make CC="arm-linux-gnueabihf-gcc" CFLAGS="$BUILD_CFLAGS"
             arm-linux-gnueabihf-strip bin/*
           else
-            make CC="gcc"
+            make CC="gcc" CFLAGS="$BUILD_CFLAGS"
             strip bin/*
           fi
-      # --- MODULAR PACKAGING BLOCK (ALL OS RUNNERS) ---
-      - name: Parse Version and Create Zip Archive
+
+      # The VM is only started for these two targets; the next step runs
+      # inside it (the checkout is synced in, and bin/ back out).
+      - name: Start Virtual Machine (OpenBSD / Haiku)
+        if: matrix.os == 'openbsd' || matrix.os == 'haiku'
+        uses: cross-platform-actions/action@v1.4.0
+        with:
+          operating_system: ${{ matrix.os }}
+          architecture: ${{ matrix.vm-arch }}
+          version: ${{ matrix.vm-version }}
+
+      # The project Makefile needs GNU make, which OpenBSD doesn't ship (its
+      # make is BSD make; gmake is a package), so the sources are compiled
+      # directly, with the same flags and files the Makefile uses: every
+      # src/*.c, including the committed parser.c and lexer.c. The smoke
+      # test runs here, where the binary can run.
+      - name: Compile, Strip and Test (OpenBSD / Haiku)
+        if: matrix.os == 'openbsd' || matrix.os == 'haiku'
+        shell: cpa.sh {0}
         run: |
-          # Dynamically builds path: inc/${PROJECT_NAME}.h
-          HEADER_FILE="inc/${{ env.PROJECT_NAME }}.h"
-          
-          VERSION=$(grep -i "VERSION" "$HEADER_FILE" | head -n 1 | awk -F'"' '{print $2}')
-          if [ -z "$VERSION" ]; then
-             VERSION=$(grep -i "VERSION" "$HEADER_FILE" | head -n 1 | awk '{print $3}')
-          fi
-          
-          if [ "${{ github.event.inputs.build_type }}" = "test" ]; then
+          uname -a
+          if command -v cc >/dev/null 2>&1; then CC=cc; else CC=gcc; fi
+          mkdir -p bin
+          $CC -Wall -Wextra -O2 -Iinc src/*.c -o bin/${{ env.PROJECT_NAME }}
+          strip bin/${{ env.PROJECT_NAME }}
+          sh scripts/smoke_test.sh bin/${{ env.PROJECT_NAME }} "${{ env.VERSION }}"
+
+      # --- SMOKE TEST (NATIVE BUILDS) ---
+      - name: Smoke Test (--version, headers from the package layout, manual pages)
+        if: matrix.smoke == true
+        run: |
+          BIN=$(ls bin/${{ env.PROJECT_NAME }}* | head -n 1)
+          sh scripts/smoke_test.sh "$BIN" "${{ env.VERSION }}"
+
+      # --- MODULAR PACKAGING BLOCK (ALL OS RUNNERS) ---
+      # scripts/stage_package.sh lays out the zip so it can be unpacked
+      # straight into <Program Files>/Vircon32/v32tools (beside v32opt and
+      # v32lua), or /usr/local/Vircon32/v32tools:
+      #     v32c++[.exe]
+      #     include/v32c++/v32/*.hpp   the C++ headers
+      #     include/v32c++/libc/       the C library for C input
+      #     docs/v32c++/*.md           the README and the documents
+      #     docs/v32c++/man1/*.1       manual pages, section 1: v32c++, and
+      #                                the Vircon32 emulator and DevTools
+      #     docs/v32c++/man3/*.3v32    section 3v32: the v32c++ headers, and
+      #                                the Vircon32 C library headers
+      # (Default shell: MSYS2's bash on Windows, which has the zip package
+      # installed above; Git Bash, the runner's own "bash", has no zip.)
+      - name: Create Zip Archive
+        run: |
+          if [ "${{ inputs.build_type }}" = "test" ]; then
             ZIP_NAME="${{ env.PROJECT_NAME }}-${VERSION}-test-${{ matrix.os }}-${{ matrix.arch }}.zip"
             echo "RETENTION_DAYS=2" >> $GITHUB_ENV
           else
             ZIP_NAME="${{ env.PROJECT_NAME }}-${VERSION}-${{ matrix.os }}-${{ matrix.arch }}.zip"
             echo "RETENTION_DAYS=0" >> $GITHUB_ENV
           fi
-          
-          echo "VERSION_TAG=v$VERSION" >> $GITHUB_ENV
           echo "Packaging: $ZIP_NAME"
-          
-          cp README.md bin/
-          cd bin
+
+          BIN=$(ls bin/${{ env.PROJECT_NAME }}* | head -n 1)
+          sh scripts/stage_package.sh "$BIN" package
+
+          cd package
           zip -r "../$ZIP_NAME" ./*
           cd ..
-          
+          unzip -l "$ZIP_NAME"
+
           echo "FINAL_ZIP_NAME=$ZIP_NAME" >> $GITHUB_ENV
+
       # --- STAGE ZIP INTERNALLY ---
       - name: Upload Compressed Target Release Artifact
         uses: actions/upload-artifact@v4
         with:
           # Modified to avoid naming collisions across jobs
-          name: ${{ env.PROJECT_NAME }}-package-${{ matrix.os }}-${{ matrix.arch }}
+          name: ${{ env.PROJECT_HEADER }}-package-${{ matrix.os }}-${{ matrix.arch }}
           path: ${{ env.FINAL_ZIP_NAME }}
-          retention-days: ${{ fromJson(env.RETENTION_DAYS) }}
-          
-      - name: Save Version Tag for Release Job
-        run: echo "${{ env.VERSION_TAG }}" > version_tag.txt
-
-      - name: Upload Version Tag
-        uses: actions/upload-artifact@v4
-        with:
-          name: version-tag-${{ matrix.os }}-${{ matrix.arch }}
-          path: version_tag.txt
           retention-days: ${{ fromJson(env.RETENTION_DAYS) }}
 
   release:
     name: Create Draft Release
-    needs: build
-    if: github.event.inputs.build_type == 'release'
+    needs: [version, build]
+    if: github.event_name == 'workflow_dispatch' && inputs.build_type == 'release'
     runs-on: ubuntu-latest
     steps:
       - name: Download all zip packages from build jobs
         uses: actions/download-artifact@v4
         with:
           path: artifacts
+          pattern: ${{ env.PROJECT_HEADER }}-package-*
           merge-multiple: true
 
-      - name: Determine Version Tag
-        run: |
-          VERSION_TAG=$(cat artifacts/version_tag.txt | head -n 1)
-          echo "VERSION_TAG=$VERSION_TAG" >> $GITHUB_ENV
-          rm artifacts/version_tag.txt
       - name: Generate Draft Release on GitHub
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ env.VERSION_TAG }}
-          name: "${{ env.PROJECT_NAME }} Release ${{ env.VERSION_TAG }}"
+          tag_name: v${{ needs.version.outputs.version }}
+          name: "${{ env.PROJECT_NAME }} Release v${{ needs.version.outputs.version }}"
           draft: true
           prerelease: false
           files: artifacts/*.zip

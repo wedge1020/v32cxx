@@ -91,7 +91,8 @@ Range-based `for` walks the characters (`for (char c : name)`), and
   otherwise it is your index.
 - `stoi` and `stof` take just the string (no position or base
   arguments), read as far as the digits go, and return 0 for no digits.
-- `std::to_string(float)` always writes six decimals, like C++.
+- `std::to_string(float)` always writes six decimals, rounded like C++
+  (`0.9999996` is `1.000000`).
 - Iterators are `char *`. There is no `string::iterator` type name, no
   reverse iterators, and no `size_t`.
 - No streams (`<<`, `>>`, `getline`), no `string_view`, no wide or UTF

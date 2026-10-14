@@ -429,6 +429,10 @@ all driven by the same input script format:
 | `v32shot` | the screen at chosen frames, as PPM images                                 |
 | `v32peek` | CPU state and RAM words at a chosen frame                                  |
 
+The toolchain's `string.h` is the project's own `c_api/string.h`:
+`build-tools.sh` installs it over the pinned DevTools one, which predates
+the `ftoa()` rounding-carry fix that `tests/130sample.cpp` checks.
+
 `tools/vircon32/v32io-script.py`  writes such  scripts from  keyboard and
 mouse actions  (`docs/V32IO.md`). `wav2vircon` is  built too when  a real
 SDL2 is installed (`sdl2-config`), for profiling demos that pack sounds.
@@ -592,7 +596,9 @@ demos/          example programs, C (demos/c) and C++ (demos/cxx)
 docs/           the documents listed above
 man/            man1/v32c++.1, the manual page (`man ./man/man1/v32c++.1`);
                 man3/*.3v32, the header pages and their aliases
-                (`man -M man 3v32 v32libc`)
+                (`man -M man 3v32 v32libc`); vircon32/, the Vircon32 SDK's
+                own pages (emulator and DevTools commands in man1/, the C
+                library headers in man3/: `man -M man/vircon32 3v32 string.h`)
 CMakeLists.txt  the CMake build, install and packaging (see "With CMake")
 cmake/          cmake_uninstall.cmake.in, for CMake's `uninstall` target
 tools/
@@ -613,7 +619,7 @@ the  community  tools share  (v32opt's  files,  and v32lua's  headers  in
 | | Linux / macOS | Windows (CMake) |
 | --- | --- | --- |
 | transpiler | `/usr/local/bin/v32c++` | `C:\Program Files\Vircon32\v32tools\v32c++.exe` |
-| man pages | `/usr/local/share/man/man1/v32c++.1.gz`, `/usr/local/share/man/man3/*.3v32.gz` (gzipped; aliases are symbolic links) | `...\v32tools\docs\v32c++\man1`, `...\man3` |
+| man pages (v32c++'s, and the Vircon32 SDK's from `man/vircon32/`, side by side) | `/usr/local/share/man/man1/*.1.gz`, `/usr/local/share/man/man3/*.3v32.gz` (gzipped; aliases are symbolic links) | `...\v32tools\docs\v32c++\man1`, `...\man3` |
 | C++ headers (`v32/`) | `/usr/local/Vircon32/v32tools/include/v32c++/v32` | `...\v32tools\include\v32c++\v32` |
 | C library (`libc/`) | `/usr/local/Vircon32/v32tools/include/v32c++/libc` | `...\v32tools\include\v32c++\libc` |
 | documentation | `/usr/local/Vircon32/v32tools/docs/v32c++` (CMake) | `...\v32tools\docs\v32c++` |
@@ -657,7 +663,28 @@ same  scheme   as  v32lua,   and  lives  in   one  place:   `VERSION`  in
 change it,  edit it there and  run `make version`, which  stamps it (with
 today's date)  into the  `.TH` header  of every  manual page  in `man/man1`
 and `man/man3` that names v32c++. Alias pages and pages of other projects
-are left alone, and a page already up to date is not rewritten.
+(the Vircon32 SDK's, in `man/vircon32/`) are left alone, and a page already up to date is not rewritten.
+
+## Releases and automated builds
+
+[`.github/workflows/release-builds.yml`](.github/workflows/release-builds.yml)
+(modeled on v32lua's) runs on every push and pull request, and on demand
+from the Actions tab:
+
+| Job | What it does |
+| --- | --- |
+| Read Version | reads `VERSION` from `inc/v32cxx.h`; checks that `make version` has stamped it into the manual pages (a warning on a `test` run, an error on a `release` run), that `man/vircon32/` and `man/` share no page name, and that every alias page leads somewhere |
+| Test Against the Vircon32 Toolchain | `make realcheck` (above), with the toolchain cached between runs |
+| CMake Build, Test and Install | configure, build, `ctest`, then `cmake --install` into a scratch directory, checking the binary, headers and every manual page, gzipped, aliases as links (Linux and macOS) |
+| Build | manual runs only: Windows (x86_64, arm64), macOS (x86_64, arm64), Linux (x86_64, arm64, Raspberry Pi), and, optionally, OpenBSD and Haiku, each smoke-tested (`scripts/smoke_test.sh`) and zipped (`scripts/stage_package.sh`) |
+| Create Draft Release | for a `release` run: a draft GitHub release `v<VERSION>` with every zip |
+
+A release zip unpacks straight into `v32tools/` (`/usr/local/Vircon32/v32tools`
+or `<Program Files>/Vircon32/v32tools`): the binary, `include/v32c++/`
+(`v32/` and `libc/`) and `docs/v32c++/` with the documents and the manual
+pages in `man1/` and `man3/`, v32c++'s and the Vircon32 SDK's together
+(`man -M docs/v32c++ 3v32 string.h`). To release: set `VERSION`, run
+`make version`, commit, and start the workflow with `release`.
 
 ## AI Collaboration
 

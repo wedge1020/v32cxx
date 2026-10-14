@@ -1,0 +1,57 @@
+.TH VIRCON2PNG 1 "October 11, 2026" "Vircon32 DevTools 26.04.24" "Vircon32 Development Tools"
+.SH NAME
+vircon2png \- convert a Vircon32 texture back into a PNG image
+.SH SYNOPSIS
+.B vircon2png
+.RB [ \-o
+.IR output.png ]
+.RB [ \-v ]
+.I input.vtex
+.br
+.B vircon2png
+.B \-\-help
+.br
+.B vircon2png
+.B \-\-version
+.SH DESCRIPTION
+.B vircon2png
+reads a VTEX texture (as made by
+.BR png2vircon (1)
+or extracted from a cartridge by
+.BR unpackrom (1))
+and writes it as an 8-bit RGBA PNG image. The texture must be between
+1 by 1 and 1024 by 1024 pixels, and its file size must match the
+dimensions in its header.
+.SH OPTIONS
+.TP
+.BI \-o " output.png"
+Write the image to
+.IR output.png .
+Without
+.BR \-o ,
+the output path is the input path with its extension replaced by
+.IR .png .
+.TP
+.B \-v
+Verbose: report the texture size and each step.
+.TP
+.B \-\-help
+Print a usage summary and exit.
+.TP
+.B \-\-version
+Print the version and author, and exit.
+.SH EXIT STATUS
+.TP
+.B 0
+The image was written.
+.TP
+.B 1
+Any error, printed as
+.IR "vircon2png: error: description" .
+.SH SEE ALSO
+.BR png2vircon (1),
+.BR unpackrom (1)
+.SH AUTHOR
+The Vircon32 PNG extractor was written by Javier Carracedo
+.RI ( Carra ).
+This manual page was written by Matthew Haas for the v32c++ project.

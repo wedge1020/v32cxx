@@ -1,0 +1,97 @@
+.TH UNPACKROM 1 "October 11, 2026" "Vircon32 DevTools 26.04.24" "Vircon32 Development Tools"
+.SH NAME
+unpackrom \- extract the program, textures and sounds from a Vircon32 ROM
+.SH SYNOPSIS
+.B unpackrom
+.RB [ \-v ]
+.I rom.v32
+.I output\-folder
+.br
+.B unpackrom
+.B \-\-help
+.br
+.B unpackrom
+.B \-\-version
+.SH DESCRIPTION
+.B unpackrom
+does the opposite of
+.BR packrom (1):
+it takes a Vircon32 cartridge or BIOS file apart, writing everything it
+contains into
+.IR output\-folder ,
+which is created if it does not exist (an existing file of that name is
+an error). For a ROM file named
+.IR game.v32 ,
+it writes:
+.TP
+.I game.vbin
+The program, as a VBIN binary (see
+.BR disassemble (1)).
+.TP
+.IR textures/texture0.vtex ", " textures/texture1.vtex ", ..."
+The textures, in id order (see
+.BR vircon2png (1)).
+.TP
+.IR sounds/sound0.vsnd ", " sounds/sound1.vsnd ", ..."
+The sounds, in id order (see
+.BR vircon2wav (1)).
+.TP
+.I game.xml
+A ROM definition listing all of the above, with the original title,
+type and versions, from which
+.BR packrom (1)
+rebuilds the same ROM.
+.TP
+.IR Make.sh ", " Make.bat
+Build scripts (shell and Windows batch) that run
+.B packrom
+on the definition, writing
+.IR bin/game.v32 .
+.I Make.sh
+is written without execute permission; run it as
+.BR "bash Make.sh" .
+.SH OPTIONS
+.TP
+.B \-v
+Verbose: report each step.
+.TP
+.B \-\-help
+Print a usage summary and exit.
+.TP
+.B \-\-version
+Print the version and author, and exit.
+.SH EXIT STATUS
+.TP
+.B 0
+The ROM was unpacked.
+.TP
+.B 1
+Any error, printed as
+.IR "unpackrom: error: description" .
+.SH EXAMPLES
+Unpack a cartridge, convert its assets to editable files, and turn its
+program back into assembly:
+.PP
+.RS
+.nf
+unpackrom game.v32 game\-unpacked
+cd game\-unpacked
+vircon2png textures/texture0.vtex
+vircon2wav sounds/sound0.vsnd
+disassemble game.vbin \-o game.asm
+.fi
+.RE
+.SH SEE ALSO
+.BR packrom (1),
+.BR disassemble (1),
+.BR vircon2png (1),
+.BR vircon2wav (1)
+.SH BUGS
+An undocumented
+.BI \-o " folder"
+option sets the output folder too, as an alternative to the second
+argument.
+.SH AUTHOR
+The Vircon32 ROM unpacker was written by Javier Carracedo
+.RI ( Carra ).
+This manual page was written by Matthew Haas for the v32c++ project.

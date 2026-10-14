@@ -1,0 +1,264 @@
+.TH VIRCON32 1 "October 11, 2026" "Vircon32 Emulator 26.02.18" "Vircon32 Emulator"
+.SH NAME
+Vircon32 \- emulator for the Vircon32 32-bit virtual game console
+.SH SYNOPSIS
+.B Vircon32
+.RI [ cartridge.v32 ]
+.SH DESCRIPTION
+.B Vircon32
+runs games for Vircon32, a 32-bit virtual console designed to be simple
+to program while being roughly as capable as the 32-bit home consoles
+of the 1990s, limited to 2D graphics. Games come as ROM files
+.RI ( .v32 ),
+built with the Vircon32 development tools (see
+.BR compile (1)
+and
+.BR packrom (1))
+or downloaded.
+.PP
+Given a
+.IR cartridge.v32 ,
+the emulator inserts it and powers the console on. Without one, it
+starts with the console off and no cartridge; use the
+.B Cartridge
+menu, or open a
+.I .v32
+file with the emulator from a file manager. More than one argument is
+an error.
+.PP
+Like a real console, the cartridge slot locks while the power is on:
+power the console off before removing or changing a cartridge.
+.SS The console
+.TS
+l l.
+Screen	640 \(mu 360 pixels, true color with alpha, 60 frames per second
+CPU	32-bit, 16 registers, 15 million instructions per second
+Memory	16 MB of RAM (4 Mi words of 32 bits)
+Graphics	up to 256 textures of 1024 \(mu 1024 pixels, drawn as regions
+	with scaling, rotation and blending
+Sound	16 channels, stereo 16-bit at 44100 Hz, up to 1024 sounds
+Gamepads	4 ports; D-pad, A, B, X, Y, L, R and Start
+Saving	memory cards of 1 MB (256 Ki words)
+Cartridges	up to 128 Mi words of program, plus textures and sounds
+.TE
+.SH THE WINDOW
+The menu bar is hidden while playing. It appears when the mouse
+pointer is over the window, and the
+.B Escape
+key shows or hides it. While the window is minimized or loses focus,
+emulation pauses.
+.SS Menus
+.TP
+.B Console
+Power on/off, Reset, Save state, Load state, the savestate slot (1 to
+4), and Quit.
+.TP
+.B Cartridge
+Load, unload or change the cartridge (only while the power is off),
+and a list of recently used cartridges.
+.TP
+.B Memory Card
+The card in use. When memory cards are handled manually (see
+.BR "MEMORY CARDS" ),
+also: create an empty card, load, unload or change the card, and a
+list of recent cards.
+.TP
+.B Gamepads
+For each of the 4 gamepads, the device that controls it: no device,
+the keyboard, or a joystick profile made with
+.BR EditControls (1).
+The keyboard can be assigned to only one gamepad; a joystick profile
+can be assigned to several gamepads when several identical joysticks
+are connected.
+.TP
+.B Options
+Window size (1\(mu, 2\(mu or 3\(mu the console resolution), full
+screen, sound volume (0 to 100), mute, memory card handling,
+language (English or Spanish), and save screenshot.
+.TP
+.B Help
+A quick guide, the Readme file, and version information.
+.SS Keyboard shortcuts
+.TS
+lb l.
+Escape	show or hide the menu bar
+Ctrl+P	power on / off
+Ctrl+R, F5	reset
+Ctrl+L	load or change the cartridge (power off only)
+Ctrl+U	unload the cartridge
+F2	save state in the current slot
+F4	load state from the current slot
+Ctrl+S	save a screenshot
+Ctrl+1, Ctrl+2, Ctrl+3	window size 1\(mu, 2\(mu, 3\(mu
+Ctrl+F	full screen
+Ctrl+M	mute
+Ctrl+Q	quit
+.TE
+.SH CONTROLS
+By default only gamepad 1 is connected, controlled by the keyboard:
+.PP
+.TS
+l l.
+D-pad	arrow keys
+L, R	Q, W
+Y, X	A, S
+B, A	Z, X
+Start	Return
+.TE
+.PP
+Keys and joysticks are configured with
+.BR EditControls (1).
+.SS The Command button
+Every keyboard or joystick profile may define an extra button, the
+Command button, which is not part of the console's gamepad. Held down
+together with a gamepad button, it controls the emulator from any of
+the four gamepads, which is useful in arcade cabinets and front-ends:
+.PP
+.TS
+lb l.
+Command + Start	quit the emulator
+Command + X	reset
+Command + L	save state
+Command + R	load state
+.TE
+.SH MEMORY CARDS
+Games save their data on a memory card. There are two ways to handle
+cards, chosen in
+.BR "Options \(-> Memory card handling" :
+.TP
+.B Automatic
+(the default) Every cartridge gets its own card, created the first
+time it is played:
+.IR Cards/game.memc ,
+named after the cartridge file.
+.TP
+.B Manual
+No card is inserted unless the player creates or loads one from the
+.B Memory Card
+menu, as with a physical console. Use the right card for each game:
+a game is supposed to check the signature at the start of the card
+before using it, but nothing guarantees that it does.
+.SH SAVESTATES
+A savestate records the whole state of the console so that play can be
+resumed later from that exact moment, even in games that cannot save.
+Each cartridge has 4 slots, stored as
+.IR Savestates/game_Slot N .state .
+Saving or loading cannot be undone, so check the selected slot.
+.PP
+Savestates do not include the screen contents, which Vircon32 keeps
+between frames: after loading one, a game that does not redraw the
+whole screen every frame may show stale graphics until it does.
+.SH V32IO DEVICES
+The emulator built from the
+.B v32io
+branch of
+.I https://github.com/wedge1020/ComputerSoftware
+(or the stock sources with the patches from the v32io repository)
+offers two more devices in the
+.B Gamepads
+menu. They connect the host computer's keyboard and mouse to programs
+that use the v32io drivers (see
+.BR keyboard.hpp (3v32)
+and
+.BR mouse.hpp (3v32)),
+by encoding them on the 11 controls of a gamepad port. To any other
+program they look like a gamepad giving meaningless input.
+.TP
+.B v32kbd
+The host keyboard, reporting one key event per frame. It takes every
+key, so it cannot be used together with the ordinary
+.B Keyboard
+device on any gamepad. The emulator's own shortcuts keep working and
+are also sent to the program.
+.TP
+.B v32mouse
+The host mouse. A left click on the game screen captures the pointer
+(the click itself is not sent to the program); left
+.B Ctrl
++ left
+.B Alt
+(left
+.B Control
++ left
+.B Option
+on a Mac) releases it and shows the menus. While the pointer is
+captured,
+.B Escape
+goes to the program instead of toggling the menu bar. When v32mouse is
+in use, the
+.B Gamepads
+menu also has a
+.B "v32mouse speed"
+setting: how many host mouse counts make one step of movement (1, 2,
+3, 4, 6 or 8; default 2).
+.PP
+Only one gamepad can use each of the two devices.
+.SH FILES
+All files live in the emulator's own folder, the directory of the
+.B Vircon32
+executable:
+.I /usr/local/Vircon32/Emulator
+with the default Linux and macOS installation. The emulator writes to
+it, so it must be writable by the user.
+.TP
+.I Bios/StandardBios.v32
+The console BIOS. Another BIOS file in
+.I Bios/
+can be selected in the settings file.
+.TP
+.I Config\-Settings.xml
+The settings: language, BIOS file, window size and full screen, volume
+and mute, the number of audio buffers (more buffers avoid crackling at
+the cost of latency), the device of each gamepad, memory card
+handling, the savestate slot, the last folders used, and the recent
+cartridges and cards. The v32io build also stores the v32mouse speed
+here. The file is rewritten on exit.
+.TP
+.I Config\-Controls.xml
+The keyboard profile and the joystick profiles, as written by
+.BR EditControls (1).
+.TP
+.I Cards/
+Memory cards created in automatic mode
+.RI ( .memc
+files: the signature
+.B V32\-MEMC
+followed by the card's 262144 words).
+.TP
+.I Savestates/
+Savestates.
+.TP
+.I Screenshots/
+Screenshots, named after the date and time they were taken
+.RI ( "2026-10-11 10.32.00.png" ).
+.TP
+.I DebugLog.txt
+A log of the last run, useful when the emulator fails to start.
+.TP
+.IR GuiFont.ttf ", " Images/ ", " Readme.txt
+The menu font, window icon and \(lqno signal\(rq screen, and the
+Readme shown from the
+.B Help
+menu.
+.SH EXIT STATUS
+.TP
+.B 0
+The emulator was closed normally.
+.TP
+.B 1
+More than one argument was given, or the emulator could not start;
+errors after start-up are shown in a dialog box.
+.SH SEE ALSO
+.BR EditControls (1),
+.BR packrom (1),
+.BR compile (1),
+.BR vircon32 (3v32)
+.PP
+The Vircon32 website:
+.I https://www.vircon32.com
+.SH AUTHOR
+Vircon32 and its emulator were designed and written by Javier
+Carracedo
+.RI ( Carra ).
+The v32kbd and v32mouse devices were added by Matthew Haas. This
+manual page was written by Matthew Haas for the v32c++ project.

@@ -1,0 +1,141 @@
+.TH PACKROM 1 "October 11, 2026" "Vircon32 DevTools 26.04.24" "Vircon32 Development Tools"
+.SH NAME
+packrom \- pack a program, textures and sounds into a Vircon32 cartridge
+.SH SYNOPSIS
+.B packrom
+.RB [ \-o
+.IR output.v32 ]
+.RB [ \-v ]
+.I definition.xml
+.br
+.B packrom
+.B \-\-help
+.br
+.B packrom
+.B \-\-version
+.SH DESCRIPTION
+.B packrom
+reads a ROM definition \(em an XML file naming a program binary, its
+textures and its sounds \(em and writes them as a single Vircon32 ROM
+file: a cartridge
+.RI ( .v32 )
+that any Vircon32 emulator can run, or a BIOS.
+.PP
+Every path in the definition is relative to the directory the
+definition file is in, not to the current directory.
+.SH OPTIONS
+.TP
+.BI \-o " output.v32"
+Write the ROM to
+.IR output.v32 .
+Without
+.BR \-o ,
+the output path is the definition's path with its extension replaced
+by
+.IR .v32 .
+.TP
+.B \-v
+Verbose: report each step.
+.TP
+.B \-\-help
+Print a usage summary and exit.
+.TP
+.B \-\-version
+Print the version and author, and exit.
+.SH ROM DEFINITION
+.RS
+.nf
+<rom\-definition version="1.0">
+    <rom type="cartridge" title="My Game" version="1.0" />
+    <binary path="obj/game.vbin" />
+    <textures>
+        <texture path="obj/sprites.vtex" />
+        <texture path="obj/background.vtex" />
+    </textures>
+    <sounds>
+        <sound path="obj/music.vsnd" />
+        <sound path="obj/jump.vsnd" />
+    </sounds>
+</rom\-definition>
+.fi
+.RE
+.TP
+.B <rom\-definition version>
+The Vircon32 specification version the definition was written for,
+as
+.IR major.minor .
+A version newer than the tools support is rejected.
+.TP
+.B <rom type>
+.B cartridge
+or
+.BR bios .
+.TP
+.B <rom title>
+Up to 63 characters, stored in the ROM header.
+.TP
+.B <rom version>
+The game's own version, as
+.IR major.minor .
+.TP
+.B <binary path>
+The program, a VBIN file made by
+.BR assemble (1).
+.TP
+.B <texture path>
+A VTEX file made by
+.BR png2vircon (1).
+Textures get ids 0, 1, 2, ... in the order listed; a program selects
+them by id. Up to 256 textures, each at most 1024 by 1024 pixels.
+.TP
+.B <sound path>
+A VSND file made by
+.BR wav2vircon (1).
+Sounds get ids 0, 1, 2, ... in the order listed. Up to 1024 sounds,
+each at most 268435456 samples long.
+.PP
+All four elements
+.RB ( <rom> ", " <binary> ", " <textures> ", " <sounds> )
+are required, but
+.B <textures>
+and
+.B <sounds>
+may be empty. A BIOS must contain exactly one texture (its font and
+graphics, selectable as texture \-1 by programs) and one sound.
+.SH OUTPUT FORMAT
+A ROM file starts with a 128-byte header: the signature
+.B V32\-CART
+or
+.BR V32\-BIOS ,
+the Vircon32 version and revision, the title (64 bytes, zero-padded),
+the ROM version and revision, the numbers of textures and sounds, and
+the offset and length in bytes of the program, video and audio
+sections. The three sections follow, holding the VBIN, VTEX and VSND
+files as they were given (headers included). All numbers are
+little-endian 32-bit integers.
+.SH EXIT STATUS
+.TP
+.B 0
+The ROM was written.
+.TP
+.B 1
+Any error: a missing element or attribute, a file that is not a valid
+VBIN/VTEX/VSND, too many or too large textures or sounds, or a file
+that can't be read or written. The message is printed as
+.IR "packrom: error: description" .
+.SH EXAMPLES
+.RS
+.nf
+packrom game.xml \-o bin/game.v32
+.fi
+.RE
+.SH SEE ALSO
+.BR assemble (1),
+.BR png2vircon (1),
+.BR wav2vircon (1),
+.BR unpackrom (1),
+.BR Vircon32 (1)
+.SH AUTHOR
+The Vircon32 ROM packer was written by Javier Carracedo
+.RI ( Carra ).
+This manual page was written by Matthew Haas for the v32c++ project.

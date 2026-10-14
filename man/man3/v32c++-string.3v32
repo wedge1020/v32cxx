@@ -1,4 +1,4 @@
-.TH V32C++\-STRING 3v32 "October 11, 2026" "v32c++ 20261010-dev" "v32c++ Library"
+.TH V32C++\-STRING 3v32 "October 14, 2026" "v32c++ 20261014-dev" "v32c++ Library"
 .SH NAME
 v32c++\-string \- std::string in v32c++, a fixed-capacity string
 .SH SYNOPSIS
@@ -147,8 +147,10 @@ works as written.
 The decimal digits, with a minus sign when negative.
 .TP
 .B to_string( float )
-Always six decimals, like C++
-.RB ( 2.500000 ).
+Always six decimals, rounded like C++
+.RB ( 2.500000 ;
+0.9999996 is
+.BR 1.000000 ).
 .TP
 .BR stoi ", " stof
 Skip leading spaces, read an optional sign and the digits (and, for

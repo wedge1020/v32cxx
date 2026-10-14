@@ -30,6 +30,14 @@ MANDATE := $(shell LC_ALL=C date +"%B %d, %Y" | sed 's/ 0\([1-9]\),/ \1,/')
 # has no .TH line of its own.
 MAN1    := $(wildcard man/man1/*.1)
 MAN3    := $(wildcard man/man3/*.3v32)
+# The Vircon32 SDK's own pages (the emulator and DevTools commands, and the
+# C library headers: video.h(3v32), string.h(3v32), ...), kept in a tree of
+# their own, man/vircon32/, because they document someone else's software
+# and carry its version, not v32c++'s: `make version` leaves them alone.
+# They install beside v32c++'s own, into the same man1 and man3 (no page
+# name is shared between the two sets).
+VMAN1   := $(wildcard man/vircon32/man1/*.1)
+VMAN3   := $(wildcard man/vircon32/man3/*.3v32)
 # The installed-header directory, from inc/config.h (same single-source
 # idea): `make sysinstall` puts the v32/ veneer headers there.
 INCPATH := $(shell sed -n 's/^[[:space:]]*\#[[:space:]]*define[[:space:]]*V32CXX_INCLUDE_PATH[[:space:]]*"\(.*\)".*/\1/p' $(INC_DIR)/config.h)
@@ -228,6 +236,7 @@ test: all | $(OUT_DIR)
 	$(BIN)  -vvv    -o out/127program.c tests/127sample.cpp 1> out/127sample.txt 2>&1
 	$(BIN)  -vvv    -o out/128program.c tests/128sample.c   1> out/128sample.txt 2>&1
 	$(BIN)  -vvv    -o out/129program.c tests/129sample.cpp 1> out/129sample.txt 2>&1
+	$(BIN)  -vvv    -o out/130program.c tests/130sample.cpp 1> out/130sample.txt 2>&1
 # `-vvv` (this project's own verbosity flag, a later round -- see
 # main.c) is passed to every sample specifically so `make test`'s own
 # output still captures the full AST/semantic-analysis/lowering dumps
@@ -346,8 +355,9 @@ uninstall:
 	rm -f $(HOME)/bin/v32c++
 
 # System-wide install: the binary to /usr/local/bin, the manual pages to
-# /usr/local/share/man/man1 (v32c++.1) and man3 (the 3v32 header pages and
-# their aliases), and, under V32CXX_INCLUDE_PATH (inc/config.h;
+# /usr/local/share/man/man1 (v32c++.1, plus the Vircon32 commands' pages from
+# man/vircon32/) and man3 (the 3v32 header pages and their aliases, plus the
+# Vircon32 C library's from man/vircon32/), and, under V32CXX_INCLUDE_PATH (inc/config.h;
 # /usr/local/Vircon32/v32tools/include/v32c++ by default), the v32/ C++
 # headers -- so <v32/math.hpp> resolves from any directory with no -I --
 # and libc/, the C library C input finds there with no -I either. The
@@ -381,7 +391,7 @@ sysinstall: all
 	chmod -R go+rX $(INCPATH)
 	chmod go+rx $(INCPARENTS) $(MANROOT) $(MANROOT)/man1 $(MANROOT)/man3
 	rm -f $(MANROOT)/man3/v32-*.hpp.3v32 $(MANROOT)/man3/v32-*.hpp.3v32.gz
-	@umask 022; for f in $(MAN1) $(MAN3); do \
+	@umask 022; for f in $(MAN1) $(MAN3) $(VMAN1) $(VMAN3); do \
 	    case "$$f" in *.1) sec=man1 ;; *) sec=man3 ;; esac; \
 	    dest="$(MANROOT)/$$sec/$${f##*/}"; \
 	    rm -f "$$dest" "$$dest.gz"; \
@@ -404,7 +414,7 @@ sysinstall: all
 # Vircon32 only if nothing else (v32opt, v32lua, the DevTools) is in them.
 sysuninstall:
 	rm -f /usr/local/bin/v32c++
-	@for f in $(MAN1) $(MAN3); do \
+	@for f in $(MAN1) $(MAN3) $(VMAN1) $(VMAN3); do \
 	    case "$$f" in *.1) sec=man1 ;; *) sec=man3 ;; esac; \
 	    rm -f "$(MANROOT)/$$sec/$${f##*/}" "$(MANROOT)/$$sec/$${f##*/}.gz"; \
 	done
@@ -426,7 +436,7 @@ put: clean
 	@cp src/parser.y  put/parser.y.txt
 
 archive: clean
-	zip -r v32cxx-project.zip * \
+	zip -r v32cxx-project.zip * .github \
 	    -x 'tools/vircon32/bin/*' 'tools/vircon32/ComputerSoftware/*' 'build/*'
 # -r matters: without it, `demos/*` stores only the demos/c and demos/cxx
 # directory ENTRIES, not the files inside them, so the archive silently

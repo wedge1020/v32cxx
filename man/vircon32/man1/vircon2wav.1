@@ -1,0 +1,58 @@
+.TH VIRCON2WAV 1 "October 11, 2026" "Vircon32 DevTools 26.04.24" "Vircon32 Development Tools"
+.SH NAME
+vircon2wav \- convert a Vircon32 sound back into a WAV file
+.SH SYNOPSIS
+.B vircon2wav
+.RB [ \-o
+.IR output.wav ]
+.RB [ \-v ]
+.I input.vsnd
+.br
+.B vircon2wav
+.B \-\-help
+.br
+.B vircon2wav
+.B \-\-version
+.SH DESCRIPTION
+.B vircon2wav
+reads a VSND sound (as made by
+.BR wav2vircon (1)
+or extracted from a cartridge by
+.BR unpackrom (1))
+and writes it as an uncompressed PCM WAV file: 16-bit stereo at
+44100 Hz, which is how the console plays every sound. The sound must
+hold between 1 and 268435456 samples, and its file size must match
+the length in its header.
+.SH OPTIONS
+.TP
+.BI \-o " output.wav"
+Write the WAV file to
+.IR output.wav .
+Without
+.BR \-o ,
+the output path is the input path with its extension replaced by
+.IR .wav .
+.TP
+.B \-v
+Verbose: report the sound length and each step.
+.TP
+.B \-\-help
+Print a usage summary and exit.
+.TP
+.B \-\-version
+Print the version and author, and exit.
+.SH EXIT STATUS
+.TP
+.B 0
+The WAV file was written.
+.TP
+.B 1
+Any error, printed as
+.IR "vircon2wav: error: description" .
+.SH SEE ALSO
+.BR wav2vircon (1),
+.BR unpackrom (1)
+.SH AUTHOR
+The Vircon32 WAV extractor was written by Javier Carracedo
+.RI ( Carra ).
+This manual page was written by Matthew Haas for the v32c++ project.

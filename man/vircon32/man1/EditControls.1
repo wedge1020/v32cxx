@@ -1,0 +1,121 @@
+.TH EDITCONTROLS 1 "October 11, 2026" "Vircon32 Emulator 26.02.18" "Vircon32 Emulator"
+.SH NAME
+EditControls \- configure Vircon32 emulator keyboard and joystick controls
+.SH SYNOPSIS
+.B EditControls
+.SH DESCRIPTION
+.B EditControls
+is the graphical companion to
+.BR Vircon32 (1)
+for mapping the host's keyboard and joysticks onto the Vircon32
+gamepad: a D-pad, buttons A, B, X, Y, L and R, and Start, plus an
+optional Command button used for emulator functions. It edits the
+emulator's
+.I Config\-Controls.xml
+and takes no arguments.
+.PP
+The emulator itself is then told which profile drives each of the 4
+gamepads, from its
+.B Gamepads
+menu.
+.SH PROFILES
+.TP
+.B Keyboard
+The keyboard profile always exists. Click a gamepad element and press
+the key for it
+.RB ( Escape
+cancels).
+.TP
+.B Joystick profiles
+Connect the joysticks to configure; they appear in the
+.B "Connected devices"
+menu, where a profile can be created for each. Give the profile a name
+you will recognize, then click each gamepad element and press the
+joystick button, move the axis, or push the hat direction to use for
+it. A profile records the joystick's name and its SDL GUID, so it
+applies to every joystick of that same model: with several identical
+joysticks, assign the one profile to several gamepads in the emulator.
+.TP
+.B The Command button
+Optional in every profile. In the emulator, holding it and pressing
+Start quits, X resets, L saves the state and R loads it. See
+.BR Vircon32 (1).
+.SH MENUS
+.TP
+.B File
+Set factory defaults, reload the controls file (discarding changes),
+exit saving changes, and exit without saving.
+.TP
+.B "Connected devices"
+The keyboard and every joystick connected now, to create or edit
+their profile.
+.TP
+.B Profiles
+Every profile in the file, connected or not, to edit or delete.
+.TP
+.B Language
+English or Spanish.
+.TP
+.B Help
+A quick guide and version information.
+.SH FILES
+.TP
+.I Config\-Controls.xml
+In the emulator's folder, which is also the folder of the
+.B EditControls
+executable
+.RI ( /usr/local/Vircon32/Emulator
+by default on Linux and macOS). Its format:
+.PP
+.RS
+.nf
+<controls version="3">
+    <keyboard>
+        <left key="Left" />
+        <right key="Right" />
+        <up key="Up" />
+        <down key="Down" />
+        <button\-a key="X" />
+        <button\-b key="Z" />
+        <button\-x key="S" />
+        <button\-y key="A" />
+        <button\-l key="Q" />
+        <button\-r key="W" />
+        <button\-start key="Return" />
+        <command key="Escape" />
+    </keyboard>
+    <joystick nickname="My pad">
+        <guid>03000000...</guid>
+        <name>Generic USB Joystick</name>
+        <left axis="0" direction="minus" />
+        <up hat="0" direction="up" />
+        <button\-a button="1" />
+        ...
+    </joystick>
+</controls>
+.fi
+.RE
+.PP
+Keys use SDL key names. A joystick control is a
+.I button
+index, an
+.I axis
+index with a
+.B plus
+or
+.B minus
+direction, or a
+.I hat
+index with a direction
+.RB ( left ", " right ", " up ", " down ).
+.B <command>
+is optional.
+.TP
+.I DebugLog.txt
+A log of the last run, in the same folder (shared with the emulator).
+.SH SEE ALSO
+.BR Vircon32 (1)
+.SH AUTHOR
+EditControls was written by Javier Carracedo
+.RI ( Carra ).
+This manual page was written by Matthew Haas for the v32c++ project.
