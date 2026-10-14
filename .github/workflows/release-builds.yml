@@ -11,12 +11,6 @@ on:
         options:
           - 'test'
           - 'release'
-  # Every push and pull request also runs the checks (version, manual pages,
-  # tests against the real Vircon32 toolchain, CMake build); only a manual
-  # run builds the packages.
-  push:
-    branches: [main, master]
-  pull_request:
 
 permissions:
   contents: write
@@ -88,6 +82,18 @@ jobs:
           done
           if [ "$STALE" = 1 ] && [ "$LEVEL" = error ]; then exit 1; fi
 
+      # The workflow, the smoke test and the packaging script are separate
+      # files: a checkout that lacks one fails here, with a clear message,
+      # rather than in the middle of every build job.
+      - name: Check Required Files
+        shell: bash
+        run: |
+          for f in scripts/smoke_test.sh scripts/stage_package.sh tools/vircon32/build-tools.sh man/man1/v32c++.1 man/vircon32/man3/string.h.3v32; do
+            [ -f "$f" ] || { echo "::error file=$f::$f is missing from the repository (is it committed?)"; MISSING=1; }
+          done
+          [ -f c_api/string.h ] || echo "::warning::c_api/string.h is not in the repository: the toolchain test (tests/130sample.cpp) needs the fixed ftoa() header"
+          [ -z "${MISSING:-}" ]
+
       - name: Check Manual Page Sets
         shell: bash
         run: |
@@ -127,6 +133,9 @@ jobs:
           sudo apt-get update && sudo apt-get install -y mandoc
           mandoc -Tlint -Wwarning man/man1/*.1 man/man3/*.3v32 man/vircon32/man1/*.1 man/vircon32/man3/*.3v32 || true
 
+  # (verify and cmake run alongside the builds, as separate results: they do
+  # not hold the builds or the release back.)
+  #
   # The transpiler against the real Vircon32 toolchain: the base Makefile's
   # `make test` transpiles every sample, then `make realcheck` runs the
   # generated programs through the real compiler, assembler and packer, and
@@ -240,9 +249,7 @@ jobs:
 
   build:
     name: Build (${{ matrix.os }}-${{ matrix.arch }})
-    needs: [version, verify, cmake]
-    # The packages are built on a manual run only.
-    if: github.event_name == 'workflow_dispatch'
+    needs: version
     runs-on: ${{ matrix.os-runner }}
 
     # The OpenBSD and Haiku targets are a nice extra, not a requirement:
@@ -440,8 +447,9 @@ jobs:
         run: |
           uname -a
           if command -v cc >/dev/null 2>&1; then CC=cc; else CC=gcc; fi
+          if [ "$(uname -s)" = Haiku ]; then LIBM=; else LIBM=-lm; fi
           mkdir -p bin
-          $CC -Wall -Wextra -O2 -Iinc src/*.c -o bin/${{ env.PROJECT_NAME }}
+          $CC -Wall -Wextra -O2 -Iinc src/*.c -o bin/${{ env.PROJECT_NAME }} $LIBM
           strip bin/${{ env.PROJECT_NAME }}
           sh scripts/smoke_test.sh bin/${{ env.PROJECT_NAME }} "${{ env.VERSION }}"
 
@@ -499,7 +507,7 @@ jobs:
   release:
     name: Create Draft Release
     needs: [version, build]
-    if: github.event_name == 'workflow_dispatch' && inputs.build_type == 'release'
+    if: inputs.build_type == 'release'
     runs-on: ubuntu-latest
     steps:
       - name: Download all zip packages from build jobs

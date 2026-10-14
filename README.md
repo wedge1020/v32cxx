@@ -668,15 +668,15 @@ and `man/man3` that names v32c++. Alias pages and pages of other projects
 ## Releases and automated builds
 
 [`.github/workflows/release-builds.yml`](.github/workflows/release-builds.yml)
-(modeled on v32lua's) runs on every push and pull request, and on demand
-from the Actions tab:
+(modeled on v32lua's) runs only when started by hand, from the Actions
+tab, as a `test` or a `release` run (nothing runs on push). The jobs:
 
 | Job | What it does |
 | --- | --- |
 | Read Version | reads `VERSION` from `inc/v32cxx.h`; checks that `make version` has stamped it into the manual pages (a warning on a `test` run, an error on a `release` run), that `man/vircon32/` and `man/` share no page name, and that every alias page leads somewhere |
 | Test Against the Vircon32 Toolchain | `make realcheck` (above), with the toolchain cached between runs |
 | CMake Build, Test and Install | configure, build, `ctest`, then `cmake --install` into a scratch directory, checking the binary, headers and every manual page, gzipped, aliases as links (Linux and macOS) |
-| Build | manual runs only: Windows (x86_64, arm64), macOS (x86_64, arm64), Linux (x86_64, arm64, Raspberry Pi), and, optionally, OpenBSD and Haiku, each smoke-tested (`scripts/smoke_test.sh`) and zipped (`scripts/stage_package.sh`) |
+| Build | Windows (x86_64, arm64), macOS (x86_64, arm64), Linux (x86_64, arm64, Raspberry Pi), and, optionally, OpenBSD and Haiku, each smoke-tested (`scripts/smoke_test.sh`) and zipped (`scripts/stage_package.sh`) |
 | Create Draft Release | for a `release` run: a draft GitHub release `v<VERSION>` with every zip |
 
 A release zip unpacks straight into `v32tools/` (`/usr/local/Vircon32/v32tools`
