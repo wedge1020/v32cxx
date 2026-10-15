@@ -57,8 +57,8 @@ above were made; see "Testing without a device" below).
 How the demo reads a typed character (one of three styles; see
 docs/V32IO.md): `typewriter` and `notepad` use `read()` + `glyph()`;
 `glyphs` uses `next_event()` and `event.text`. Text with box drawing
-glyphs is built from `int` codes, because the Vircon32 toolchain can't
-carry codes 14–31 in a string literal.
+glyphs is written as ordinary literals (`"\031\032"`); v32c++ moves the
+control codes into hidden arrays, which the Vircon32 assembler needs.
 
 ## Building
 

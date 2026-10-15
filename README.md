@@ -313,11 +313,11 @@ Checked against  the current  transpiler and  the real  Vircon32 compiler
   it jumps out of; keep it to  scopes without them. A `goto` to a missing
   label is caught by the Vircon32 compiler, not by v32c++.
 - **`const` is not enforced** — violations are left to the C compiler.
-- **Box drawing glyphs in string literals**:  the BIOS font's codes 14–31
-  (`┌ ─ ┐ │ ░ ▒ ▓ █` ...) can't be written in a string literal,  `"\x15"`:
-  the Vircon32 C compiler writes control codes raw  into its assembly and
-  the assembler rejects them (with hand-written C too). v32c++ warns; use
-  an `int` array of codes instead (see `demos/cxx/v32io/glyphs.cpp`).
+- **Control codes in string literals are rewritten**:  the Vircon32 toolchain
+  can't assemble a string holding the BIOS font's codes 14–31 (`┌ ─ ┐ │ ░ ▒ ▓ █`
+  ...)  or other control codes,  `"\025"`.  v32c++ moves such a literal into a
+  hidden global `char` array (`__v32_strN`); `sizeof` and inline asm are left
+  alone.  See `docs/VIRCON32_QUIRKS.md` #28.
 - **Classes in  a namespace  keep their bare  C name**  (`v32::String` is
   `String` in  the generated C),  so a program  can't have its  own class
   with the same name as one in a header it includes (`String`, `Channel`,

@@ -1227,8 +1227,7 @@ static void print_expr(FILE *out, const AstNode *e);
  * draw an "unknown escape character" warning and decode as the digit
  * itself ('\0' becomes '0'), and a one-digit \x7 would swallow the next
  * character. Everything else is rewritten as \xHH. */
-static void print_vircon32_string(FILE *out, const char *raw, int line) {
-    int warned = 0;
+static void print_vircon32_string(FILE *out, const char *raw) {
     fputc('"', out);
     for (const char *p = raw; *p; ) {
         if (*p != '\\' || p[1] == '\0') { fputc(*p++, out); continue; }
@@ -1242,22 +1241,6 @@ static void print_vircon32_string(FILE *out, const char *raw, int line) {
         p++;
         int v = ast_decode_escape(&p);
         fprintf(out, "\\x%02x", (unsigned)(v & 0xFF));
-        /* The Vircon32 C compiler writes a string's control characters
-         * (1-31 except \t \n \r, and 127) raw into its assembly, and
-         * the assembler rejects them ("character is not valid
-         * (non-printable ASCII)"). It happens with hand-written C too, so
-         * it is not v32c++'s to fix -- but the BIOS font's box drawing
-         * glyphs and shades are exactly codes 14 to 31, so say so. */
-        v &= 0xFF;
-        if (!warned && ((v >= 1 && v <= 31 && v != 9 && v != 10 && v != 13) || v == 127)) {
-            warned = 1;
-            sema_warning(line,
-                "string literal holds control code %d (\\x%02x): the Vircon32 "
-                "compiler writes it raw into the assembly and the assembler "
-                "rejects it. Build text with BIOS glyphs 14-31 (box drawing, "
-                "shades) in an int array, as in demos/cxx/v32io/glyphs.cpp",
-                v, (unsigned)v);
-        }
     }
     fputc('"', out);
 }
@@ -1534,7 +1517,7 @@ static void print_expr(FILE *out, const AstNode *e) {
              * here, which Vircon32 rejected at the call site.
              * Vircon32 mode rewrites the escapes its lexer doesn't read
              * (see print_vircon32_string). */
-            if (g_target == TARGET_VIRCON32) print_vircon32_string(out, e->str1, e->line);
+            if (g_target == TARGET_VIRCON32) print_vircon32_string(out, e->str1);
             else fprintf(out, "\"%s\"", e->str1);
             break;
         default:

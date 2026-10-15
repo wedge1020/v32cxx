@@ -1396,16 +1396,19 @@ through a base pointer to an array of a derived class is undefined.
 Multi-dimensional arrays of objects are constructed but not destroyed
 at scope exit.
 .PP
-The BIOS font's codes 14 to 31 (box drawing characters and shades) can't
-be written in a string literal, as
-.BR \(dq\ex15\(dq :
-the Vircon32 C compiler writes a string's control characters raw into its
-assembly, and its assembler rejects them, whatever produced the C.
+The Vircon32 assembler rejects a string holding control codes (1 to 8, 11,
+12, 14 to 31 and 127, which include the BIOS font's box drawing characters),
+because the compiler writes them raw.
 .B v32c++
-warns when it meets one; build such text in an
-.B int
-array of codes (see
-.IR demos/cxx/v32io/glyphs.cpp ).
+moves such a literal into a hidden global
+.B char
+array
+.RB ( __v32_str0 ,
+\&...) and uses that in its place; a literal inside
+.B sizeof
+or inline assembly is not rewritten.
+See quirk 28 in
+.IR docs/VIRCON32_QUIRKS.md .
 .PP
 A class declared inside a namespace keeps its bare C name
 .RI ( v32::String

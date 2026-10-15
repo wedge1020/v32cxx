@@ -28,7 +28,10 @@
 //
 //  Characters are written with octal escapes ("\351" is é) because the BIOS
 //  font codes are not Unicode; the text each one spells is in the comment
-//  beside it.
+//  beside it. Codes 14 to 31 (the box drawing set) work in string literals
+//  too, "\031\025\030" being ┌─┐: the Vircon32 toolchain can't carry those
+//  in a literal, so v32c++ moves such literals into hidden global arrays
+//  (see docs/VIRCON32_QUIRKS.md).
 // *****************************************************************************
 
 #title   "v32io glyphs"
@@ -111,13 +114,6 @@ void rule_at( int x, int y, int left, int middle, int right, int width )
     line[ width + 1 ] = right;
     line[ width + 2 ] = 0;
     print_at( x, y, line );
-}
-
-// a tree branch, "├─" or (the last one) "└─": codes 27 / 26 and 21
-void branch_at( int x, int y, bool last )
-{
-    glyph_at( x, y, last ? 26 : 27 );
-    glyph_at( x + 10, y, BOX_H );
 }
 
 // -----------------------------------------------------------------------------
@@ -273,12 +269,7 @@ void draw_compose()
     print_at( 0, 160, "Alt codes (left Alt, digits on the keypad):" );
     colored( color_white );
     // Alt 0233 = é   Alt 0128 = €   Alt 021 = ─   Alt 020 = █
-    // (the last two glyphs are codes below 32: drawn from codes, because the
-    // Vircon32 toolchain cannot carry those in a string literal)
-    print_at( 20, 180, "Alt 0233 = \351   Alt 0128 = \200   Alt 021 = " );
-    glyph_at( 20 + 400, 180, BOX_H );
-    print_at( 20 + 410, 180, "   Alt 020 = " );
-    glyph_at( 20 + 540, 180, SOLID );
+    print_at( 20, 180, "Alt 0233 = \351   Alt 0128 = \200   Alt 021 = \025   Alt 020 = \024" );
     colored( color_gray );
     print_at( 0, 200, "Emulator: your own layout, dead keys and compose key." );
 
@@ -383,12 +374,9 @@ void draw_scene()
     colored( color_gray );
     print_at( 40, 240, "cartridge" );
     // ├─ code      ├─ textures      └─ sounds
-    branch_at( 40, 260, false );
-    print_at( 60, 260, "code" );
-    branch_at( 40, 280, false );
-    print_at( 60, 280, "textures" );
-    branch_at( 40, 300, true );
-    print_at( 60, 300, "sounds" );
+    print_at( 40, 260, "\033\025 code" );
+    print_at( 40, 280, "\033\025 textures" );
+    print_at( 40, 300, "\032\025 sounds" );
 
     // bars made of the shades, sliding along in opposite directions
     for( int i = 0; i < 40; i++ )

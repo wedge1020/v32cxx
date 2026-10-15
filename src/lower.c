@@ -7148,8 +7148,10 @@ static void c_truth(AstNode **slot, AstNode *cls, LocalVarType *locals) {
 }
 
 /* Does this string literal hold a character Vircon32 C's strings cannot
- * spell? (Its escapes are \n \r \t \\ \' \" -- see print_vircon32_string
- * in codegen.c.) */
+ * spell? The compiler writes control codes (1-8, 11, 12, 14-31, 127) raw
+ * into its assembly and the assembler rejects them (docs/VIRCON32_QUIRKS.md
+ * #28). Codes it escapes itself (>= 0x80 as \xHH, NUL, \n \r \t \\ \' \")
+ * are fine. */
 static int c_string_needs_array(const char *raw) {
     for (const char *p = raw; *p != '\0'; p++) {
         if ((unsigned char)*p < ' ' && *p != '\t') return 1;
@@ -7174,17 +7176,39 @@ static AstNode *c_string_chars(const char *raw, int length, int line) {
     return list;
 }
 
+/* The hoisted arrays made so far, by the literal's own raw text: the same
+ * literal used twice (a frame-border glyph in a draw loop, say) shares one
+ * array. */
+typedef struct HoistedString {
+    char *raw;
+    char name[40];
+    struct HoistedString *next;
+} HoistedString;
+static HoistedString *g_hoisted_names = NULL;
+
 static AstNode *c_hoist_string(const AstNode *lit) {
     char name[40];
     int line = lit->line;
-    snprintf(name, sizeof name, "__v32_str%d", g_c_hoisted_strings.count);
-    AstNode *var = ast_new(AST_VAR_DECL, line);
-    var->str1 = strdup(name);
-    var->a = c_string_chars(lit->str1, 0, line);
-    var->type = ast_wrap_array(ast_ident("char", line), var->a->list.count, line);
-    ast_list_append(&g_c_hoisted_strings, var);
-    lower_note(line, "moved a string literal with a control character into the char "
-        "array %s -- Vircon32 C's string literals have no escape for it", name);
+    const HoistedString *known = NULL;
+    for (const HoistedString *h = g_hoisted_names; h != NULL; h = h->next)
+        if (strcmp(h->raw, lit->str1) == 0) { known = h; break; }
+    if (known != NULL) {
+        snprintf(name, sizeof name, "%s", known->name);
+    } else {
+        snprintf(name, sizeof name, "__v32_str%d", g_c_hoisted_strings.count);
+        AstNode *var = ast_new(AST_VAR_DECL, line);
+        var->str1 = strdup(name);
+        var->a = c_string_chars(lit->str1, 0, line);
+        var->type = ast_wrap_array(ast_ident("char", line), var->a->list.count, line);
+        ast_list_append(&g_c_hoisted_strings, var);
+        HoistedString *h = calloc(1, sizeof *h);
+        h->raw = strdup(lit->str1);
+        snprintf(h->name, sizeof h->name, "%s", name);
+        h->next = g_hoisted_names;
+        g_hoisted_names = h;
+        lower_note(line, "moved a string literal with a control character into the char "
+            "array %s -- Vircon32 C's string literals have no escape for it", name);
+    }
     /* &__v32_strN[0] */
     AstNode *element = ast_new(AST_SUBSCRIPT, line);
     element->a = ast_ident(name, line);
@@ -7457,6 +7481,15 @@ static void c_stmt(AstNode **slot, AstNode *cls, LocalVarType **locals) {
     }
 }
 
+static void c_prepend_hoisted(AstList *decls) {
+    if (g_c_hoisted_strings.count > 0) {
+        AstList out = g_c_hoisted_strings;
+        for (int i = 0; i < decls->count; i++) ast_list_append(&out, decls->items[i]);
+        *decls = out;
+        g_c_hoisted_strings = ast_list_new();
+    }
+}
+
 static void c_input_fixups(AstNode *program) {
     AstList *decls = &program->list;
     g_lower_unions = decls;
@@ -7470,15 +7503,66 @@ static void c_input_fixups(AstNode *program) {
             c_stmt(&n->a, NULL, &locals);
         }
     }
-    if (g_c_hoisted_strings.count > 0) {
-        AstList out = g_c_hoisted_strings;
-        for (int i = 0; i < decls->count; i++) ast_list_append(&out, decls->items[i]);
-        *decls = out;
-        g_c_hoisted_strings = ast_list_new();
+    c_prepend_hoisted(decls);
+}
+
+/* ---- phase 12b: C++ input -- strings the assembler cannot carry ----------
+ *
+ * The Vircon32 C compiler writes a string literal into its assembly with
+ * every character except \n \r \t \\ \' \" and those from 0x80 up RAW, and the
+ * assembler rejects control characters ("character is not valid
+ * (non-printable ASCII)"). That is no one's source spelling to fix: "\x15",
+ * "\025" and a pasted byte all decode to the same character. The BIOS
+ * font's box drawing glyphs and shades are exactly codes 14 to 31, so a
+ * literal like "\031\020\030" is natural to write -- and the C compiler's
+ * own int-array initializers have no such trouble. So the program is
+ * walked once, and each such literal is moved into a hidden global char
+ * array (the same thing phase 12 does for C input), replaced by its
+ * address. Input C++ stays ordinary; only the output changes.
+ *
+ * Skipped on purpose: inline assembly text (AST_ASM: those strings ARE
+ * text) and sizeof (unevaluated, and an array's size is not the literal's). */
+static int cxx_string_needs_array(const char *raw) {
+    for (const char *p = raw; *p != '\0'; ) {
+        int ch = (unsigned char)*p++;
+        if (ch == '\\' && *p != '\0') ch = ast_decode_escape(&p) & 0xFF;
+        if ((ch >= 1 && ch <= 31 && ch != '\t' && ch != '\n' && ch != '\r') || ch == 127)
+            return 1;
     }
+    return 0;
+}
+
+static void cxx_hoist_walk(AstNode **slot) {
+    AstNode *n = *slot;
+    if (n == NULL) return;
+    if (n->kind == AST_ASM || n->kind == AST_SIZEOF) return;
+    if (n->kind == AST_STRING_LIT) {
+        if (n->str1 != NULL && cxx_string_needs_array(n->str1)) *slot = c_hoist_string(n);
+        return;
+    }
+    if (n->kind == AST_VAR_DECL && n->a != NULL && n->a->kind == AST_STRING_LIT &&
+        n->a->str1 != NULL && cxx_string_needs_array(n->a->str1)) {
+        const AstNode *t = c_resolved_type(n->type);
+        if (t != NULL && t->kind == AST_ARRAY_TYPE) {
+            /* char s[] = "..."  ->  = { codes..., 0 } */
+            n->a = c_string_chars(n->a->str1, t->ival, n->a->line);
+            return;
+        }
+    }
+    cxx_hoist_walk(&n->a);
+    cxx_hoist_walk(&n->b);
+    cxx_hoist_walk(&n->c);
+    cxx_hoist_walk(&n->d);
+    for (int i = 0; i < n->list.count; i++) cxx_hoist_walk(&n->list.items[i]);
+}
+
+static void cxx_hoist_strings(AstNode *program) {
+    for (int i = 0; i < program->list.count; i++) cxx_hoist_walk(&program->list.items[i]);
+    c_prepend_hoisted(&program->list);
 }
 
 int lower_run(AstNode *program) {
+    g_hoisted_names = NULL;                 /* phase 12/12b's literal table: per run */
     lower_notes_reset(); /* always start this run's log empty -- see
         lower_notes_print's own doc comment */
     compute_struct_layouts(&program->list);
@@ -7539,6 +7623,7 @@ int lower_run(AstNode *program) {
         v32_compat_classes(&program->list);           /* phase 11 */
         v32_compat_free_functions(&program->list);
         if (g_c_mode) c_input_fixups(program);        /* phase 12 */
+        else cxx_hoist_strings(program);              /* phase 12b */
     }
     return 0;
 }

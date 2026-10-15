@@ -317,12 +317,12 @@ print_at( 0, 0, text );                     // the BIOS font draws them all
 - A gamepad that has just been connected starts the decoding over (the
   strobe and any waiting prefix), as for the mouse.
 
-**Characters in string literals.** Text that holds box drawing glyphs
-(codes 14 to 31) can't be written as a string literal, `"\x15"` or `"\025"`:
-the Vircon32 C compiler writes those control codes raw into its assembly
-and the assembler rejects them, whatever translates the C (v32c++ says so
-with a warning). Build such text in an `int` array, or draw the glyph with
-a one-character array, as `glyphs.cpp` does. Everything from code 32 up,
+**Characters in string literals.** Text can hold box drawing glyphs (codes
+14 to 31) as an ordinary literal, `"\025\026"`. The Vircon32 compiler would
+write those control codes raw into its assembly, and the assembler rejects
+them, so v32c++ moves such a literal into a hidden global `char` array and
+uses that instead (`docs/VIRCON32_QUIRKS.md` #28). Nothing to do in the
+source. Everything from code 32 up,
 accented letters included, is fine in a literal, written with an escape:
 use **octal** (`"caf\351e"` is café; at most three digits, so what follows
 is safe), because C++ makes a `\x` escape swallow every hex digit after it
@@ -584,7 +584,7 @@ from it.
   (the emulator uses the computer's layout and does translate them).
 - Typed characters take two frames each (two events), so fast typing with
   accents queues up: 30 characters a second at most. Box drawing glyphs
-  (codes 14–31) can't be written in a string literal (see above).
+  in a string literal are rewritten into hidden arrays (see above).
 - **One event per frame.** The keyboard protocol carries at most 60 events
   a second (30 keystrokes, since press and release are separate events),
   whatever the typist does. No key repeat is generated.

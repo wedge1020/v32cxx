@@ -1,7 +1,7 @@
 # v32c++ library manual pages (English)
 
 Section  3  manual  pages  for   the  headers  that  come  with  `v32c++`
-(`20261014-dev`): the `v32/` C++  headers (including the `v32io` keyboard
+(`20261015-dev`): the `v32/` C++  headers (including the `v32io` keyboard
 and mouse libraries), the  built-in `<string>`, `<array>` and `<vector>`,
 and the C-mode library in  `libc/`. They complement `man/v32c++.1`. Every
 example was run through v32c++, the real Vircon32 compiler and assembler;

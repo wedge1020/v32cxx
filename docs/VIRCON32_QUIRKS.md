@@ -920,6 +920,47 @@ or three calls.
 
 `tests/124sample.cpp` counts the calls for each shape.
 
+## 28. Control codes in a string literal cannot be assembled -- LOWERED
+
+- **Vircon32 C** (`compile`, v26.04.24): `EscapeCCharacter` escapes only
+  the bytes from 0x80 up (as `\xHH`), NUL, `\ " '`, and `\n \r \t`. Every
+  other control code -- 1 to 8, 11, 12, 14 to 31 and 127 -- goes raw into
+  the `.asm` text, and `assemble` stops with "character is not valid
+  (non-printable ASCII)". Hand-written C hits it the same way:
+  `"\x15"` compiles, then fails to assemble. The assembler itself accepts
+  `\xHH` in a string, and an `int`/`char` array initializer with the same
+  codes compiles and assembles fine; only the compiler's escaping is
+  missing. Codes 14 to 31 are the BIOS font's box drawing characters and shades, so
+  this is what keeps them out of text (see `v32::Keyboard::glyph`).
+- **What v32c++ does** (Vircon32 mode, C++ input): lowering phase 12b
+  (`cxx_hoist_strings`, `lower.c`) moves each such literal into a hidden
+  global array and uses that in its place, so the C++ source stays an
+  ordinary literal:
+
+  ```c
+  puts( "\025\025ok" );   ->   char __v32_str0[ 5 ] = { 21, 21, 111, 107, 0 };
+                                puts( &__v32_str0[ 0 ] );
+  ```
+
+  A `char s[] = "..."` initializer becomes the same list in place. Equal
+  literals share one array (`__v32_strN`, declared ahead of the program).
+  Literals the compiler can spell (everything else, accented letters
+  included) are left alone, so ordinary programs are unchanged.
+  Not rewritten: a literal inside `sizeof` (its value doesn't change) and
+  inline `asm`.
+  C input has the same rewrite, in phase 12 (`c_hoist_string`).
+  A literal that is the initializer of a GLOBAL pointer (`const char *p =
+  "..."`) is not supported by the Vircon32 compiler to begin with.
+- **Standard C target**: nothing to do; any C compiler takes the literal.
+- **Writing it**: prefer octal escapes (`"\025"`); a C++ `\x` escape
+  swallows every hex digit after it (`"caf\xE9e"` is not café).
+
+`tests/132sample.cpp` runs the shapes (global and local `char[]`, a
+method, a ternary, a repeated literal, `\x`, DEL, mixed text) on the real
+toolchain and emulator. An upstream fix would be three lines in
+`EscapeCCharacter` (escape the control codes as `\xHH`), after which this
+phase could be dropped.
+
 ## What this list does NOT cover
 
 - Anything this project hasn't discovered yet -- this is a record of
