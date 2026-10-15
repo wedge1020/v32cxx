@@ -1,4 +1,4 @@
-.TH V32TERM 3v32 "October 14, 2026" "v32c++ 20261014-dev" "v32c++ Library"
+.TH V32TERM 3v32 "October 15, 2026" "v32c++ 20261015-dev" "v32c++ Library"
 .SH NAME
 v32term \- an 80\(mu24 text screen, gamepad polling and on-screen keyboard
 .SH SYNOPSIS

@@ -1,4 +1,4 @@
-.TH V32C++\-STRING 3v32 "October 14, 2026" "v32c++ 20261014-dev" "v32c++ Library"
+.TH V32C++\-STRING 3v32 "October 15, 2026" "v32c++ 20261015-dev" "v32c++ Library"
 .SH NAME
 v32c++\-string \- std::string in v32c++, a fixed-capacity string
 .SH SYNOPSIS
