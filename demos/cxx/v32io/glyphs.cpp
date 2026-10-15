@@ -132,12 +132,12 @@ void draw_chrome()
     if( keyboard.connected() )
     {
         colored( color_green );
-        print_at( 450, 0, "keyboard: Gamepad 2" );
+        print_at( 400, 0, "keyboard: Gamepad 2" );
     }
     else
     {
         colored( color_red );
-        print_at( 450, 0, "no keyboard: Gamepad 2" );
+        print_at( 400, 0, "no keyboard: Gamepad 2" );
     }
 
     colored( color_white );
@@ -343,7 +343,7 @@ void draw_scene()
 
     // title in the top edge
     colored( color_yellow );
-    print_at( 230, 20, " Glyphs of the BIOS font " );
+    print_at( 200, 40, " Glyphs of the BIOS font " );
 
     // the languages
     colored( color_white );
@@ -385,7 +385,7 @@ void draw_scene()
     colored( color_cyan );
     print_at( 190, 260, shade );
     for( int i = 0; i < 40; i++ )
-      shade[ i ] = ramp[ (i + 8 * 100 - step) % 8 ];
+      shade[ i ] = ramp[ (i + 8 - step % 8) % 8 ];   // never negative
     colored( color_yellow );
     print_at( 190, 280, shade );
     colored( color_white );
