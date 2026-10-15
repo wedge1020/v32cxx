@@ -7,7 +7,11 @@
 //  with Gamepads > Gamepad 2 > v32kbd. The stock emulator's "Keyboard"
 //  device will NOT work. See docs/V32IO.md.
 //
-//      typing        shift and caps lock apply, as on a US layout
+//      typing        shift and caps lock apply, as on a US layout; with
+//                    the modified emulator the computer's own layout, dead
+//                    keys and compose keys type accented letters, and the
+//                    adaptor has AltGr / Alt codes (docs/V32IO.md): é, ñ, ß,
+//                    ©, box drawing... all come out of Keyboard::read()
 //      Enter / Tab   new line / 4 spaces
 //      Backspace     delete the last character
 //      Escape        clear the page
@@ -148,8 +152,8 @@ void main()
                 for( int i = 0; i < 4; i++ )
                   page.add( ' ' );
             }
-            else if( key >= 32 && key < 127 )
-              page.add( key );
+            else if( keyboard.glyph( key ) > 0 )     // ASCII, and typed
+              page.add( keyboard.glyph( key ) );     // characters (accents..)
 
             key = keyboard.read();
         }

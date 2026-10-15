@@ -1,4 +1,4 @@
-.TH KEYBOARD.HPP 3v32 "October 14, 2026" "v32c++ 20261014-dev" "v32c++ Library"
+.TH KEYBOARD.HPP 3v32 "October 15, 2026" "v32c++ 20261014-dev" "v32c++ Library"
 .SH NAME
 v32/keyboard.hpp \- v32::Keyboard, a v32io keyboard on a gamepad port
 .SH SYNOPSIS
@@ -12,10 +12,17 @@ v32/keyboard.hpp \- v32::Keyboard, a v32io keyboard on a gamepad port
 .B "    KeyCapsLock = 5, KeyLShift = 6, KeyRShift = 7, KeyBackspace = 8,"
 .B "    KeyTab = 9, KeyLCtrl = 10, KeyRCtrl = 11, KeyLAlt = 12, KeyEnter = 13,"
 .B "    KeyF1 = 14, ... KeyF12 = 25, KeyRAlt = 26, KeyEscape = 27,"
-.B "    KeyLGui = 28, KeyRGui = 29, KeyDelete = 127"
+.B "    KeyLGui = 28, KeyRGui = 29, KeyPageHigh = 30, KeyPageLow = 31,"
+.B "    KeyDelete = 127"
 .B "};"
 .PP
-.B "struct KeyEvent { int key; int symbol; bool pressed; };"
+.B "enum KeyboardProtocol {"
+.B "    ... KeyboardGlyph = 256, KeyboardPageTimeout = 30"
+.B "};"
+.PP
+.B "struct KeyEvent { int key; int symbol; bool pressed; bool text; };"
+.PP
+.BI "int key_glyph( int " value " );"
 .PP
 .B class Keyboard {
 .BI "    Keyboard( int " gamepad " );"
@@ -32,6 +39,7 @@ v32/keyboard.hpp \- v32::Keyboard, a v32io keyboard on a gamepad port
 .B  "    bool gui_down();"
 .B  "    bool caps_lock_on();"
 .BI "    int  symbol( int " key " );"
+.BI "    int  glyph( int " value " );"
 .B  "    int  last_event();"
 .B  "    int  dropped();"
 .B  "    bool connected();"
@@ -63,7 +71,46 @@ space, and
 constants; the function keys are consecutive
 .RB ( "KeyF1 + n \- 1" ),
 and the numeric keypad reports the same codes as the main keyboard.
-Code 0 is never reported.
+Code 0 is never reported. Codes 30 and 31 are not keys: they are the
+codepage prefixes of typed characters (see below).
+.SS Typed characters
+A key code says which key was pressed, not what it typed, so a key
+combination that types something outside ASCII (an accented letter from a
+dead key or AltGr, a box drawing character) cannot be told in a key code.
+A v32io device can send such a
+.I typed character
+instead, in the character set of the BIOS font: Windows\-1252, with box
+drawing characters and shades in place of codes 14 to 31. The
+modified emulator sends what the computer's own keyboard layout types; the
+adaptor has its own AltGr combinations, dead keys and Alt codes
+(see
+.IR docs/V32IO.md ).
+.PP
+.B probe
+decodes them, and
+.BR read " and " next_event
+hand them out together with the keys, in order. The key that typed a
+character is not reported, only the character. Two things to know:
+.IP \(bu 3
+.B read
+returns a typed character as its BIOS font code: 32 to 126 and 128 to 255
+as they are. Codes below 32 would be mistaken for key codes, so for those
+.B read
+returns the code plus
+.B KeyboardGlyph
+(256). Pass any value
+.B read
+returned to
+.B glyph
+to get the code to draw, or 0 when it is a key with no character (arrows,
+function keys, Escape...).
+.IP \(bu 3
+.B read_event
+skips typed characters (they are not keys); use
+.B read
+or
+.B next_event
+for them.
 .SS Reading keys
 Events wait in a queue of 64 inside the object.
 .BR read ,
@@ -73,8 +120,10 @@ and
 all take from the same queue: use one style per keyboard.
 .TP
 .B probe
-Read the device and queue its new key event, if any. Returns true when
-an event arrived. When the queue is full the event is still applied to
+Read the device and queue its new key event or typed character, if any.
+Returns true when one arrived (a codepage prefix alone is not one: the
+character completes with the next event). A gamepad that has just been
+connected starts the decoding over. When the queue is full the event is still applied to
 .B is_down
 and caps lock, but is not queued (see
 .BR dropped ).
@@ -82,8 +131,11 @@ and caps lock, but is not queued (see
 .B read
 The next key press, as the character it types \(em shift and caps lock
 applied, compatible with the BIOS font \(em or, for keys that type
-none, its key code (below 32, or 127). Releases are skipped. Returns 0
-when the queue is empty.
+none, its key code (below 32, or 127). A typed character sent by the
+device comes back as its BIOS font code, plus
+.B KeyboardGlyph
+when that is below 32. Releases are skipped. Returns 0 when the queue
+is empty.
 .TP
 .B read_event
 The next event, press or release, as its key code (no shift applied);
@@ -92,14 +144,35 @@ is set to true for a press, unless
 .I pressed
 is
 .BR NULL .
-Returns 0 when the queue is empty.
+Typed characters are skipped. Returns 0 when the queue is empty.
 .TP
 .B next_event
 The next event with its key code, its typed character (shift and caps
 lock as they were when it was pressed) and whether it was a press.
-Returns false, leaving
+For a typed character sent by the device,
+.I text
+is true, and
+.I key
+and
+.I symbol
+are both its BIOS font code (never offset by
+.BR KeyboardGlyph )
+and
+.I pressed
+is true. Returns false, leaving
 .I *out
 alone, when the queue is empty.
+.TP
+.BR glyph ", " key_glyph
+The BIOS font character to draw for a value
+.B read
+returned, or 0 when it is not a typed character: a key with no character
+or no key at all. It is what tells a key code below 32 apart from a box
+drawing character with the same code.
+.B glyph
+is the member; the function
+.B key_glyph
+does not need a keyboard.
 .TP
 .BR pending ", " flush
 The number of queued events; discard them all (held keys stay held).
@@ -141,8 +214,21 @@ carry the 7-bit key code, Start being the lowest bit. A keyboard
 created while the device already shows an event takes that state as
 its starting point, so an old event is not read as a new one after a
 reset.
+.PP
+Typed characters take two consecutive events: a codepage prefix, whose
+key code is
+.B KeyPageHigh
+(30: BIOS characters 128 to 255) or
+.B KeyPageLow
+(31: 0 to 127), and then a payload that carries the low 7 bits of the
+character in the key code field. Both are sent as key releases, so a
+driver that predates them sees two releases and no key. A character thus
+takes two frames. A prefix that is not followed by its payload within
+.B KeyboardPageTimeout
+(30) frames is forgotten.
 .SH EXAMPLES
-A line editor on gamepad 2 (port 1):
+A line editor on gamepad 2 (port 1), which takes accented letters and
+other typed characters as well as ASCII:
 .PP
 .RS
 .nf
@@ -164,9 +250,10 @@ void main()
         {
             if( key == v32::KeyBackspace && length > 0 )
               length\-\-;
-            else if( key >= 32 && key < 127 && length < 63 )
+            else if( keyboard.glyph( key ) > 0 && length < 63 )
             {
-                line[ length ] = key;
+                // ASCII, or a typed character (accents, box drawing...)
+                line[ length ] = keyboard.glyph( key );
                 length++;
             }
             line[ length ] = 0;

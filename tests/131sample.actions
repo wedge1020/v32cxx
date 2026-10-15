@@ -1,0 +1,43 @@
+# tests/131sample.actions -- typed-character (extended character) input for
+# tests/131sample.cpp. Turned into tests/131sample.input by:
+#   tools/vircon32/v32io-script.py tests/131sample.actions > tests/131sample.input
+connect 1 1
+# the standard BIOS hands over to the cartridge around frame 250
+at 320
+# phase 1: every event through next_event()
+# 'a' is held while characters arrive (they must not touch the held keys)
+kbd 1 press a
+kbd 1 char 233
+# payloads that equal the prefix codes: high page 30/31, low page 30/31
+kbd 1 char 158 159 30 31
+kbd 1 release a
+kbd 1 char 65 128 255
+# a prefix that never gets its payload: forgotten after 30 frames, so the
+# next event is an ordinary key
+kbd 1 release pagehigh
+wait 40
+kbd 1 tap x
+# a prefix followed by a key PRESS: the payload is taken as such
+kbd 1 release pagelow
+kbd 1 press b
+kbd 1 release b
+kbd 1 tap f1
+# phase 2: read() and glyph()
+kbd 1 char 233 20 31 65 200
+kbd 1 tap enter
+kbd 1 tap f2
+# phase 3: read_event() skips characters
+kbd 1 char 233
+kbd 1 tap q
+kbd 1 char 200
+kbd 1 tap f3
+wait 4
+# phase 4: a prefix waiting when the gamepad is unplugged and plugged in
+# again is forgotten, and the new device starts over (it strobes Left)
+kbd 1 release pagehigh
+connect 1 0
+wait 3
+connect 1 1
+wait 3
+kbd 1 tap z
+wait 10

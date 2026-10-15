@@ -13,7 +13,7 @@
 # keyboard.hpp, mouse.hpp), so
 # the examples build without `make sysinstall`.
 
-DEMOS         = typewriter paint monitor notepad
+DEMOS         = typewriter paint monitor notepad glyphs
 TRANSPILER    = v32c++ -I ../../..
 COMPILER      = compile
 ASSEMBLER     = assemble

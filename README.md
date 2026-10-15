@@ -250,7 +250,7 @@ drivers they port, protocol-for-protocol:
 | Header | Class | The C library's |
 | ------ | ----- | --------------- |
 | `v32/v32io.hpp` | `v32::IoDevice`: a gamepad's 11 controls read as data (the core) | `v32io.h` |
-| `v32/keyboard.hpp` | `v32::Keyboard`: key events, typed characters with shift and caps lock, held keys | `keyboard.h` |
+| `v32/keyboard.hpp` | `v32::Keyboard`: key events, typed characters (shift and caps lock, and accented and box drawing characters sent by the device), held keys | `keyboard.h` |
 | `v32/mouse.hpp` | `v32::Mouse`: a bounded pointer, movement, three buttons | `mouse.h` |
 
 A program includes the driver(s) it needs; each includes the core.
@@ -263,7 +263,8 @@ v32::Keyboard keyboard( v32::SecondGamepadPort );   // "Gamepad 2"
 v32::Mouse    mouse( v32::ThirdGamepadPort );       // "Gamepad 3"
 ...
 keyboard.probe();  mouse.probe();                   // once EVERY frame
-for( int key = keyboard.read(); key > 0; key = keyboard.read() ) ...
+for( int key = keyboard.read(); key > 0; key = keyboard.read() )
+    if( keyboard.glyph( key ) > 0 ) text.add( keyboard.glyph( key ) );  // é, ß, ┌ ...
 if( mouse.pressed( v32::MouseLeft ) ) click( mouse.x(), mouse.y() );
 ```
 
@@ -279,10 +280,12 @@ if( mouse.pressed( v32::MouseLeft ) ) click( mouse.x(), mouse.y() );
 > stock emulator's own *Keyboard* device is **not** a v32io keyboard.
 
 Full   documentation  —   setup,  the   API,  the   protocols,  porting
-from   the   C   library,   testing   without  a   device   —   is   in
-**[`docs/V32IO.md`](docs/V32IO.md)**.  Four  ready-to-build  examples  (a
+from   the   C   library,   typing  accented   and   box   drawing
+characters,   testing   without  a   device   —   is   in
+**[`docs/V32IO.md`](docs/V32IO.md)**.  Five  ready-to-build  examples  (a
 typewriter,   a   paint   program,    a   port   monitor   for   checking
-a    setup,   and    a    notepad   using    both    devices)   are    in
+a    setup,   a    notepad   using    both    devices,   and   a   tour   of
+every   glyph   in   the  BIOS   font   and   how   to   type   it)   are   in
 [`demos/cxx/v32io`](demos/cxx/v32io/README.md).
 
 ## Known limitations
@@ -310,6 +313,11 @@ Checked against  the current  transpiler and  the real  Vircon32 compiler
   it jumps out of; keep it to  scopes without them. A `goto` to a missing
   label is caught by the Vircon32 compiler, not by v32c++.
 - **`const` is not enforced** — violations are left to the C compiler.
+- **Box drawing glyphs in string literals**:  the BIOS font's codes 14–31
+  (`┌ ─ ┐ │ ░ ▒ ▓ █` ...) can't be written in a string literal,  `"\x15"`:
+  the Vircon32 C compiler writes control codes raw  into its assembly and
+  the assembler rejects them (with hand-written C too). v32c++ warns; use
+  an `int` array of codes instead (see `demos/cxx/v32io/glyphs.cpp`).
 - **Classes in  a namespace  keep their bare  C name**  (`v32::String` is
   `String` in  the generated C),  so a program  can't have its  own class
   with the same name as one in a header it includes (`String`, `Channel`,

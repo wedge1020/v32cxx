@@ -1,4 +1,4 @@
-.TH V32C++ 1 "October 14, 2026" "v32c++ 20261014-dev" "User Commands"
+.TH V32C++ 1 "October 15, 2026" "v32c++ 20261014-dev" "User Commands"
 .SH NAME
 v32c++ \- transpile a subset of C++ to Vircon32 C
 .SH SYNOPSIS
@@ -889,7 +889,9 @@ Vircon32 C drivers, split the same way as its
 .IR keyboard.h ", " mouse.h " and " v32io.h :
 a keyboard
 .RB ( v32::Keyboard :
-key events, typed characters with shift and caps lock, held keys) and a
+key events, typed characters with shift and caps lock, held keys, and the
+accented and box drawing characters of the BIOS font that a device can
+send) and a
 mouse
 .RB ( v32::Mouse :
 a bounded pointer, movement, three buttons), both built on the core,
@@ -932,8 +934,13 @@ v32::Keyboard keyboard( v32::SecondGamepadPort );  // Gamepad 2
 .fi
 .RE
 .PP
-Every device must be probed once on every frame, or key events can be
-lost and mouse movement misread. See
+Characters outside ASCII (an accented letter, a box drawing character)
+come out of
+.B read
+too, as BIOS font codes; pass the value to
+.B glyph
+to get the code to draw. Every device must be probed once on every
+frame, or key events can be lost and mouse movement misread. See
 .I docs/V32IO.md
 for setup, the full API and the protocols, and
 .I demos/cxx/v32io
@@ -1388,6 +1395,17 @@ destroys none;
 through a base pointer to an array of a derived class is undefined.
 Multi-dimensional arrays of objects are constructed but not destroyed
 at scope exit.
+.PP
+The BIOS font's codes 14 to 31 (box drawing characters and shades) can't
+be written in a string literal, as
+.BR \(dq\ex15\(dq :
+the Vircon32 C compiler writes a string's control characters raw into its
+assembly, and its assembler rejects them, whatever produced the C.
+.B v32c++
+warns when it meets one; build such text in an
+.B int
+array of codes (see
+.IR demos/cxx/v32io/glyphs.cpp ).
 .PP
 A class declared inside a namespace keeps its bare C name
 .RI ( v32::String

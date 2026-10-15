@@ -12,7 +12,9 @@
 //
 //      left click            move the cursor to that cell
 //      right click           erase that cell
-//      typing                writes at the cursor and moves it on
+//      typing                writes at the cursor and moves it on (accented
+//                            letters and box drawing characters too, where
+//                            the device types them: see docs/V32IO.md)
 //      arrow keys            move the cursor
 //      Backspace / Delete    erase before / at the cursor
 //      Enter                 start of the next line
@@ -154,8 +156,8 @@ void handle_key( int key )
     else if( key == v32::KeyBackspace ) grid.backspace();
     else if( key == v32::KeyDelete )    grid.delete_here();
     else if( key == v32::KeyEnter )     grid.new_line();
-    else if( key >= 32 && key < 127 && !keyboard.ctrl_down() )
-      grid.put( key );
+    else if( keyboard.glyph( key ) > 0 && !keyboard.ctrl_down() )
+      grid.put( keyboard.glyph( key ) );          // ASCII or a typed character
 }
 
 void main()

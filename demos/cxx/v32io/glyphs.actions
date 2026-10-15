@@ -1,0 +1,35 @@
+# glyphs.actions -- a scripted tour of glyphs.cpp, with no keyboard needed.
+# It plays the typed characters the way a v32io device sends them (a
+# codepage prefix and a payload; `char` takes BIOS font codes), so the
+# COMPOSE page's box fills in as if someone had typed with AltGr.
+#
+#   ../../../tools/vircon32/v32io-script.py glyphs.actions > glyphs.input
+#   ../../../tools/vircon32/bin/v32shot ../../../tools/vircon32/bin/StandardBios.v32 \
+#       bin/glyphs.v32 glyphs.input shots/glyphs 340 520 760
+#
+# (the standard BIOS hands over to the cartridge around frame 250)
+connect 1 1
+at 300
+# MAP: the cartridge starts here; nothing to do for a while
+wait 80
+# COMPOSE
+kbd 1 tap f2
+kbd 1 type Cr
+kbd 1 char 232
+kbd 1 type me br
+kbd 1 char 251
+kbd 1 type l
+kbd 1 char 233
+kbd 1 type e, ni
+kbd 1 char 241
+kbd 1 type o:
+kbd 1 tap space
+kbd 1 char 169 128 171 187 177 190 223 230 248 254
+kbd 1 tap space
+kbd 1 char 25 21 24 22 27 31 28 20 19 18 17
+kbd 1 tap space
+kbd 1 char 233
+wait 60
+# SCENE
+kbd 1 tap f3
+wait 120

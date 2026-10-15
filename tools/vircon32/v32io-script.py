@@ -15,12 +15,19 @@
 #  actions (one per line, '#' comments; frames advance as actions run):
 #    at <frame>                 jump forward to this frame
 #    wait <frames>              let frames pass with nothing changing
-#    connect <port> <0|1>       plug / unplug a gamepad (no frame used)
+#    connect <port> <0|1>       plug / unplug a gamepad (no frame used); a
+#                               device plugged in starts over, as a new one:
+#                               its next keyboard event strobes Left
 #    kbd <port> press <key>     one key event per frame
 #    kbd <port> release <key>
 #    kbd <port> tap <key>       press, then release
 #    kbd <port> type <text>     rest of the line, typed with shift as
 #                               needed (US layout); \n is Enter
+#    kbd <port> char <code>...  typed CHARACTERS as the device sends them
+#                               (accented letters, box drawing...): each
+#                               code is a BIOS font code, decimal or 0x..,
+#                               sent as a codepage prefix and a payload (2
+#                               frames, both key releases)
 #    mouse <port> move <dx> <dy>   in device steps; at most 5 per axis per
 #                                  frame, so a long move spans frames
 #    mouse <port> down <left|right|middle>
@@ -29,7 +36,9 @@
 #
 #  Key names: a single character ('a', '1', '/', 'space' for ' '), or one
 #  of up down left right capslock lshift rshift backspace tab lctrl rctrl
-#  lalt enter f1..f12 ralt escape lgui rgui delete.
+#  lalt enter f1..f12 ralt escape lgui rgui delete pagehigh pagelow (the
+#  codepage prefixes, for testing a prefix that is never followed by its
+#  payload: `char` sends both in order).
 #
 #  The protocols are described in docs/V32IO.md. This is a development
 #  tool (tests/119sample.input was made with it); nothing in a build needs
@@ -42,7 +51,8 @@ CONTROLS = ["left", "right", "up", "down", "start", "a", "b", "x", "y", "l", "r"
 NAMED = {"up": 1, "down": 2, "left": 3, "right": 4, "capslock": 5,
          "lshift": 6, "rshift": 7, "backspace": 8, "tab": 9, "lctrl": 10,
          "rctrl": 11, "lalt": 12, "enter": 13, "ralt": 26, "escape": 27,
-         "lgui": 28, "rgui": 29, "delete": 127, "space": 32}
+         "lgui": 28, "rgui": 29, "pagehigh": 30, "pagelow": 31,
+         "delete": 127, "space": 32}
 for n in range(1, 13):
     NAMED["f%d" % n] = 13 + n
 
@@ -149,7 +159,17 @@ def main():
             for _ in range(int(words[1])):
                 emit_frame()
         elif op == "connect":
-            port(int(words[1]))
+            p = port(int(words[1]))
+            if words[2] == "1":
+                p.strobe = 0
+            else:
+                # an unplugged device shows nothing: release its controls
+                # first, so nothing stays pressed in the console
+                for i in range(11):
+                    if shown[int(words[1])][i]:
+                        out.append("%d release %s %s" % (frame, words[1], CONTROLS[i]))
+                shown[int(words[1])] = [False] * 11
+                p.state = [False] * 11
             out.append("%d connect %s %s" % (frame, words[1], words[2]))
         elif op == "kbd":
             n, action = int(words[1]), words[2]
@@ -169,6 +189,15 @@ def main():
                     key_event(n, code, True); key_event(n, code, False)
                     if shift:
                         key_event(n, 6, False)
+            elif action == "char":
+                for word in words[3:]:
+                    value = int(word, 0)
+                    if not 1 <= value <= 255:
+                        raise SystemExit("v32io-script: char %s is not 1..255" % word)
+                    # high page: 128..255 -> prefix 30 + (value - 128);
+                    # low page: 1..127 -> prefix 31 + value. Both releases.
+                    key_event(n, 30 if value >= 128 else 31, False)
+                    key_event(n, value & 127, False)
             else:
                 code = key_code(words[3])
                 if action in ("press", "tap"):

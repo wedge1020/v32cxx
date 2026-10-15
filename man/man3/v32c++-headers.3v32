@@ -1,4 +1,4 @@
-.TH V32C++\-HEADERS 3v32 "October 14, 2026" "v32c++ 20261014-dev" "v32c++ Library"
+.TH V32C++\-HEADERS 3v32 "October 15, 2026" "v32c++ 20261014-dev" "v32c++ Library"
 .SH NAME
 v32c++\-headers \- the C++ headers and the C library that come with v32c++
 .SH SYNOPSIS
@@ -70,7 +70,7 @@ emulator:
 .TS
 l l.
 \fBv32io.hpp\fR(3v32)	IoDevice, the common core
-\fBkeyboard.hpp\fR(3v32)	Keyboard
+\fBkeyboard.hpp\fR(3v32)	Keyboard, with typed characters (accents, box drawing)
 \fBmouse.hpp\fR(3v32)	Mouse
 .TE
 .SS Built-in standard headers

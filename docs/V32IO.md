@@ -197,10 +197,11 @@ is not read as a new one).
 
 | Member                         | What it does                                                                                     |
 | ------------------------------ | ------------------------------------------------------------------------------------------------ |
-| `bool probe()`                 | Once per frame. Queues the new key event, if any; true when one arrived.                          |
-| `int read()`                   | Next key **press** as its typed character (shift and caps lock applied, BIOS-font compatible). Keys without a character return their key code (below 32, or 127). Releases are skipped. 0 when empty. |
-| `int read_event(bool* pressed)` | Next event, press **or** release, as its **key code** (no shift). `*pressed` is set if not `NULL`. 0 when empty. |
-| `bool next_event(KeyEvent* e)` | Next event with everything: `e->key`, `e->symbol`, `e->pressed`. False when empty.                |
+| `bool probe()`                 | Once per frame. Queues the new key event or typed character, if any; true when one arrived. |
+| `int read()`                   | Next key **press** as its typed character (shift and caps lock applied, BIOS-font compatible). Keys without a character return their key code (below 32, or 127). **Typed characters** sent by the device (é, ß, ┌ ...) come back as their BIOS font code, plus `v32::KeyboardGlyph` when that is below 32. Releases are skipped. 0 when empty. |
+| `int read_event(bool* pressed)` | Next event, press **or** release, as its **key code** (no shift). `*pressed` is set if not `NULL`. Typed characters are skipped (they are not keys). 0 when empty. |
+| `bool next_event(KeyEvent* e)` | Next event with everything: `e->key`, `e->symbol`, `e->pressed`, `e->text` (true for a typed character: `key` and `symbol` are then its BIOS font code). False when empty. |
+| `int glyph(int value)`         | The BIOS character to **draw** for a value `read()` returned: ASCII and typed characters as themselves, 0 for keys with no character. See [Typed characters](#typed-characters). |
 | `int pending()`                | Events waiting.                                                                                    |
 | `void flush()`                 | Throw every waiting event away (held keys stay held).                                              |
 | `bool is_down(int key)`        | Is that key held now? Takes key codes: `'a'`, `' '`, `v32::KeyLeft`, ...                           |
@@ -216,6 +217,8 @@ is not read as a new one).
 events): use one style per keyboard. `is_down()` and the modifier queries
 work alongside either, and don't depend on reading the queue at all — a
 game that only wants WASD can probe every frame and never read.
+
+The free function `v32::key_glyph( value )` is `glyph()` without a keyboard.
 
 **Typing vs. playing.** Use `read()` for text (names, chat, a console);
 `is_down()` for game controls (movement keys held down); `next_event()`
@@ -239,11 +242,92 @@ literals. The others:
 | 7    | `v32::KeyRShift`  | 28      | `v32::KeyLGui` (left command / Windows) |
 | 8    | `v32::KeyBackspace` | 29    | `v32::KeyRGui` (right command)     |
 | 9    | `v32::KeyTab`     | 127     | `v32::KeyDelete`                   |
-| 10   | `v32::KeyLCtrl`   | 30, 31  | unused; 0 is never reported        |
+| 10   | `v32::KeyLCtrl`   | 30, 31  | `v32::KeyPageHigh`, `v32::KeyPageLow`: codepage prefixes of typed characters, never keys (see below); 0 is never reported |
 
 The numeric keypad reports the same codes as the main keyboard. The arrow
 keys (1–4) are distinct from `'a'`..`'z'` and from the gamepad's own
 directions.
+
+### Typed characters
+
+Key codes say which key was pressed, not what it typed, so they can't
+carry an accented letter from a dead key or AltGr, or a box drawing
+character. A v32io device can send those as **typed characters** instead,
+in the character set of the Vircon32 BIOS font: Windows-1252 (`é ñ ß © € « »`
+...) with box drawing characters and shades in place of codes 14 to 31
+(`┌ ─ ┐ │ └ ┘ ░ ▒ ▓ █` ...). `demos/cxx/v32io/glyphs` shows all of them.
+
+Where they come from:
+
+- **The modified emulator** sends whatever the computer's own keyboard
+  layout, dead keys and compose key type, as long as the BIOS font has the
+  glyph. Nothing to learn: type é the way you always do.
+- **The adaptor** only knows which key is down, so it has its own layer
+  for a US keyboard: **AltGr** (right Alt; right Option on a Mac) plus a key
+  (AltGr+E = é, AltGr+S = ß, AltGr+C = ©, AltGr+5 = €), **dead keys**
+  (AltGr+`'` then a letter puts an acute on it; the same with `` ` `` `^` `¨`
+  `~`), and **Alt codes** (hold the *left* Alt, type the BIOS code on the
+  keypad: `Alt 0233` is é, `Alt 021` is ─). The complete tables are in the
+  v32io repository, `docs/v32io/COMPOSE.md`. A key combination that
+  types something here is *not* also reported as a key.
+
+How a program sees them:
+
+```cpp
+v32::Keyboard keyboard( v32::SecondGamepadPort );
+int text[ 64 ];
+int length = 0;
+
+keyboard.probe();                           // once on EVERY frame
+int key = keyboard.read();
+while( key > 0 )
+{
+    int glyph = keyboard.glyph( key );      // what to draw, 0 for a non-character key
+    if( glyph > 0 && length < 63 )
+    {
+        text[ length ] = glyph;             // ASCII, é, ß, ┌ ... all alike
+        length++;
+        text[ length ] = 0;
+    }
+    key = keyboard.read();
+}
+print_at( 0, 0, text );                     // the BIOS font draws them all
+```
+
+- `read()` returns a typed character as its **BIOS font code** (32–126 and
+  128–255 as they are). A code below 32 would be mistaken for a key code
+  (13 is Enter, 27 is Escape, but 27 is also `├`), so for those `read()`
+  returns the code **plus `v32::KeyboardGlyph`** (256). **Don't test the
+  returned value yourself: pass it to `glyph()`**, which gives the code to
+  draw (a character) or 0 (a key with no character: an arrow, F5, Escape,
+  Delete...). `key >= 32 && key < 127`, the test for "printable ASCII",
+  still works for ASCII only.
+- `next_event()` sets `e->text` for them, and `e->key` and `e->symbol` are
+  both the BIOS code, never offset. `read_event()` skips them.
+- They never touch `is_down()`: the keys of a combination are not
+  reported, so a game that reads keys held is not affected, and a program
+  that doesn't read characters never sees them.
+- On the wire a character takes **two events**, so two frames: a codepage
+  prefix (`v32::KeyPageHigh`, BIOS characters 128–255, or `v32::KeyPageLow`,
+  0–127) and a payload with the low 7 bits. Both are key *releases*,
+  which is why a driver that predates them sees only two releases and no
+  key press. `probe()` does all of this; a prefix that waits more than
+  `v32::KeyboardPageTimeout` (30) frames is forgotten. See PROTOCOLS.md in
+  the v32io repository for the full description.
+- A gamepad that has just been connected starts the decoding over (the
+  strobe and any waiting prefix), as for the mouse.
+
+**Characters in string literals.** Text that holds box drawing glyphs
+(codes 14 to 31) can't be written as a string literal, `"\x15"` or `"\025"`:
+the Vircon32 C compiler writes those control codes raw into its assembly
+and the assembler rejects them, whatever translates the C (v32c++ says so
+with a warning). Build such text in an `int` array, or draw the glyph with
+a one-character array, as `glyphs.cpp` does. Everything from code 32 up,
+accented letters included, is fine in a literal, written with an escape:
+use **octal** (`"caf\351e"` is café; at most three digits, so what follows
+is safe), because C++ makes a `\x` escape swallow every hex digit after it
+(`"caf\xE9e"` is not what it looks like; split the literal, `"caf\xE9" "e"`).
+The transpiler passes either on to the compiler as `\xE9`.
 
 ### `v32::Mouse`
 
@@ -305,7 +389,7 @@ Free functions `v32::mouse_counter()`, `v32::mouse_steps()` and
 
 Measured on the headless console: probing a keyboard or a mouse costs well
 under 1% of a frame's CPU (a full-screen paint program spends ~0.3% in the
-mouse driver and the rest drawing). Memory: a `Keyboard` is about 400
+mouse driver and the rest drawing). Memory: a `Keyboard` is about 470
 words (mostly its 64-event queue and 128 held-key flags), a `Mouse` about
 90, an `IoDevice` 75 (68 of them its machine-code routine).
 
@@ -346,7 +430,10 @@ Left, the next Right, then Left again, so a new event has arrived whenever
 the side differs from the last one seen (which is what lets the same key
 arrive twice in a row). Up means press, Down means release, and the seven
 buttons carry the 7-bit key code. Shift and caps lock are ordinary keys;
-`Keyboard` tracks them to produce characters.
+`Keyboard` tracks them to produce characters. Characters that are not on a
+US keyboard (é, ß, ┌ ...) come as a **pair** of events, a codepage prefix
+(key code 30 or 31) and a payload, both as key releases: see
+[Typed characters](#typed-characters).
 
 **Mouse.** Movement is not sent as deltas — a delta held for a frame can't
 be told from the same delta sent twice — but as two **counters**, one per
@@ -384,6 +471,10 @@ and `docs/PROTOCOLS.md`.
 | `v32kbd_readevent (&kb, &pressed)`                    | `kb.read_event( &pressed )`                        |
 | `v32kbd_getkey (&kb)` (+ `free()`)                    | `kb.next_event( &event )` (a `v32::KeyEvent`)      |
 | `v32kbd_isdown (&kb, V32KEY_LCTRL)`                   | `kb.is_down( v32::KeyLCtrl )` or `kb.ctrl_down()`  |
+| `v32kbd_glyph (key)`                                  | `kb.glyph( key )` or `v32::key_glyph( key )`       |
+| `V32KBD_GLYPH`, `V32KBD_PAGE_TIMEOUT`                 | `v32::KeyboardGlyph`, `v32::KeyboardPageTimeout`   |
+| `V32KEY_PAGE_HIGH`, `V32KEY_PAGE_LOW`                 | `v32::KeyPageHigh`, `v32::KeyPageLow`              |
+| `key -> text` (a `v32key`)                            | `event.text` (a `v32::KeyEvent`)                   |
 | `v32kbd_symbol (kb, key)`                             | `kb.symbol( key )`                                 |
 | `v32kbd_scan (kb)`                                    | `kb.device()->scan()`                              |
 | `kb -> capslock`                                      | `kb.caps_lock_on()`                                |
@@ -423,6 +514,7 @@ Behavior is the same, with these deliberate differences:
 | `paint.cpp`      | mouse, Gamepad 2                 | pointer, bounds, button edges, smooth strokes            |
 | `monitor.cpp`    | any, all four ports              | `IoDevice` and the raw protocol — a setup/debug tool     |
 | `notepad.cpp`    | keyboard Gamepad 2 + mouse Gamepad 3 | two v32io devices at once                            |
+| `glyphs.cpp`     | keyboard Gamepad 2 (two of its three pages need none) | every BIOS font glyph, how to type them, typed characters vs. keys |
 
 `cd demos/cxx/v32io && make` builds them (`v32c++` and the DevTools on the
 `PATH`).
@@ -442,6 +534,7 @@ connect 2 1                  # ... and one into port id 2 (Gamepad 3)
 at 300                       # the standard BIOS hands over around frame 250
 kbd 1 type Hello, World!     # shift added as needed; \n is Enter
 kbd 1 tap f1
+kbd 1 char 233 0x80 20        # typed characters, by BIOS code: é € █ (2 frames each)
 kbd 1 press lctrl
 kbd 1 tap c
 kbd 1 release lctrl
@@ -461,6 +554,17 @@ realcheck` runs it. Its script was also cross-checked against the original
 C drivers, which decode the same 110 key events and mouse positions from
 it.
 
+`tests/131sample.cpp` does the same for typed characters: prefix and
+payload decoding (including payloads equal to the prefix codes), the
+timeout, a prefix that meets an unplug / replug, `read()` + `glyph()`, and
+`read_event()` skipping characters. `kbd <port> char <code>...` sends
+characters the way the adaptor and the emulator do; `connect <port> 0`
+then `1` simulates a replug (the new device starts over). The `glyphs`
+demo has its own script, `demos/cxx/v32io/glyphs.actions`, which plays a
+typing session so its three pages can be photographed with `v32shot`
+without a keyboard; the screenshots in `demos/cxx/v32io/images/` came
+from it.
+
 ---
 
 ## Limits
@@ -471,7 +575,16 @@ it.
 - **US layout.** Key codes are physical keys reported US-style, and
   `symbol()`/`read()` apply US shift rules. Other layouts' printed
   characters (and AltGr) are not translated.
-- **ASCII only**: 7-bit key codes, characters the BIOS font can draw.
+- **Characters are what the BIOS font can draw**: key codes are 7 bits and
+  identify keys; anything beyond ASCII (accents, symbols, box drawing)
+  arrives as a typed character, in the font's own code (Windows-1252 plus
+  box drawing). Characters the font lacks (Cyrillic, CJK, ...) can't be
+  typed. On the adaptor they need a US keyboard and its AltGr / dead key /
+  Alt code layer; other layouts' printed characters are not translated
+  (the emulator uses the computer's layout and does translate them).
+- Typed characters take two frames each (two events), so fast typing with
+  accents queues up: 30 characters a second at most. Box drawing glyphs
+  (codes 14–31) can't be written in a string literal (see above).
 - **One event per frame.** The keyboard protocol carries at most 60 events
   a second (30 keystrokes, since press and release are separate events),
   whatever the typist does. No key repeat is generated.

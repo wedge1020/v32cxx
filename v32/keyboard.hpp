@@ -29,6 +29,23 @@
 //  garbage. See docs/V32IO.md for setup, the protocols, and the examples
 //  in demos/cxx/v32io.
 //
+//  EXTENDED CHARACTERS: key codes identify keys, so they cannot say what a
+//  key typed when that is not ASCII (an accented letter from a dead key or
+//  AltGr, a box drawing character...). A v32io device can send such a
+//  TYPED CHARACTER instead -- in the character set of the BIOS font
+//  (Windows-1252, with box drawing characters in place of codes 14 to 31)
+//  -- as two consecutive events: a codepage PREFIX (KeyPageHigh or
+//  KeyPageLow, two key codes that used to be unused) and then a PAYLOAD
+//  with the low 7 bits of the character:
+//
+//      KeyPageHigh + payload  ->  character 128 + payload  (128 to 255)
+//      KeyPageLow  + payload  ->  character payload        (0 to 127)
+//
+//  probe() decodes them; read() returns them like any typed character
+//  (their BIOS font code, plus KeyboardGlyph below 32, where a character
+//  would be mistaken for a key code), and glyph() turns any value read()
+//  returned into the code to draw. See docs/V32IO.md, "Typed characters".
+//
 //  THE RULE: call probe() once on EVERY frame for every device (keyboard
 //  and mouse alike), before end_frame(). The console only updates the
 //  gamepads between frames and a keyboard reports at most one key event
@@ -82,6 +99,8 @@ namespace v32
         KeyEscape    = 27,
         KeyLGui      = 28,    // left command on a Mac, Windows key on a PC
         KeyRGui      = 29,    // right command on a Mac
+        KeyPageHigh  = 30,    // codepage prefix: BIOS characters 128-255
+        KeyPageLow   = 31,    // codepage prefix: BIOS characters 0-127
         KeyDelete    = 127
     };
 
@@ -94,17 +113,44 @@ namespace v32
         KeyboardCodeShift = 4,     // key code starts at IoStart (bit 4)
         KeyboardCodeMask  = 127,   // and is 7 bits long
         KeyboardKeys      = 128,   // possible key codes
-        KeyboardQueueSize = 64     // events that can wait to be read
+        KeyboardQueueSize = 64,    // events that can wait to be read
+        KeyboardGlyph     = 256,   // added by read() to typed characters
+                                   // below 32 (box drawing...): see glyph()
+        KeyboardPageTimeout = 30   // frames a codepage prefix waits for its
+                                   // payload
     };
+
+    // -------------------------------------------------------------------------
+    //  key_glyph — from a value returned by Keyboard::read(), the BIOS font
+    //  character to draw (the code print_at() takes), or 0 when the value is
+    //  not a typed character: a key with no character (arrows, function keys,
+    //  escape, delete...) or no key at all. It tells a key code below 32
+    //  apart from a box drawing character that has the same code.
+    // -------------------------------------------------------------------------
+
+    int key_glyph( int value )
+    {
+        if( (value >= 32 && value < 127) || (value >= 128 && value < 256) )
+          return value;
+
+        if( value > KeyboardGlyph && value < KeyboardGlyph + 32 )
+          return value - KeyboardGlyph;
+
+        return 0;
+    }
 
     // one key event, as next_event() hands it out
     struct KeyEvent
     {
-        int  key;        // key code (a character, or a Key constant)
+        int  key;        // key code (a character, or a Key constant); for a
+                         // typed character (text), its BIOS font code
         int  symbol;     // typed character: shift and caps lock applied as
                          // they were when the key was pressed (same as key
-                         // for keys with no character)
-        bool pressed;    // true: pressed, false: released
+                         // for keys with no character, and for text)
+        bool pressed;    // true: pressed, false: released (always true for
+                         // a typed character)
+        bool text;       // true: a typed character sent by the device
+                         // (extended characters), not a key
     };
 
     // -------------------------------------------------------------------------
@@ -134,13 +180,19 @@ namespace v32
     //      }
     //
     //  read() and read_event()/next_event() take from the same queue: use
-    //  one style per keyboard. is_down() works alongside either.
+    //  one style per keyboard. is_down() works alongside either. Typed
+    //  characters sent by the device (see the top of this file) come out of
+    //  read() and next_event(); read_event() skips them, as they are not
+    //  keys.
     // -------------------------------------------------------------------------
 
     class Keyboard
     {
         IoDevice io;
         int  strobe_side;        // last strobe side seen (0 none, 1 L, 2 R)
+        int  page;               // codepage prefix waiting for its payload
+                                 // (0 none, else KeyPageHigh or KeyPageLow)
+        int  page_frame;         // frame at which that prefix was received
         bool caps_lock;          // caps lock state (toggles on each press)
         int  last_event_frame;   // frame of the latest key event (-1: none)
         int  dropped_events;     // events lost to a full queue
@@ -149,6 +201,7 @@ namespace v32
         int  queue_key[ KeyboardQueueSize ];
         int  queue_symbol[ KeyboardQueueSize ];
         bool queue_pressed[ KeyboardQueueSize ];
+        bool queue_text[ KeyboardQueueSize ];
         bool held[ KeyboardKeys ];
 
         // drop the oldest queued event (caller checks queue_count > 0)
@@ -156,6 +209,24 @@ namespace v32
         {
             queue_first = (queue_first + 1) % KeyboardQueueSize;
             queue_count--;
+        }
+
+        // add an event, unless nobody is reading them (queue full)
+        void enqueue( int key, int typed, bool pressed, bool text )
+        {
+            int slot = 0;
+
+            if( queue_count < KeyboardQueueSize )
+            {
+                slot = (queue_first + queue_count) % KeyboardQueueSize;
+                queue_key[ slot ]     = key;
+                queue_symbol[ slot ]  = typed;
+                queue_pressed[ slot ] = pressed;
+                queue_text[ slot ]    = text;
+                queue_count++;
+            }
+            else
+              dropped_events++;
         }
 
         public:
@@ -168,6 +239,8 @@ namespace v32
 
                 caps_lock        = false;
                 last_event_frame = -1;
+                page             = 0;
+                page_frame       = 0;
                 dropped_events   = 0;
                 queue_first      = 0;
                 queue_count      = 0;
@@ -178,51 +251,100 @@ namespace v32
             }
 
             // Call once per frame: reads the device and queues the new key
-            // event, if there is one. True when an event arrived. When the
-            // queue is full (nobody reading) the event still updates
-            // is_down() and caps lock, but is not queued.
+            // event, if there is one. True when an event arrived (a key
+            // event or a complete typed character; a codepage prefix alone
+            // is not one). When the queue is full (nobody reading) the
+            // event still updates is_down() and caps lock, but is not
+            // queued.
             bool probe()
             {
-                int raw  = 0;
-                int side = 0;
-                int key  = 0;
-                int slot = 0;
+                bool result    = false;
+                bool handled   = false;
+                int  raw       = 0;
+                int  side      = 0;
+                int  key       = 0;
+                int  frame     = 0;
+                int  character = 0;
 
                 io.probe();
                 raw  = io.read();
-                side = raw & KeyboardStrobe;
 
+                // A gamepad that has just been connected shows every control
+                // released, so the history of the device is lost: the strobe
+                // starts over (the first event will be a new one, whatever
+                // side it is) and a prefix that was waiting won't get its
+                // payload.
+                if( io.plugged() )
+                {
+                    strobe_side = 0;
+                    page        = 0;
+                }
+
+                side = raw & KeyboardStrobe;
                 if( side == 0 || side == strobe_side )
                   return false;
 
                 strobe_side      = side;
-                last_event_frame = get_frame_counter();
+                frame            = get_frame_counter();
+                last_event_frame = frame;
                 key = (raw >> KeyboardCodeShift) & KeyboardCodeMask;
-                if( key == 0 )
-                  return false;
 
-                held[ key ] = (raw & KeyboardPressed) != 0;
-                if( key == KeyCapsLock && held[ key ] )
-                  caps_lock = !caps_lock;
-
-                if( queue_count < KeyboardQueueSize )
+                // A prefix is waiting: this event is its payload (any code,
+                // including 0 and the prefix codes themselves, and whatever
+                // the action). A prefix that has waited too long was lost
+                // with its payload: forget it and read this event as a
+                // regular one.
+                if( page != 0 )
                 {
-                    slot = (queue_first + queue_count) % KeyboardQueueSize;
-                    queue_key[ slot ]     = key;
-                    queue_symbol[ slot ]  = symbol( key );
-                    queue_pressed[ slot ] = held[ key ];
-                    queue_count++;
-                }
-                else
-                  dropped_events++;
+                    if( frame - page_frame <= KeyboardPageTimeout )
+                    {
+                        handled   = true;
+                        result    = true;
+                        character = key;
+                        if( page == KeyPageHigh )
+                          character = key + 128;
+                        page = 0;
 
-                return true;
+                        // character 0 is nothing
+                        if( character > 0 )
+                          enqueue( character, character, true, true );
+                    }
+                    else
+                      page = 0;
+                }
+
+                // Prefixes carry no key: they announce that the next event
+                // is a character.
+                if( !handled && (key == KeyPageHigh || key == KeyPageLow) )
+                {
+                    handled    = true;
+                    page       = key;
+                    page_frame = frame;
+                }
+
+                if( !handled && key > 0 )
+                {
+                    result = true;
+
+                    held[ key ] = (raw & KeyboardPressed) != 0;
+                    if( key == KeyCapsLock && held[ key ] )
+                      caps_lock = !caps_lock;
+
+                    enqueue( key, symbol( key ), held[ key ], false );
+                }
+
+                return result;
             }
 
             // Next key PRESS (releases are skipped and discarded), as its
             // typed character -- shift and caps lock applied, compatible
             // with the BIOS font. Keys with no character return their key
-            // code (always below 32, or 127). 0 when nothing is left.
+            // code (always below 32, or 127). Typed characters sent by the
+            // device (accented letters, box drawing...) are returned too:
+            // as their BIOS font code, or for codes below 32 (which are
+            // also key codes) that code plus KeyboardGlyph. Pass any value
+            // read() returns to glyph() to get the code to draw. 0 when
+            // nothing is left.
             int read()
             {
                 int result = 0;
@@ -230,18 +352,35 @@ namespace v32
                 while( queue_count > 0 && result == 0 )
                 {
                     if( queue_pressed[ queue_first ] )
-                      result = queue_symbol[ queue_first ];
+                    {
+                        result = queue_symbol[ queue_first ];
+                        if( queue_text[ queue_first ] && result < 32 )
+                          result += KeyboardGlyph;
+                    }
                     pop_event();
                 }
                 return result;
             }
 
+            // The BIOS font character to draw for a value read() returned
+            // (0 for a key with no character). See key_glyph().
+            int glyph( int value )
+            {
+                return key_glyph( value );
+            }
+
             // Next event, press or release, as its KEY CODE (no shift
             // applied). If pressed is not NULL it is set to true for a
-            // press, false for a release. 0 when nothing is left.
+            // press, false for a release. Typed characters sent by the
+            // device are not keys, so they are skipped (and discarded):
+            // read them with read() or next_event(). 0 when nothing is
+            // left.
             int read_event( bool* pressed )
             {
                 int result = 0;
+
+                while( queue_count > 0 && queue_text[ queue_first ] )
+                  pop_event();
 
                 if( queue_count == 0 )
                   return 0;
@@ -253,7 +392,8 @@ namespace v32
                 return result;
             }
 
-            // Next event with everything known about it. False (and *out
+            // Next event with everything known about it -- keys and typed
+            // characters alike (see KeyEvent::text). False (and *out
             // untouched) when nothing is left.
             bool next_event( KeyEvent* out )
             {
@@ -263,6 +403,7 @@ namespace v32
                 out->key     = queue_key[ queue_first ];
                 out->symbol  = queue_symbol[ queue_first ];
                 out->pressed = queue_pressed[ queue_first ];
+                out->text    = queue_text[ queue_first ];
                 pop_event();
                 return true;
             }
