@@ -1,0 +1,157 @@
+'\" -*- coding: UTF-8 -*-
+.TH MISC.HPP 3v32 "16 de octubre de 2026" "v32c++ 20261016-dev" "Biblioteca v32c++"
+.SH NOMBRE
+v32/misc.hpp \- ayudas de C++ para números aleatorios, arreglos de palabras y bloques de memoria dinámica
+.SH SINOPSIS
+.nf
+.B #include <v32/misc.hpp>
+.PP
+.B namespace v32 {
+.PP
+.BI "int   random_below( int " limit " );"
+.BI "int   random_between( int " low ", int " high " );"
+.BI "bool  random_chance( int " percent " );"
+.B  "float random_unit();"
+.BI "void  seed_random( int " seed " );"
+.PP
+.BI "void  fill_words( int* " destination ", int " value ", int " count " );"
+.BI "void  copy_words( int* " destination ", int* " source ", int " count " );"
+.BI "bool  same_words( int* " first ", int* " second ", int " count " );"
+.PP
+.B  "void  halt();"
+.PP
+.B class HeapBlock {
+.BI "    HeapBlock( int " word_count " );"
+.B  "    ~HeapBlock();"
+.B  "    bool ok();"
+.B  "    int* data();"
+.B  "    int  size();"
+.BI "    void fill( int " value " );"
+.BI "    bool resize( int " word_count " );"
+.B };
+.PP
+.B }
+.fi
+.SH DESCRIPCIÓN
+.I v32/misc.hpp
+incluye el
+.I misc.h
+del SDK (véase
+.BR misc.h (3v32)).
+Todos los tamaños y recuentos están en palabras de 32 bits.
+.SS Números aleatorios
+Leen el generador por hardware de la consola mediante el
+.B rand
+del SDK (véase
+.BR misc.h (3v32)).
+.TP
+.B random_below
+De 0 a
+.IR limit \-1
+.RI ( limit
+debe ser positivo).
+.TP
+.B random_between
+De
+.I low
+a
+.IR high ,
+ambos incluidos.
+.TP
+.B random_chance
+Verdadero con una probabilidad de
+.I percent
+entre 100.
+.TP
+.B random_unit
+Un float de 0.0 a 1.0.
+.TP
+.B seed_random
+Siembra el generador, sustituyendo las dos semillas que lo estropearían \(em 0, que el
+hardware ignora, y cualquier semilla cuyos 31 bits bajos sean todos unos (como \-1), lo
+que hace que todo valor posterior sea 0 \(em por 1, la semilla de arranque.
+.SS Arreglos de palabras
+.TP
+.BR fill_words ", " copy_words ", " same_words
+Los
+.BR memset ,
+.B memcpy
+y
+.B memcmp
+del SDK para arreglos de
+.BR int ,
+sin conversiones.
+.B same_words
+es verdadero cuando los dos rangos son iguales.
+.SS HeapBlock
+Posee un bloque obtenido con el
+.B malloc
+del SDK, liberado con
+.B free
+cuando el objeto sale del ámbito.
+.TP
+.B ok
+Si la reserva tuvo éxito. Compruébalo antes de usar el bloque.
+.TP
+.BR data ", " size
+El bloque, y su tamaño en palabras (0 si la reserva falló).
+.TP
+.B fill
+Pone cada palabra a
+.IR value .
+.TP
+.B resize
+Agranda o reduce el bloque, conservando su contenido, con
+.BR realloc .
+Devuelve false, conservando el bloque anterior, cuando el montón no puede proporcionar
+el nuevo tamaño.
+.PP
+Un
+.B HeapBlock
+debe seguir siendo una variable local: copiar uno copia el puntero, y ambas copias
+liberarían el mismo bloque. Pasa en su lugar un
+.B HeapBlock*
+o el puntero
+.BR data() .
+.SS Flujo del programa
+.TP
+.B halt
+Detiene la CPU (el
+.B exit
+del SDK).
+.SH EJEMPLOS
+.RS
+.nf
+#include <v32/misc.hpp>
+#include <v32/time.hpp>
+
+void shuffle( int* cards, int count )
+{
+    for( int i = count \- 1; i > 0; i\-\- )
+    {
+        int j = v32::random_between( 0, i );
+        int t = cards[ i ];
+        cards[ i ] = cards[ j ];
+        cards[ j ] = t;
+    }
+}
+
+void main()
+{
+    v32::seed_random( get_time() );
+
+    v32::HeapBlock deck( 52 );
+    if( !deck.ok() )
+      return;
+
+    for( int i = 0; i < 52; i++ )
+      deck.data()[ i ] = i;
+    shuffle( deck.data(), deck.size() );
+}                               // el bloque se libera aquí
+.fi
+.RE
+.SH VÉASE TAMBIÉN
+.BR misc.h (3v32),
+.BR v32c++\-headers (3v32)
+.SH AUTOR
+Matthew Haas

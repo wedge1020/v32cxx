@@ -1,4 +1,4 @@
-.TH MISC.HPP 3v32 "October 16, 2026" "v32c++ 20261015-dev" "v32c++ Library"
+.TH MISC.HPP 3v32 "October 16, 2026" "v32c++ 20261016-dev" "v32c++ Library"
 .SH NAME
 v32/misc.hpp \- C++ helpers for random numbers, word arrays and heap blocks
 .SH SYNOPSIS

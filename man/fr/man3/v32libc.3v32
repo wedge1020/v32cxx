@@ -1,0 +1,328 @@
+'\" -*- coding: UTF-8 -*-
+.TH V32LIBC 3v32 "16 octobre 2026" "v32c++ 20261016-dev" "Bibliothèque v32c++"
+.SH NOM
+v32libc \- fonctions de la bibliothèque C standard pour les programmes C transpilés par v32c++
+.SH SYNOPSIS
+.nf
+.B #include <stdio.h>
+.RB "(ou " stdlib.h ", " ctype.h ", " errno.h ", " limits.h ", " memory.h ", " signal.h ,
+.RB " " stddef.h ", " unistd.h ", " fcntl.h ", " sys/types.h ", " sys/stat.h ")"
+.PP
+.B #include <v32libc.c>      \fR/* une fois, dans l'unique fichier source du programme */
+.PP
+.B v32c++ \-I \fI<v32c++>\fB/libc program.c\fR      (sans \fB\-I\fR une fois v32c++ installé)
+.fi
+.SH DESCRIPTION
+Un programme C transpilé par
+.BR v32c++ (1)
+à partir d'un fichier
+.I .c
+peut utiliser la partie de la bibliothèque C standard énumérée ci-dessous, écrite pour la
+console et transpilée avec le programme. Chacun des en-têtes à nom standard de
+.I libc/
+inclut le même en-tête de déclarations,
+.IR v32libc.h ,
+de sorte qu'un programme garde ses lignes
+.B #include
+telles quelles. Comme les programmes Vircon32 forment une seule unité de traduction sans
+éditeur de liens, le code lui-même est apporté en incluant
+.I v32libc.c
+une fois.
+.PP
+.I v32libc.h
+inclut aussi les en-têtes
+.IR video.h ,
+.IR input.h ,
+.IR time.h ,
+.I string.h
+et
+.I misc.h
+du SDK. Là où une fonction du SDK se comporte déjà comme le dit C, elle est utilisée telle
+quelle :
+.BR strlen ,
+.BR strcmp ,
+.BR strncmp ,
+.BR isdigit ,
+.BR isalpha ,
+.BR isupper ,
+.BR islower ,
+.BR isspace ,
+.BR tolower ,
+.BR toupper ,
+.BR memset ,
+.BR memcpy ,
+.BR memcmp ,
+.B rand
+et
+.BR srand .
+Là où ce n'est pas le cas, le nom standard est une macro pour une fonction
+.B v32_
+conforme (voir
+.BR "NOMS STANDARD REDIRIGÉS" ).
+.PP
+.BR <string.h> ", " <time.h> ", " <math.h>
+et les autres noms d'en-têtes du SDK mènent toujours aux en-têtes propres du SDK, jamais à
+cette bibliothèque ; les déclarations ci-dessous viennent avec n'importe lequel des en-têtes
+de
+.IR libc/ .
+.SS Mots et pointeur nul
+Tout est un mot de 32 bits :
+.BR char ,
+.BR short ,
+.BR int ,
+.B long
+et tout pointeur, si bien que
+.B "sizeof(char) == sizeof(int) == 1"
+et qu'une chaîne est un tableau de mots. Le code qui écrit « les 4 octets d'un int »
+.RB ( "fwrite( &n, 1, 4, f )" )
+touche trois mots de trop et doit dire
+.B sizeof n
+à la place.
+.PP
+Le pointeur nul vaut 0, comme en C ; v32c++ réécrit les pointeurs nuls et les tests de
+pointeurs dans l'entrée C pour qu'il en soit ainsi. Le SDK, lui, utilise \-1 pour « aucun
+pointeur » : ne passez pas directement un pointeur nul C à une fonction du SDK.
+.SH NOMS STANDARD REDIRIGÉS
+.TP
+.BR malloc ", " calloc ", " realloc ", " free
+Retournent 0 en cas d'échec, acceptent
+.B free(NULL)
+et
+.BR realloc(NULL,\ n) ,
+au-dessus de l'allocateur du SDK (voir
+.BR misc.h (3v32)).
+.TP
+.BR strcpy ", " strcat ", " strncpy ", " strncat
+Retournent leur destination, comme celles de C.
+.B strncpy
+écrit exactement
+.I n
+mots, complétés par des zéros, et ne laisse pas de terminateur quand la source compte
+.I n
+caractères ou plus.
+.TP
+.B exit
+Voir
+.BR "ENVIRONNEMENT ET DÉROULEMENT DU PROGRAMME" .
+.SH STDIO
+.TP
+.BR printf ", " fprintf ", " sprintf ", " vsprintf
+Sortie formatée. Conversions :
+.BR %d ", " %i ", " %u ", " %x ", " %X ", " %o ", " %c ", " %s
+et
+.BR %% ,
+avec les indicateurs
+.B \-
+et
+.BR 0 ,
+une largeur et une précision (l'une et l'autre peuvent être
+.BR * ),
+et les modificateurs de longueur
+.B h
+et
+.BR l ,
+qui ne changent rien puisque tout entier est un mot. Il n'y a pas de conversions en virgule
+flottante.
+.TP
+.BR putchar ", " puts ", " fputs ", " fputc ", " putc
+Sortie de caractères et de lignes.
+.TP
+.BR getchar ", " fgets
+Lisent depuis le clavier à l'écran (ou la source de touches propre au programme ; voir
+.BR v32term (3v32)),
+avec écho à l'écran.
+.B fgets
+ne lit que depuis
+.BR stdin  ;
+Retour arrière efface, et Échap ou Entrée termine la ligne.
+.TP
+.B sscanf
+.BR %d ", " %u ", " %x ", " %c ", " %s ,
+avec les modificateurs
+.B h
+et
+.B l
+et une largeur.
+.TP
+.BR fflush ", " setbuf
+La sortie n'est pas tamponnée ;
+.B fflush
+sur un fichier de la carte mémoire le réécrit.
+.B setbuf
+ne fait rien.
+.TP
+.BR fopen ", " fclose ", " fread ", " fwrite ", " fgetc ", " getc ,
+.TQ
+.BR fseek ", " ftell ", " rewind ", " feof ", " ferror ", " remove ", " rename
+Fichiers de la carte mémoire ; voir
+.BR v32file (3v32).
+.TP
+.B perror
+Affiche un message et
+.B strerror(errno)
+à l'écran.
+.PP
+.BR stdout " et " stderr
+écrivent sur l'écran texte 80\(mu24 de
+.BR v32term (3v32),
+et
+.B stdin
+lit son clavier.
+.SH CHAÎNES ET CARACTÈRES
+.TP
+.BR strchr ", " strrchr ", " strstr
+Recherchent dans une chaîne.
+.TP
+.BR isprint ", " isalnum ", " ispunct ", " iscntrl ", " toascii
+Classes de caractères absentes du SDK (ASCII).
+.TP
+.BR atoi ", " abs
+Conversion et valeur absolue
+.RB ( abs
+seulement quand le
+.I math.h
+du SDK n'est pas inclus).
+.SH ERREURS ET SIGNAUX
+.TP
+.B errno
+Définie par les fonctions de fichiers :
+.B ENOENT
+(fichier inexistant),
+.B ENOMEM
+(mémoire épuisée),
+.B EACCES
+(la carte mémoire contient les données d'un autre jeu),
+.B ENODEV
+(pas de carte mémoire),
+.B EMFILE
+(trop de fichiers ouverts),
+.B ENOSPC
+(la carte mémoire est pleine).
+.TP
+.B strerror
+Un message pour chacune d'elles.
+.TP
+.B signal
+Il n'y a pas de signaux sur une console :
+.B signal
+ne retient rien et retourne
+.BR SIG_DFL .
+Les constantes
+.B SIG
+existent pour que les programmes compilent.
+.SH TEMPS
+.TP
+.B time
+Un nombre qui change chaque seconde : la date et l'heure de la console combinées. Ce n'est pas
+le nombre de secondes depuis 1970, mais il sert de graine aléatoire et d'entrée à
+.BR localtime .
+Compiler avec
+.B \-DV32LIBC_FIXED_TIME=\fIn\fP
+lui fait toujours retourner
+.I n
+(pour des exécutions de test reproductibles).
+.TP
+.B localtime
+La date et l'heure courantes de la console sous forme de
+.BR "struct tm" ,
+quel que soit son argument.
+.B tm_wday
+vaut toujours 0.
+.SH ENVIRONNEMENT ET DÉROULEMENT DU PROGRAMME
+.TP
+.B getenv
+Toujours
+.BR NULL  ;
+.B environ
+est vide.
+.TP
+.B main( argc, argv )
+v32c++ appelle
+.B main
+avec
+.I argc
+valant 1 et
+.I argv
+valant
+.RB { \(dqprogram\(dq ", " NULL }.
+Un programme qui définit
+.B "char **v32_main_args( int *argc, char **argv )"
+la voit appelée au début de
+.BR main ,
+et peut y choisir sa propre ligne de commande (depuis un écran-titre, par exemple).
+.TP
+.BR exit ", " abort
+Affichent
+.B v32_exit_prompt
+(« [Press START to play again] »), attendent Start sur la manette 1, effacent l'écran et
+relancent le programme depuis le début, avec la RAM effacée et les globales de nouveau
+initialisées. Si
+.B v32_exit_hook
+est défini, il est d'abord appelé avec le statut de sortie.
+.SH LIMITES
+Sont définis
+.BR INT_MAX ,
+.BR INT_MIN ,
+.BR LONG_MAX ,
+.BR LONG_MIN ,
+.B SHRT_MAX
+et
+.B PATH_MAX
+(256) ;
+.B UINT_MAX
+est égal à
+.B INT_MAX
+et
+.B CHAR_BIT
+vaut 32. Les types
+.BR size_t ,
+.BR time_t ,
+.BR off_t ,
+.BR pid_t ,
+.BR uid_t ,
+.B gid_t
+et
+.B mode_t
+sont
+.BR int .
+.SH EXEMPLES
+.RS
+.nf
+#include <stdio.h>
+#include <stdlib.h>
+#include <v32libc.c>
+
+int main( int argc, char **argv )
+{
+    char name[ 32 ];
+
+    printf( "What is your name? " );
+    fgets( name, sizeof name, stdin );
+    printf( "Hello, %s", name );
+    printf( "%d arguments, first is %s\en", argc, argv[ 0 ] );
+    printf( "[%5d] [%\-5d] [%05x]\en", 42, 42, 255 );
+    exit( 0 );
+}
+.fi
+.RE
+.SH FICHIERS
+.TP
+.I <répertoire d'includes installé>/libc/
+.IR v32libc.h ", " v32libc.c ", " v32file.c ", " v32term.h ", " v32term.c ,
+.IR curses.h ", " v32curses.c ,
+et les en-têtes à nom standard. Le répertoire d'includes installé est
+.I /usr/local/Vircon32/v32tools/include/v32c++
+par défaut ; l'entrée C cherche automatiquement son
+.IR libc/ .
+.SH VOIR AUSSI
+.BR v32file (3v32),
+.BR v32term (3v32),
+.BR v32curses (3v32),
+.BR v32c++\-headers (3v32),
+.BR misc.h (3v32),
+.BR v32c++ (1)
+.PP
+.I docs/C_INPUT.fr.md
+dans la distribution des sources de v32c++.
+.SH AUTEUR
+Matthew Haas

@@ -1,5 +1,7 @@
 # Design: `native Name;` — opaque pass-through type declarations
 
+[Spanish version / en español](NATIVE_PASSTHROUGH.es.md) | [French version / en français](NATIVE_PASSTHROUGH.fr.md) <!-- langlinks -->
+
 > **Status (20260925-dev): implemented.** Grammar, AST, registry, and
 > every sema rejection below have landed, with `tests/90sample.cpp`
 > (legal uses) and `tests/91sample.cpp` (one error per rejected shape).

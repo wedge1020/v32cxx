@@ -25,6 +25,13 @@ FLEX    = flex
 # \t in brackets, no `date +%-d` (the day's leading zero is cut by sed).
 VERSION := $(shell sed -n 's/^\#define[[:space:]]*VERSION[[:space:]]*"\(.*\)".*/\1/p' $(INC_DIR)/v32cxx.h)
 MANDATE := $(shell LC_ALL=C date +"%B %d, %Y" | sed 's/ 0\([1-9]\),/ \1,/')
+# The same date in the translated pages' .TH line (man/es, man/fr): month
+# names from a table, so the build does not depend on the locales installed.
+MAN_D   := $(shell date +%d | sed 's/^0//')
+MAN_M   := $(shell date +%m | sed 's/^0//')
+MAN_Y   := $(shell date +%Y)
+MANDATE_ES := $(MAN_D) de $(word $(MAN_M),enero febrero marzo abril mayo junio julio agosto septiembre octubre noviembre diciembre) de $(MAN_Y)
+MANDATE_FR := $(if $(filter 1,$(MAN_D)),1er,$(MAN_D)) $(word $(MAN_M),janvier février mars avril mai juin juillet août septembre octobre novembre décembre) $(MAN_Y)
 # The manual pages: man/man1 (v32c++.1) and man/man3 (the headers, in
 # section 3v32). A page that is only `.so <other page>` is an alias and
 # has no .TH line of its own.
@@ -38,6 +45,43 @@ MAN3    := $(wildcard man/man3/*.3v32)
 # name is shared between the two sets).
 VMAN1   := $(wildcard man/vircon32/man1/*.1)
 VMAN3   := $(wildcard man/vircon32/man3/*.3v32)
+# The translations of v32c++'s own pages: man/es/ and man/fr/, each with its
+# man1/ and man3/ (the SDK pages above exist only in English).
+ES_MAN1 := $(wildcard man/es/man1/*.1)
+ES_MAN3 := $(wildcard man/es/man3/*.3v32)
+FR_MAN1 := $(wildcard man/fr/man1/*.1)
+FR_MAN3 := $(wildcard man/fr/man3/*.3v32)
+
+# DEST_LANG chooses the documentation language `sysinstall` installs:
+#   (unset) / all   everything: the English manual pages and documents, plus
+#                   the translations -- the pages in the standard
+#                   per-language trees $(MANROOT)/es/man1 ... so `man` picks
+#                   one from LANG, the documents side by side
+#   en              English only
+#   es / fr         that language only: its pages directly in man1 / man3 and
+#                   its documents under the plain names (README.md ...)
+# The Vircon32 SDK's pages are English only and always installed.
+DEST_LANG ?= all
+ifeq ($(DEST_LANG),)
+DEST_LANG := all
+endif
+ifeq ($(DEST_LANG),all)
+PLAIN_MAN := $(MAN1) $(MAN3) $(VMAN1) $(VMAN3)
+LANG_MANS := es fr
+else ifeq ($(DEST_LANG),en)
+PLAIN_MAN := $(MAN1) $(MAN3) $(VMAN1) $(VMAN3)
+LANG_MANS :=
+else ifeq ($(DEST_LANG),es)
+PLAIN_MAN := $(ES_MAN1) $(ES_MAN3) $(VMAN1) $(VMAN3)
+LANG_MANS :=
+else ifeq ($(DEST_LANG),fr)
+PLAIN_MAN := $(FR_MAN1) $(FR_MAN3) $(VMAN1) $(VMAN3)
+LANG_MANS :=
+else
+$(error DEST_LANG must be all, en, es or fr (not '$(DEST_LANG)'))
+endif
+# Every page this Makefile may have installed, in any language, for uninstall
+ALL_MAN := $(MAN1) $(MAN3) $(VMAN1) $(VMAN3) $(ES_MAN1) $(ES_MAN3) $(FR_MAN1) $(FR_MAN3)
 # The installed-header directory, from inc/config.h (same single-source
 # idea): `make sysinstall` puts the v32/ veneer headers there.
 INCPATH := $(shell sed -n 's/^[[:space:]]*\#[[:space:]]*define[[:space:]]*V32CXX_INCLUDE_PATH[[:space:]]*"\(.*\)".*/\1/p' $(INC_DIR)/config.h)
@@ -344,14 +388,15 @@ realcheck: test
 # stamped. Run after changing VERSION, before a release.
 version:
 	@echo "v32c++ $(VERSION) ($(MANDATE))"
-	@for f in $(MAN1) $(MAN3); do \
+	@for f in $(MAN1) $(MAN3) $(ES_MAN1) $(ES_MAN3) $(FR_MAN1) $(FR_MAN3); do \
 	    grep -q '^\.TH .* "v32c++ [^"]*"' "$$f" || continue; \
-	    sed 's/^\(\.TH [^ ]* [^ ]*\) "[^"]*" "v32c++ [^"]*"/\1 "$(MANDATE)" "v32c++ $(VERSION)"/' \
+	    case "$$f" in man/es/*) d='$(MANDATE_ES)' ;; man/fr/*) d='$(MANDATE_FR)' ;; *) d='$(MANDATE)' ;; esac; \
+	    sed "s/^\(\.TH [^ ]* [^ ]*\) \"[^\"]*\" \"v32c++ [^\"]*\"/\1 \"$$d\" \"v32c++ $(VERSION)\"/" \
 	        "$$f" > "$$f.tmp" || exit 1; \
 	    if cmp -s "$$f" "$$f.tmp"; then rm -f "$$f.tmp"; \
 	    else mv "$$f.tmp" "$$f"; echo "stamped $$f"; fi; \
 	done
-	@grep -h '^\.TH' $(MAN1) $(MAN3) | sed 's/^\.TH \([^ ]*\) \([^ ]*\) \("[^"]*" "[^"]*"\).*/  \1(\2) \3/'
+	@grep -h '^\.TH' $(MAN1) $(MAN3) $(ES_MAN1) $(ES_MAN3) $(FR_MAN1) $(FR_MAN3) | sed 's/^\.TH \([^ ]*\) \([^ ]*\) \("[^"]*" "[^"]*"\).*/  \1(\2) \3/'
 
 install: all
 	mkdir -p $(HOME)/bin
@@ -371,8 +416,11 @@ uninstall:
 # and libc/, the C library C input finds there with no -I either. The
 # community tools share v32tools/ (v32lua's includes go in
 # v32tools/include/v32lua). The same layout `cmake --install` produces
-# with its default prefix (see CMakeLists.txt), minus the documents. May
+# with its default prefix (see CMakeLists.txt), documents included. May
 # need sudo. `make sysuninstall` removes it again.
+#
+# DEST_LANG=es|fr|en|all (above) picks the documentation language: by default
+# everything is installed, `sudo make sysinstall DEST_LANG=es` only Spanish.
 #
 # Manual pages are installed gzip -9'd (page.3v32.gz), mode 0644. An alias
 # page (a one-line `.so man3/<page>`) becomes a symbolic link to its
@@ -383,12 +431,39 @@ uninstall:
 # names used before the rename to <name>.hpp, are removed on the way.
 LIBCDIR := $(INCPATH)/libc
 MANROOT := /usr/local/share/man
+# The documents (README, docs/, LICENSE): next to the headers, in the
+# directory the CMake build also uses (v32tools/docs/v32c++)
+DOCDIR  := $(abspath $(INCPATH)/../../docs/v32c++)
 # Vircon32/, v32tools/ and include/ above the header directory: each gets
 # go+rx (added, never taken away) so that ordinary users can reach the
 # headers whatever umask created them.
 INCPARENTS := $(patsubst %/,%,$(dir $(INCPATH))) \
               $(patsubst %/,%,$(dir $(patsubst %/,%,$(dir $(INCPATH))))) \
               $(patsubst %/,%,$(dir $(patsubst %/,%,$(dir $(patsubst %/,%,$(dir $(INCPATH)))))))
+
+# a newline, to end each expansion of INSTALL_MAN inside a $(foreach)
+define NL
+
+
+endef
+
+# $(call INSTALL_MAN,<pages>,<manual root>): the pages (man/.../manN/page)
+# into <manual root>/manN, gzipped; an alias becomes a symlink (see above)
+define INSTALL_MAN
+	@umask 022; for f in $(1); do \
+	    case "$$f" in *.1) sec=man1 ;; *) sec=man3 ;; esac; \
+	    install -d "$(2)/$$sec"; chmod go+rx "$(2)" "$(2)/$$sec"; \
+	    dest="$(2)/$$sec/$${f##*/}"; \
+	    rm -f "$$dest" "$$dest.gz"; \
+	    if head -n 1 "$$f" | grep -q '^\.so '; then \
+	        target=`sed -n '1s|^\.so [^/]*/||p' "$$f"`; \
+	        ln -s "$$target.gz" "$$dest.gz" || exit 1; \
+	    else \
+	        gzip -9 -n -c "$$f" > "$$dest.gz" || exit 1; \
+	        chmod 0644 "$$dest.gz" || exit 1; \
+	    fi; \
+	done
+endef
 
 sysinstall: all
 	umask 022; install -d /usr/local/bin $(MANROOT)/man1 $(MANROOT)/man3 $(INCPATH)/v32 $(LIBCDIR)/sys
@@ -399,22 +474,14 @@ sysinstall: all
 	chmod -R go+rX $(INCPATH)
 	chmod go+rx $(INCPARENTS) $(MANROOT) $(MANROOT)/man1 $(MANROOT)/man3
 	rm -f $(MANROOT)/man3/v32-*.hpp.3v32 $(MANROOT)/man3/v32-*.hpp.3v32.gz
-	@umask 022; for f in $(MAN1) $(MAN3) $(VMAN1) $(VMAN3); do \
-	    case "$$f" in *.1) sec=man1 ;; *) sec=man3 ;; esac; \
-	    dest="$(MANROOT)/$$sec/$${f##*/}"; \
-	    rm -f "$$dest" "$$dest.gz"; \
-	    if head -n 1 "$$f" | grep -q '^\.so '; then \
-	        target=`sed -n '1s|^\.so [^/]*/||p' "$$f"`; \
-	        ln -s "$$target.gz" "$$dest.gz" || exit 1; \
-	    else \
-	        gzip -9 -n -c "$$f" > "$$dest.gz" || exit 1; \
-	        chmod 0644 "$$dest.gz" || exit 1; \
-	    fi; \
-	done
+	$(call INSTALL_MAN,$(PLAIN_MAN),$(MANROOT))
+	$(foreach l,$(LANG_MANS),$(call INSTALL_MAN,$(wildcard man/$(l)/man1/*.1) $(wildcard man/$(l)/man3/*.3v32),$(MANROOT)/$(l))$(NL))
+	sh scripts/install_docs.sh $(DEST_LANG) $(DOCDIR)
+	chmod -R go+rX $(DOCDIR)
 	-@command -v mandb >/dev/null 2>&1 && mandb -q 2>/dev/null; true
-	@echo "Installed v32c++ to /usr/local/bin, its manual pages (gzipped) to"
-	@echo "$(MANROOT)/man1 and man3, the C++ headers to $(INCPATH)/v32"
-	@echo "and the C library to $(LIBCDIR)"
+	@echo "Installed v32c++ to /usr/local/bin, its manual pages (gzipped; $(DEST_LANG)) to"
+	@echo "$(MANROOT)/man1 and man3, the C++ headers to $(INCPATH)/v32,"
+	@echo "the C library to $(LIBCDIR) and the documents ($(DEST_LANG)) to $(DOCDIR)"
 
 # Removes exactly what sysinstall put down -- the manual pages as .gz (and
 # any uncompressed copy or old v32-<name>.hpp name an earlier install left)
@@ -422,15 +489,23 @@ sysinstall: all
 # Vircon32 only if nothing else (v32opt, v32lua, the DevTools) is in them.
 sysuninstall:
 	rm -f /usr/local/bin/v32c++
-	@for f in $(MAN1) $(MAN3) $(VMAN1) $(VMAN3); do \
+	@for f in $(ALL_MAN); do \
 	    case "$$f" in *.1) sec=man1 ;; *) sec=man3 ;; esac; \
-	    rm -f "$(MANROOT)/$$sec/$${f##*/}" "$(MANROOT)/$$sec/$${f##*/}.gz"; \
+	    case "$$f" in man/es/*) root="$(MANROOT)/es"; rootplain="$(MANROOT)" ;; \
+	                  man/fr/*) root="$(MANROOT)/fr"; rootplain="$(MANROOT)" ;; \
+	                  *) root="$(MANROOT)"; rootplain="" ;; esac; \
+	    for r in $$root $$rootplain; do \
+	        rm -f "$$r/$$sec/$${f##*/}" "$$r/$$sec/$${f##*/}.gz"; \
+	    done; \
 	done
-	rm -f $(MANROOT)/man3/v32-*.hpp.3v32 $(MANROOT)/man3/v32-*.hpp.3v32.gz
+	-@for d in $(MANROOT)/es/man1 $(MANROOT)/es/man3 $(MANROOT)/es $(MANROOT)/fr/man1 $(MANROOT)/fr/man3 $(MANROOT)/fr; do \
+	    rmdir "$$d" 2>/dev/null && echo "removed empty $$d"; \
+	done; true
+	sh scripts/install_docs.sh --remove $(DOCDIR)
 	rm -f $(addprefix $(INCPATH)/v32/,$(notdir $(wildcard v32/*.hpp)))
 	rm -f $(addprefix $(LIBCDIR)/,$(notdir $(wildcard libc/*.h libc/*.c)))
 	rm -f $(addprefix $(LIBCDIR)/sys/,$(notdir $(wildcard libc/sys/*.h)))
-	-@for d in $(INCPATH)/v32 $(LIBCDIR)/sys $(LIBCDIR) $(INCPATH) $(INCPARENTS); do \
+	-@for d in $(INCPATH)/v32 $(LIBCDIR)/sys $(LIBCDIR) $(INCPATH) $(DOCDIR) $(patsubst %/,%,$(dir $(DOCDIR))) $(INCPARENTS); do \
 	    rmdir "$$d" 2>/dev/null && echo "removed empty $$d"; \
 	done; true
 	-@command -v mandb >/dev/null 2>&1 && mandb -q 2>/dev/null; true

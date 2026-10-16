@@ -1,0 +1,141 @@
+'\" -*- coding: UTF-8 -*-
+.TH AUDIO.HPP 3v32 "16 de octubre de 2026" "v32c++ 20261016-dev" "Biblioteca v32c++"
+.SH NOMBRE
+v32/audio.hpp \- ayudas de C++ para la SPU de Vircon32: canales y sonidos
+.SH SINOPSIS
+.nf
+.B #include <v32/audio.hpp>
+.PP
+.B namespace v32 {
+.PP
+.B "enum ChannelState { ChannelStopped = 0x40, ChannelPaused = 0x41,"
+.B "                    ChannelPlaying = 0x42 };"
+.B "enum AudioLimits  { SoundChannels = 16 };"
+.B "enum PlayResult   { NoFreeChannel = \-1 };"
+.PP
+.BI "void  set_sound_looping( int " sound_id ", bool " enabled " );"
+.BI "void  set_sound_loop_points( int " sound_id ","
+.BI "                             int " start_sample ", int " end_sample " );"
+.BI "int   play_any( int " sound_id " );"
+.B  "void  pause_all();"
+.B  "void  resume_all();"
+.B  "void  stop_all();"
+.BI "void  set_master_volume( float " volume " );"
+.B  "float master_volume();"
+.PP
+.B class Channel {
+.BI "    Channel( int " channel_id " );"
+.B  "    int   number();"
+.BI "    void  assign( int " sound_id " );"
+.B  "    void  play();"
+.BI "    void  play( int " sound_id " );"
+.B  "    void  pause();"
+.B  "    void  stop();"
+.BI "    void  set_volume( float " volume " );"
+.BI "    void  set_speed( float " speed " );"
+.BI "    void  set_position( int " position " );"
+.BI "    void  set_looping( bool " enabled " );"
+.B  "    float speed();"
+.B  "    int   position();"
+.B  "    int   state();"
+.B  "    bool  is_playing();"
+.B  "    bool  is_paused();"
+.B  "    bool  is_stopped();"
+.B };
+.PP
+.B class SoundScope   { SoundScope( int \fIsound_id\fP ); ~SoundScope(); };
+.B class ChannelScope { ChannelScope( int \fIchannel_id\fP ); ~ChannelScope(); };
+.PP
+.B }
+.fi
+.SH DESCRIPCIÓN
+.I v32/audio.hpp
+incluye el
+.I audio.h
+del SDK (véase
+.BR audio.h (3v32)).
+El SDK configura «el» sonido o canal seleccionado, y varias de sus funciones cambian
+la selección como efecto secundario. Todo lo de esta cabecera deja la selección tal
+como la encontró.
+.SS Funciones
+.TP
+.BR set_sound_looping ", " set_sound_loop_points
+Establecen la repetición por defecto de un sonido, o la parte de él que se repite (en
+muestras desde su inicio), sin cambiar el sonido seleccionado.
+.TP
+.B play_any
+Reproduce un sonido en el primer canal detenido y devuelve el número del canal, o
+.B NoFreeChannel
+si los 16 están ocupados.
+.TP
+.BR pause_all ", " resume_all ", " stop_all
+Todos los canales a la vez.
+.TP
+.BR set_master_volume ", " master_volume
+El volumen de toda la mezcla, de 0.0 a 2.0 (1.0 es neutro).
+.SS Channel
+Un manejador de uno de los 16 canales, que guarda solo su número; cada método
+selecciona el canal, actúa y restaura la selección anterior.
+.TP
+.B number
+El número del canal.
+.TP
+.B assign
+Asigna un sonido sin reproducirlo.
+.TP
+.B play
+Reproduce el sonido asignado (un canal en pausa se reanuda, uno que está sonando
+empieza de nuevo) o, si se da un
+.IR sound_id ,
+lo asigna y lo reproduce.
+.TP
+.BR pause ", " stop
+Pausa conservando la posición, o detiene y rebobina.
+.TP
+.BR set_volume ", " set_speed ", " set_position ", " set_looping
+Volumen (1.0 normal), velocidad (1.0 normal), posición en muestras y repetición de lo
+que suena ahora.
+.TP
+.BR speed ", " position ", " state
+Los valores actuales;
+.B state
+es uno de los valores de
+.BR ChannelState .
+.TP
+.BR is_playing ", " is_paused ", " is_stopped
+Comprobaciones de
+.BR state .
+.SS SoundScope, ChannelScope
+Guardianes de ámbito: el constructor recuerda el sonido (o canal) seleccionado y
+selecciona el que se le da; el destructor vuelve a seleccionar el recordado. Úsalos
+alrededor de llamadas directas a las funciones del SDK basadas en selección.
+.SH EJEMPLOS
+.RS
+.nf
+#include <v32/audio.hpp>
+
+#define SOUND_MUSIC 0
+#define SOUND_SHOT  1
+
+void main()
+{
+    v32::Channel music( 0 );
+    music.play( SOUND_MUSIC );
+    music.set_looping( true );
+    music.set_volume( 0.5 );
+
+    int channel = v32::play_any( SOUND_SHOT );
+    if( channel != v32::NoFreeChannel )
+    {
+        v32::Channel shot( channel );
+        shot.set_speed( 1.2 );
+    }
+}
+.fi
+.RE
+.SH VÉASE TAMBIÉN
+.BR audio.h (3v32),
+.BR wav2vircon (1),
+.BR v32c++\-headers (3v32)
+.SH AUTOR
+Matthew Haas

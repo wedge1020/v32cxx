@@ -1,0 +1,129 @@
+'\" -*- coding: UTF-8 -*-
+.TH TIME.HPP 3v32 "16 de octubre de 2026" "v32c++ 20261016-dev" "Biblioteca v32c++"
+.SH NOMBRE
+v32/time.hpp \- ayudas de C++ para la temporización, la fecha y la hora de Vircon32
+.SH SINOPSIS
+.nf
+.B #include <v32/time.hpp>
+.PP
+.B namespace v32 {
+.PP
+.B "enum FrameTiming { FramesPerSecond = 60 };"
+.PP
+.BI "float frames_to_seconds( int " frames " );"
+.BI "int   seconds_to_frames( float " seconds " );"
+.BI "void  wait_seconds( float " seconds " );"
+.PP
+.B class Date {
+.B "public:"
+.B "    int year, month, day;"
+.B "    Date();"
+.B "    void set_now();"
+.BI "    void set_from( int " date_value " );"
+.B };
+.PP
+.B class TimeOfDay {
+.B "public:"
+.B "    int hours, minutes, seconds;"
+.B "    TimeOfDay();"
+.B "    void set_now();"
+.BI "    void set_from( int " seconds_of_day " );"
+.B };
+.PP
+.B class Stopwatch {
+.B "    Stopwatch();"
+.B "    void  restart();"
+.B "    int   elapsed_frames();"
+.B "    float elapsed_seconds();"
+.B };
+.PP
+.B class FrameScope {
+.B "    FrameScope();"
+.B "    ~FrameScope();"
+.B };
+.PP
+.B }
+.fi
+.SH DESCRIPCIÓN
+.I v32/time.hpp
+incluye el
+.I time.h
+del SDK (véase
+.BR time.h (3v32)).
+.SS Funciones
+.TP
+.BR frames_to_seconds ", " seconds_to_frames
+Convierten a 60 fotogramas por segundo;
+.B seconds_to_frames
+trunca.
+.TP
+.B wait_seconds
+Espera unos
+.I seconds
+segundos (fotogramas enteros, truncados), llamando a
+.B end_frame
+en cada uno.
+.SS Date
+La fecha del calendario.
+.B set_now
+lee el reloj de la consola;
+.B set_from
+decodifica un valor de
+.BR get_date (3v32).
+.I month
+va de 1 a 12 y
+.I day
+desde 1. Un
+.B Date
+nuevo contiene el año 0, 1 de enero.
+.SS TimeOfDay
+.B set_now
+lee el reloj de la consola;
+.B set_from
+decodifica un número de segundos desde la medianoche, tal como lo devuelve
+.BR get_time (3v32).
+.SS Stopwatch
+Mide el tiempo en fotogramas desde su construcción o su último
+.BR restart .
+.SS FrameScope
+Un guardián cuyo destructor llama a
+.BR end_frame .
+Declarado al principio del cuerpo de un bucle principal, termina el fotograma en la
+llave de cierre, incluso tras un
+.BR continue .
+.SH EJEMPLOS
+.RS
+.nf
+#include <v32/time.hpp>
+#include <v32/video.hpp>
+
+void main()
+{
+    v32::Stopwatch round_timer;
+
+    while( true )
+    {
+        v32::FrameScope frame;
+
+        if( round_timer.elapsed_seconds() > 30.0 )
+        {
+            clear_screen( color_red );
+            round_timer.restart();
+            continue;               // el fotograma termina igualmente aquí
+        }
+
+        clear_screen( color_black );
+    }
+}
+.fi
+.RE
+.SH NOTAS
+La regla de los años bisiestos de
+.B Date
+es la del SDK: divisible por 4 pero no por 100, así que el año 2000 sale con un día de
+diferencia.
+.SH VÉASE TAMBIÉN
+.BR time.h (3v32),
+.BR v32c++\-headers (3v32)
+.SH AUTOR
+Matthew Haas

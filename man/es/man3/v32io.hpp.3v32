@@ -1,0 +1,175 @@
+'\" -*- coding: UTF-8 -*-
+.TH V32IO.HPP 3v32 "16 de octubre de 2026" "v32c++ 20261016-dev" "Biblioteca v32c++"
+.SH NOMBRE
+v32/v32io.hpp \- v32::IoDevice, un puerto de mando leído como datos v32io
+.SH SINOPSIS
+.nf
+.B #include <v32/v32io.hpp>
+.PP
+.B namespace v32 {
+.PP
+.B "enum GamepadPort { FirstGamepadPort = 0, SecondGamepadPort = 1,"
+.B "                   ThirdGamepadPort = 2, FourthGamepadPort = 3 };"
+.PP
+.B "enum IoControl {"
+.B "    IoLeft = 1,    IoRight = 2,  IoUp = 4,   IoDown = 8,"
+.B "    IoStart = 16,  IoA = 32,     IoB = 64,   IoX = 128,"
+.B "    IoY = 256,     IoL = 512,    IoR = 1024, IoAll = 2047"
+.B "};"
+.PP
+.B class IoDevice {
+.BI "    IoDevice( int " gamepad " );"
+.B  "    int  port();"
+.B  "    bool probe();"
+.B  "    int  read();"
+.B  "    int  read_previous();"
+.B  "    int  changed();"
+.BI "    bool is_down( int " mask " );"
+.B  "    bool connected();"
+.B  "    bool plugged();"
+.B  "    int  scan();"
+.B };
+.PP
+.B }
+.fi
+.SH DESCRIPCIÓN
+La consola Vircon32 no tiene puerto de teclado ni de ratón.
+.I v32io
+los conecta en cambio a través de un puerto de mando: la consola ve un mando, pero sus
+11 controles transportan datos de teclado o de ratón, que decodifican los controladores
+de
+.BR keyboard.hpp (3v32)
+y
+.BR mouse.hpp (3v32).
+.B IoDevice
+es el núcleo que comparten: lee los 11 controles de un mando y los empaqueta en un solo
+.BR int ,
+un bit por control
+.RB ( IoControl ),
+en el orden de los puertos de entrada de la consola. Úsalo directamente para escribir
+un controlador propio o para ver qué está enviando un dispositivo.
+.PP
+Es un port a C++ de los controladores de C de v32io
+.RI ( https://github.com/wedge1020/v32io ),
+con los mismos protocolos y la misma decodificación. No necesita la biblioteca de C, y
+ambas no están pensadas para mezclarse en un mismo programa.
+.SS Requisitos
+Debe haber un dispositivo v32io conectado; sin uno, esta cabecera no sirve de nada. O
+bien:
+.IP \(bu 2
+el adaptador de hardware v32io, que presenta al ordenador un teclado o ratón USB como un
+joystick llamado
+.B v32io:kbd
+o
+.BR v32io:mouse ,
+asignado en cualquier emulador de Vircon32 con un perfil de joystick que envíe el botón
+.I n
+al control
+.IR n ;
+o bien
+.IP \(bu 2
+un emulador de Vircon32 modificado con los dispositivos
+.B v32kbd
+y
+.B v32mouse
+en su menú
+.B Gamepads
+(véase
+.BR Vircon32 (1)).
+.PP
+El dispositivo
+.B Keyboard
+del emulador estándar no es un teclado v32io: asigna unas pocas teclas a botones del
+mando, y aquí se lee como basura. Los identificadores de puerto cuentan desde 0; los
+menús del emulador cuentan los mandos desde 1.
+.SS La regla
+Llama a
+.B probe
+una vez en
+.B cada
+fotograma, para cada dispositivo, antes de
+.BR end_frame .
+La consola actualiza los mandos solo entre fotogramas, y un teclado notifica como mucho
+un evento de tecla por fotograma, de modo que un fotograma omitido puede perder una
+tecla o malinterpretar el movimiento del ratón. Las llamadas adicionales en el mismo
+fotograma no hacen nada.
+.SS Miembros
+.TP
+.B IoDevice( gamepad )
+Lee el puerto de mando
+.I gamepad
+(0 a 3). El constructor escribe en el objeto una pequeña rutina de código máquina que
+lee los 11 puertos en una sola llamada, y toma lo que muestra el dispositivo ahora mismo
+como estado inicial.
+.TP
+.B port
+El puerto del mando.
+.TP
+.B probe
+Lee los controles, conservando la lectura anterior. Devuelve true cuando los controles
+empaquetados cambiaron. Una segunda llamada en el mismo fotograma devuelve false y no
+lee nada.
+.TP
+.BR read ", " read_previous
+Los controles empaquetados del último sondeo, y del anterior.
+.TP
+.B changed
+Los controles que cambiaron en el último sondeo, como bits de
+.BR IoControl .
+.TP
+.B is_down
+Si algún control de
+.I mask
+estaba pulsado en el último sondeo.
+.TP
+.B connected
+Si el mando estaba conectado en el último sondeo.
+.TP
+.B plugged
+Si el mando pasó a estar conectado en el último sondeo. Un mando recién conectado
+muestra todos los controles sueltos, sea lo que sea lo que mantenga el dispositivo, de
+modo que los protocolos que dependen del historial empiezan de nuevo.
+.TP
+.B scan
+Lee los controles ahora, sin tocar el historial de sondeos. Los controladores usan
+.B probe
+en su lugar.
+.PP
+Todo método restaura el mando seleccionado previamente.
+.SH EJEMPLOS
+Mostrar los bits en bruto que envía un dispositivo en el mando 2 (puerto 1):
+.PP
+.RS
+.nf
+#include <v32/v32io.hpp>
+#include <v32/string.hpp>
+
+v32::IoDevice device( v32::SecondGamepadPort );
+
+void main()
+{
+    while( true )
+    {
+        device.probe();
+
+        v32::String bits( "" );
+        bits.append_int( device.read(), 2 );
+        clear_screen( color_black );
+        bits.print_at_xy( 10, 10 );
+        end_frame();
+    }
+}
+.fi
+.RE
+.SH VÉASE TAMBIÉN
+.BR keyboard.hpp (3v32),
+.BR mouse.hpp (3v32),
+.BR input.h (3v32),
+.BR Vircon32 (1),
+.BR v32c++\-headers (3v32)
+.PP
+.I docs/V32IO.es.md
+en la distribución del código fuente de v32c++, y el repositorio v32io,
+.IR https://github.com/wedge1020/v32io .
+.SH AUTOR
+Matthew Haas

@@ -29,6 +29,7 @@ foreach(DIR
         "@V32CXX_HEADER_PATH@"
         "@V32CXX_UNINSTALL_MAN1@"
         "@V32CXX_UNINSTALL_MAN3@"
+        @V32CXX_UNINSTALL_LANGDIRS@
         "${PREFIX}/@V32CXX_INSTALL_DOCDIR@"
         "${PREFIX}/@V32CXX_TOOLS_ROOT@/include"
         "${PREFIX}/@V32CXX_TOOLS_ROOT@/docs"

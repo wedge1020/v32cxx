@@ -1,0 +1,129 @@
+'\" -*- coding: UTF-8 -*-
+.TH MEMCARD.HPP 3v32 "16 octobre 2026" "v32c++ 20261016-dev" "Bibliothèque v32c++"
+.SH NOM
+v32/memcard.hpp \- v32::MemoryCard, un emplacement de sauvegarde à signature vérifiée
+.SH SYNOPSIS
+.nf
+.B #include <v32/memcard.hpp>
+.PP
+.B namespace v32 {
+.PP
+.B "enum MemoryCardLayout {"
+.B "    CardWords = 262144, SignatureWords = 20, CardDataWords = 262124"
+.B "};"
+.PP
+.B  "bool card_present();"
+.B  "bool card_blank();"
+.BI "bool card_matches( int* " signature " );"
+.BI "void read_card_signature( int* " out_signature " );"
+.BI "void write_card_signature( int* " signature " );"
+.PP
+.B class MemoryCard {
+.BI "    MemoryCard( int* " game_signature_words " );"
+.B  "    bool connected();"
+.B  "    bool is_blank();"
+.B  "    bool is_ours();"
+.B  "    bool claim();"
+.BI "    bool load( int* " destination ", int " offset ", int " words " );"
+.BI "    bool save( int* " source ", int " offset ", int " words " );"
+.B };
+.PP
+.B }
+.fi
+.SH DESCRIPTION
+.I v32/memcard.hpp
+inclut le
+.I memcard.h
+du SDK (voir
+.BR memcard.h (3v32)).
+Les signatures sont passées sous forme de simples tableaux de 20
+.BR int s ;
+un initialiseur par littéral de chaîne en remplit un, complétant par des zéros :
+.PP
+.RS
+.nf
+int signature[ 20 ] = "SPACEGAME\-SAVE\-1";
+.fi
+.RE
+.SS Fonctions
+.TP
+.B card_present
+Indique si une carte est insérée.
+.TP
+.B card_blank
+Indique si la signature de la carte est entièrement nulle (aucun jeu ne l'a
+revendiquée).
+.TP
+.B card_matches
+Indique si la carte porte la signature donnée.
+.TP
+.BR read_card_signature ", " write_card_signature
+Lisent ou écrivent la signature de la carte.
+.SS MemoryCard
+Une zone de sauvegarde pour un jeu, identifiée par sa signature. Seul un pointeur vers
+le tableau de la signature est conservé ; le tableau doit donc survivre à l'objet.
+Chaque méthode revérifie qu'une carte est connectée, puisqu'elle peut être retirée à
+tout moment.
+.PP
+Contrairement à
+.BR card_read_data " et " card_write_data
+du SDK, dont les décalages se comptent depuis le début de la carte (signature
+comprise),
+.B load
+et
+.B save
+comptent depuis le premier mot après la signature, de 0 à
+.BR CardDataWords \-1,
+de sorte que les données du jeu ne peuvent pas écraser la signature.
+.TP
+.B connected
+Indique si une carte est insérée.
+.TP
+.B is_blank
+Une carte est insérée et aucun jeu ne l'a revendiquée.
+.TP
+.B is_ours
+Une carte est insérée et porte la signature de ce jeu.
+.TP
+.B claim
+Écrit la signature de ce jeu sur une carte vierge. Retourne false, sans rien écrire,
+quand la carte appartient à un autre jeu ; true quand la carte était vierge ou
+appartenait déjà à ce jeu.
+.TP
+.BR load ", " save
+Copient
+.I words
+mots entre la RAM et la zone de données de la carte à
+.IR offset .
+Elles retournent false, sans rien toucher, sauf si la carte est celle de ce jeu et que
+la plage se trouve dans la zone de données.
+.SH EXEMPLES
+.RS
+.nf
+#include <v32/memcard.hpp>
+#include <v32/misc.hpp>
+
+int signature[ 20 ] = "SPACEGAME\-SAVE\-1";
+int progress[ 4 ];
+
+void main()
+{
+    v32::MemoryCard card( signature );
+
+    if( card.is_blank() )
+      card.claim();
+
+    if( !card.load( progress, 0, 4 ) )
+      v32::fill_words( progress, 0, 4 );
+
+    progress[ 0 ] += 1;            // nombre de parties jouées
+    card.save( progress, 0, 4 );
+}
+.fi
+.RE
+.SH VOIR AUSSI
+.BR memcard.h (3v32),
+.BR misc.hpp (3v32),
+.BR v32c++\-headers (3v32)
+.SH AUTEUR
+Matthew Haas

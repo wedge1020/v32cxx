@@ -1,0 +1,285 @@
+'\" -*- coding: UTF-8 -*-
+.TH KEYBOARD.HPP 3v32 "16 octobre 2026" "v32c++ 20261016-dev" "Bibliothèque v32c++"
+.SH NOM
+v32/keyboard.hpp \- v32::Keyboard, un clavier v32io sur un port de manette
+.SH SYNOPSIS
+.nf
+.B #include <v32/keyboard.hpp>
+.PP
+.B namespace v32 {
+.PP
+.B "enum Key {"
+.B "    KeyNone = 0, KeyUp = 1, KeyDown = 2, KeyLeft = 3, KeyRight = 4,"
+.B "    KeyCapsLock = 5, KeyLShift = 6, KeyRShift = 7, KeyBackspace = 8,"
+.B "    KeyTab = 9, KeyLCtrl = 10, KeyRCtrl = 11, KeyLAlt = 12, KeyEnter = 13,"
+.B "    KeyF1 = 14, ... KeyF12 = 25, KeyRAlt = 26, KeyEscape = 27,"
+.B "    KeyLGui = 28, KeyRGui = 29, KeyPageHigh = 30, KeyPageLow = 31,"
+.B "    KeyDelete = 127"
+.B "};"
+.PP
+.B "enum KeyboardProtocol {"
+.B "    ... KeyboardGlyph = 256, KeyboardPageTimeout = 30"
+.B "};"
+.PP
+.B "struct KeyEvent { int key; int symbol; bool pressed; bool text; };"
+.PP
+.BI "int key_glyph( int " value " );"
+.PP
+.B class Keyboard {
+.BI "    Keyboard( int " gamepad " );"
+.B  "    bool probe();"
+.B  "    int  read();"
+.BI "    int  read_event( bool* " pressed " );"
+.BI "    bool next_event( KeyEvent* " out " );"
+.B  "    int  pending();"
+.B  "    void flush();"
+.BI "    bool is_down( int " key " );"
+.B  "    bool shift_down();"
+.B  "    bool ctrl_down();"
+.B  "    bool alt_down();"
+.B  "    bool gui_down();"
+.B  "    bool caps_lock_on();"
+.BI "    int  symbol( int " key " );"
+.BI "    int  glyph( int " value " );"
+.B  "    int  last_event();"
+.B  "    int  dropped();"
+.B  "    bool connected();"
+.B  "    int  port();"
+.B  "    IoDevice* device();"
+.B };
+.PP
+.B }
+.fi
+.SH DESCRIPTION
+.B v32::Keyboard
+décode un clavier v32io (le protocole
+.BR v32kbd )
+relié à un port de manette. Il nécessite un périphérique v32io \(em l'adaptateur matériel
+ou un émulateur modifié \(em comme décrit dans
+.BR v32io.hpp (3v32),
+que cet en-tête inclut. Appelez
+.B probe
+une fois à chaque image.
+.SS Codes de touche
+Les codes identifient des touches, pas des caractères. Une touche qui saisit un caractère
+signale ce caractère tel qu'il est saisi sans majuscule sur une disposition américaine :
+.BR \(aqa\(aq " à " \(aqz\(aq ,
+.BR \(aq0\(aq " à " \(aq9\(aq ,
+l'espace, et
+.B \` \- = [ ] \e ; \(aq , . /
+\(em comparez-les à des littéraux de caractère. Les autres touches utilisent les constantes
+de
+.BR Key  ;
+les touches de fonction sont consécutives
+.RB ( "KeyF1 + n \- 1" ),
+et le pavé numérique signale les mêmes codes que le clavier principal. Le code 0 n'est
+jamais signalé. Les codes 30 et 31 ne sont pas des touches : ce sont les préfixes de page
+de codes des caractères saisis (voir ci-dessous).
+.SS Caractères saisis
+Un code de touche dit quelle touche a été enfoncée, pas ce qu'elle a saisi ; une
+combinaison de touches qui saisit quelque chose hors ASCII (une lettre accentuée obtenue
+par une touche morte ou AltGr, un caractère de tracé de cadres) ne peut donc pas s'exprimer
+dans un code de touche. Un périphérique v32io peut envoyer à la place un
+.I caractère saisi
+dans le jeu de caractères de la police du BIOS : Windows\-1252, avec des caractères de
+tracé de cadres et d'ombrage à la place des codes 14 à 31. L'émulateur modifié envoie ce que
+saisit la propre disposition de clavier de l'ordinateur ; l'adaptateur a ses propres
+combinaisons AltGr, touches mortes et codes Alt (voir
+.IR docs/V32IO.fr.md ).
+.PP
+.B probe
+les décode, et
+.BR read " et " next_event
+les remettent avec les touches, dans l'ordre. La touche qui a saisi un caractère n'est pas
+signalée, seulement le caractère. Deux choses à savoir :
+.IP \(bu 3
+.B read
+retourne un caractère saisi sous la forme de son code de police du BIOS : 32 à 126 et 128 à
+255 tels quels. Les codes inférieurs à 32 seraient pris pour des codes de touche ; pour
+ceux-là,
+.B read
+retourne donc le code plus
+.B KeyboardGlyph
+(256). Passez toute valeur retournée par
+.B read
+à
+.B glyph
+pour obtenir le code à dessiner, ou 0 quand c'est une touche sans caractère (flèches,
+touches de fonction, Échap...).
+.IP \(bu 3
+.B read_event
+saute les caractères saisis (ce ne sont pas des touches) ; utilisez
+.B read
+ou
+.B next_event
+pour eux.
+.SS Lecture des touches
+Les événements attendent dans une file de 64 à l'intérieur de l'objet.
+.BR read ,
+.B read_event
+et
+.B next_event
+puisent tous dans la même file : utilisez un seul style par clavier.
+.TP
+.B probe
+Lit le périphérique et met en file son nouvel événement de touche ou caractère saisi, s'il
+y en a un. Retourne true quand un événement est arrivé (un préfixe de page de codes seul n'en
+est pas un : le caractère se complète avec l'événement suivant). Une manette tout juste
+connectée recommence le décodage. Quand la file est pleine, l'événement est tout de même
+appliqué à
+.B is_down
+et au verrouillage des majuscules, mais n'est pas mis en file (voir
+.BR dropped ).
+.TP
+.B read
+L'appui de touche suivant, sous forme du caractère qu'il saisit \(em majuscules et
+verrouillage des majuscules appliqués, compatible avec la police du BIOS \(em ou, pour les
+touches qui n'en saisissent aucun, son code de touche (inférieur à 32, ou 127). Un caractère
+saisi envoyé par le périphérique revient sous la forme de son code de police du BIOS, plus
+.B KeyboardGlyph
+quand il est inférieur à 32. Les relâchements sont sautés. Retourne 0 quand la file est
+vide.
+.TP
+.B read_event
+L'événement suivant, appui ou relâchement, sous forme de son code de touche (sans majuscule
+appliquée) ;
+.I *pressed
+est mis à true pour un appui, sauf si
+.I pressed
+vaut
+.BR NULL .
+Les caractères saisis sont sautés. Retourne 0 quand la file est vide.
+.TP
+.B next_event
+L'événement suivant avec son code de touche, son caractère saisi (majuscules et
+verrouillage des majuscules tels qu'ils étaient lors de l'appui) et l'indication d'un appui.
+Pour un caractère saisi envoyé par le périphérique,
+.I text
+est true, et
+.I key
+et
+.I symbol
+valent tous deux son code de police du BIOS (jamais décalé par
+.BR KeyboardGlyph )
+et
+.I pressed
+est true. Retourne false, en laissant
+.I *out
+intact, quand la file est vide.
+.TP
+.BR glyph ", " key_glyph
+Le caractère de la police du BIOS à dessiner pour une valeur retournée par
+.BR read ,
+ou 0 quand ce n'est pas un caractère saisi : une touche sans caractère ou aucune touche. C'est
+ce qui distingue un code de touche inférieur à 32 d'un caractère de tracé de cadres de même
+code.
+.B glyph
+est le membre ; la fonction
+.B key_glyph
+n'a pas besoin d'un clavier.
+.TP
+.BR pending ", " flush
+Le nombre d'événements en file ; les rejette tous (les touches maintenues restent
+maintenues).
+.SS Touches maintenues
+.TP
+.B is_down
+Indique si une touche est maintenue à l'instant, par code de touche
+.RB ( \(aqw\(aq ", " v32::KeyLeft ", " v32::KeyLShift ", ...)."
+Pour les commandes de jeu et les modificateurs.
+.TP
+.BR shift_down ", " ctrl_down ", " alt_down ", " gui_down
+L'une ou l'autre des deux touches de la paire est maintenue.
+.TP
+.B caps_lock_on
+L'état du verrouillage des majuscules, basculé à chaque appui sur Verr Maj.
+.TP
+.B symbol
+Le caractère que saisit un code de touche avec l'état courant des majuscules et du
+verrouillage des majuscules (disposition américaine). Le verrouillage des majuscules n'affecte
+que les lettres, où il inverse les majuscules.
+.SS Divers
+.TP
+.B last_event
+La valeur du compteur d'images du dernier événement de touche, ou \-1 avant le premier.
+.TP
+.B dropped
+Le nombre d'événements perdus à cause d'une file pleine.
+.TP
+.BR connected ", " port ", " device
+La connexion de la manette, son port et le
+.B IoDevice
+sous-jacent.
+.SH PROTOCOLE
+Le périphérique signale au plus un événement de touche par image et le conserve jusqu'au
+suivant. Gauche et Droite forment un strobe qui alterne à chaque événement, de sorte qu'un
+nouvel événement est reconnu même quand la même touche est enfoncée deux fois de suite. Haut
+signifie un appui et Bas un relâchement ; Start, A, B, X, Y, L et R portent le code de touche
+sur 7 bits, Start étant le bit de poids faible. Un clavier créé alors que le périphérique
+montre déjà un événement prend cet état comme point de départ, de sorte qu'un ancien
+événement n'est pas lu comme nouveau après une réinitialisation.
+.PP
+Les caractères saisis prennent deux événements consécutifs : un préfixe de page de codes, dont
+le code de touche est
+.B KeyPageHigh
+(30 : caractères du BIOS 128 à 255) ou
+.B KeyPageLow
+(31 : 0 à 127), puis une charge utile qui porte les 7 bits de poids faible du caractère dans le
+champ du code de touche. Les deux sont envoyés comme des relâchements de touche, de sorte
+qu'un pilote antérieur à eux voit deux relâchements et aucune touche. Un caractère prend donc
+deux images. Un préfixe qui n'est pas suivi de sa charge utile dans les
+.B KeyboardPageTimeout
+(30) images est oublié.
+.SH EXEMPLES
+Un éditeur de ligne sur la manette 2 (port 1), qui accepte les lettres accentuées et autres
+caractères saisis en plus de l'ASCII :
+.PP
+.RS
+.nf
+#include <v32/keyboard.hpp>
+#include <v32/string.hpp>
+
+v32::Keyboard keyboard( v32::SecondGamepadPort );
+int line[ 64 ];
+int length = 0;
+
+void main()
+{
+    line[ 0 ] = 0;
+    while( true )
+    {
+        keyboard.probe();                       // à chaque image
+        int key = keyboard.read();
+        while( key > 0 )
+        {
+            if( key == v32::KeyBackspace && length > 0 )
+              length\-\-;
+            else if( keyboard.glyph( key ) > 0 && length < 63 )
+            {
+                // ASCII, ou un caractère saisi (accents, tracé de cadres...)
+                line[ length ] = keyboard.glyph( key );
+                length++;
+            }
+            line[ length ] = 0;
+            key = keyboard.read();
+        }
+
+        clear_screen( color_black );
+        if( !keyboard.connected() )
+          print_at( 10, 10, "No keyboard on gamepad 2" );
+        print_at( 10, 40, line );
+        end_frame();
+    }
+}
+.fi
+.RE
+.SH VOIR AUSSI
+.BR v32io.hpp (3v32),
+.BR mouse.hpp (3v32),
+.BR Vircon32 (1),
+.BR v32c++\-headers (3v32)
+.PP
+.I docs/V32IO.fr.md
+dans la distribution des sources de v32c++.
+.SH AUTEUR
+Matthew Haas

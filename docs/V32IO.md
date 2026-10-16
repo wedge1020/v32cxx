@@ -1,5 +1,7 @@
 # v32io: keyboard and mouse input
 
+[Spanish version / en español](V32IO.es.md) | [French version / en français](V32IO.fr.md) <!-- langlinks -->
+
 Three `v32/` headers give v32c++ programs a real **keyboard** and
 **mouse** on the Vircon32 console. They are a C++ port of the
 [v32io](https://github.com/wedge1020/v32io) Vircon32 C drivers, split the

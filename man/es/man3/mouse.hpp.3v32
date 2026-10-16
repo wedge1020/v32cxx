@@ -1,0 +1,178 @@
+'\" -*- coding: UTF-8 -*-
+.TH MOUSE.HPP 3v32 "16 de octubre de 2026" "v32c++ 20261016-dev" "Biblioteca v32c++"
+.SH NOMBRE
+v32/mouse.hpp \- v32::Mouse, un ratón v32io en un puerto de mando
+.SH SINOPSIS
+.nf
+.B #include <v32/mouse.hpp>
+.PP
+.B namespace v32 {
+.PP
+.B "enum MouseButton { MouseLeft = 1, MouseRight = 2, MouseMiddle = 4, MouseAny = 7 };"
+.PP
+.BI "int mouse_counter( int " raw ", int " negative ", int " positive ","
+.BI "                   int " high ", int " low " );"
+.BI "int mouse_steps( int " before ", int " after " );"
+.BI "int mouse_buttons( int " raw " );"
+.PP
+.B class Mouse {
+.BI "    Mouse( int " gamepad " );"
+.B  "    bool probe();"
+.B  "    int  x();"
+.B  "    int  y();"
+.BI "    void position( int* " out_x ", int* " out_y " );"
+.B  "    int  dx();"
+.B  "    int  dy();"
+.BI "    void delta( int* " out_dx ", int* " out_dy " );"
+.B  "    int  steps_x();"
+.B  "    int  steps_y();"
+.BI "    void set_position( int " new_x ", int " new_y " );"
+.BI "    void set_bounds( int " min_x ", int " min_y ", int " max_x ", int " max_y " );"
+.BI "    void set_scale( int " scale " );"
+.B  "    int  scale();"
+.BI "    bool is_down( int " button " );"
+.BI "    bool pressed( int " button " );"
+.BI "    bool released( int " button " );"
+.B  "    int  buttons();"
+.B  "    int  last_event();"
+.B  "    bool connected();"
+.B  "    int  port();"
+.B  "    IoDevice* device();"
+.B };
+.PP
+.B }
+.fi
+.SH DESCRIPCIÓN
+.B v32::Mouse
+decodifica un ratón v32io (el protocolo
+.BR v32mouse )
+conectado a un puerto de mando, y mantiene una posición del puntero a partir de su
+movimiento. Necesita un dispositivo v32io \(em el adaptador de hardware o un emulador
+modificado \(em como se describe en
+.BR v32io.hpp (3v32),
+que esta cabecera incluye. Llama a
+.B probe
+una vez en cada fotograma.
+.PP
+El puntero empieza en el centro de la pantalla, se mueve 2 píxeles por paso del
+dispositivo y permanece dentro de la pantalla, salvo que se cambie con
+.BR set_position ,
+.B set_scale
+y
+.BR set_bounds .
+No hay rueda de desplazamiento; el botón central es el clic de la rueda.
+.SS Miembros
+.TP
+.B probe
+Lee el dispositivo: calcula el movimiento desde el último sondeo, mueve el puntero y
+actualiza los botones. Devuelve true si el ratón se movió o cambió un botón. En el
+fotograma en que el mando pasa a estar conectado no se toma ningún movimiento.
+.TP
+.BR x ", " y ", " position
+El puntero.
+.B position
+guarda ambos, omitiendo un puntero
+.BR NULL .
+.TP
+.BR dx ", " dy ", " delta
+El movimiento en el último sondeo, en píxeles (pasos por escala), notificado incluso
+cuando los límites detuvieron el puntero, lo que viene bien para los controles de
+«mirar con el ratón».
+.TP
+.BR steps_x ", " steps_y
+El mismo movimiento en pasos del dispositivo, de \-5 a 5.
+.TP
+.B set_position
+Coloca el puntero, dentro de sus límites.
+.TP
+.B set_bounds
+El rectángulo en el que se mueve el puntero, inclusivo; el puntero se mueve dentro de él
+de inmediato.
+.TP
+.BR set_scale ", " scale
+Píxeles por paso; los valores menores que 1 se ignoran.
+.TP
+.B is_down
+Si algún botón de la máscara está pulsado
+.RB ( MouseLeft ,
+.BR MouseAny ,
+\&...).
+.TP
+.BR pressed ", " released
+Si algún botón de la máscara se pulsó, o se soltó, en el último sondeo. El dispositivo
+mantiene cada cambio de botón durante al menos 25 ms, de modo que incluso un clic
+rápido dura más de un fotograma.
+.TP
+.B buttons
+Todos los botones pulsados, como bits de
+.BR MouseButton .
+.TP
+.B last_event
+El valor del contador de fotogramas del último movimiento o cambio de botón, o \-1
+antes de cualquiera.
+.TP
+.BR connected ", " port ", " device
+La conexión del mando, su puerto y el
+.B IoDevice
+subyacente.
+.SS Funciones de decodificación
+.TP
+.B mouse_counter
+La posición, de 0 a 11, de un contador de movimiento en los controles empaquetados,
+dadas las máscaras de sus cuatro controles; \-1 si no forman una posición válida.
+.TP
+.B mouse_steps
+El movimiento de una posición del contador a otra, de \-5 a 5. Un salto de 6, que no
+puede distinguirse de \-6, y las posiciones desconocidas cuentan como ausencia de
+movimiento.
+.TP
+.B mouse_buttons
+Los bits de
+.B MouseButton
+pulsados en los controles empaquetados.
+.SH PROTOCOLO
+El movimiento no se envía como distancias sino como dos contadores, uno por eje, cada
+uno recorriendo un ciclo de 12 posiciones; cada paso cambia exactamente un control. Un
+contador es un código Gray de 2 bits (X e Y para el contador horizontal, L y R para el
+vertical) junto con un valor de tres estados en un par de direcciones opuestas
+(Izquierda y Derecha, Arriba y Abajo; nunca ambas pulsadas). Los botones son Start
+(central), A (izquierdo) y B (derecho). Como el movimiento se mide comparando dos
+fotogramas, solo se pueden ver como mucho 5 pasos por eje en cada fotograma.
+.SH EJEMPLOS
+.RS
+.nf
+#include <v32/mouse.hpp>
+#include <v32/video.hpp>
+
+v32::Mouse mouse( v32::SecondGamepadPort );
+
+void main()
+{
+    select_texture( \-1 );
+    while( true )
+    {
+        mouse.probe();                          // en cada fotograma
+
+        if( mouse.pressed( v32::MouseLeft ) )
+          clear_screen( color_black );
+
+        if( mouse.is_down( v32::MouseLeft ) )
+        {
+            select_region( 20 );                // un bloque sólido
+            draw_region_at( mouse.x(), mouse.y() );
+        }
+        end_frame();
+    }
+}
+.fi
+.RE
+.SH VÉASE TAMBIÉN
+.BR v32io.hpp (3v32),
+.BR keyboard.hpp (3v32),
+.BR Vircon32 (1),
+.BR v32c++\-headers (3v32)
+.PP
+.I docs/V32IO.es.md
+en la distribución del código fuente de v32c++.
+.SH AUTOR
+Matthew Haas

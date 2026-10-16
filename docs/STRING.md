@@ -1,5 +1,7 @@
 # std::string
 
+[Spanish version / en español](STRING.es.md) | [French version / en français](STRING.fr.md) <!-- langlinks -->
+
 `#include <string>` gives a program `std::string`. There is no such file
 on disk: the header is built into the transpiler (its source is
 [`lib/string`](../lib/string)) and is an ordinary C++ class, transpiled

@@ -1,0 +1,193 @@
+'\" -*- coding: UTF-8 -*-
+.TH V32FILE 3v32 "16 octobre 2026" "v32c++ 20261016-dev" "Bibliothèque v32c++"
+.SH NOM
+v32file \- fichiers stdio du C sur la carte mémoire de la Vircon32
+.SH SYNOPSIS
+.nf
+.B #include <stdio.h>
+.B #include <v32libc.c>
+.PP
+.B "extern char *v32file_signature;"
+.PP
+.BI "FILE  *fopen( char *" name ", char *" mode " );"
+.BI "int    fclose( FILE *" f " );"
+.BI "size_t fread( void *" ptr ", size_t " size ", size_t " count ", FILE *" f " );"
+.BI "size_t fwrite( void *" ptr ", size_t " size ", size_t " count ", FILE *" f " );"
+.BI "int    fgetc( FILE *" f " );     " "getc(), fputc(), putc() de même"
+.BI "int    fseek( FILE *" f ", int " offset ", int " whence " );"
+.BI "int    ftell( FILE *" f " );"
+.BI "void   rewind( FILE *" f " );"
+.BI "int    fflush( FILE *" f " );"
+.BI "int    feof( FILE *" f " );"
+.BI "int    ferror( FILE *" f " );"
+.BI "int    remove( char *" name " );"
+.BI "int    unlink( char *" name " );"
+.BI "int    rename( char *" old_name ", char *" new_name " );"
+.BI "int    stat( char *" name ", struct stat *" st " );"
+.PP
+.B "int  v32file_card( void );"
+.B "void v32file_format( void );"
+.B "int  v32file_free_words( void );"
+.fi
+.SH DESCRIPTION
+Une console Vircon32 n'a pas de système de fichiers ; ce qui survit à une session, c'est la
+carte mémoire, de 262144 mots. Cette partie de
+.BR v32libc (3v32)
+donne aux programmes C de véritables fichiers stdio dessus.
+.SS La carte
+.TS
+l l.
+mots 0\-19	la signature du jeu : \fBv32file_signature\fR, complétée de zéros
+mots 20\-21	un nombre magique ("V32F") et une version de format
+à partir du mot 22	un répertoire de 8 fichiers : nom (24 mots), début et taille
+ensuite	les fichiers, chacun une suite contiguë de mots
+.TE
+.PP
+Définissez
+.B v32file_signature
+(20 caractères au plus) avec un texte qui identifie le programme avant l'ouverture du premier
+fichier ; elle vaut par défaut
+.BR "\(dqV32LIBC FILES\(dq" .
+Une carte portant une autre signature n'est jamais écrite, de sorte que le programme ne peut
+pas endommager les sauvegardes d'un autre jeu. Une carte vierge (signature entièrement à
+zéro) est formatée la première fois qu'un fichier est écrit.
+.SS Fichiers
+Un fichier a un nom de 23 caractères au plus, comparé exactement. Tant qu'il est ouvert, il
+est conservé en entier en RAM : fopen le lit, et il est réécrit sur la carte, à la première
+place où il tient, quand il est fermé, vidé ou rembobiné après une modification. Un fichier
+peut donc grandir ou rétrécir librement, et en supprimer un libère sa place pour les autres.
+Jusqu'à 4 fichiers peuvent être ouverts en même temps, et le répertoire en contient 8.
+.PP
+Tout est compté en mots.
+.B "fwrite( &n, sizeof n, 1, f )"
+écrit un mot, et un caractère écrit avec
+.B putc
+occupe un mot et revient en entier.
+.TP
+.B fopen
+Modes
+.BR \(dqr\(dq ,
+.BR \(dqw\(dq ,
+.BR \(dqa\(dq ,
+.B \(dqr+\(dq
+et
+.B \(dqw+\(dq
+(un
+.B b
+est accepté et ne signifie rien).
+.B \(dqw\(dq
+commence un fichier vide, qui existe sur la carte une fois fermé ;
+.B \(dqa\(dq
+commence à la fin du contenu actuel du fichier.
+.TP
+.BR fclose ", " fflush ", " rewind
+Réécrivent sur la carte un fichier modifié.
+.B rewind
+retourne aussi au début ; c'est ce que doit appeler un programme qui garde un fichier ouvert
+pendant toute son exécution pour le sauvegarder.
+.TP
+.BR fread ", " fwrite ", " fgetc ", " fputc ", " getc ", " putc
+Transfèrent des mots à la position courante.
+.TP
+.BR fseek ", " ftell
+Les positions sont en mots. Se positionner au-delà de la fin est permis ; une écriture à cet
+endroit étend le fichier.
+.TP
+.BR remove ", " unlink ", " rename
+Agissent aussitôt sur le répertoire de la carte.
+.TP
+.B stat
+0 si le fichier existe, en remplissant
+.I st_size
+(en mots) ; \-1 sinon.
+.TP
+.B v32file_card
+L'état de la carte :
+.B V32FILE_NO_CARD
+(aucune insérée),
+.B V32FILE_READY
+(celle de ce programme),
+.B V32FILE_BLANK
+(vide) ou
+.B V32FILE_FOREIGN
+(celle d'un autre jeu).
+.TP
+.B v32file_format
+Efface la carte et la rend propre à ce programme. Elle écrase n'importe quelle carte, y
+compris celle d'un autre jeu ; demandez donc d'abord au joueur.
+.TP
+.B v32file_free_words
+Le nombre de mots de données qu'aucun fichier n'utilise. L'espace libre peut être réparti en
+plusieurs trous, si bien qu'un fichier de cette taille peut ne pas tenir.
+.SH BOGUES
+.TP
+.B ENODEV
+Aucune carte n'est insérée.
+.TP
+.B EACCES
+La carte appartient à un autre jeu (à l'ouverture en écriture).
+.TP
+.B ENOENT
+Fichier inexistant (à l'ouverture en lecture, à la suppression ou au renommage).
+.TP
+.B EMFILE
+4 fichiers sont déjà ouverts.
+.TP
+.B ENOSPC
+Le fichier ne tient pas sur la carte, ou le répertoire est plein (signalé lors de la
+réécriture du fichier :
+.BR fclose ,
+.B fflush
+ou
+.B rewind
+retournent
+.BR EOF ).
+.TP
+.B ENOMEM
+Pas de RAM pour contenir le fichier.
+.SH EXEMPLES
+.RS
+.nf
+#include <stdio.h>
+#include <v32libc.c>
+
+int high_score = 0;
+
+void load_score( void )
+{
+    FILE *f = fopen( "scores", "r" );
+    if( f == NULL )
+        return;                       /* pas de carte, ou pas encore de fichier */
+    fread( &high_score, sizeof high_score, 1, f );
+    fclose( f );
+}
+
+void save_score( void )
+{
+    FILE *f = fopen( "scores", "w" );
+    if( f == NULL )
+    {
+        perror( "scores" );
+        return;
+    }
+    fwrite( &high_score, sizeof high_score, 1, f );
+    if( fclose( f ) == EOF )
+        perror( "scores" );
+}
+
+int main( void )
+{
+    v32file_signature = "MYGAME";
+    load_score();
+    high_score++;
+    save_score();
+    return 0;
+}
+.fi
+.RE
+.SH VOIR AUSSI
+.BR v32libc (3v32),
+.BR memcard.h (3v32),
+.BR Vircon32 (1)
+.SH AUTEUR
+Matthew Haas

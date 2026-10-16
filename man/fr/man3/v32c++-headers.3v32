@@ -1,0 +1,232 @@
+'\" -*- coding: UTF-8 -*-
+.TH V32C++\-HEADERS 3v32 "16 octobre 2026" "v32c++ 20261016-dev" "Bibliothèque v32c++"
+.SH NOM
+v32c++\-headers \- les en-têtes C++ et la bibliothèque C qui accompagnent v32c++
+.SH SYNOPSIS
+.nf
+Entrée C++ :
+.PP
+.B #include <v32/video.hpp>
+.B #include <v32/input.hpp>
+.B #include <v32/audio.hpp>
+.B #include <v32/time.hpp>
+.B #include <v32/math.hpp>
+.B #include <v32/string.hpp>
+.B #include <v32/misc.hpp>
+.B #include <v32/memcard.hpp>
+.B #include <v32/keyboard.hpp>
+.B #include <v32/mouse.hpp>
+.B #include <v32/v32io.hpp>
+.PP
+.B #include <string>
+.B #include <array>
+.B #include <vector>
+.B #include <cstdarg>
+.PP
+Entrée C :
+.PP
+.B #include <stdio.h>
+.RB "(et " stdlib.h ", " ctype.h ", " unistd.h ", " curses.h ", ...)"
+.B #include <v32libc.c>
+.B #include <v32curses.c>
+.fi
+.SH DESCRIPTION
+.BR v32c++ (1)
+traduit du C++ (ou, pour un fichier
+.IR .c ,
+du C) vers le dialecte C de la console Vircon32, compilé par
+.BR compile (1).
+Trois groupes d'en-têtes l'accompagnent.
+.SS Les en-têtes v32
+.I v32/*.hpp
+est une couche C++ au-dessus des en-têtes du SDK de Vircon32 décrits dans
+.BR vircon32 (3v32).
+Chacun inclut son en-tête du SDK (la ligne
+.B #include
+passe dans le C généré) et ajoute, dans l'espace de noms
+.BR v32 ,
+ce que le C ne peut pas exprimer : des énumérations typées pour les
+.BR #define s
+du SDK, des jeux de surcharges, des classes gardiennes de portée qui restaurent la
+texture, la manette, le son ou le canal « sélectionnés » de la console quand elles sortent
+de la portée, et de petites classes de poignée. Rien en eux ne touche directement le
+matériel ; tout accès à un port est un appel au SDK.
+.PP
+.TS
+l l.
+\fBvideo.hpp\fR(3v32)	BlendMode, TextureScope, Point, aides de dessin
+\fBinput.hpp\fR(3v32)	lecteurs booléens, Button, GamepadScope
+\fBaudio.hpp\fR(3v32)	Channel, SoundScope, ChannelScope
+\fBtime.hpp\fR(3v32)	Date, TimeOfDay, Stopwatch, FrameScope
+\fBmath.hpp\fR(3v32)	minimum, maximum, absolute, clamp, lerp, ...
+\fBstring.hpp\fR(3v32)	String, une classe de chaîne à capacité fixe
+\fBmisc.hpp\fR(3v32)	plages aléatoires, aides sur les mots, HeapBlock
+\fBmemcard.hpp\fR(3v32)	MemoryCard, un emplacement de sauvegarde à signature vérifiée
+.TE
+.PP
+Trois autres donnent aux programmes un clavier et une souris grâce au protocole v32io, qui
+exige soit l'adaptateur matériel v32io, soit un émulateur modifié :
+.PP
+.TS
+l l.
+\fBv32io.hpp\fR(3v32)	IoDevice, le noyau commun
+\fBkeyboard.hpp\fR(3v32)	Keyboard, avec caractères saisis (accents, tracé de cadres)
+\fBmouse.hpp\fR(3v32)	Mouse
+.TE
+.SS En-têtes standard intégrés
+.BR <string> ,
+.B <array>
+et
+.B <vector>
+n'ont pas de fichiers : le transpileur fournit lui-même
+.BR std::string ,
+.B std::array
+et
+.B std::vector
+(voir
+.BR v32c++\-string (3v32),
+.BR v32c++\-array (3v32)
+et
+.BR v32c++\-vector (3v32)).
+.B <cstdarg>
+(ou
+.BR <stdarg.h> )
+fournit
+.B va_list
+et les macros
+.B va_
+pour les fonctions variadiques.
+.SS La bibliothèque C
+Pour l'entrée C,
+.I libc/
+contient la partie de la bibliothèque C standard qu'attendent les programmes C ordinaires,
+plus curses, écrite pour la console en C et transpilée avec le programme. Ses en-têtes aux
+noms standard
+.RB ( stdio.h ", " stdlib.h ", " ctype.h ", " errno.h ", " limits.h ,
+.BR memory.h ", " signal.h ", " stddef.h ", " unistd.h ", " fcntl.h ,
+.BR sys/types.h ", " sys/stat.h )
+incluent tous un même en-tête de déclarations,
+.IR v32libc.h ,
+et le code est apporté en incluant
+.I v32libc.c
+(et
+.I v32curses.c
+pour curses) une fois, puisque les programmes Vircon32 forment une seule unité de
+traduction.
+.PP
+.TS
+l l.
+\fBv32libc\fR(3v32)	stdio, stdlib, string, ctype, errno, signal, time
+\fBv32file\fR(3v32)	fichiers sur la carte mémoire
+\fBv32term\fR(3v32)	écran de texte 80\(mu24, manette, clavier à l'écran
+\fBv32curses\fR(3v32)	curses
+.TE
+.SH CHEMIN DE RECHERCHE
+Un
+.B #include
+d'un fichier
+.I .hpp
+ou
+.IR .cpp ,
+et en entrée C de tout fichier
+.I .h
+ou
+.I .c
+autre que l'un des huit noms d'en-têtes du SDK, est résolu et lu par
+.B v32c++
+lui-même. La forme entre guillemets cherche dans le répertoire du fichier qui l'inclut,
+dans chaque répertoire de
+.BR \-I ,
+dans le répertoire courant, dans chaque répertoire de
+.BR $V32CXX_INCLUDE
+et dans le répertoire d'en-têtes installé, dans cet ordre ; la forme entre chevrons saute
+le premier et le troisième. Le répertoire installé est par défaut
+.I /usr/local/Vircon32/v32tools/include/v32c++
+(il contient
+.I v32/
+et
+.IR libc/ ,
+de sorte que
+.B #include <v32/video.hpp>
+fonctionne de n'importe où), et l'entrée C cherche aussi dans son sous-répertoire
+.IR libc/ .
+.PP
+Un en-tête du SDK
+.RB ( video.h ", " input.h ", " audio.h ", " time.h ", " math.h ,
+.BR string.h ", " misc.h ", " memcard.h )
+n'est pas développé, ni en entrée C ni en C++, de sorte que
+.B #include <string.h>
+et
+.B #include <time.h>
+dans un programme C atteignent les en-têtes du SDK et non ceux de la bibliothèque C : leur
+ligne
+.B #include
+passe dans le C généré, où
+.BR compile (1)
+la trouve. Quand
+.B v32c++
+peut aussi trouver l'en-tête \(em dans le chemin de recherche, dans
+.BR $V32CXX_SDK_INCLUDE ,
+à côté d'un
+.B compile
+dans
+.BR $PATH ,
+ou dans
+.I /usr/local/Vircon32/DevTools/include
+\(em il le lit, afin que ses macros et ses noms de struct et de typedef puissent être
+utilisés depuis le C++.
+.SH CONVENTIONS
+.IP \(bu 2
+Une enveloppe n'a jamais le même nom que la fonction du SDK qu'elle enveloppe
+.RB ( v32::minimum ,
+et non
+.BR v32::min ),
+de sorte que les fonctions C du SDK restent disponibles sans changement et qu'un appel non
+qualifié dans l'espace de noms ne puisse pas trouver l'enveloppe à la place.
+.IP \(bu 2
+Chaque paramètre et valeur de retour tient en un mot, comme l'exige le C de Vircon32 : les
+résultats qui demandent davantage reviennent par un argument pointeur
+.RB ( v32::screen_center(Point*) ),
+et les classes sont passées par pointeur ou par référence.
+.IP \(bu 2
+Les gardiens de portée et les classes de poignée sont faits pour être des variables
+locales ; leurs destructeurs s'exécutent à la fin du bloc, par tous les chemins de sortie.
+Il n'y a pas d'exceptions.
+.IP \(bu 2
+Comme dans le SDK, les tailles sont en mots de 32 bits et un caractère est un mot.
+.IP \(bu 2
+Une fonction dans un espace de noms est émise sous un nom C qui inclut l'espace de noms et
+les types des paramètres
+.RI ( v32::draw(int,int,int)
+devient
+.IR v32__draw__int_int_int ) ;
+une classe conserve son nom nu dans le C.
+.SH FICHIERS
+.TP
+.I /usr/local/Vircon32/v32tools/include/v32c++/v32/
+Les en-têtes v32.
+.TP
+.I /usr/local/Vircon32/v32tools/include/v32c++/libc/
+La bibliothèque C.
+.SH ENVIRONNEMENT
+.TP
+.B V32CXX_INCLUDE
+Répertoires séparés par des deux-points, cherchés avant le répertoire d'en-têtes installé.
+.TP
+.B V32CXX_SDK_INCLUDE
+Répertoires séparés par des deux-points, cherchés pour les en-têtes
+.I .h
+du SDK.
+.SH VOIR AUSSI
+.BR v32c++ (1),
+.BR vircon32 (3v32),
+.BR compile (1)
+.PP
+Dans la distribution des sources :
+.IR docs/V32IO.fr.md ,
+.IR docs/C_INPUT.fr.md ,
+.IR docs/STRING.fr.md ,
+.IR docs/GENERICS.fr.md ,
+.IR docs/NATIVE_PASSTHROUGH.fr.md .
+.SH AUTEUR
+Matthew Haas

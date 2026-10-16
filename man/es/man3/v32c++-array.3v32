@@ -1,0 +1,160 @@
+'\" -*- coding: UTF-8 -*-
+.TH V32C++\-ARRAY 3v32 "16 de octubre de 2026" "v32c++ 20261016-dev" "Biblioteca v32c++"
+.SH NOMBRE
+v32c++\-array \- std::array en v32c++, un contenedor de tamaño fijo
+.SH SINOPSIS
+.nf
+.B #include <array>
+.PP
+.BI "std::array< " T ", " N " > " nombre ;
+.BI "std::array< " T ", " N " > " nombre " = { " "valor, ..." " };"
+.PP
+.BI "T&   operator[]( int " i " );"
+.BI "T&   at( int " i " );"
+.B  "T&   front();"
+.B  "T&   back();"
+.B  "int  size();"
+.B  "int  max_size();"
+.B  "bool empty();"
+.B  "T*   data();"
+.B  "T*   begin();"
+.B  "T*   end();"
+.BI "void fill( const T& " value " );"
+.fi
+.SH DESCRIPCIÓN
+v32c++ no implementa plantillas. Ofrece en su lugar
+.B std::array
+(y
+.BR std::vector ,
+véase
+.BR v32c++\-vector (3v32))
+como tipos genéricos integrados: por cada
+.BI std::array< T ", " N >
+distinto que nombra un programa, el transpilador escribe una clase corriente con el tipo
+de elemento y la longitud rellenados, llamada
+.BI array_ T _ N
+en el C generado
+.RB ( std::array<Enemy,\ 8>
+pasa a ser
+.BR array_Enemy_8 ;
+.B ::
+y
+.B *
+se escriben
+.B _
+y
+.BR _ptr ).
+.B #include <array>
+activa la característica; no se lee ningún archivo y la línea no llega al C generado.
+.PP
+.I T
+puede ser
+.BR int ,
+.BR float ,
+.BR bool ,
+.BR char ,
+cualquier struct, clase, unión o enumeración (cualificada o no), un puntero a cualquiera
+de ellos, u otro
+.BR std::array .
+.I N
+es un literal entero, una constante de
+.B #define
+o una constante con nombre, como una constante de enumeración.
+.PP
+Los elementos de un tipo de clase se construyen cuando se construye el arreglo, y se
+destruyen con él.
+.SS Miembros
+.TP
+.BR operator[] ", " at ", " front ", " back
+Referencias a elementos.
+.B at
+no comprueba su índice: no hay excepciones.
+.TP
+.BR size ", " max_size ", " empty
+.IR N ,
+.I N
+y false.
+.TP
+.BR data ", " begin ", " end
+Punteros
+.B T*
+simples;
+.B end
+apunta una posición más allá del último elemento.
+.TP
+.B fill
+Pone cada elemento a
+.IR value .
+.PP
+La inicialización de agregados
+.RB ( "= { 1, 2, 3 }" )
+funciona para arreglos locales y globales, y
+.B "b = a"
+copia el arreglo entero. El
+.B for
+basado en rango funciona sobre un arreglo
+.RB ( "for( Enemy &e : enemies )" ),
+y también
+.B "using namespace std;"
+con la grafía simple
+.BR array<T,\ N> .
+.PP
+Los accesores se escriben en su sitio en el C generado
+.RB ( v[i]
+pasa a ser
+.BR v.m_data[i] ,
+.B v.size()
+pasa a ser la constante) salvo que se dé
+.B \-\-no\-inline\-containers
+a
+.BR v32c++ (1).
+.SH EJEMPLOS
+.RS
+.nf
+#include <array>
+
+struct Bunker { int x; int health; };
+
+std::array< Bunker, 4 > bunkers;
+std::array< int, 3 > speeds = { 1, 2, 4 };
+
+void main()
+{
+    for( int i = 0; i < bunkers.size(); i++ )
+    {
+        bunkers[ i ].x = 80 + 160 * i;
+        bunkers[ i ].health = 10;
+    }
+    for( Bunker &b : bunkers )
+      b.health \-= speeds.back();
+}
+.fi
+.RE
+.SH ERRORES
+Las longitudes se comparan por nombre:
+.B std::array<int,\ MAX>
+y
+.B std::array<int,\ 8>
+son tipos distintos aunque
+.B MAX
+sea una constante de enumeración igual a 8 (un
+.B #define
+se expande primero, así que no le afecta).
+.PP
+No existe el nombre de tipo
+.B ::iterator
+(los iteradores son
+.BR T* ;
+.B "auto it = a.begin();"
+funciona), y el
+.B for
+basado en rango no funciona sobre un arreglo de C simple.
+.SH VÉASE TAMBIÉN
+.BR v32c++\-vector (3v32),
+.BR v32c++\-string (3v32),
+.BR v32c++ (1)
+.PP
+.I docs/GENERICS.es.md
+en la distribución del código fuente de v32c++.
+.SH AUTOR
+Matthew Haas

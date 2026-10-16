@@ -1,0 +1,159 @@
+'\" -*- coding: UTF-8 -*-
+.TH V32C++\-ARRAY 3v32 "16 octobre 2026" "v32c++ 20261016-dev" "Bibliothèque v32c++"
+.SH NOM
+v32c++\-array \- std::array dans v32c++, un conteneur de taille fixe
+.SH SYNOPSIS
+.nf
+.B #include <array>
+.PP
+.BI "std::array< " T ", " N " > " nom ;
+.BI "std::array< " T ", " N " > " nom " = { " "valeur, ..." " };"
+.PP
+.BI "T&   operator[]( int " i " );"
+.BI "T&   at( int " i " );"
+.B  "T&   front();"
+.B  "T&   back();"
+.B  "int  size();"
+.B  "int  max_size();"
+.B  "bool empty();"
+.B  "T*   data();"
+.B  "T*   begin();"
+.B  "T*   end();"
+.BI "void fill( const T& " value " );"
+.fi
+.SH DESCRIPTION
+v32c++ n'implémente pas les templates. Il propose à la place
+.B std::array
+(et
+.BR std::vector ,
+voir
+.BR v32c++\-vector (3v32))
+comme types génériques intégrés : pour chaque
+.BI std::array< T ", " N >
+distinct que nomme un programme, le transpileur écrit une classe ordinaire dont le type
+d'élément et la longueur sont renseignés, nommée
+.BI array_ T _ N
+dans le C généré
+.RB ( std::array<Enemy,\ 8>
+devient
+.BR array_Enemy_8  ;
+.B ::
+et
+.B *
+s'écrivent
+.B _
+et
+.BR _ptr ).
+.B #include <array>
+active la fonctionnalité ; aucun fichier n'est lu et la ligne n'atteint pas le C généré.
+.PP
+.I T
+peut être
+.BR int ,
+.BR float ,
+.BR bool ,
+.BR char ,
+toute struct, classe, union ou énumération (qualifiée ou non), un pointeur vers l'un
+d'eux, ou un autre
+.BR std::array .
+.I N
+est un littéral entier, une constante de
+.B #define
+ou une constante nommée, comme une constante d'énumération.
+.PP
+Les éléments d'un type classe sont construits quand le tableau l'est, et détruits avec
+lui.
+.SS Membres
+.TP
+.BR operator[] ", " at ", " front ", " back
+Références vers des éléments.
+.B at
+ne vérifie pas son indice : il n'y a pas d'exceptions.
+.TP
+.BR size ", " max_size ", " empty
+.IR N ,
+.I N
+et false.
+.TP
+.BR data ", " begin ", " end
+De simples pointeurs
+.B T* ;
+.B end
+pointe un élément après le dernier.
+.TP
+.B fill
+Met chaque élément à
+.IR value .
+.PP
+L'initialisation d'agrégat
+.RB ( "= { 1, 2, 3 }" )
+fonctionne pour les tableaux locaux et globaux, et
+.B "b = a"
+copie tout le tableau. Le
+.B for
+sur intervalle fonctionne sur un tableau
+.RB ( "for( Enemy &e : enemies )" ),
+de même que
+.B "using namespace std;"
+avec la graphie nue
+.BR array<T,\ N> .
+.PP
+Les accesseurs sont écrits sur place dans le C généré
+.RB ( v[i]
+devient
+.BR v.m_data[i] ,
+.B v.size()
+devient la constante) sauf si
+.B \-\-no\-inline\-containers
+est donné à
+.BR v32c++ (1).
+.SH EXEMPLES
+.RS
+.nf
+#include <array>
+
+struct Bunker { int x; int health; };
+
+std::array< Bunker, 4 > bunkers;
+std::array< int, 3 > speeds = { 1, 2, 4 };
+
+void main()
+{
+    for( int i = 0; i < bunkers.size(); i++ )
+    {
+        bunkers[ i ].x = 80 + 160 * i;
+        bunkers[ i ].health = 10;
+    }
+    for( Bunker &b : bunkers )
+      b.health \-= speeds.back();
+}
+.fi
+.RE
+.SH BOGUES
+Les longueurs sont comparées par leur nom :
+.B std::array<int,\ MAX>
+et
+.B std::array<int,\ 8>
+sont des types différents même si
+.B MAX
+est une constante d'énumération égale à 8 (un
+.B #define
+est développé d'abord, il n'est donc pas concerné).
+.PP
+Il n'existe pas de nom de type
+.B ::iterator
+(les itérateurs sont des
+.BR T* ;
+.B "auto it = a.begin();"
+fonctionne), et le
+.B for
+sur intervalle ne fonctionne pas sur un tableau C simple.
+.SH VOIR AUSSI
+.BR v32c++\-vector (3v32),
+.BR v32c++\-string (3v32),
+.BR v32c++ (1)
+.PP
+.I docs/GENERICS.fr.md
+dans la distribution des sources de v32c++.
+.SH AUTEUR
+Matthew Haas

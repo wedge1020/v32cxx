@@ -1,0 +1,282 @@
+'\" -*- coding: UTF-8 -*-
+.TH KEYBOARD.HPP 3v32 "16 de octubre de 2026" "v32c++ 20261016-dev" "Biblioteca v32c++"
+.SH NOMBRE
+v32/keyboard.hpp \- v32::Keyboard, un teclado v32io en un puerto de mando
+.SH SINOPSIS
+.nf
+.B #include <v32/keyboard.hpp>
+.PP
+.B namespace v32 {
+.PP
+.B "enum Key {"
+.B "    KeyNone = 0, KeyUp = 1, KeyDown = 2, KeyLeft = 3, KeyRight = 4,"
+.B "    KeyCapsLock = 5, KeyLShift = 6, KeyRShift = 7, KeyBackspace = 8,"
+.B "    KeyTab = 9, KeyLCtrl = 10, KeyRCtrl = 11, KeyLAlt = 12, KeyEnter = 13,"
+.B "    KeyF1 = 14, ... KeyF12 = 25, KeyRAlt = 26, KeyEscape = 27,"
+.B "    KeyLGui = 28, KeyRGui = 29, KeyPageHigh = 30, KeyPageLow = 31,"
+.B "    KeyDelete = 127"
+.B "};"
+.PP
+.B "enum KeyboardProtocol {"
+.B "    ... KeyboardGlyph = 256, KeyboardPageTimeout = 30"
+.B "};"
+.PP
+.B "struct KeyEvent { int key; int symbol; bool pressed; bool text; };"
+.PP
+.BI "int key_glyph( int " value " );"
+.PP
+.B class Keyboard {
+.BI "    Keyboard( int " gamepad " );"
+.B  "    bool probe();"
+.B  "    int  read();"
+.BI "    int  read_event( bool* " pressed " );"
+.BI "    bool next_event( KeyEvent* " out " );"
+.B  "    int  pending();"
+.B  "    void flush();"
+.BI "    bool is_down( int " key " );"
+.B  "    bool shift_down();"
+.B  "    bool ctrl_down();"
+.B  "    bool alt_down();"
+.B  "    bool gui_down();"
+.B  "    bool caps_lock_on();"
+.BI "    int  symbol( int " key " );"
+.BI "    int  glyph( int " value " );"
+.B  "    int  last_event();"
+.B  "    int  dropped();"
+.B  "    bool connected();"
+.B  "    int  port();"
+.B  "    IoDevice* device();"
+.B };
+.PP
+.B }
+.fi
+.SH DESCRIPCIÓN
+.B v32::Keyboard
+decodifica un teclado v32io (el protocolo
+.BR v32kbd )
+conectado a un puerto de mando. Necesita un dispositivo v32io \(em el adaptador de
+hardware o un emulador modificado \(em como se describe en
+.BR v32io.hpp (3v32),
+que esta cabecera incluye. Llama a
+.B probe
+una vez en cada fotograma.
+.SS Códigos de tecla
+Los códigos identifican teclas, no caracteres. Una tecla que escribe un carácter informa
+de ese carácter tal como se escribe sin mayúsculas en una distribución estadounidense:
+.BR \(aqa\(aq " a " \(aqz\(aq ,
+.BR \(aq0\(aq " a " \(aq9\(aq ,
+el espacio, y
+.B \` \- = [ ] \e ; \(aq , . /
+\(em compáralos con literales de carácter. Las demás teclas usan las constantes de
+.BR Key ;
+las teclas de función son consecutivas
+.RB ( "KeyF1 + n \- 1" ),
+y el teclado numérico informa de los mismos códigos que el teclado principal. El código 0
+nunca se notifica. Los códigos 30 y 31 no son teclas: son los prefijos de página de
+códigos de los caracteres escritos (véase más abajo).
+.SS Caracteres escritos
+Un código de tecla dice qué tecla se pulsó, no lo que escribió, de modo que una
+combinación de teclas que escribe algo fuera de ASCII (una letra acentuada mediante una
+tecla muerta o AltGr, un carácter de dibujo de recuadros) no puede expresarse en un código
+de tecla. Un dispositivo v32io puede enviar en cambio un
+.I carácter escrito
+en el juego de caracteres de la fuente de la BIOS: Windows\-1252, con caracteres de dibujo
+de recuadros y sombreados en lugar de los códigos 14 a 31. El emulador modificado envía lo
+que escribe la propia distribución de teclado del ordenador; el adaptador tiene sus propias
+combinaciones de AltGr, teclas muertas y códigos Alt (véase
+.IR docs/V32IO.es.md ).
+.PP
+.B probe
+los decodifica, y
+.BR read " y " next_event
+los entregan junto con las teclas, en orden. La tecla que escribió un carácter no se
+notifica, solo el carácter. Dos cosas que conviene saber:
+.IP \(bu 3
+.B read
+devuelve un carácter escrito como su código de la fuente de la BIOS: de 32 a 126 y de 128
+a 255 tal cual. Los códigos por debajo de 32 se confundirían con códigos de tecla, así que
+para ellos
+.B read
+devuelve el código más
+.B KeyboardGlyph
+(256). Pasa cualquier valor que haya devuelto
+.B read
+a
+.B glyph
+para obtener el código que dibujar, o 0 cuando es una tecla sin carácter (flechas, teclas
+de función, Escape...).
+.IP \(bu 3
+.B read_event
+omite los caracteres escritos (no son teclas); usa
+.B read
+o
+.B next_event
+para ellos.
+.SS Lectura de teclas
+Los eventos esperan en una cola de 64 dentro del objeto.
+.BR read ,
+.B read_event
+y
+.B next_event
+toman todos de la misma cola: usa un solo estilo por teclado.
+.TP
+.B probe
+Lee el dispositivo y encola su nuevo evento de tecla o carácter escrito, si lo hay.
+Devuelve true cuando llegó uno (un prefijo de página de códigos solo no cuenta: el
+carácter se completa con el siguiente evento). Un mando recién conectado empieza de nuevo
+la decodificación. Cuando la cola está llena, el evento se aplica igualmente a
+.B is_down
+y al bloqueo de mayúsculas, pero no se encola (véase
+.BR dropped ).
+.TP
+.B read
+La siguiente pulsación de tecla, como el carácter que escribe \(em con mayúsculas y bloqueo
+de mayúsculas aplicados, compatible con la fuente de la BIOS \(em o, para las teclas que no
+escriben ninguno, su código de tecla (inferior a 32, o 127). Un carácter escrito enviado por
+el dispositivo vuelve como su código de la fuente de la BIOS, más
+.B KeyboardGlyph
+cuando es inferior a 32. Las liberaciones se omiten. Devuelve 0 cuando la cola está vacía.
+.TP
+.B read_event
+El siguiente evento, pulsación o liberación, como su código de tecla (sin mayúsculas
+aplicadas);
+.I *pressed
+se pone a true en una pulsación, salvo que
+.I pressed
+sea
+.BR NULL .
+Los caracteres escritos se omiten. Devuelve 0 cuando la cola está vacía.
+.TP
+.B next_event
+El siguiente evento con su código de tecla, su carácter escrito (con las mayúsculas y el
+bloqueo de mayúsculas tal como estaban al pulsarse) y si fue una pulsación. Para un carácter
+escrito enviado por el dispositivo,
+.I text
+es true, y
+.I key
+y
+.I symbol
+son ambos su código de la fuente de la BIOS (nunca desplazado por
+.BR KeyboardGlyph )
+y
+.I pressed
+es true. Devuelve false, dejando
+.I *out
+intacto, cuando la cola está vacía.
+.TP
+.BR glyph ", " key_glyph
+El carácter de la fuente de la BIOS que dibujar para un valor que devolvió
+.BR read ,
+o 0 cuando no es un carácter escrito: una tecla sin carácter o ninguna tecla. Es lo que
+distingue un código de tecla inferior a 32 de un carácter de dibujo de recuadros con el
+mismo código.
+.B glyph
+es el miembro; la función
+.B key_glyph
+no necesita un teclado.
+.TP
+.BR pending ", " flush
+El número de eventos en cola; descartarlos todos (las teclas mantenidas siguen
+mantenidas).
+.SS Teclas mantenidas
+.TP
+.B is_down
+Si una tecla está mantenida ahora, por código de tecla
+.RB ( \(aqw\(aq ", " v32::KeyLeft ", " v32::KeyLShift ", ...)."
+Para controles de juego y modificadores.
+.TP
+.BR shift_down ", " ctrl_down ", " alt_down ", " gui_down
+Cualquiera de las dos teclas del par está mantenida.
+.TP
+.B caps_lock_on
+El estado del bloqueo de mayúsculas, que alterna con cada pulsación de Bloq Mayús.
+.TP
+.B symbol
+El carácter que escribe un código de tecla con el estado actual de mayúsculas y bloqueo de
+mayúsculas (distribución estadounidense). El bloqueo de mayúsculas solo afecta a las letras,
+en las que invierte las mayúsculas.
+.SS Otros
+.TP
+.B last_event
+El valor del contador de fotogramas del último evento de tecla, o \-1 antes del primero.
+.TP
+.B dropped
+El número de eventos perdidos por una cola llena.
+.TP
+.BR connected ", " port ", " device
+La conexión del mando, su puerto y el
+.B IoDevice
+subyacente.
+.SH PROTOCOLO
+El dispositivo notifica como mucho un evento de tecla por fotograma y lo mantiene hasta el
+siguiente. Izquierda y Derecha forman un estroboscopio que alterna con cada evento, de
+modo que se reconoce un evento nuevo incluso cuando se pulsa dos veces seguidas la misma
+tecla. Arriba significa una pulsación y Abajo una liberación; Start, A, B, X, Y, L y R
+llevan el código de tecla de 7 bits, siendo Start el bit más bajo. Un teclado creado cuando
+el dispositivo ya muestra un evento toma ese estado como punto de partida, de modo que un
+evento antiguo no se lee como nuevo tras un reinicio.
+.PP
+Los caracteres escritos ocupan dos eventos consecutivos: un prefijo de página de códigos,
+cuyo código de tecla es
+.B KeyPageHigh
+(30: caracteres de la BIOS 128 a 255) o
+.B KeyPageLow
+(31: 0 a 127), y luego una carga útil que lleva los 7 bits bajos del carácter en el campo
+del código de tecla. Ambos se envían como liberaciones de tecla, de modo que un
+controlador anterior a ellos ve dos liberaciones y ninguna tecla. Un carácter ocupa así dos
+fotogramas. Un prefijo que no va seguido de su carga útil en
+.B KeyboardPageTimeout
+(30) fotogramas se olvida.
+.SH EJEMPLOS
+Un editor de línea en el mando 2 (puerto 1), que admite letras acentuadas y otros
+caracteres escritos además de ASCII:
+.PP
+.RS
+.nf
+#include <v32/keyboard.hpp>
+#include <v32/string.hpp>
+
+v32::Keyboard keyboard( v32::SecondGamepadPort );
+int line[ 64 ];
+int length = 0;
+
+void main()
+{
+    line[ 0 ] = 0;
+    while( true )
+    {
+        keyboard.probe();                       // en cada fotograma
+        int key = keyboard.read();
+        while( key > 0 )
+        {
+            if( key == v32::KeyBackspace && length > 0 )
+              length\-\-;
+            else if( keyboard.glyph( key ) > 0 && length < 63 )
+            {
+                // ASCII, o un carácter escrito (acentos, dibujo de recuadros...)
+                line[ length ] = keyboard.glyph( key );
+                length++;
+            }
+            line[ length ] = 0;
+            key = keyboard.read();
+        }
+
+        clear_screen( color_black );
+        if( !keyboard.connected() )
+          print_at( 10, 10, "No keyboard on gamepad 2" );
+        print_at( 10, 40, line );
+        end_frame();
+    }
+}
+.fi
+.RE
+.SH VÉASE TAMBIÉN
+.BR v32io.hpp (3v32),
+.BR mouse.hpp (3v32),
+.BR Vircon32 (1),
+.BR v32c++\-headers (3v32)
+.PP
+.I docs/V32IO.es.md
+en la distribución del código fuente de v32c++.
+.SH AUTOR
+Matthew Haas

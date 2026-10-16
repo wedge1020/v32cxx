@@ -1,7 +1,7 @@
 # v32c++ library manual pages (English)
 
 Section  3  manual  pages  for   the  headers  that  come  with  `v32c++`
-(`20261015-dev`): the `v32/` C++  headers (including the `v32io` keyboard
+(`20261016-dev`): the `v32/` C++  headers (including the `v32io` keyboard
 and mouse libraries), the  built-in `<string>`, `<array>` and `<vector>`,
 and the C-mode library in  `libc/`. They complement `man/v32c++.1`. Every
 example was run through v32c++, the real Vircon32 compiler and assembler;
@@ -54,3 +54,25 @@ these. No page name is used by both sets.
 
 `make sysinstall` and `cmake --install` install both sets (gzipped, mode
 0644, aliases as symbolic links) into the same `man1` and `man3`.
+
+## Translations (Spanish and French)
+
+The v32c++ pages (`man1/v32c++.1` and every section 3v32 page above) are also
+translated: [`es/`](es/) (Spanish) and [`fr/`](fr/) (French), each with the same
+`man1` and `man3` layout. The alias pages are copied as they are (a `.so
+man3/<page>` resolves against the manual root of the tree it is in). The
+Vircon32 SDK pages in `vircon32/` stay in English and are installed with every
+language. `make version` stamps the translated pages too, with the date written
+in their language.
+
+`make sysinstall` and `cmake --install` take `DEST_LANG=all|en|es|fr` (default
+`all`). `all` installs the English pages in `man1` and `man3` and the
+translations in `$MANROOT/es/man{1,3}` and `$MANROOT/fr/man{1,3}`, which
+`man` picks from `LANG` (`LANG=es_ES.UTF-8 man v32c++`). `en` installs only the
+English pages. `es` or `fr` installs only that language's pages, directly in
+`man1` and `man3`.
+
+    sudo make sysinstall DEST_LANG=fr
+    cmake -S . -B build -DDEST_LANG=es && cmake --install build
+
+Without installing, read one in place: `man -l es/man1/v32c++.1`.

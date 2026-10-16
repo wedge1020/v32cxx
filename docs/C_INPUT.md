@@ -1,5 +1,7 @@
 # C input
 
+[Spanish version / en español](C_INPUT.es.md) | [French version / en français](C_INPUT.fr.md) <!-- langlinks -->
+
 `v32c++ program.c` transpiles **C**, not C++. The file's extension decides:
 a name ending in `.c` turns on C mode for the whole run (`g_c_mode`,
 `inc/driver.h`). Everything in this document applies to C input only --

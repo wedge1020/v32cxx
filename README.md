@@ -1,5 +1,7 @@
 # v32c++
 
+[Spanish version / en español](README.es.md) | [French version / en français](README.fr.md) <!-- langlinks -->
+
 **A        C++-subset-to-C        transpiler,        targeting        the
 [Vircon32](https://www.vircon32.com) fantasy console's C compiler.**
 
@@ -565,6 +567,10 @@ when it is installed).
 | [`docs/DESIGN_NOTES.md`](docs/DESIGN_NOTES.md) | internals and the full development history |
 | [`docs/TRANSPILER_REPORT.md`](docs/TRANSPILER_REPORT.md) | the gap report from the first Space Invaders port, with current status |
 
+The README and the reference documents (all but `DESIGN_NOTES.md` and
+`TRANSPILER_REPORT.md`) are also available in Spanish (`.es.md`) and French
+(`.fr.md`), and the manual pages in `man/es/` and `man/fr/`.
+
 ## Project layout
 
 ```
@@ -611,12 +617,14 @@ tests/          NNsample.cpp / .c inputs run by `make test` (some
                 `make realcheck`; 119sample.{actions,input} is scripted
                 v32io input
 demos/          example programs, C (demos/c) and C++ (demos/cxx)
-docs/           the documents listed above
+docs/           the documents listed above (+ .es.md / .fr.md translations)
 man/            man1/v32c++.1, the manual page (`man ./man/man1/v32c++.1`);
                 man3/*.3v32, the header pages and their aliases
-                (`man -M man 3v32 v32libc`); vircon32/, the Vircon32 SDK's
-                own pages (emulator and DevTools commands in man1/, the C
-                library headers in man3/: `man -M man/vircon32 3v32 string.h`)
+                (`man -M man 3v32 v32libc`); es/ and fr/, the same pages
+                translated (`man -M man/es 3v32 v32libc`); vircon32/, the
+                Vircon32 SDK's own pages (emulator and DevTools commands in
+                man1/, the C library headers in man3/:
+                `man -M man/vircon32 3v32 string.h`)
 CMakeLists.txt  the CMake build, install and packaging (see "With CMake")
 cmake/          cmake_uninstall.cmake.in, for CMake's `uninstall` target
 tools/
@@ -663,6 +671,21 @@ only  v32c++'s own  files, and  then `v32tools/`  (and on  Linux /  macOS
 `Vircon32/`)  only  if nothing  else  is  left  in  it. On  Windows,  add
 `C:\Program Files\Vircon32\v32tools` to your `PATH`, as for the DevTools.
 
+**Documentation language.** By default both builds install the documents in
+every language (`README.md`, `README.es.md`, `README.fr.md`,
+`docs/V32IO.es.md`, ...) and the English manual pages plus the translated ones
+in the standard per-language trees (`man/es/` goes to
+`/usr/local/share/man/es/man1` and `man3`, `man/fr/` to `.../fr/man1` and
+`man3`, so `man` picks the language from `LANG`). `DEST_LANG=es` or
+`DEST_LANG=fr` (`sudo make sysinstall DEST_LANG=es`, or `cmake -S . -B build
+-DDEST_LANG=es`) installs only that language instead: the translated README and
+documents under those plain names (with the links between them adjusted), next
+to the documents that exist only in English (`docs/DESIGN_NOTES.md`, ...), and
+the manual pages in that language directly in `man1` and `man3`.
+`DEST_LANG=en` installs only the English documents and manual pages. The
+Vircon32 SDK's pages (`man/vircon32/`) exist only in English and are always
+installed.
+
 `make  install`  / `make  uninstall`  instead  copy  just the  binary  to
 `~/bin`.  Installation  defaults  for  the  Makefile  build  (the  header
 directory,  the  environment  variable  names,  a  few  limits)  live  in
@@ -680,7 +703,8 @@ same  scheme   as  v32lua,   and  lives  in   one  place:   `VERSION`  in
 [`inc/v32cxx.h`](inc/v32cxx.h),  which  `v32c++   --version`  prints.  To
 change it,  edit it there and  run `make version`, which  stamps it (with
 today's date)  into the  `.TH` header  of every  manual page  in `man/man1`
-and `man/man3` that names v32c++. Alias pages and pages of other projects
+and `man/man3` that names v32c++, and in those of `man/es/` and `man/fr/` (with
+the date in each one's language). Alias pages and pages of other projects
 (the Vircon32 SDK's, in `man/vircon32/`) are left alone, and a page already up to date is not rewritten.
 
 ## Releases and automated builds

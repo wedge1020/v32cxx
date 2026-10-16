@@ -1,0 +1,1473 @@
+'\" -*- coding: UTF-8 -*-
+.TH V32C++ 1 "16 octobre 2026" "v32c++ 20261016-dev" "Commandes utilisateur"
+.SH NOM
+v32c++ \- transpile un sous-ensemble de C++ en C Vircon32
+.SH SYNOPSIS
+.B v32c++
+.RB [ \-o
+.IR sortie.c ]
+.RB [ \-c ]
+.RB [ \-v ... ]
+.RB [ \-I
+.IR rép ]...
+.RB [ \-D
+.IR nom [= valeur ]]...
+.RB [ \-U
+.IR nom ]...
+.RB [ \-x ]
+.RB [ \-b ]
+.RB [ \-g ]
+.RB [ \-\-target=vircon32 | standard ]
+.RB [ \-\-reject\-bit\-fields ]
+.RB [ \-\-no\-signed\-shift ]
+.RB [ \-\-no\-inline\-containers ]
+.I entrée.cpp
+.br
+.B v32c++
+.B \-\-version
+.SH DESCRIPTION
+.B v32c++
+traduit un sous-ensemble de C++ conçu sur mesure \(em classes, héritage simple,
+constructeurs et destructeurs, fonctions virtuelles et répartition dynamique,
+surcharge d'opérateurs, tableaux et le langage habituel d'instructions et
+d'expressions \(em en C simple destiné au compilateur C propre de la console
+fantaisie
+.BR Vircon32 .
+Le C généré est confié à ce compilateur exactement comme le serait du C Vircon32
+écrit à la main ; aucun autre outil ne s'intercale entre
+.B v32c++
+et la cible.
+.PP
+C'est la stratégie qu'employait déjà le
+.B cfront
+original de Bjarne Stroustrup pour les premiers compilateurs C++ : traduire
+d'abord en C, puis laisser un compilateur C existant et éprouvé faire tout le
+reste.
+.PP
+Les templates, les exceptions, la RTTI et l'héritage multiple ne font pas partie
+du langage qu'accepte
+.B v32c++
+et n'en feront jamais partie \(em ce sont des limites de conception permanentes,
+non des lacunes en attente d'une prochaine version. Voir
+.B NOTES SUR LE LANGAGE
+ci-dessous, ainsi que le README du projet, pour ce qui
+.I est
+pris en charge et ce qui est encore en cours.
+.PP
+.B v32c++
+ne produit aucune sortie en cas de succès, sauf si une option de verbosité est
+donnée (voir
+.BR \-v ,
+ci-dessous) \(em cela correspond au comportement du compilateur C de Vircon32 et
+de
+.BR v32lua (1).
+Un code de retour non nul et un message sur la sortie d'erreur standard
+signalent un vrai problème : une erreur de syntaxe, une erreur sémantique (un
+type non déclaré, un membre inaccessible, un appel non résolvable, etc.) ou
+l'absence de la fonction
+.B main
+lorsqu'elle était exigée (voir
+.BR \-c ).
+.SH OPTIONS
+.TP
+.BI \-o " sortie.c"
+Écrit le C généré dans
+.IR sortie.c ,
+au lieu du nom par défaut. Si
+.B \-o
+n'est pas donné du tout, le nom du fichier de sortie est déduit de celui de
+l'entrée : son extension est remplacée par
+.IR .c ,
+de sorte que
+.I foo/bar.cpp
+devient
+.IR foo/bar.c .
+Cela correspond aussi au nom par défaut du compilateur C de Vircon32 et de
+.BR v32lua (1).
+.TP
+.B \-c
+Transpile sans exiger qu'une fonction
+.B main
+existe dans l'entrée. Comme le
+.B \-c
+d'un vrai compilateur C (« compiler seulement ») : à utiliser pour une
+bibliothèque ou un fragment de module qui n'est pas, en soi, un programme
+complet et compilable de façon autonome. Sans
+.BR \-c ,
+une entrée sans
+.B main
+est traitée comme une erreur.
+.TP
+.B \-v
+Augmente la verbosité. Cumulable \(em répétez-la pour plus de détails, soit
+sous forme d'options séparées
+.RI ( "\-v \-v \-v" )
+soit regroupées
+.RI ( \-vvv ).
+Sans aucun
+.B \-v
+(le comportement par défaut), rien n'est produit en cas de succès.
+.RS
+.TP
+.B "un seul \-v"
+Affiche un message de progression d'une ligne au début de chaque étape interne :
+analyse lexicale et syntaxique, analyse sémantique, abaissement et génération de
+code.
+.TP
+.B "\-vv"
+Tout ce qu'affiche un seul
+.BR \-v ,
+plus des commentaires explicatifs semés directement dans le
+.I .c
+généré, aux endroits où la transformation de C++ en C de ce projet est la moins
+évidente pour qui lit la sortie \(em voir
+.B COMMENTAIRES EXPLICATIFS
+ci-dessous. Pur commentaire : cela ne change jamais le code émis, seulement
+l'émission ou non d'un commentaire qui l'explique à côté.
+.TP
+.B "\-vvv"
+Tout ce qu'affiche
+.BR \-vv ,
+plus un vidage complet de l'AST analysé, un résumé de l'analyse sémantique
+(disposition des classes, vtables, appels résolus) et la forme entièrement
+abaissée du corps de chaque méthode et fonction \(em réellement utile pour
+suivre ce que l'outil a compris d'un programme et comment il l'a transformé, et
+pas seulement une sortie de débogage. Elle se termine par un
+.IR "journal des notes d'abaissement" :
+une ligne par endroit où une phase d'abaissement a réécrit le programme
+spécifiquement pour contourner une particularité du C de Vircon32 (un ternaire
+hissé en
+.IR if / else ,
+un
+.I &fonction
+implicite, un cast du receveur qui retire const, un cast de pointeur
+base/dérivée), avec la ligne du source et la particularité.
+.RE
+.TP
+.BI \-I " rép\fR, " \-\-include= rép
+Ajoute
+.I rép
+au chemin de recherche des inclusions de
+.I .hpp
+et
+.I .cpp
+(voir
+.B EN-TÊTES ET TYPES C
+ci-dessous). Peut être répétée ; les répertoires sont parcourus dans l'ordre de
+la ligne de commande. Un
+.B #include
+entre guillemets cherche d'abord dans le répertoire du fichier qui l'inclut,
+puis dans chaque
+.IR rép ;
+un
+.B #include
+entre chevrons ne cherche que dans la liste des
+.IR rép .
+Les deux formes se rabattent ensuite sur les répertoires de
+.B V32CXX_INCLUDE
+puis, enfin, sur le répertoire d'en-têtes installé (voir
+.BR ENVIRONNEMENT ).
+Sans effet sur les inclusions de
+.IR .h ,
+qui passent toujours inchangées dans le C généré.
+.TP
+.BI \-D " nom\fR[" = valeur\fR]
+Définit une macro, comme si
+.BI "#define " "nom valeur"
+ouvrait l'entrée
+.RI ( valeur
+vaut 1 par défaut). Elle est visible de
+.BR #if / #ifdef
+et se développe comme toute autre macro, et elle est transmise au C généré. Peut
+être répétée.
+.TP
+.BI \-U " nom"
+Supprime la définition d'une macro (une définie par un
+.B \-D
+antérieur).
+Les options sont appliquées dans l'ordre de la ligne de commande.
+.TP
+.B \-\-version
+Affiche la version, l'auteur et l'URL du projet, puis s'arrête aussitôt sans
+traiter aucune entrée.
+.TP
+.B \-b
+Transpile un
+.B BIOS
+Vircon32 plutôt qu'une cartouche ordinaire (voir
+.B MODE BIOS
+ci-dessous) : l'élément
+.B <rom>
+du XML généré reçoit
+.BR type=\(dqbios\(dq ,
+et trois contraintes supplémentaires sont imposées, vérifiées seulement avec
+.BR \-b :
+exactement une indication
+.BR #texture ,
+au plus une indication
+.BR #sound ,
+et une fonction
+.B "void error_handler()"
+présente à côté de
+.BR main .
+.TP
+.B \-g
+Écrit aussi
+.IR <sortie>.debug ,
+une correspondance éparse entre lignes de C et lignes de C++ (voir
+.B CARTES DE DÉBOGAGE
+ci-dessous) à côté du C généré. Rien n'est écrit sans
+.BR \-g .
+.TP
+.BR \-x ", " \-\-no\-xml
+Ne génère pas le fichier XML de conditionnement de la cartouche Vircon32 (voir
+.B CONDITIONNEMENT DE LA CARTOUCHE
+ci-dessous). Il est généré par défaut chaque fois qu'un fichier
+.I .c
+est effectivement écrit ; jamais généré avec
+.BR \-\-target=standard ,
+avec ou sans cette option.
+.TP
+.B \-\-no\-inline\-containers
+Conserve les accesseurs de
+.B std::array
+et de
+.B std::vector
+(v[i], v.size(), v.front(), ...) sous forme d'appels de fonction dans le C
+généré, au lieu d'écrire chacun sur place comme un accès direct aux champs du
+conteneur. Plus lent sur la console ; utile pour lire le C généré à côté de la
+classe dont il provient.
+.TP
+.B \-\-no\-signed\-shift
+Imprime
+.B >>
+et
+.B >>=
+tels qu'écrits. Le seul décalage de Vircon32 est logique ; par défaut, un
+décalage à droite d'une valeur signée est donc réécrit en décalage arithmétique,
+comme le fait le C
+.RI ( "\-8 >> 1" " vaut " \-4 ):
+quelques instructions de plus par décalage, ou un appel pour un opérande qui
+n'est pas une simple variable ou un simple membre. Une valeur déclarée
+.B unsigned
+se décale logiquement, comme en C, et n'est jamais réécrite ; il en va de même
+d'une constante ou d'un décalage masqué par une petite constante non négative
+.RI ( "(x >> 4) & 15" ).
+Utilisez cette option lorsque chaque valeur décalée est connue pour être non
+négative et que le code supplémentaire coûte trop cher. Sans effet avec
+.BR \-\-target=standard ,
+qui ne le réécrit jamais.
+.TP
+.B \-\-reject\-bit\-fields
+Traite un membre de champ de bits
+.RI ( "int level : 6;" )
+comme une erreur. Par défaut il est accepté avec un avertissement et stocké
+comme un membre ordinaire d'un mot entier, puisque le C de Vircon32 n'a pas de
+champs de bits : la structure est plus grande et ne correspond plus à une
+disposition compactée, et une valeur plus large que la largeur déclarée est
+conservée entière au lieu d'être tronquée. Utilisez cette option pour du code qui
+dépend de l'un ou l'autre.
+.TP
+.BI \-\-target= X
+Dialecte C de sortie :
+.B vircon32
+(ou
+.BR v32 ,
+la valeur par défaut) vise partout les particularités du vrai compilateur
+Vircon32 ;
+.B standard
+(ou
+.BR std )
+vise au contraire du C simple et portable. Avec
+.B \-\-target=standard
+il n'y a, dans tous les cas, ni XML de conditionnement ni carte de débogage, car
+ce sont deux notions propres à la plateforme Vircon32, sans signification en
+dehors d'elle.
+Une vraie différence de comportement, pas seulement un échange de syntaxe : le
+type de retour de
+.B main
+lui-même \(em le mode Vircon32 force toujours
+.IR "void main(void)" ,
+écartant ce que le source déclarait ; le mode standard le respecte
+(typiquement
+.IR int ),
+en conservant les vraies instructions
+.B return
+au lieu de les supprimer. Le mode Vircon32 réécrit aussi chaque opérateur
+ternaire en un
+.IR if / else
+équivalent (via une variable temporaire lorsque la valeur est nécessaire au sein
+d'une expression plus grande, en conservant la règle du C++ selon laquelle seule
+la branche choisie s'exécute), et sépare l'opérateur virgule en instructions
+distinctes \(em le vrai compilateur Vircon32 ne prend en charge ni l'un ni
+l'autre ; le mode standard conserve les deux exactement tels qu'écrits. Les
+structures de plusieurs mots passées ou retournées par valeur sont réécrites pour
+voyager par un pointeur caché, en mode Vircon32 seulement. Les pointeurs de
+fonction (y compris leurs tableaux et les vtables de la répartition virtuelle)
+produisent aussi une syntaxe de déclarateur/cast correcte du C standard avec
+.BR \-\-target=standard ,
+et pas seulement la forme inversée propre à Vircon32. Voir
+.I docs/VIRCON32_QUIRKS.fr.md
+pour la liste détaillée de tout ce que cette option change réellement.
+.SH CODE DE RETOUR
+.TP
+.B 0
+L'entrée a été transpilée avec succès.
+.TP
+.B 1
+Une erreur de syntaxe, une erreur sémantique, l'absence de la fonction
+.B main
+(sans
+.BR \-c )
+ou une erreur d'E/S (l'entrée n'a pas pu être ouverte, ou la sortie n'a pas pu
+être écrite) s'est produite. Les détails sont affichés sur la sortie d'erreur
+standard.
+.SH EXEMPLES
+Transpiler un seul fichier, en écrivant
+.IR sprite.c  :
+.PP
+.RS
+.nf
+v32c++ sprite.cpp
+.fi
+.RE
+.PP
+Transpiler un fragment de bibliothèque sans
+.B main
+propre, vers un chemin de sortie précis, en regardant chaque étape s'exécuter :
+.PP
+.RS
+.nf
+v32c++ \-c \-v \-o build/widgets.c src/widgets.cpp
+.fi
+.RE
+.PP
+Inspecter exactement ce que l'outil a compris d'un programme, sans écrire de
+fichier de sortie où l'appelant ne l'a pas demandé :
+.PP
+.RS
+.nf
+v32c++ \-vvv sprite.cpp
+.fi
+.RE
+.PP
+Construire un jeu qui utilise les en-têtes de l'API C++ d'une copie de v32c++
+.RI ( "#include <v32/video.hpp>" ) :
+.PP
+.RS
+.nf
+v32c++ \-I ~/src/v32c++ \-o build/game.c game.cpp
+.fi
+.RE
+.PP
+Construire un programme qui lit un clavier v32io sur la Manette 2
+.RI ( "#include <v32/keyboard.hpp>" \ ;
+l'exécuter nécessite l'adaptateur v32io ou un émulateur modifié, voir
+.B CLAVIER ET SOURIS
+ci-dessous) :
+.PP
+.RS
+.nf
+v32c++ \-I ~/src/v32c++ \-o obj/typewriter.c typewriter.cpp
+compile \-o obj/typewriter.asm obj/typewriter.c
+.fi
+.RE
+.PP
+Produire du C portable à la place, pour le vérifier avec un compilateur de bureau :
+.PP
+.RS
+.nf
+v32c++ \-\-target=standard \-o /tmp/game.c game.cpp
+gcc \-std=c99 \-c /tmp/game.c
+.fi
+.RE
+.SH NOTES SUR LE LANGAGE
+Cette section est un bref résumé, non une référence complète \(em voir le README
+du projet et
+.I docs/DESIGN_NOTES.md
+(en anglais uniquement) pour le tableau complet et à jour, y compris les lacunes
+connues en cours de développement.
+.PP
+Pris en charge : les classes et les
+.BR struct s
+simples à la manière du C indifféremment (la seule vraie différence \(em l'accès
+par défaut aux membres : privé pour
+.BR class ,
+public pour
+.B struct
+\(em est géré correctement ; toute autre fonctionnalité des classes est partagée
+à l'identique entre les deux) avec héritage simple et contrôle d'accès ;
+constructeurs et destructeurs, y compris l'invocation automatique en sortie de
+portée et via
+.BR delete  ;
+fonctions
+.B virtual
+et répartition dynamique, destructeurs virtuels compris ;
+surcharge d'opérateurs ; résolution de surcharge des fonctions et des
+constructeurs ;
+.B new
+et
+.BR delete ,
+formes pour tableaux comprises ; tableaux, avec la syntaxe de déclarateurs du C
+standard ou avec le style natif de Vircon32, acceptés indifféremment comme entrée
+côté C++ ; résolution des
+.B #include
+de
+.I .hpp / .cpp
+avec
+.B #pragma once
+et un préprocesseur complet (voir
+.B PRÉPROCESSEUR
+ci-dessous) ; déclarations de types opaques
+.B native
+pour des types C définis dans des en-têtes transmis tels quels (voir
+.B EN-TÊTES ET TYPES C
+ci-dessous) ; assembleur en ligne
+.RI ( "asm { \(dq...\(dq }" ,
+la forme propre de Vircon32, transmise telle quelle ; l'
+.I asm(\(dq...\(dq)
+basique à la manière de GCC et ses graphies
+.BR __asm__ / volatile
+sont acceptés et réémis sous la forme de Vircon32 ; l'asm étendu avec contraintes
+d'opérandes est rejeté) ; valeurs par défaut des paramètres ; classes et
+fonctions
+.BR friend  ;
+.BR nullptr  ;
+initialisation directe avec arguments de constructeur
+.RI ( "Shape shape(7);" )  ;
+plusieurs déclarateurs dans une seule instruction
+.RI ( "int a, *b, c = 5;" )  ;
+.BR typedef s
+de pointeurs de fonction dans l'un ou l'autre style de déclarateur ;
+.B break
+et
+.BR continue .
+Les deux sont correctement distingués, non confondus :
+.B break
+est valide à l'intérieur d'un
+.B switch
+seul (aucune boucle englobante nécessaire), alors que
+.B continue
+ne l'est pas \(em exactement comme en vrai C. Sémantique de chute du vrai C pour
+.B switch / case / default
+(sans
+.B break
+l'exécution se poursuit dans les instructions de l'étiquette suivante, comme en
+vrai C) ; opérateurs bit à bit (
+.BR & ", " | ", " ^ ", " << ", " >>
+et leurs formes d'affectation composée
+.RI ( &= ", " |= ", " ^= ", " <<= ", " >>= ),
+avec la précédence correcte des opérateurs du C \(em y compris le piège classique
+.I "a & b == c"
+(l'égalité lie plus fort que le ET bit à bit, donc ceci s'analyse comme
+.IR "a & (b == c)" ,
+et non
+.IR "(a & b) == c" ),
+géré exactement et non approximé ; casts à la manière du C
+.RI ( "(int)x" ", " "(Base *)ptr" )
+et à la manière du C++
+.RI ( static_cast / const_cast / reinterpret_cast ,
+les trois transpilés à l'identique de la forme C \(em la simplification
+sémantiquement correcte dès lors que la cible est le C, qui ne connaît aucune
+distinction entre eux) ; littéraux entiers hexadécimaux/octaux/binaires
+.RI ( "0x1F" ", " "013" ", " "0b1010" \(em
+.B les littéraux binaires sont un ajout du C++14,
+qui ne fait pas partie de tous les standards C++, acceptés ici par commodité dans
+tous les cas) et suffixes de littéraux entiers/flottants
+.RI ( "42u" ", " "100L" ", " "3.9f" ,
+acceptés et ignorés \(em il n'y a ici qu'un type entier et qu'un type flottant,
+donc un suffixe n'a plus rien à désambiguïser) ; l'opérateur ternaire
+.RI ( "cond ? a : b" )
+avec la précédence correcte du C, entre l'affectation et
+.BR || ,
+associatif à droite, de sorte que le chaînage s'imbrique comme en vrai C++ ;
+.BR do / while
+(le corps s'exécute au moins une fois, sans condition, avant le premier test
+\(em réutilise exactement la même gestion de profondeur de boucle et de frontière
+de destructeurs que
+.BR while / for ,
+vérifiée directement, non supposée) ;
+.B enum
+(au niveau supérieur ou de l'espace de noms ; valeurs auto-incrémentées ou
+explicites, résolues par le compilateur C en aval exactement comme le ferait le
+vrai C++, non calculées par ce projet) ;
+.B union
+simple à la manière du C (au niveau supérieur ou de l'espace de noms ; NON
+acheminée par la même mécanique que
+.BR class / struct ,
+puisque le vrai C++ restreint lui-même ce qu'une union peut contenir bien plus
+que l'une ou l'autre) ;
+.B sizeof
+au niveau du source (aussi bien
+.RI ( Type )
+que
+.I "expr"
+/
+.RI ( expr ),
+avec un appel à l'intérieur de la forme expression correctement résolu, non
+ignoré) ;
+.B goto
+et instructions étiquetées (une limitation réelle, signalée délibérément \(em voir
+BOGUES ci-dessous) ; pointeurs de fonction, dans LES DEUX styles de déclarateur :
+le style singulier de Vircon32
+.RI ( "TypeRetour(TypesParam)* nom;" )
+et celui du C standard
+.RI ( "TypeRetour (*nom)(TypesParam);" ),
+y compris les tableaux de l'un ou l'autre \(em la sortie est toujours la forme que
+Vircon32 exige quelle que soit celle employée dans le source, le même traitement
+de double acceptation que les déclarateurs de tableau, le tout confirmé avec le
+vrai compilateur ; tableaux multidimensionnels
+.RI ( "int grid[8][4];" " ou " "int [8][4] grid;" ,
+dimensions imbriquées de la plus externe à la plus interne, exactement comme en
+C), et l'indexation chaînée
+.RI ( "grid[i][j]" )
+ne demande aucun travail nouveau ;
+.B const
+comme préfixe de type partout où un type peut apparaître
+.RI ( "const int x" ", " "const int *p" ,
+un paramètre ou un type de retour
+.BR const )
+\(em résolvant correctement les appels de méthodes et les surcharges à travers un
+type de classe qualifié const, et pas seulement en analysant le mot-clé \(em et
+aussi comme qualificateur final des fonctions membres
+.RI ( "int getValue() const { ... }" ,
+déclarées dans la classe comme définies hors de celle-ci), ce qui se propage
+réellement : le paramètre
+.I this
+généré pour une méthode const est
+.RI ( "const ClassName *" ,
+et non un pointeur simple dont le qualificateur serait écarté en silence (voir
+BOGUES ci-dessous pour la limite exacte de ce que cela ne couvre pas) ; les sites
+d'appel d'un paramètre de type référence, qui insèrent correctement l'adresse-de
+implicite dont a besoin un argument par référence du C++ une fois abaissé en
+pointeur C simple
+.RI ( "getArea(shape)" " devient " "getArea__Shape_ref((&shape))" ,
+y compris à travers un argument pointeur déréférencé) ; variables globales (de
+niveau fichier) ; délégation au constructeur de la classe de base, aussi bien
+EXPLICITE (
+.I ": Base(args)"
+dans la propre liste d'initialisation des membres d'un constructeur) qu'IMPLICITE
+(si
+.I ": Base(args)"
+n'est pas écrit du tout, le constructeur sans argument de la base est tout de
+même appelé automatiquement, comme en vrai C++ \(em une base sans constructeur
+propre n'a rien à appeler ; une base dotée de constructeurs dont aucun n'est
+appelable sans argument est une vraie erreur, signalée, et non un sous-objet de
+base laissé non initialisé en silence) ; initialiseurs de champs membres de type
+primitif dans cette même liste (
+.IR ": x(val)" ,
+pour un simple
+.IR int / float /etc.,
+ou un pointeur/une référence), avec la sémantique d'ordre de déclaration du vrai
+C++ \(em un champ s'initialise dans l'ordre où il est
+.I déclaré
+dans la classe, non dans l'ordre où il est
+.I écrit
+dans la liste, et un argument d'initialiseur qui référence un autre membre par
+son nom nu est lui aussi réécrit correctement (
+.I ": y(x)"
+devient
+.IR "this\->y = this\->x" ) ;
+objets fonction (un appel via
+.BR operator() ),
+.BR operator++ / operator\-\-
+préfixe et suffixe
+.RI ( "operator++()" " et " "operator++(int)" ) ;
+opérateurs de conversion
+.RI ( "operator int() const" ", " "operator bool()" ", " "operator Vec2 *()" ),
+appelés partout où l'objet est utilisé comme valeur de ce type (un initialiseur,
+une affectation, un retour, une condition, un cast, un argument, de l'arithmétique,
+un indice), d'abord une correspondance exacte, sinon l'unique conversion
+arithmétique de la classe, sinon une erreur pour ambiguïté ; fonctions variadiques
+.RB ( ... ,
+.BR va_list ", " va_start ", " va_arg ", " va_end
+de
+.IR <cstdarg> ),
+comme pour l'entrée C (voir
+.B ENTRÉE C
+ci-dessous), dans les fonctions libres, les espaces de noms et les méthodes, où
+une surcharge avec
+.B ...
+passe après toutes les autres et où un objet passé par
+.B ...
+est une erreur (passez un pointeur) ;
+.BR override " et " final
+sur les fonctions membres et
+.B final
+sur une classe, vérifiés comme le C++ les vérifie, tout en restant des noms
+ordinaires partout ailleurs ;
+.B explicit
+(accepté) ; membres de données de type référence
+.RI ( "int &r;" ,
+liés dans la liste d'initialisation du constructeur) ;
+.BR double " et " "long double" ,
+qui sont
+.BR float ,
+l'unique type flottant de Vircon32 ; détection des doublons dans une liste
+d'initialisation de membres (
+.I ": x(a), x(b)"
+est une erreur signalée, non un choix arbitraire et silencieux entre les deux) ;
+initialiseurs de membres qui sont eux-mêmes des objets
+.RI ( ": mVel(vx, vy)" ) ;
+initialiseurs de membres par défaut dans la classe
+.RI ( "int mLives = 3;" ),
+appliqués par tout constructeur qui n'initialise pas lui-même le membre ;
+fonctions virtuelles pures
+.RI ( "= 0" ) ;
+temporaires sans nom
+.RI ( "return Vec(x, y);" ) ;
+objets de niveau fichier, construits au début de
+.B main
+(avec arguments de constructeur s'il y en a) ; tableaux d'objets, construits et
+détruits élément par élément (tableaux membres compris) ; structures et classes de
+plus d'un mot passées et retournées par valeur (réécrites avec des pointeurs
+cachés pour le C de Vircon32) ; références comme paramètres, valeurs de retour et
+variables locales, scalaires comprises ; variables locales
+.B auto
+et
+.B for
+sur intervalle ; les
+.BR std::string ,
+.B std::array
+et
+.B std::vector
+intégrés (voir
+.IR docs/STRING.fr.md " et " docs/GENERICS.fr.md
+du projet) ; variables locales
+.B static
+et
+.BR static ,
+.BR extern " et " volatile
+de niveau fichier (le C de Vircon32 n'en a aucun : les locales passent au niveau
+fichier sous des noms uniques, les autres sont écartés ou fusionnés) ;
+.BR unsigned ", " signed ", " short " et " long
+comme l'unique type entier de 32 bits
+.RB ( unsigned
+avec un avertissement : son \fB>>\fR reste logique, mais \fB/\fR, \fB%\fR et les comparaisons se comportent comme du signé au-delà d'INT_MAX) ; champs de bits, comme mots entiers avec un avertissement (voir
+.BR \-\-reject\-bit\-fields ).
+.PP
+.B dynamic_cast
+est lui aussi accepté, mais honnêtement, non en silence : il s'analyse et se
+transpile exactement comme les autres casts ci-dessus, mais comme il n'effectue
+pas la vérification à l'exécution fondée sur la RTTI que promet le vrai
+.B dynamic_cast
+(ce projet n'a jamais pris en charge la RTTI, par conception), l'utiliser produit
+un
+.BR avertissement ,
+non une erreur \(em affiché sur la sortie d'erreur, sans jamais bloquer la
+transpilation. Les avertissements forment une catégorie de diagnostic distincte
+des erreurs sémantiques décrites tout au long de cette section \(em ils
+n'affectent jamais le code de retour de cet outil.
+.PP
+Non pris en charge (chacun est une erreur claire sauf indication contraire) :
+membres
+.B static
+de classes ;
+.BR "enum class" ,
+.BR constexpr ,
+lambdas,
+.BR mutable ,
+classes imbriquées et énumérations de portée de classe, et déclarateurs empilés
+comme
+.IR "T *&"  ;
+un paramètre de type tableau à deux dimensions.
+.PP
+Le
+.B new
+de tableaux
+.RI ( "new T[n]" )
+alloue sans construire chaque élément, et
+.B delete[]
+n'exécute aucun destructeur ; préférez
+.B std::vector
+ou un tableau sur la pile.
+.PP
+Jamais pris en charge, par conception : templates, exceptions, RTTI, héritage
+multiple.
+.SH ENTRÉE C
+Un fichier d'entrée dont le nom se termine par
+.B .c
+est transpilé comme du C, non comme du C++.
+Les inclusions
+.B .h
+et
+.B .c
+du programme lui-même sont développées et transpilées (les en-têtes du SDK
+Vircon32 continuent de passer tels quels) ; les étiquettes de struct, union et enum
+ont un espace de noms propre ; une fonction déclarée plusieurs fois, ou avec moins
+de détails que sa définition
+.RB ( "void fatal();" ),
+est une seule fonction, et les noms ne sont pas décorés ; les fonctions variadiques
+.RB ( ... ,
+.BR va_start ,
+.BR va_arg ,
+.BR va_end )
+sont prises en charge (en C++ aussi), chaque argument supplémentaire voyageant
+comme un mot \(em un int, un pointeur ou un float, dont les bits sont conservés ;
+le pointeur nul vaut 0, comme le dit le C, et non \-1 comme dans le C de Vircon32 ;
+.B main
+peut prendre
+.BR argc ,
+.B argv
+et
+.BR envp  ;
+et les mots-clés du C++
+.RB ( class ,
+.BR new ,
+.BR this ...)
+sont des noms ordinaires.
+Le répertoire
+.B libc/
+contient une petite bibliothèque C et curses pour de tels programmes ; ajoutez-le
+avec
+.BR \-I .
+Voir
+.B docs/C_INPUT.fr.md
+pour la liste complète et les limites.
+.SH PRÉPROCESSEUR
+Avant l'analyse,
+.B v32c++
+préprocesse lui-même le source C++, de sorte que l'analyseur le voit entièrement
+développé :
+.IP \(bu 2
+Tout
+.B #include
+d'un fichier se terminant par
+.I .hpp
+ou
+.I .cpp
+est remplacé par le contenu de ce fichier, récursivement (ordre de recherche : voir
+.BR \-I ).
+Un en-tête contenant
+.B #pragma once
+n'est inséré qu'une fois au plus, et un cycle d'inclusions sans lui est une erreur.
+Les inclusions de
+.I .h
+passent dans le C généré, une fois chacune.
+.IP \(bu 2
+.B #define
+et
+.B #undef
+fonctionnent comme en C++ : macros de type objet et de type fonction, conversion en
+chaîne avec
+.BR # ,
+collage avec
+.B ##
+et variadiques avec
+.B ...
+et
+.BR __VA_ARGS__ .
+Une macro qui se référence elle-même ne se développe qu'une fois.
+.BR __V32CXX__ ,
+.B __FILE__
+et
+.B __LINE__
+sont prédéfinies.
+.IP \(bu 2
+.BR #if ", " #ifdef ", " #ifndef ", " #elif ", " #else " et " #endif
+sont évalués (arithmétique entière,
+.BR defined() )  ;
+seule la branche active est transpilée.
+.B #error
+arrête la transpilation ;
+.B #warning
+affiche un message. Tout autre
+.B #pragma
+est écarté avec un avertissement, puisque le compilateur C de Vircon32 le rejette.
+.IP \(bu 2
+Un en-tête
+.I .h
+transmis tel quel est aussi LU lorsqu'on peut le trouver (voir
+.B V32CXX_SDK_INCLUDE
+sous ENVIRONNEMENT) : ses macros
+.RI ( screen_width ", " color_red ", " pi ", ...)"
+fonctionnent dans les tailles de tableau et les conditions et gardent leur nom dans
+la sortie, et ses noms de struct et de typedef
+.RI ( date_info ", " game_signature ", ...)"
+sont déclarés
+.B native
+automatiquement. Seules ses directives sont traitées ; l'en-tête lui-même continue
+d'atteindre le C généré sous forme d'une ligne
+.BR #include .
+.PP
+Tout
+.B #define
+et
+.B #undef
+est aussi transmis en tête du C généré, et l'emploi d'une simple constante nommée y
+conserve son nom
+.RI ( "int [MAX] scores;" ).
+Les macros que le préprocesseur C de Vircon32 ne peut pas accepter (celles qui
+utilisent
+.BR # ,
+.B ##
+ou
+.BR ... ,
+ou qui se référencent elles-mêmes) sont développées et non transmises.
+Les diagnostics et les cartes de débogage de
+.B \-g
+rapportent partout les fichiers et lignes d'origine.
+.PP
+La dimension d'un tableau peut être n'importe quelle expression constante entière :
+un littéral, une macro, une constante d'énumération ou de l'arithmétique sur ceux-ci
+.RI ( "int grid[ROWS][COLS];" ).
+.SH EN-TÊTES ET TYPES C
+Le répertoire
+.I v32/
+de la distribution des sources contient des en-têtes C++ pour l'API C de Vircon32,
+un par en-tête du SDK
+.RI ( video.hpp ", " input.hpp ", " string.hpp ", " time.hpp ,
+.IR audio.hpp ", " math.hpp ", " misc.hpp ", " memcard.hpp )
+dans l'espace de noms
+.BR v32 .
+Ils enveloppent les fonctions C du SDK sans réimplémenter aucun accès au matériel,
+et chacun transmet tel quel son propre
+.I .h
+inclus. Ce qu'ils ajoutent : des énumérations typées pour les
+.BR #define s
+du SDK, des jeux de surcharges int/float
+.RB ( v32::minimum ", " v32::clamp ", ...),"
+des classes gardiennes de portée qui restaurent la texture, la manette, le son ou le
+canal sélectionnés de la console à l'accolade fermante, et de petites classes de
+poignée
+.RB ( v32::Channel ", " v32::MemoryCard ", " v32::HeapBlock ", ...)."
+Les noms des enveloppes ne réutilisent jamais le nom d'une fonction C, de sorte que
+l'API C brute reste disponible à côté. Trois autres,
+.IR v32io.hpp ", " keyboard.hpp " et " mouse.hpp ,
+apportent la prise en charge du clavier et de la souris (voir
+.B CLAVIER ET SOURIS
+ci-dessous).
+.PP
+Une fonction libre déclarée dans un espace de noms est émise sous un nom C qui inclut
+l'espace de noms
+.RI ( v32::draw(int,int,int)
+devient
+.IR v32__draw__int_int_int ),
+de sorte qu'elle ne peut pas entrer en collision avec une fonction de même nom et de
+mêmes paramètres ailleurs. Un appel qualifié
+.RI ( v32::draw(...) )
+ne considère que les fonctions de cet espace de noms, et c'est une erreur s'il n'y en
+a aucune. Un appel non qualifié à l'intérieur d'un espace de noms trouve les
+fonctions de cet espace de noms avant celles des portées englobantes.
+.PP
+.B "using namespace N;"
+(au niveau du fichier ou dans un bloc, jusqu'à la fin du bloc) rend visibles sans
+qualification les noms de N : variables, énumérations, typedefs, classes et
+fonctions, qui se surchargent avec celles déjà dans la portée.
+.B "using N::nom;"
+fait venir un seul nom, et
+.B "using Nom = type;"
+est un typedef.
+.PP
+Un appel surchargé dont les arguments incluent une macro d'un en-tête
+.I .h
+du SDK ou le résultat d'un appel à l'API C (dont
+.B v32c++
+ne peut pas voir les types) se résout tout de même lorsque les types connus des
+autres arguments ne laissent qu'un seul candidat, p. ex.
+.IR "v32::minimum(rand(), 10)" .
+Sinon c'est une erreur ; affectez d'abord la valeur à une variable locale typée.
+.PP
+Comme les en-têtes transmis tels quels ne sont jamais analysés, un type struct C
+qu'ils définissent est inconnu de
+.BR v32c++ .
+Une déclaration
+.B native
+rend un tel nom utilisable :
+.PP
+.RS
+.nf
+native date_info;
+
+void stamp( date_info* out )
+{
+    translate_date( get_date(), out );   // la vraie fonction C
+}
+.fi
+.RE
+.PP
+.B native
+.I Nom\fB;
+déclare
+.I Nom
+comme un type opaque et n'émet aucun C propre. Il peut être utilisé par pointeur ou
+par référence partout où un type peut apparaître : variables locales, globales,
+paramètres, types de retour, membres de classe, casts et
+.IR sizeof(Nom*) .
+Tout usage par valeur est une erreur sémantique qui nomme le type : une variable
+locale, globale, un paramètre, un type de retour ou un membre par valeur (même
+.BR const ),
+.IR sizeof(Nom) ,
+et l'accès à un membre à travers un pointeur vers lui. La disposition vit dans un
+en-tête que
+.B v32c++
+ne lit jamais, il ne peut donc ni dimensionner le type ni vérifier les noms de ses
+champs. Déclarer à nouveau le même native est sans conséquence. Déclarer native un
+nom qui est déjà une classe, une struct ou un typedef est une erreur. Un native
+déclaré dans un espace de noms est tout de même émis sous son nom C nu.
+.B native
+est un mot réservé.
+.SH CLAVIER ET SOURIS
+.IR v32/keyboard.hpp ,
+.I v32/mouse.hpp
+et
+.I v32/v32io.hpp
+sont un portage en C++ des pilotes C
+.B v32io
+de Vircon32, découpés de la même façon que ses
+.IR keyboard.h ", " mouse.h " et " v32io.h  :
+un clavier
+.RB ( v32::Keyboard  :
+événements de touche, caractères saisis avec majuscules et verrouillage des
+majuscules, touches maintenues, et caractères accentués et de tracé de cadres de la
+police du BIOS qu'un périphérique peut envoyer) et une souris
+.RB ( v32::Mouse  :
+un pointeur borné, le mouvement, trois boutons), tous deux construits sur le noyau,
+.BR v32::IoDevice ,
+qui lit comme des données les 11 commandes d'une manette. Un programme inclut le ou
+les pilotes dont il a besoin ; chacun inclut le noyau.
+.PP
+.B Cela EXIGE un périphérique v32io.
+La console n'a ni port clavier ni port souris ; un périphérique v32io l'atteint par
+un port de manette, ses commandes transportant des données de clavier ou de souris,
+et quelque chose d'extérieur à la console doit produire ces données : soit
+l'
+.B adaptateur matériel v32io
+(un clavier ou une souris USB branchés sur la carte v32io-pico, présentés à tout
+émulateur Vircon32 comme le joystick
+.I v32io:kbd
+ou
+.IR v32io:mouse ),
+soit un
+.B DesktopEmulator de Vircon32 modifié
+offrant les périphériques de manette
+.I v32kbd
+et
+.I v32mouse
+\(em le fork sur
+.IR https://github.com/wedge1020/ComputerSoftware ,
+branche
+.BR v32io ,
+ou l'émulateur standard avec les correctifs du dépôt v32io appliqués. Le
+périphérique
+.I Keyboard
+propre à l'émulateur standard n'est pas un clavier v32io.
+.PP
+.RS
+.nf
+#include <v32/keyboard.hpp>
+
+v32::Keyboard keyboard( v32::SecondGamepadPort );  // Manette 2
+
+    keyboard.probe();             // une fois à CHAQUE image
+    int key = keyboard.read();    // appui suivant sous forme de caractère ; 0 : aucun
+.fi
+.RE
+.PP
+Les caractères hors ASCII (une lettre accentuée, un caractère de tracé de cadres)
+sortent eux aussi de
+.BR read ,
+sous forme de codes de la police du BIOS ; passez la valeur à
+.B glyph
+pour obtenir le code à dessiner. Chaque périphérique doit être sondé une fois à
+chaque image, sinon des événements de touche peuvent se perdre et le mouvement de la
+souris être mal interprété. Voir
+.I docs/V32IO.fr.md
+pour la mise en place, l'API complète et les protocoles, et
+.I demos/cxx/v32io
+pour des exemples.
+.SH CONDITIONNEMENT DE LA CARTOUCHE
+À côté du
+.I .c
+généré,
+.B v32c++
+écrit aussi par défaut un fichier XML de conditionnement de cartouche Vircon32
+(voir
+.BR \-x ,
+ci-dessus, pour le désactiver) \(em la
+.I rom-definition
+qu'attend l'étape de conditionnement des cartouches de Vircon32 elle-même, de sorte
+que cette étape n'a plus besoin d'un fichier XML séparé, manuel et écrit à la main
+pour chaque construction. Son nom de fichier est déduit de la même façon que celui
+de la sortie
+.I .c
+ : l'extension du fichier
+.I .c
+est remplacée par
+.IR .xml .
+.PP
+Deux directives d'
+.I indication de cartouche
+sont reconnues directement dans le source C++, chacune sur sa propre ligne :
+.PP
+.RS
+.nf
+#texture NOM "fichier.png"
+#sound   NOM "fichier.wav"
+.fi
+.RE
+.PP
+inspirées des indications
+.B \-\-#texture
+/
+.B \-\-#sound
+de
+.BR v32lua (1).
+Chaque
+.I NOM
+(en toute casse \(em majuscules, minuscules ou mélange, jamais forcé dans l'une)
+devient un
+.B #define
+dans le C généré, associé à l'id de cette ressource : les ids commencent à 0 et
+augmentent de un par indication, textures et sons comptés séparément, dans l'ordre
+où les indications apparaissent dans le source \(em la
+.I première
+.B #texture
+a toujours l'id 0, la deuxième l'id 1, et ainsi de suite ; de même pour
+.BR #sound .
+.I NOM
+est alors utilisable partout où irait une constante entière, comme argument de la
+fonction de sélection de texture/son qu'appelle le programme cible. Le même ordre de
+déclaration détermine aussi la position de chaque ressource dans les sections
+.B <textures>
+/
+.B <sounds>
+du XML généré \(em la position
+.I est
+l'id, le même invariant sur lequel s'appuie
+.BR v32lua (1)
+lui-même, de sorte que les deux concordent toujours. L'extension de chaque nom de
+fichier est remplacée par
+.I .vtex
+(textures) ou
+.I .vsnd
+(sons) dans le XML, conformément aux formats de ressource qu'attend Vircon32 ;
+l'extension d'origine donnée dans l'indication (
+.IR .png ", " .wav ,
+quelle qu'elle soit) ne sert qu'à localiser la ressource source, non à ce qui
+voyage dans la cartouche.
+.PP
+Un programme sans aucune indication
+.B #texture
+/
+.B #sound
+reçoit tout de même un XML généré, avec les éléments vides auto-fermants
+.B <textures />
+/
+.B <sounds />
+\(em le comportement précédent, sans indications, inchangé pour tout ce qui
+n'utilise pas ceci.
+.PP
+Deux autres indications remplacent les attributs
+.B title
+/
+.B version
+de l'élément
+.B <rom>
+lui-même, fixés chacun à « Vircon32 Program » / « 1.0 » (comme les valeurs par
+défaut de
+.BR v32lua (1))
+jusqu'à ce qu'ils soient remplacés :
+.PP
+.RS
+.nf
+#title "Le titre du BIOS/de la cartouche"
+#version 1.0
+.fi
+.RE
+.PP
+.I title
+est entre guillemets (peut contenir des espaces) ;
+.I version
+est un jeton nu, jamais entre guillemets (comme l'indication
+.B \-\-#version
+de
+.BR v32lua (1)).
+Si l'une ou l'autre indication apparaît plusieurs fois, la dernière rencontrée
+l'emporte.
+.PP
+Pas encore pris en charge : une vérification de noms en double entre les indications
+.B #texture
+/
+.BR #sound .
+Deux lignes
+.B #texture
+portant le même
+.I NOM
+produisent deux lignes
+.B #define
+pour lui, que le compilateur C de Vircon32 accepte sans se plaindre : l'id postérieur
+l'emporte en silence, tandis que les deux fichiers entrent tout de même dans le XML.
+.SH MODE BIOS
+.B \-b
+(voir OPTIONS, ci-dessus) transpile un
+.B BIOS
+Vircon32 plutôt qu'une cartouche ordinaire : l'élément
+.B <rom>
+du XML généré reçoit
+.BR type=\(dqbios\(dq
+au lieu du
+.BR type=\(dqcartridge\(dq
+habituel, et trois contraintes \(em vérifiées seulement lorsque
+.B \-b
+est donné, et pas autrement \(em doivent toutes être respectées, faute de quoi
+.B v32c++
+signale chaque violation trouvée (pas seulement la première) et s'arrête avec un code
+non nul sans rien écrire :
+.IP \(bu 3
+Exactement une indication
+.B #texture
+\(em zéro ou deux et plus sont des erreurs.
+.IP \(bu 3
+Au plus une indication
+.B #sound
+\(em zéro convient, deux et plus est une erreur.
+.IP \(bu 3
+Une fonction
+.BR "void error_handler()" ,
+en plus de
+.BR main .
+.PP
+.B v32c++
+n'impose lui-même que ces trois contraintes \(em tout le reste de ce qui fait un BIOS
+Vircon32 valide et amorçable relève du compilateur C et de l'assembleur, en aval de cet
+outil.
+.SH CARTES DE DÉBOGAGE
+.B \-g
+(voir OPTIONS, ci-dessus) écrit
+.I <sortie>.debug
+à côté du C généré \(em notez le suffixe complet
+.IR .c.debug ,
+et non une extension remplacée (
+.I sprite.c
+produit
+.IR sprite.c.debug ,
+et non
+.IR sprite.debug ).
+Chaque ligne associe un point du C généré à la ligne du source C++ qui en est
+responsable :
+.PP
+.RS
+.nf
+c_chemin,c_ligne,cpp_chemin,cpp_ligne[,nom_de_fonction]
+.fi
+.RE
+.PP
+.I nom_de_fonction
+n'apparaît que sur la ligne où commence la définition C d'une fonction, et nomme le côté
+du
+.I C généré
+de cette fonction (son nom décoré, lorsque ce projet en décore un \(em p. ex.
+.IR Square__area__void ,
+et non le
+.I area
+propre au source C++), conformément au côté de la correspondance que cette colonne
+documente réellement.
+.I cpp_chemin
+est toujours le
+.I .cpp
+original donné sur la ligne de commande, tel quel \(em jamais un intermédiaire
+préprocessé ou autrement modifié, quel que soit l'outil qui pourrait un jour se placer
+devant
+.BR v32c++ .
+.PP
+C'est une table
+.IR éparse ,
+inspirée d'une vraie carte de débogage C vers assembleur de Vircon32 : une entrée
+n'existe que là où l'association ligne de C/ligne de C++ change réellement, et non une
+ligne par ligne de C généré. Une instruction synthétisée par l'abaissement (un destructeur
+invoqué en sortie de portée, par exemple) porte tout de même un numéro de ligne \(em
+généralement celui de l'instruction réelle la plus proche, réutilisé \(em de sorte que les
+correspondances restent raisonnablement exactes même pour le code généré par
+.B v32c++
+lui-même, et pas seulement pour ce qu'une personne a écrit directement ; on ne prétend pas
+qu'elles soient exactes pour chaque ligne synthétisée.
+.SH COMMENTAIRES EXPLICATIFS
+.B \-vv
+(voir OPTIONS, ci-dessus) sème des commentaires explicatifs directement dans le C généré,
+aux endroits où la transformation de C++ en C de ce projet est la moins évidente pour qui
+lit la sortie plutôt que le C++ d'origine \(em dans le but que le C généré vaille la peine
+d'être lu en lui-même, et ne soit pas qu'un artefact de construction en route vers une
+cartouche. Ils couvrent :
+.IP \(bu 3
+Le champ pointeur de vtable dans la struct d'une classe, et l'endroit où les champs d'une
+struct cessent d'être les siens pour commencer à être aplatis depuis une classe de base
+(les struct du C n'ont pas d'héritage propre).
+.IP \(bu 3
+Le type struct de la vtable lui-même, et l'unique instance partagée vers laquelle le champ
+vtable de chaque objet d'une classe pointe.
+.IP \(bu 3
+Le paramètre explicite
+.B this
+que reçoit chaque méthode (le C n'a pas de paramètre d'objet implicite).
+.IP \(bu 3
+Les fonctions d'allocation/de libération auxquelles
+.B new
+/
+.B delete
+sont abaissés, et la répartition d'un destructeur virtuel à travers la vtable.
+.IP \(bu 3
+Un destructeur invoqué automatiquement en sortie de portée, un appel virtuel réparti à
+travers la vtable, et l'appel d'une expression
+.B new
+à son allocateur \(em chacun expliqué au site d'appel précis, et pas seulement là où la
+fonction sous-jacente est définie.
+.PP
+Pur commentaire : cela ne change jamais le code émis, seulement l'émission ou non d'un
+commentaire qui l'explique à côté \(em la sortie de `\-vv` est par ailleurs identique à
+celle de `\-v`. Chaque commentaire est détecté structurellement, à partir de motifs de
+noms et de formes que seul l'abaissement de ce projet produit (un suffixe décoré
+.IR __dtor__void  ;
+une chaîne d'accès de membres
+.IR \->vtable\->  ;
+un préfixe de nom de fonction
+.IR v32_new_ )
+\(em rien que le source C++ puisse déclencher par coïncidence.
+.SH FICHIERS
+.TP
+.I *.cpp
+Source d'entrée, dans le sous-ensemble de C++ qu'accepte cet outil.
+.TP
+.I *.hpp
+En-têtes C++, insérés dans l'unité de traduction lorsqu'ils sont inclus par
+.B #include
+(voir
+.BR \-I ).
+.TP
+.I *.c
+C Vircon32 généré, prêt à être confié directement au compilateur C de Vircon32.
+.TP
+.I *.xml
+Configuration de conditionnement de cartouche générée (voir
+.B CONDITIONNEMENT DE LA CARTOUCHE
+ci-dessus), prête pour l'étape de conditionnement des cartouches de Vircon32 elle-même.
+Non écrite si
+.B \-x
+/
+.B \-\-no\-xml
+a été donné.
+.TP
+.I *.c.debug
+Carte de débogage ligne de C/ligne de C++ générée (voir
+.B CARTES DE DÉBOGAGE
+ci-dessus). Écrite seulement si
+.B \-g
+a été donné.
+.PP
+La sortie générée peut référencer les propres en-têtes de la bibliothèque standard de
+Vircon32 (par exemple
+.I misc.h
+pour
+.B malloc
+et
+.BR free ,
+ou un en-tête vidéo/graphique pour des routines propres à la console) via des lignes
+.B #include
+reportées depuis l'entrée (ou depuis un en-tête
+.I .hpp
+inséré) par le passage direct du préprocesseur \(em ces en-têtes sont fournis par le SDK
+Vircon32, non par
+.BR v32c++ ,
+et doivent être disponibles là où le C généré est effectivement compilé.
+.SH ENVIRONNEMENT
+.TP
+.B V32CXX_INCLUDE
+Une liste de répertoires séparés par des deux-points où sont cherchées les inclusions de
+.I .hpp
+et
+.I .cpp
+après chaque répertoire de
+.B \-I
+(et, pour une inclusion entre guillemets, le répertoire courant), avant le répertoire
+d'en-têtes installé.
+.TP
+.B V32CXX_SDK_INCLUDE
+Une liste de répertoires séparés par des deux-points où sont cherchés les en-têtes
+.I .h
+transmis tels quels (après la recherche d'inclusions normale), de sorte que leurs macros
+et leurs noms de struct/typedef soient visibles de
+.BR v32c++ .
+Cherchée avant le dossier
+.I include
+voisin du
+.B compile
+de Vircon32 trouvé dans le
+.B PATH
+et avant
+.IR /usr/local/Vircon32/DevTools/include .
+.B \-v
+liste les dossiers parcourus.
+.SH FICHIERS (INSTALLATION)
+Où
+.B make sysinstall
+et
+.B cmake \-\-install
+(préfixe par défaut
+.IR /usr/local )
+placent les choses sous Linux et macOS :
+.TP
+.I /usr/local/bin/v32c++
+Le transpileur.
+.TP
+.I /usr/local/share/man/fr/man1/v32c++.1
+Cette page de manuel (la traduction française ; avec
+.B DEST_LANG=fr
+elle va directement dans
+.IR man1 ).
+.TP
+.I /usr/local/Vircon32/v32tools/include/v32c++
+Le répertoire d'en-têtes installé, contenant
+.I v32/
+et
+.IR libc/ ,
+cherché en dernier pour les inclusions de
+.I .hpp
+et
+.IR .cpp ,
+de sorte que
+.B #include <v32/video.hpp>
+n'a pas besoin de
+.BR \-I .
+Compilé dans le transpileur : par
+.I inc/config.h
+pour la construction par Makefile, à partir du préfixe d'installation pour celle par
+CMake. Son
+.I libc/
+(la bibliothèque C et curses) est cherché de la même façon pour l'entrée C, sans
+.BR \-I .
+.TP
+.I /usr/local/Vircon32/v32tools/docs/v32c++
+Les documents (selon
+.BR DEST_LANG  :
+toutes les langues par défaut ; avec
+.B DEST_LANG=fr
+seulement ceux traduits en français, sous des noms sans suffixe).
+.PP
+.I v32tools/
+est partagé par les outils communautaires de Vircon32 : les en-têtes de v32lua vont dans
+.IR v32tools/include/v32lua ,
+à côté de ceux-ci. Sous Windows, l'installation par CMake (préfixe par défaut
+.IR "C:\eProgram Files\eVircon32" )
+place le transpileur dans
+.IR v32tools ,
+les en-têtes et
+.I libc
+dans
+.I v32tools\einclude\ev32c++
+et les documents et cette page dans
+.IR v32tools\edocs\ev32c++ ,
+à côté des DevTools de Vircon32 ; ajoutez
+.I v32tools
+au
+.BR PATH .
+.SH VOIR AUSSI
+.BR v32lua (1),
+la documentation du compilateur C de Vircon32.
+.PP
+Dans la distribution des sources :
+.I README.fr.md
+(vue d'ensemble et limitations connues),
+.I docs/V32IO.fr.md
+(clavier et souris),
+.I docs/C_INPUT.fr.md
+(entrée C et
+.IR libc/ ),
+.IR docs/STRING.fr.md ,
+.I docs/GENERICS.fr.md
+.RB ( std::string ", " std::array ", " std::vector ),
+.IR docs/NATIVE_PASSTHROUGH.fr.md ,
+.IR docs/INLINE_ASSEMBLY_SUPPORT.fr.md ,
+.I docs/VIRCON32_QUIRKS.fr.md
+(chaque différence du C de Vircon32 et la façon dont elle est gérée) et
+.I docs/DESIGN_NOTES.md
+(fonctionnement interne et historique ; en anglais uniquement).
+.PP
+Pilotes, micrologiciel et correctifs d'émulateur de v32io :
+.I https://github.com/wedge1020/v32io
+.PP
+Dépôt du projet :
+.I https://github.com/wedge1020/v32cxx
+.SH BOGUES
+.B goto
+n'interagit pas correctement avec les destructeurs : sauter vers l'intérieur ou hors
+d'une portée contenant une variable locale vivante de type classe n'invoque pas le
+destructeur de cette variable comme le font déjà correctement
+.BR break / continue / return
+\(em il n'existe pas encore de passe équivalente pour
+.BR goto .
+Un
+.B goto
+vers une étiquette qui n'existe pas n'est pas signalé par
+.B v32c++
+(le compilateur Vircon32 le signale). Gardez
+.B goto
+dans des portées plates, sans variable locale destructible en jeu, jusqu'à ce que cela
+soit traité.
+.PP
+.B const
+n'est accepté que comme PRÉFIXE devant un type
+.RI ( "const int" ", " "const int *" ,
+pointeur vers const \(em l'objet pointé ne peut pas changer) ; un POINTEUR const lui-même
+.RI ( "int * const p" ,
+le pointeur ne peut pas être réaffecté) n'est pas pris en charge. Surtout, ce projet
+n'IMPOSE la const-correction nulle part où il accepte la syntaxe : pas d'erreur pour
+réaffecter une variable const, pas d'erreur pour écrire à travers
+.I this
+dans une fonction membre const, pas d'erreur pour appeler une méthode non const à travers
+une référence const. La syntaxe est acceptée et correctement émise dans le C généré \(em y
+compris, pour une fonction membre const, le type du paramètre
+.I this
+généré lui-même \(em, les vraies violations étant laissées au compilateur C/C++ en aval.
+.PP
+Le
+.B new
+de tableaux ne construit pas chaque élément et
+.B delete[]
+n'en détruit aucun ;
+.B delete[]
+à travers un pointeur de base vers un tableau d'une classe dérivée est indéfini. Les
+tableaux multidimensionnels d'objets sont construits mais non détruits en sortie de
+portée.
+.PP
+L'assembleur de Vircon32 rejette une chaîne contenant des codes de contrôle (1 à 8, 11, 12,
+14 à 31 et 127, ce qui inclut les caractères de tracé de cadres de la police du BIOS),
+parce que le compilateur les écrit bruts.
+.B v32c++
+déplace un tel littéral dans un tableau global caché de
+.B char
+.RB ( __v32_str0 ,
+\&...) et utilise celui-ci à sa place ; un littéral dans
+.B sizeof
+ou dans de l'assembleur en ligne n'est pas réécrit.
+Voir la particularité 28 de
+.IR docs/VIRCON32_QUIRKS.fr.md .
+.PP
+Une classe déclarée dans un espace de noms conserve son nom C nu
+.RI ( v32::String
+est émis sous le nom
+.IR String ),
+de sorte qu'une classe propre au programme portant le même nom qu'une classe des en-têtes
+de
+.B v32
+entre en collision dans le C généré.
+.PP
+Un type
+.B native
+peut être pointé mais pas créé : le source de v32c++ n'a aucun moyen d'allouer du stockage
+pour un tel type, le pointeur doit donc provenir de code C.
+.PP
+Une inclusion de
+.I .h
+non résolvable (le cas habituel quand les en-têtes du SDK ne sont pas à côté du source)
+est transmise chaque fois qu'elle apparaît, de sorte que deux en-têtes qui l'incluent tous
+deux produisent deux fois la même ligne
+.BR #include .
+.PP
+Signalez les problèmes, y compris tout ce que cet outil transpile incorrectement ou toute
+vraie fonctionnalité du C++ dont vous aimeriez voir la priorité relevée, via le dépôt du
+projet ci-dessus. Ce logiciel est en développement actif \(em voir
+.I docs/DESIGN_NOTES.md
+pour l'historique complet de ce qui a été trouvé et corrigé jusqu'ici, y compris de vrais
+bogues de compilateur détectés en chemin.
+.SH AUTEUR
+Matthew Haas

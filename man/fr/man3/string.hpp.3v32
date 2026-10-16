@@ -1,0 +1,118 @@
+'\" -*- coding: UTF-8 -*-
+.TH STRING.HPP 3v32 "16 octobre 2026" "v32c++ 20261016-dev" "Bibliothèque v32c++"
+.SH NOM
+v32/string.hpp \- v32::String, une chaîne à capacité fixe au-dessus du SDK de Vircon32
+.SH SYNOPSIS
+.nf
+.B #include <v32/string.hpp>
+.PP
+.B namespace v32 {
+.PP
+.B class String {
+.B "public:"
+.B "    String();"
+.BI "    String( int* " text " );"
+.B "    int  length();"
+.B "    int* c_str();"
+.BI "    int  at( int " index " );"
+.BI "    void assign( int* " text " );"
+.BI "    void append( int* " text " );"
+.BI "    void append_int( int " value ", int " base " );"
+.BI "    void append_float( float " value " );"
+.BI "    void operator+=( int* " text " );"
+.BI "    void operator=( int* " text " );"
+.BI "    bool equals( int* " text " );"
+.BI "    bool operator==( int* " text " );"
+.BI "    bool operator!=( int* " text " );"
+.BI "    void print_at_xy( int " x ", int " y " );"
+.B "    void print_current_point();"
+.B };
+.PP
+.B }
+.fi
+.SH DESCRIPTION
+.B v32::String
+contient jusqu'à 127 caractères dans un tableau de 128 mots à l'intérieur de l'objet ;
+elle n'a donc pas besoin du tas et peut être copiée sans risque. Elle est construite sur
+les
+.I string.h
+et
+.I video.h
+du SDK (voir
+.BR string.h (3v32)),
+que cet en-tête inclut.
+.PP
+Le
+.B std::string
+intégré (voir
+.BR v32c++\-string (3v32))
+est une alternative dotée de l'interface standard du C++, qui peut aussi être passée et
+retournée par valeur.
+.TP
+.BR String() ", " String( text )
+Une chaîne vide, ou une copie de
+.IR text .
+.TP
+.BR length ", " c_str
+La longueur, et les caractères sous forme d'un simple
+.B int*
+terminé par zéro pour les fonctions du SDK.
+.TP
+.B at
+Le caractère à
+.IR index ,
+ou 0 quand
+.I index
+est hors limites.
+.TP
+.BR assign ", " operator=
+Remplacent le contenu.
+.TP
+.BR append ", " operator+=
+Ajoutent du texte.
+.TP
+.B append_int
+Ajoute un nombre en base 2 à 16, tel que l'écrit
+.BR itoa (3v32).
+.TP
+.B append_float
+Ajoute un nombre avec jusqu'à 5 décimales, tel que l'écrit
+.BR ftoa (3v32)
+(0.999999 donne
+.BR 1 ).
+Une valeur de 2147483648 ou plus, ou inférieure à \-2147483648, que
+.B ftoa
+ne sait pas formater et sur laquelle il se bloque, ajoute à la place
+.B overflow
+ou
+.BR \-overflow .
+.TP
+.BR equals ", " operator== ", " operator!=
+Comparent à un texte.
+.TP
+.BR print_at_xy ", " print_current_point
+Dessinent la chaîne avec la police du BIOS, comme
+.BR print_at (3v32).
+.SH EXEMPLES
+.RS
+.nf
+#include <v32/string.hpp>
+
+void show_score( int score )
+{
+    v32::String s( "SCORE " );
+    s.append_int( score, 10 );
+    s += " PTS";
+    s.print_at_xy( 10, 10 );
+}
+.fi
+.RE
+.SH BOGUES
+Rien ne vérifie la capacité : un texte qui rend la chaîne plus longue que 127 caractères
+déborde de l'objet.
+.SH VOIR AUSSI
+.BR string.h (3v32),
+.BR v32c++\-string (3v32),
+.BR v32c++\-headers (3v32)
+.SH AUTEUR
+Matthew Haas

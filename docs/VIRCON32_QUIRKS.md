@@ -1,5 +1,7 @@
 # Vircon32-specific output quirks
 
+[Spanish version / en español](VIRCON32_QUIRKS.es.md) | [French version / en français](VIRCON32_QUIRKS.fr.md) <!-- langlinks -->
+
 Every place this project's generated C deliberately diverges from
 standard C, in one list, organized by quirk rather than by when it was
 discovered. `docs/DESIGN_NOTES.md` has the full round-by-round story of

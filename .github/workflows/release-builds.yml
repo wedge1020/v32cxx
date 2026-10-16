@@ -72,7 +72,7 @@ jobs:
           STALE=0
 
           # v32c++'s own pages are stamped; aliases (.so) have no .TH
-          for page in man/man1/*.1 man/man3/*.3v32; do
+          for page in man/man1/*.1 man/man3/*.3v32 man/es/man1/*.1 man/es/man3/*.3v32 man/fr/man1/*.1 man/fr/man3/*.3v32; do
             [ -f "$page" ] || continue
             grep -q '^\.TH .* "v32c++ [^"]*"' "$page" || continue
             if ! grep -q "^\.TH .*\"v32c++ $VERSION\"" "$page"; then
@@ -109,7 +109,7 @@ jobs:
             done
           done
           # every alias page points at a page that exists, in its own set
-          for root in man man/vircon32; do
+          for root in man man/vircon32 man/es man/fr; do
             for page in $root/man1/* $root/man3/*; do
               [ -f "$page" ] || continue
               first=$(head -n 1 "$page")
@@ -123,6 +123,12 @@ jobs:
               esac
             done
           done
+          # the Spanish and French trees mirror v32c++'s own English set
+          for lang in es fr; do
+            for page in man/man1/* man/man3/*; do
+              [ -f "man/$lang/${page#man/}" ] || { echo "::error::man/$lang/${page#man/} is missing (no translation or alias for $page)"; FAIL=1; }
+            done
+          done
           exit $FAIL
 
       # Advisory: mandoc's lint warnings are shown, but do not fail the run.
@@ -131,7 +137,7 @@ jobs:
         continue-on-error: true
         run: |
           sudo apt-get update && sudo apt-get install -y mandoc
-          mandoc -Tlint -Wwarning man/man1/*.1 man/man3/*.3v32 man/vircon32/man1/*.1 man/vircon32/man3/*.3v32 || true
+          mandoc -Tlint -Wwarning man/man1/*.1 man/man3/*.3v32 man/vircon32/man1/*.1 man/vircon32/man3/*.3v32 man/es/man1/*.1 man/es/man3/*.3v32 man/fr/man1/*.1 man/fr/man3/*.3v32 || true
 
   # (verify and cmake run alongside the builds, as separate results: they do
   # not hold the builds or the release back.)
@@ -239,8 +245,14 @@ jobs:
           done
           [ "$(readlink "$MAN/man3/ftoa.3v32.gz")" = "string.h.3v32.gz" ] || { echo "::error::ftoa(3v32) is not a link to string.h.3v32.gz"; exit 1; }
 
+          # the default install (DEST_LANG=all) also carries es and fr
+          for lang in es fr; do
+            [ -f "$MAN/$lang/man1/v32c++.1.gz" ] || { echo "::error::$lang/man1/v32c++.1.gz was not installed"; exit 1; }
+            [ "$(ls "$MAN/$lang"/man3/*.3v32.gz | wc -l | tr -d ' ')" = "$(ls man/$lang/man3/*.3v32 | wc -l | tr -d ' ')" ] || { echo "::error::not every $lang man3 page was installed"; exit 1; }
+          done
+
           # no dangling aliases
-          for link in "$MAN"/man1/*.gz "$MAN"/man3/*.gz; do
+          for link in "$MAN"/man1/*.gz "$MAN"/man3/*.gz "$MAN"/es/man*/*.gz "$MAN"/fr/man*/*.gz; do
             if [ -L "$link" ] && [ ! -e "$link" ]; then
               echo "::error::$link is a dangling link"; exit 1
             fi

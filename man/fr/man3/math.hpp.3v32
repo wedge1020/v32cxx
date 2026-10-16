@@ -1,0 +1,118 @@
+'\" -*- coding: UTF-8 -*-
+.TH MATH.HPP 3v32 "16 octobre 2026" "v32c++ 20261016-dev" "Bibliothèque v32c++"
+.SH NOM
+v32/math.hpp \- surcharges et aides C++ pour les mathématiques de Vircon32
+.SH SYNOPSIS
+.nf
+.B #include <v32/math.hpp>
+.PP
+.B namespace v32 {
+.PP
+.BI "int   minimum( int " a ", int " b " );"
+.BI "float minimum( float " a ", float " b " );"
+.BI "int   maximum( int " a ", int " b " );"
+.BI "float maximum( float " a ", float " b " );"
+.BI "int   absolute( int " a " );"
+.BI "float absolute( float " x " );"
+.BI "int   clamp( int " value ", int " low ", int " high " );"
+.BI "float clamp( float " value ", float " low ", float " high " );"
+.BI "int   sign( int " value " );"
+.BI "float sign( float " value " );"
+.PP
+.BI "float to_radians( float " degrees " );"
+.BI "float to_degrees( float " radians " );"
+.BI "float lerp( float " a ", float " b ", float " t " );"
+.BI "float distance( float " x1 ", float " y1 ", float " x2 ", float " y2 " );"
+.BI "float distance_squared( float " x1 ", float " y1 ", float " x2 ", float " y2 " );"
+.PP
+.B }
+.fi
+.SH DESCRIPTION
+.I v32/math.hpp
+inclut le
+.I math.h
+du SDK (voir
+.BR math.h (3v32)),
+dont les fonctions et constantes
+.RB ( pi ", " INT_MIN ", " INT_MAX )
+restent disponibles, et ajoute un nom surchargé pour chaque opération que le SDK écrit
+différemment selon le type.
+.TP
+.BR minimum ", " maximum ", " absolute
+Les
+.BR min / fmin ,
+.BR max / fmax
+et
+.BR abs / fabs
+du SDK, choisies d'après le type des arguments.
+.TP
+.B clamp
+.I value
+limitée à
+.IR low " .. " high .
+Quand
+.I low
+est supérieur à
+.IR high ,
+le résultat est
+.IR low .
+.TP
+.B sign
+\-1, 0 ou 1 (\-1.0, 0.0 ou 1.0).
+.TP
+.BR to_radians ", " to_degrees
+Conversion d'angles. Les fonctions trigonométriques du SDK et
+.BR set_drawing_angle (3v32)
+utilisent des radians.
+.TP
+.B lerp
+Interpolation linéaire :
+.I a
+quand
+.I t
+vaut 0,
+.I b
+quand il vaut 1.
+.TP
+.BR distance ", " distance_squared
+La distance entre deux points, et son carré (sans racine carrée, donc moins coûteux :
+comparez-le à
+.IR r * r ).
+.SH NOTES
+Un appel surchargé a besoin d'au moins un argument dont
+.BR v32c++ (1)
+connaît le type. Un appel dont les arguments sont tous des résultats de fonctions ou de
+macros du SDK
+.RB ( "v32::absolute( rand() )" )
+ne peut pas être résolu et constitue une erreur ; rangez d'abord la valeur dans une
+variable typée.
+.B v32::clamp( x, 0, screen_width )
+convient quand
+.I x
+est un
+.BR int .
+.SH EXEMPLES
+.RS
+.nf
+#include <v32/math.hpp>
+#include <v32/video.hpp>
+
+int ship_x = 320;
+
+void move_ship( int dx )
+{
+    ship_x = v32::clamp( ship_x + dx, 16, screen_width \- 16 );
+}
+
+float aim( float from_x, float from_y, float to_x, float to_y )
+{
+    float degrees = v32::to_degrees( atan2( to_y \- from_y, to_x \- from_x ) );
+    return v32::lerp( 0.0, degrees, 0.5 );
+}
+.fi
+.RE
+.SH VOIR AUSSI
+.BR math.h (3v32),
+.BR v32c++\-headers (3v32)
+.SH AUTEUR
+Matthew Haas

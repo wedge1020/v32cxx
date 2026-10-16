@@ -1,0 +1,176 @@
+'\" -*- coding: UTF-8 -*-
+.TH V32C++\-VECTOR 3v32 "16 octobre 2026" "v32c++ 20261016-dev" "Bibliothèque v32c++"
+.SH NOM
+v32c++\-vector \- std::vector dans v32c++, un conteneur extensible
+.SH SYNOPSIS
+.nf
+.B #include <vector>
+.PP
+.BI "std::vector< " T " > " nom ;
+.PP
+.BI "void push_back( const T& " value " );"
+.B  "void pop_back();"
+.B  "int  size();"
+.B  "int  capacity();"
+.B  "bool empty();"
+.BI "T&   operator[]( int " i " );"
+.BI "T&   at( int " i " );"
+.B  "T&   front();"
+.B  "T&   back();"
+.B  "T*   data();"
+.B  "T*   begin();"
+.B  "T*   end();"
+.BI "void reserve( int " n " );"
+.B  "void clear();"
+.BI "void resize( int " n " );"
+.BI "void resize( int " n ", const T& " value " );"
+.BI "T*   erase( T* " pos " );"
+.BI "T*   insert( T* " pos ", const T& " value " );"
+.fi
+.SH DESCRIPTION
+Comme
+.B std::array
+(voir
+.BR v32c++\-array (3v32)),
+.B std::vector
+est un type générique intégré : pour chaque type d'élément que nomme un programme, le
+transpileur écrit une classe ordinaire,
+.BI vector_ T
+dans le C généré
+.RB ( std::vector<int>
+est
+.BR vector_int ).
+.B #include <vector>
+active la fonctionnalité ; aucun fichier n'est lu. Les types d'éléments permis sont ceux
+de
+.BR std::array .
+.PP
+Le stockage provient du
+.B malloc
+et du
+.B free
+du SDK (voir
+.BR misc.h (3v32)).
+.SS Membres
+.TP
+.BR push_back ", " pop_back
+Ajoutent un élément à la fin, ou retirent le dernier. La capacité démarre à 4 et double
+quand elle est pleine.
+.TP
+.BR size ", " capacity ", " empty
+Le nombre d'éléments, la place allouée, et l'absence ou non d'éléments.
+.TP
+.BR operator[] ", " at ", " front ", " back
+Références vers des éléments ; pas de vérification des bornes.
+.TP
+.BR data ", " begin ", " end
+De simples pointeurs
+.BR T* .
+.TP
+.BR reserve ", " clear
+Font de la place pour
+.I n
+éléments ; retirent tous les éléments, en conservant le stockage.
+.TP
+.B resize
+Change le nombre d'éléments ; les nouveaux éléments sont remplis de zéros, ou sont des
+copies de
+.IR value .
+.TP
+.BR erase ", " insert
+Retirent l'élément à
+.IR pos ,
+ou insèrent
+.I value
+avant lui.
+.I pos
+est un pointeur :
+.BR "v.begin() + i" .
+.PP
+.B "a = b"
+copie les éléments. Le
+.B for
+sur intervalle fonctionne sur un vecteur, et les accesseurs sont écrits sur place dans le
+C généré sauf si
+.B \-\-no\-inline\-containers
+est donné à
+.BR v32c++ (1).
+.SS Différences avec le C++
+.IP \(bu 2
+Les éléments sont de la mémoire brute : ils sont copiés avec une simple affectation, et
+le vecteur n'exécute jamais le constructeur ni le destructeur d'un élément. Les nombres,
+les pointeurs, les struct simples et les classes dont le constructeur ne fait que
+renseigner des champs se comportent comme prévu, fonctions virtuelles comprises. Une
+classe dotée d'un destructeur reçoit un avertissement ; conservez plutôt des pointeurs
+vers de tels objets.
+.IP \(bu 2
+Les copies autres que
+.B "a = b"
+sont des erreurs :
+.BR "std::vector<T> b = a;" ,
+passer un vecteur par valeur et en retourner un par valeur laisseraient deux vecteurs
+propriétaires d'un même tampon. Passez
+.BR "std::vector<T> &" .
+.IP \(bu 2
+Un manque de mémoire n'est pas signalé. Appelez
+.B reserve
+quand la taille est connue ; l'agrandissement copie chaque élément.
+.IP \(bu 2
+Une référence ou un pointeur dans un vecteur devient invalide dès que le vecteur grandit,
+comme en C++.
+.IP \(bu 2
+Un vecteur de vecteurs exige une espace entre les chevrons fermants
+.RB ( "std::vector<std::vector<int> >" ),
+et ses vecteurs intérieurs sont de la mémoire brute comme tout autre élément : ils ne
+sont pas construits.
+.IP \(bu 2
+Un vecteur de niveau fichier est construit au début de
+.BR main .
+.SH EXEMPLES
+.RS
+.nf
+#include <vector>
+
+struct Bullet { int x; int y; int dy; };
+
+std::vector< Bullet > bullets;
+
+void fire( int x, int y )
+{
+    Bullet b;
+    b.x = x;
+    b.y = y;
+    b.dy = \-4;
+    bullets.push_back( b );
+}
+
+void update()
+{
+    for( int i = 0; i < bullets.size(); )
+    {
+        bullets[ i ].y += bullets[ i ].dy;
+        if( bullets[ i ].y < 0 )
+          bullets.erase( bullets.begin() + i );
+        else
+          i++;
+    }
+}
+
+void main()
+{
+    bullets.reserve( 32 );
+    fire( 100, 300 );
+    update();
+}
+.fi
+.RE
+.SH VOIR AUSSI
+.BR v32c++\-array (3v32),
+.BR v32c++\-string (3v32),
+.BR misc.h (3v32),
+.BR v32c++ (1)
+.PP
+.I docs/GENERICS.fr.md
+dans la distribution des sources de v32c++.
+.SH AUTEUR
+Matthew Haas

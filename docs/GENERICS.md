@@ -1,5 +1,7 @@
 # Transpiler-level generics: `std::array<T, N>` and `std::vector<T>`
 
+[Spanish version / en español](GENERICS.es.md) | [French version / en français](GENERICS.fr.md) <!-- langlinks -->
+
 v32c++ does not do templates. What it offers instead is a small set of
 *built-in* generic containers with STL-compatible spelling:
 `std::array<T, N>` and `std::vector<T>`. Both use the same machinery.

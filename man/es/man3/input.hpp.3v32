@@ -1,0 +1,101 @@
+'\" -*- coding: UTF-8 -*-
+.TH INPUT.HPP 3v32 "16 de octubre de 2026" "v32c++ 20261016-dev" "Biblioteca v32c++"
+.SH NOMBRE
+v32/input.hpp \- ayudas de C++ para los mandos de Vircon32
+.SH SINOPSIS
+.nf
+.B #include <v32/input.hpp>
+.PP
+.B namespace v32 {
+.PP
+.B "enum Button { ButtonA, ButtonB, ButtonX, ButtonY, ButtonL, ButtonR, ButtonStart };"
+.PP
+.B "bool connected();"
+.B "bool left();"
+.B "bool right();"
+.B "bool up();"
+.B "bool down();"
+.B "bool button_a();"
+.B "bool button_b();"
+.B "bool button_x();"
+.B "bool button_y();"
+.B "bool button_l();"
+.B "bool button_r();"
+.B "bool button_start();"
+.PP
+.BI "bool pressed( Button " button " );"
+.BI "int  button_frames_held( Button " button " );"
+.BI "int  button_frames_held( int " button " );"
+.BI "void direction( Point* " out " );"
+.PP
+.B class GamepadScope {
+.BI "    GamepadScope( int " gamepad_id " );"
+.B "    ~GamepadScope();"
+.B };
+.PP
+.B }
+.fi
+.SH DESCRIPCIÓN
+.I v32/input.hpp
+incluye el
+.I input.h
+del SDK (véase
+.BR input.h (3v32))
+y
+.IR v32/video.hpp ,
+para
+.BR v32::Point .
+Todos los lectores se aplican al mando seleccionado.
+.TP
+.B connected
+Si hay un mando conectado al puerto seleccionado.
+.TP
+.BR left ", " right ", " up ", " down ", " button_a " ... " button_start
+Si el control está pulsado ahora mismo. Las funciones del SDK, que devuelven recuentos
+de fotogramas, siguen disponibles para medir tiempos: un recuento de 1 significa
+«recién pulsado».
+.TP
+.B pressed
+Si un
+.B Button
+está pulsado.
+.TP
+.B button_frames_held
+El recuento de fotogramas del SDK para un botón: positivo mientras está pulsado,
+negativo mientras está suelto (véase
+.BR input.h (3v32)).
+La sobrecarga de
+.B int
+toma el valor numérico de un
+.BR Button ,
+de modo que un bucle de 0 a 6 no necesita conversión. Un valor fuera de 0 a 6 devuelve
+0.
+.TP
+.B direction
+Guarda en
+.I *out
+la dirección de la cruceta: \-1, 0 o 1 en cada eje, con izquierda y arriba negativos.
+.SS GamepadScope
+Un guardián de ámbito: el constructor recuerda el mando seleccionado y selecciona
+.IR gamepad_id ;
+el destructor vuelve a seleccionar el recordado.
+.SH EJEMPLOS
+.RS
+.nf
+#include <v32/input.hpp>
+
+void read_player( int gamepad, v32::Point* move, bool* fire )
+{
+    v32::GamepadScope pad( gamepad );
+    v32::direction( move );
+    *fire = v32::button_frames_held( v32::ButtonA ) == 1;
+}
+.fi
+.RE
+.SH VÉASE TAMBIÉN
+.BR input.h (3v32),
+.BR video.hpp (3v32),
+.BR keyboard.hpp (3v32),
+.BR v32c++\-headers (3v32)
+.SH AUTOR
+Matthew Haas

@@ -1,5 +1,7 @@
 # Inline assembly support for v32c++
 
+[Spanish version / en español](INLINE_ASSEMBLY_SUPPORT.es.md) | [French version / en français](INLINE_ASSEMBLY_SUPPORT.fr.md) <!-- langlinks -->
+
 ## Goal
 
 Let  v32c++ source  contain inline  assembly, passing  it through  to the

@@ -1,0 +1,179 @@
+'\" -*- coding: UTF-8 -*-
+.TH MOUSE.HPP 3v32 "16 octobre 2026" "v32c++ 20261016-dev" "Bibliothèque v32c++"
+.SH NOM
+v32/mouse.hpp \- v32::Mouse, une souris v32io sur un port de manette
+.SH SYNOPSIS
+.nf
+.B #include <v32/mouse.hpp>
+.PP
+.B namespace v32 {
+.PP
+.B "enum MouseButton { MouseLeft = 1, MouseRight = 2, MouseMiddle = 4, MouseAny = 7 };"
+.PP
+.BI "int mouse_counter( int " raw ", int " negative ", int " positive ","
+.BI "                   int " high ", int " low " );"
+.BI "int mouse_steps( int " before ", int " after " );"
+.BI "int mouse_buttons( int " raw " );"
+.PP
+.B class Mouse {
+.BI "    Mouse( int " gamepad " );"
+.B  "    bool probe();"
+.B  "    int  x();"
+.B  "    int  y();"
+.BI "    void position( int* " out_x ", int* " out_y " );"
+.B  "    int  dx();"
+.B  "    int  dy();"
+.BI "    void delta( int* " out_dx ", int* " out_dy " );"
+.B  "    int  steps_x();"
+.B  "    int  steps_y();"
+.BI "    void set_position( int " new_x ", int " new_y " );"
+.BI "    void set_bounds( int " min_x ", int " min_y ", int " max_x ", int " max_y " );"
+.BI "    void set_scale( int " scale " );"
+.B  "    int  scale();"
+.BI "    bool is_down( int " button " );"
+.BI "    bool pressed( int " button " );"
+.BI "    bool released( int " button " );"
+.B  "    int  buttons();"
+.B  "    int  last_event();"
+.B  "    bool connected();"
+.B  "    int  port();"
+.B  "    IoDevice* device();"
+.B };
+.PP
+.B }
+.fi
+.SH DESCRIPTION
+.B v32::Mouse
+décode une souris v32io (le protocole
+.BR v32mouse )
+reliée à un port de manette, et tient une position de pointeur à partir de son
+mouvement. Elle nécessite un périphérique v32io \(em l'adaptateur matériel ou un
+émulateur modifié \(em comme décrit dans
+.BR v32io.hpp (3v32),
+que cet en-tête inclut. Appelez
+.B probe
+une fois à chaque image.
+.PP
+Le pointeur démarre au centre de l'écran, se déplace de 2 pixels par pas du périphérique
+et reste dans l'écran, sauf modification par
+.BR set_position ,
+.B set_scale
+et
+.BR set_bounds .
+Il n'y a pas de molette ; le bouton du milieu est le clic de la molette.
+.SS Membres
+.TP
+.B probe
+Lit le périphérique : calcule le mouvement depuis le dernier sondage, déplace le
+pointeur et met à jour les boutons. Retourne true si la souris a bougé ou si un bouton a
+changé. À l'image où la manette devient connectée, aucun mouvement n'est pris en compte.
+.TP
+.BR x ", " y ", " position
+Le pointeur.
+.B position
+range les deux, en ignorant un pointeur
+.BR NULL .
+.TP
+.BR dx ", " dy ", " delta
+Le mouvement du dernier sondage, en pixels (pas multipliés par l'échelle), rapporté même
+lorsque le pointeur a été arrêté par ses bornes, ce qui convient aux commandes de
+« regard à la souris ».
+.TP
+.BR steps_x ", " steps_y
+Le même mouvement en pas du périphérique, de \-5 à 5.
+.TP
+.B set_position
+Place le pointeur, dans ses bornes.
+.TP
+.B set_bounds
+Le rectangle dans lequel se déplace le pointeur, bornes incluses ; le pointeur y est
+ramené aussitôt.
+.TP
+.BR set_scale ", " scale
+Pixels par pas ; les valeurs inférieures à 1 sont ignorées.
+.TP
+.B is_down
+Indique si un bouton du masque est maintenu
+.RB ( MouseLeft ,
+.BR MouseAny ,
+\&...).
+.TP
+.BR pressed ", " released
+Indiquent si un bouton du masque a été enfoncé, ou relâché, au dernier sondage. Le
+périphérique maintient chaque changement de bouton pendant au moins 25 ms, de sorte
+qu'un clic même rapide dure plus d'une image.
+.TP
+.B buttons
+Tous les boutons maintenus, sous forme de bits de
+.BR MouseButton .
+.TP
+.B last_event
+La valeur du compteur d'images du dernier mouvement ou changement de bouton, ou \-1
+avant tout événement.
+.TP
+.BR connected ", " port ", " device
+La connexion de la manette, son port et le
+.B IoDevice
+sous-jacent.
+.SS Fonctions de décodage
+.TP
+.B mouse_counter
+La position, de 0 à 11, d'un compteur de mouvement dans les commandes empaquetées, étant
+donné les masques de ses quatre commandes ; \-1 si elles ne forment pas une position
+valide.
+.TP
+.B mouse_steps
+Le mouvement d'une position de compteur à une autre, de \-5 à 5. Un saut de 6, qui ne
+peut être distingué de \-6, et les positions inconnues comptent comme une absence de
+mouvement.
+.TP
+.B mouse_buttons
+Les bits de
+.B MouseButton
+maintenus dans les commandes empaquetées.
+.SH PROTOCOLE
+Le mouvement n'est pas envoyé sous forme de distances mais de deux compteurs, un par
+axe, chacun parcourant un cycle de 12 positions ; chaque pas change exactement une
+commande. Un compteur est un code de Gray sur 2 bits (X et Y pour le compteur
+horizontal, L et R pour le vertical) accompagné d'une valeur à trois états sur une paire
+de directions opposées (Gauche et Droite, Haut et Bas ; jamais les deux appuyées). Les
+boutons sont Start (milieu), A (gauche) et B (droit). Comme le mouvement se mesure en
+comparant deux images, au plus 5 pas par axe peuvent être vus par image.
+.SH EXEMPLES
+.RS
+.nf
+#include <v32/mouse.hpp>
+#include <v32/video.hpp>
+
+v32::Mouse mouse( v32::SecondGamepadPort );
+
+void main()
+{
+    select_texture( \-1 );
+    while( true )
+    {
+        mouse.probe();                          // à chaque image
+
+        if( mouse.pressed( v32::MouseLeft ) )
+          clear_screen( color_black );
+
+        if( mouse.is_down( v32::MouseLeft ) )
+        {
+            select_region( 20 );                // un bloc plein
+            draw_region_at( mouse.x(), mouse.y() );
+        }
+        end_frame();
+    }
+}
+.fi
+.RE
+.SH VOIR AUSSI
+.BR v32io.hpp (3v32),
+.BR keyboard.hpp (3v32),
+.BR Vircon32 (1),
+.BR v32c++\-headers (3v32)
+.PP
+.I docs/V32IO.fr.md
+dans la distribution des sources de v32c++.
+.SH AUTEUR
+Matthew Haas

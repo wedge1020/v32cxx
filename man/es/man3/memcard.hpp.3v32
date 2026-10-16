@@ -1,0 +1,127 @@
+'\" -*- coding: UTF-8 -*-
+.TH MEMCARD.HPP 3v32 "16 de octubre de 2026" "v32c++ 20261016-dev" "Biblioteca v32c++"
+.SH NOMBRE
+v32/memcard.hpp \- v32::MemoryCard, una ranura de guardado con firma comprobada
+.SH SINOPSIS
+.nf
+.B #include <v32/memcard.hpp>
+.PP
+.B namespace v32 {
+.PP
+.B "enum MemoryCardLayout {"
+.B "    CardWords = 262144, SignatureWords = 20, CardDataWords = 262124"
+.B "};"
+.PP
+.B  "bool card_present();"
+.B  "bool card_blank();"
+.BI "bool card_matches( int* " signature " );"
+.BI "void read_card_signature( int* " out_signature " );"
+.BI "void write_card_signature( int* " signature " );"
+.PP
+.B class MemoryCard {
+.BI "    MemoryCard( int* " game_signature_words " );"
+.B  "    bool connected();"
+.B  "    bool is_blank();"
+.B  "    bool is_ours();"
+.B  "    bool claim();"
+.BI "    bool load( int* " destination ", int " offset ", int " words " );"
+.BI "    bool save( int* " source ", int " offset ", int " words " );"
+.B };
+.PP
+.B }
+.fi
+.SH DESCRIPCIÓN
+.I v32/memcard.hpp
+incluye el
+.I memcard.h
+del SDK (véase
+.BR memcard.h (3v32)).
+Las firmas se pasan como arreglos simples de 20
+.BR int s;
+un inicializador de literal de cadena llena uno, rellenando con ceros:
+.PP
+.RS
+.nf
+int signature[ 20 ] = "SPACEGAME\-SAVE\-1";
+.fi
+.RE
+.SS Funciones
+.TP
+.B card_present
+Si hay una tarjeta insertada.
+.TP
+.B card_blank
+Si la firma de la tarjeta es toda de ceros (ningún juego la ha reclamado).
+.TP
+.B card_matches
+Si la tarjeta lleva la firma dada.
+.TP
+.BR read_card_signature ", " write_card_signature
+Leen o escriben la firma de la tarjeta.
+.SS MemoryCard
+Un área de guardado para un juego, identificada por su firma. Solo se conserva un
+puntero al arreglo de la firma, así que el arreglo debe sobrevivir al objeto. Cada
+método comprueba de nuevo que haya una tarjeta conectada, ya que puede retirarse en
+cualquier momento.
+.PP
+A diferencia de
+.BR card_read_data " y " card_write_data
+del SDK, cuyos desplazamientos cuentan desde el inicio de la tarjeta (firma incluida),
+.B load
+y
+.B save
+cuentan desde la primera palabra tras la firma, de 0 a
+.BR CardDataWords \-1,
+de modo que los datos del juego no pueden sobrescribir la firma.
+.TP
+.B connected
+Si hay una tarjeta insertada.
+.TP
+.B is_blank
+Hay una tarjeta insertada y ningún juego la ha reclamado.
+.TP
+.B is_ours
+Hay una tarjeta insertada y lleva la firma de este juego.
+.TP
+.B claim
+Escribe la firma de este juego en una tarjeta en blanco. Devuelve false, sin escribir
+nada, cuando la tarjeta pertenece a otro juego; true cuando la tarjeta estaba en blanco
+o ya era de este juego.
+.TP
+.BR load ", " save
+Copian
+.I words
+palabras entre la RAM y el área de datos de la tarjeta en
+.IR offset .
+Devuelven false, sin tocar nada, a menos que la tarjeta sea de este juego y el rango
+quede dentro del área de datos.
+.SH EJEMPLOS
+.RS
+.nf
+#include <v32/memcard.hpp>
+#include <v32/misc.hpp>
+
+int signature[ 20 ] = "SPACEGAME\-SAVE\-1";
+int progress[ 4 ];
+
+void main()
+{
+    v32::MemoryCard card( signature );
+
+    if( card.is_blank() )
+      card.claim();
+
+    if( !card.load( progress, 0, 4 ) )
+      v32::fill_words( progress, 0, 4 );
+
+    progress[ 0 ] += 1;            // veces jugado
+    card.save( progress, 0, 4 );
+}
+.fi
+.RE
+.SH VÉASE TAMBIÉN
+.BR memcard.h (3v32),
+.BR misc.hpp (3v32),
+.BR v32c++\-headers (3v32)
+.SH AUTOR
+Matthew Haas

@@ -1,0 +1,228 @@
+'\" -*- coding: UTF-8 -*-
+.TH V32TERM 3v32 "16 de octubre de 2026" "v32c++ 20261016-dev" "Biblioteca v32c++"
+.SH NOMBRE
+v32term \- una pantalla de texto de 80\(mu24, lectura del mando y teclado en pantalla
+.SH SINOPSIS
+.nf
+.B #include <v32term.h>     \fR/* también lo incluyen v32libc.c y curses.h */
+.B #include <v32libc.c>
+.PP
+.B "#define V32TERM_COLS 80"
+.B "#define V32TERM_ROWS 24"
+.B "#define V32TERM_REVERSE  0x0100"
+.B "#define V32TERM_INK(n)   ((n) << 12)"
+.PP
+.B "void v32term_init( void );"
+.B "void v32term_clear( void );"
+.BI "void v32term_set( int " y ", int " x ", int " cell " );"
+.BI "int  v32term_get( int " y ", int " x " );"
+.BI "int  v32term_find( char *" text ", int " first_row ", int " last_row " );"
+.B "void v32term_flush( void );"
+.B "void v32term_redraw( void );"
+.B "void v32term_frame( void );"
+.PP
+.BI "void v32term_goto( int " y ", int " x " );"
+.BI "void v32term_attr( int " attr " );"
+.BI "void v32term_putc( int " c " );"
+.BI "void v32term_puts( char *" s " );"
+.PP
+.BI "void v32term_text( int " y ", int " x ", char *" s ", int " attr " );"
+.BI "void v32term_fill( int " y ", int " x ", int " h ", int " w ", int " cell " );"
+.BI "void v32term_box( int " y ", int " x ", int " h ", int " w ", int " attr " );"
+.BI "void v32term_save( int *" buffer " );"
+.BI "void v32term_restore( int *" buffer " );"
+.PP
+.B "void v32pad_poll( void );"
+.BI "int  v32pad_hit( int " button " );"
+.BI "int  v32pad_down( int " button " );"
+.BI "int  v32pad_held_frames( int " button " );"
+.B "int  v32pad_any_hit( void );"
+.PP
+.B "extern int (*v32term_key_source)( void );"
+.B "int  v32term_getkey( void );"
+.B "int  v32osk_getkey( void );"
+.BI "int  v32osk_getkey_titled( char *" title " );"
+.fi
+.SH DESCRIPCIÓN
+.SS La pantalla
+La pantalla de 640\(mu360 de la consola y los caracteres de 10\(mu20 de la fuente de la BIOS
+dan solo 64\(mu18 caracteres. Este terminal usa en cambio celdas de 8\(mu15 píxeles, de modo
+que 80 columnas por 24 filas \(em el tamaño que suponen los programas de terminal \(em llenan
+la pantalla exactamente. Los glifos de la BIOS se ajustan a las celdas más pequeñas sin perder
+trazos.
+.PP
+Una celda es una palabra: el carácter en sus 8 bits bajos, más bits de atributo:
+.B V32TERM_REVERSE
+(negro sobre el color) y
+.BI V32TERM_INK( n )
+para un color de la paleta:
+.BR V32INK_DEFAULT ,
+.BR RED ,
+.BR GREEN ,
+.BR YELLOW ,
+.BR BLUE ,
+.BR MAGENTA ,
+.BR CYAN ,
+.BR WHITE ,
+.BR GRAY ,
+.BR ORANGE ,
+.BR BROWN ,
+.B DIM
+y
+.B DKGREEN
+(de 0 a 12, cada nombre con el prefijo
+.BR V32INK_ ).
+Los caracteres 17 a 20 son los bloques de sombreado de la fuente de la BIOS, desde un cuarto
+de los píxeles encendidos hasta sólido
+.RB ( V32TERM_SHADE_LIGHT ", " _HALF ", " _DARK ", " _SOLID ).
+.PP
+El terminal recuerda lo último que dibujó y repinta solo las celdas que cambiaron, ya que la
+consola conserva la pantalla entre fotogramas. Los cambios aparecen en el siguiente
+.BR v32term_flush ,
+que ocurre siempre que el programa espera una tecla o un fotograma.
+.TP
+.BR v32term_init ", " v32term_clear
+Preparan las regiones de la fuente (se hace automáticamente en el primer uso); dejan en
+blanco todas las celdas.
+.TP
+.BR v32term_set ", " v32term_get
+Escriben o leen una celda (fila
+.IR y ,
+columna
+.IR x ).
+.TP
+.B v32term_find
+1 si
+.I text
+aparece en cualquier fila desde
+.I first_row
+hasta
+.IR last_row ,
+y 0 en caso contrario.
+.TP
+.BR v32term_flush ", " v32term_redraw ", " v32term_frame
+Dibujan las celdas modificadas; olvidan lo que hay en pantalla para que el siguiente volcado
+pinte todo; vuelcan y esperan al siguiente fotograma.
+.SS Salida de teletipo
+Aquello en lo que escriben
+.B printf
+y
+.BR putchar :
+un cursor que se ajusta en el borde derecho y desplaza el contenido en la parte inferior.
+Se respetan
+.BR \en ,
+.BR \er ,
+.B \eb
+(una columna atrás) y
+.B \et
+(hasta el siguiente múltiplo de 8); los demás caracteres de control se ignoran.
+.TP
+.BR v32term_goto ", " v32term_attr
+Mueven el cursor; establecen los atributos de lo que se escriba a partir de ahora.
+.TP
+.BR v32term_putc ", " v32term_puts
+Escriben un carácter o una cadena en el cursor.
+.SS Dibujo directo
+Para menús y ventanas emergentes.
+.TP
+.B v32term_text
+Escribe una cadena en una posición, con atributos, sin mover el cursor.
+.TP
+.BR v32term_fill ", " v32term_box
+Rellenan un rectángulo de
+.I h
+filas por
+.I w
+columnas con una celda; dibujan un recuadro de
+.BR + ,
+.B \-
+y
+.B |
+alrededor de un rectángulo en blanco.
+.TP
+.BR v32term_save ", " v32term_restore
+Copian las 1920 celdas hacia o desde
+.I buffer
+(de
+.B V32TERM_CELLS
+palabras), para devolver lo que cubría una ventana emergente.
+.SS Mando
+.B v32pad_poll
+vuelca la pantalla, termina el fotograma y lee el mando 1 (puerto 0). Las demás funciones
+informan de la última lectura, para los botones
+.BR V32PAD_LEFT ", " RIGHT ", " UP ", " DOWN ", " A ", " B ", " X ", " Y ,
+.BR L ", " R " y " START
+(cada uno con el prefijo
+.BR V32PAD_ ).
+.TP
+.B v32pad_hit
+True en la primera lectura que encuentra el botón pulsado y, para las cuatro direcciones,
+de nuevo a un ritmo constante mientras sigue pulsado (autorrepetición).
+.TP
+.BR v32pad_down ", " v32pad_held_frames
+Si el botón está pulsado; cuántas lecturas seguidas lleva pulsado (0 si está suelto).
+.TP
+.B v32pad_any_hit
+True cuando acaba de pulsarse cualquier botón que no sea una dirección.
+.SS Teclas
+Los programas leen teclas mediante
+.BR v32term_getkey ,
+que vuelca la pantalla y llama a
+.BR v32term_key_source .
+Por defecto es el teclado en pantalla; un programa con su propia idea de cómo debe escribir
+el mando (un juego que asigna botones a órdenes) lo apunta a su propia función, y aún puede
+llamar a
+.B v32osk_getkey
+para los casos que no gestiona.
+.TP
+.BR v32osk_getkey ", " v32osk_getkey_titled
+Muestran el teclado en pantalla, con un título opcional en su borde, y devuelven un
+carácter: la cruceta mueve, A escribe la tecla resaltada, B es Escape, X Retroceso, Y
+Espacio, L Mayús y R Ctrl para la siguiente tecla, y Start es Intro
+.RB ( V32KEY_ESC ", " V32KEY_BACKSPACE ", " V32KEY_ENTER ).
+.SH EJEMPLOS
+Un menú manejado con la cruceta:
+.PP
+.RS
+.nf
+#include <stdio.h>
+#include <v32libc.c>
+
+char *items[ 3 ] = { "New game", "Load game", "Quit" };
+
+int menu( void )
+{
+    int choice = 0;
+    int i;
+
+    for( ;; )
+    {
+        for( i = 0; i < 3; i++ )
+            v32term_text( 10 + i, 30, items[ i ],
+                          i == choice ? V32TERM_REVERSE : 0 );
+        v32pad_poll();
+        if( v32pad_hit( V32PAD_UP ) && choice > 0 )
+            choice\-\-;
+        if( v32pad_hit( V32PAD_DOWN ) && choice < 2 )
+            choice++;
+        if( v32pad_hit( V32PAD_A ) || v32pad_hit( V32PAD_START ) )
+            return choice;
+    }
+}
+
+int main( void )
+{
+    v32term_clear();
+    v32term_box( 8, 26, 7, 20, V32TERM_INK( V32INK_CYAN ) );
+    printf( "You chose %d\en", menu() );
+    return 0;
+}
+.fi
+.RE
+.SH VÉASE TAMBIÉN
+.BR v32libc (3v32),
+.BR v32curses (3v32),
+.BR video.h (3v32),
+.BR input.h (3v32)
+.SH AUTOR
+Matthew Haas

@@ -1,0 +1,176 @@
+'\" -*- coding: UTF-8 -*-
+.TH V32C++\-VECTOR 3v32 "16 de octubre de 2026" "v32c++ 20261016-dev" "Biblioteca v32c++"
+.SH NOMBRE
+v32c++\-vector \- std::vector en v32c++, un contenedor que puede crecer
+.SH SINOPSIS
+.nf
+.B #include <vector>
+.PP
+.BI "std::vector< " T " > " nombre ;
+.PP
+.BI "void push_back( const T& " value " );"
+.B  "void pop_back();"
+.B  "int  size();"
+.B  "int  capacity();"
+.B  "bool empty();"
+.BI "T&   operator[]( int " i " );"
+.BI "T&   at( int " i " );"
+.B  "T&   front();"
+.B  "T&   back();"
+.B  "T*   data();"
+.B  "T*   begin();"
+.B  "T*   end();"
+.BI "void reserve( int " n " );"
+.B  "void clear();"
+.BI "void resize( int " n " );"
+.BI "void resize( int " n ", const T& " value " );"
+.BI "T*   erase( T* " pos " );"
+.BI "T*   insert( T* " pos ", const T& " value " );"
+.fi
+.SH DESCRIPCIÓN
+Como
+.B std::array
+(véase
+.BR v32c++\-array (3v32)),
+.B std::vector
+es un tipo genérico integrado: por cada tipo de elemento que nombra un programa, el
+transpilador escribe una clase corriente,
+.BI vector_ T
+en el C generado
+.RB ( std::vector<int>
+es
+.BR vector_int ).
+.B #include <vector>
+activa la característica; no se lee ningún archivo. Los tipos de elemento permitidos son
+los de
+.BR std::array .
+.PP
+El almacenamiento procede del
+.B malloc
+y el
+.B free
+del SDK (véase
+.BR misc.h (3v32)).
+.SS Miembros
+.TP
+.BR push_back ", " pop_back
+Añaden un elemento al final, o quitan el último. La capacidad empieza en 4 y se duplica
+cuando se llena.
+.TP
+.BR size ", " capacity ", " empty
+El número de elementos, el espacio reservado y si no hay elementos.
+.TP
+.BR operator[] ", " at ", " front ", " back
+Referencias a elementos; sin comprobación de límites.
+.TP
+.BR data ", " begin ", " end
+Punteros
+.B T*
+simples.
+.TP
+.BR reserve ", " clear
+Hacen sitio para
+.I n
+elementos; quitan todos los elementos, conservando el almacenamiento.
+.TP
+.B resize
+Cambia el número de elementos; los elementos nuevos se rellenan con ceros, o son copias
+de
+.IR value .
+.TP
+.BR erase ", " insert
+Quitan el elemento en
+.IR pos ,
+o insertan
+.I value
+delante de él.
+.I pos
+es un puntero:
+.BR "v.begin() + i" .
+.PP
+.B "a = b"
+copia los elementos. El
+.B for
+basado en rango funciona sobre un vector, y los accesores se escriben en su sitio en el C
+generado salvo que se dé
+.B \-\-no\-inline\-containers
+a
+.BR v32c++ (1).
+.SS Diferencias con C++
+.IP \(bu 2
+Los elementos son memoria en bruto: se copian dentro con una asignación simple, y el
+vector nunca ejecuta el constructor ni el destructor de un elemento. Los números, los
+punteros, las struct simples y las clases cuyo constructor solo establece campos se
+comportan como se espera, funciones virtuales incluidas. Una clase con destructor
+recibe una advertencia; guarda en su lugar punteros a tales objetos.
+.IP \(bu 2
+Las copias distintas de
+.B "a = b"
+son errores:
+.BR "std::vector<T> b = a;" ,
+pasar un vector por valor y devolver uno por valor dejarían dos vectores propietarios
+de un mismo búfer. Pasa
+.BR "std::vector<T> &" .
+.IP \(bu 2
+No se informa de que se agote la memoria. Llama a
+.B reserve
+cuando se conozca el tamaño; crecer copia cada elemento.
+.IP \(bu 2
+Una referencia o puntero a un vector deja de ser válido cuando el vector crece, como en
+C++.
+.IP \(bu 2
+Un vector de vectores necesita un espacio entre los corchetes angulares de cierre
+.RB ( "std::vector<std::vector<int> >" ),
+y sus vectores interiores son memoria en bruto como cualquier otro elemento: no se
+construyen.
+.IP \(bu 2
+Un vector a nivel de archivo se construye al principio de
+.BR main .
+.SH EJEMPLOS
+.RS
+.nf
+#include <vector>
+
+struct Bullet { int x; int y; int dy; };
+
+std::vector< Bullet > bullets;
+
+void fire( int x, int y )
+{
+    Bullet b;
+    b.x = x;
+    b.y = y;
+    b.dy = \-4;
+    bullets.push_back( b );
+}
+
+void update()
+{
+    for( int i = 0; i < bullets.size(); )
+    {
+        bullets[ i ].y += bullets[ i ].dy;
+        if( bullets[ i ].y < 0 )
+          bullets.erase( bullets.begin() + i );
+        else
+          i++;
+    }
+}
+
+void main()
+{
+    bullets.reserve( 32 );
+    fire( 100, 300 );
+    update();
+}
+.fi
+.RE
+.SH VÉASE TAMBIÉN
+.BR v32c++\-array (3v32),
+.BR v32c++\-string (3v32),
+.BR misc.h (3v32),
+.BR v32c++ (1)
+.PP
+.I docs/GENERICS.es.md
+en la distribución del código fuente de v32c++.
+.SH AUTOR
+Matthew Haas

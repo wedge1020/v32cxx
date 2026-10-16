@@ -1,0 +1,129 @@
+'\" -*- coding: UTF-8 -*-
+.TH VIDEO.HPP 3v32 "16 octobre 2026" "v32c++ 20261016-dev" "Bibliothèque v32c++"
+.SH NOM
+v32/video.hpp \- aides C++ pour le GPU de Vircon32
+.SH SYNOPSIS
+.nf
+.B #include <v32/video.hpp>
+.PP
+.B namespace v32 {
+.PP
+.B "enum BlendMode { BlendAlpha = 0x20, BlendAdd = 0x21, BlendSubtract = 0x22 };"
+.PP
+.BI "void clear_screen_rgb( int " r ", int " g ", int " b " );"
+.BI "void print_xy( int " x ", int " y ", int* " text " );"
+.BI "void draw( int " region_id ", int " x ", int " y " );"
+.BI "void draw_scaled( int " region_id ", int " x ", int " y ", float " scale " );"
+.BI "void set_blending( BlendMode " mode " );"
+.BI "void screen_center( Point* " out " );"
+.PP
+.B class TextureScope {
+.BI "    TextureScope( int " texture_id " );"
+.B "    ~TextureScope();"
+.B };
+.PP
+.B class Point {
+.B "public:"
+.B "    int x;"
+.B "    int y;"
+.B "    Point();"
+.BI "    Point( int " px ", int " py " );"
+.BI "    void add( const Point& " other " );"
+.B };
+.PP
+.B }
+.fi
+.SH DESCRIPTION
+.I v32/video.hpp
+inclut le
+.I video.h
+du SDK (voir
+.BR video.h (3v32)),
+dont les fonctions, couleurs et constantes restent disponibles telles quelles, et ajoute
+ce qui suit dans l'espace de noms
+.BR v32 .
+.SS Fonctions
+.TP
+.B clear_screen_rgb
+Efface l'écran avec une couleur opaque donnée en rouge, vert et bleu, de 0 à 255.
+.TP
+.B print_xy
+Identique à
+.BR print_at .
+.TP
+.B draw
+Sélectionne la région
+.I region_id
+de la texture sélectionnée et la dessine avec son point d'ancrage en
+.RI ( x ", " y ).
+.TP
+.B draw_scaled
+Pareil, mis à l'échelle
+.I scale
+dans les deux directions. Laisse l'échelle de dessin fixée à
+.IR scale .
+.TP
+.B set_blending
+Définit le mode de mélange à partir d'un
+.BR BlendMode .
+.TP
+.B screen_center
+Range le centre de l'écran, (320, 180), dans
+.IR *out .
+.SS TextureScope
+Un gardien de portée pour la texture sélectionnée : le constructeur mémorise la texture
+sélectionnée et sélectionne
+.IR texture_id  ;
+le destructeur, exécuté quand le gardien sort de la portée par n'importe quel chemin,
+sélectionne de nouveau celle qui était mémorisée. Déclarez-le comme variable locale.
+.SS Point
+Une paire de coordonnées
+.BR int ,
+(0, 0) par défaut.
+.B add
+ajoute un autre point à celui-ci sur place. Suivant la règle d'un mot pour les
+paramètres et les résultats, les fonctions qui produisent un point prennent un
+.B Point*
+à remplir au lieu d'en retourner un.
+.SH EXEMPLES
+.RS
+.nf
+#include <v32/video.hpp>
+#include <v32/time.hpp>
+
+#define TEX_SPRITES 0
+#define REG_SHIP    1
+
+void draw_hud()
+{
+    v32::TextureScope bios( \-1 );     // la texture de la police du BIOS
+    v32::print_xy( 10, 10, "SCORE 0" );
+}                                     // la texture 0 est de nouveau sélectionnée
+
+void main()
+{
+    select_texture( TEX_SPRITES );
+    select_region( REG_SHIP );
+    define_region_center( 0, 0, 31, 31 );
+
+    v32::Point center;
+    v32::screen_center( &center );
+
+    while( true )
+    {
+        v32::clear_screen_rgb( 0, 0, 40 );
+        v32::draw( REG_SHIP, center.x, center.y );
+        draw_hud();
+        end_frame();
+    }
+}
+.fi
+.RE
+.SH VOIR AUSSI
+.BR video.h (3v32),
+.BR input.hpp (3v32),
+.BR string.hpp (3v32),
+.BR v32c++\-headers (3v32),
+.BR v32c++ (1)
+.SH AUTEUR
+Matthew Haas

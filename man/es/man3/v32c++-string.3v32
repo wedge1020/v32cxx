@@ -1,0 +1,220 @@
+'\" -*- coding: UTF-8 -*-
+.TH V32C++\-STRING 3v32 "16 de octubre de 2026" "v32c++ 20261016-dev" "Biblioteca v32c++"
+.SH NOMBRE
+v32c++\-string \- std::string en v32c++, una cadena de capacidad fija
+.SH SINOPSIS
+.nf
+.BR "#define V32_STRING_CAPACITY 63" "    (el valor por defecto)"
+.B #include <string>
+.PP
+.B namespace std {
+.PP
+.B class string {
+.B "    string();"
+.BI "    string( const char* " text " );"
+.BI "    string( const char* " text ", int " count " );"
+.BI "    string( int " count ", char " c " );"
+.BI "    string( const string& " other ", int " pos ", int " count " = \-1 );"
+.PP
+.B "    int  size(), length(), capacity(), max_size();"
+.B "    bool empty();"
+.B "    void clear();"
+.BI "    void resize( int " count ", char " c " = 0 );"
+.BI "    void reserve( int " n " );"
+.B "    void shrink_to_fit();"
+.PP
+.BI "    char& operator[]( int " i " );"
+.BI "    char& at( int " i " );"
+.B "    char& front(), back();"
+.B "    const char* c_str(), data();"
+.B "    char* begin(), end();"
+.PP
+.BI "    void push_back( char " c " );"
+.B "    void pop_back();"
+.B "    string& append( ... );       \fR// texto, texto+cuenta, cadena,"
+.B "                                 \fR// subcadena, cuenta+carácter"
+.B "    string& operator+=( ... );   \fR// cadena, texto, carácter"
+.B "    string& operator=( ... );    \fR// cadena, texto, carácter"
+.B "    string& assign( ... );       \fR// texto, cadena, cuenta+carácter"
+.BI "    string& erase( int " pos " = 0, int " count " = \-1 );"
+.BI "    string& insert( int " pos ", ... );   " "// texto, cadena, cuenta+carácter"
+.BI "    string& replace( int " pos ", int " count ", ... );   " "// texto, cadena"
+.PP
+.BI "    int  find( ... , int " pos " = 0 );    " "// texto, cadena, carácter"
+.B "    int  rfind( ... );                 \fR// texto, cadena, carácter"
+.BI "    int  find_first_of( const char* " set ", int " pos " = 0 );"
+.BI "    int  find_first_not_of( const char* " set ", int " pos " = 0 );"
+.BI "    int  find_last_of( const char* " set " );"
+.BI "    int  find_last_not_of( const char* " set " );"
+.B "    bool starts_with( ... ), ends_with( ... );   \fR// texto, cadena"
+.BI "    string substr( int " pos " = 0, int " count " = \-1 );"
+.B "    int  compare( ... );               \fR// texto, cadena"
+.B "    bool operator==, !=, <, >, <=, >=;   \fR// contra una cadena o un texto"
+.B "    string operator+( ... );           \fR// cadena, texto, carácter"
+.B };
+.PP
+.B "std::string::npos     \fR// \-1"
+.PP
+.BI "string operator+( const char* " text ", const string& " s " );"
+.BI "bool   operator==( const char* " text ", const string& " s " );"
+.BI "bool   operator!=( const char* " text ", const string& " s " );"
+.BI "string to_string( int " value " );"
+.BI "string to_string( float " value " );"
+.BI "int    stoi( const string& " s " );"
+.BI "float  stof( const string& " s " );"
+.PP
+.B }
+.fi
+.SH DESCRIPCIÓN
+.B #include <string>
+da a un programa
+.BR std::string .
+No existe tal archivo: la clase está integrada en
+.BR v32c++ (1)
+y se transpila con el programa como cualquier otra clase.
+.PP
+Los miembros se comportan como en el C++ estándar, con estas diferencias.
+.SS Capacidad fija
+Los caracteres se guardan dentro del objeto, en un arreglo de
+.B V32_STRING_CAPACITY
++ 1 palabras. La cadena nunca reserva memoria, y eso es lo que hace segura su copia:
+v32c++ no tiene constructores de copia y copia los objetos palabra a palabra, así que
+una cadena que apuntara a memoria dinámica se liberaría dos veces. Por tanto, las
+cadenas pueden asignarse, pasarse y devolverse por valor, y guardarse en clases y en
+.BR std::vector .
+.PP
+La capacidad es de 63 caracteres salvo que se defina
+.B V32_STRING_CAPACITY
+antes de la inclusión, o en la línea de órdenes
+.RB ( "v32c++ \-D V32_STRING_CAPACITY=127" ).
+Es un único ajuste para todo el programa. Cada cadena ocupa capacidad + 2 palabras sea
+cual sea su longitud, así que pasa las cadenas como
+.B "const std::string &"
+siempre que sea posible y no pongas una capacidad mayor de la necesaria.
+.PP
+El texto que hiciera una cadena más larga que su capacidad se descarta en silencio;
+.B size()
+nunca supera
+.BR capacity() .
+.B reserve
+y
+.B shrink_to_fit
+no hacen nada.
+.SS Sin excepciones
+Los tamaños y las posiciones son
+.BR int ,
+y
+.B std::string::npos
+es \-1.
+.BR at ,
+.BR front ,
+.B back
+y
+.B operator[]
+no comprueban su índice. Las posiciones fuera de rango se acotan donde resulta barato
+.RB ( substr ,
+.BR erase ,
+.BR insert );
+en otro caso se usa el índice tal como se da.
+.SS Conversiones
+Un literal de cadena se convierte en un
+.B std::string
+dondequiera que lo convertiría C++: una inicialización, un argumento por valor o por
+.BR "const &" ,
+un valor de retorno, un argumento de constructor,
+.B push_back
+en un vector de cadenas. La única excepción es una conversión en la condición o el paso
+de un bucle
+.RB ( "while( count( \(dqx\(dq ) < n )" ),
+que es un error: construye la cadena en una variable antes del bucle.
+.PP
+.B c_str()
+y
+.B data()
+devuelven
+.BR "const char *" ;
+v32c++ descarta el
+.B const
+cuando el puntero se pasa a una función de C, de modo que
+.B print_at( 10, 10, s.c_str() )
+funciona tal como está escrito.
+.SS Números
+.TP
+.B to_string( int )
+Los dígitos decimales, con signo menos cuando es negativo.
+.TP
+.B to_string( float )
+Siempre seis decimales, redondeados como C++
+.RB ( 2.500000 ;
+0.9999996 es
+.BR 1.000000 ).
+.TP
+.BR stoi ", " stof
+Saltan los espacios iniciales, leen un signo opcional y los dígitos (y, en el caso de
+.BR stof ,
+un punto decimal y decimales), y se detienen en cualquier otra cosa. No toman argumentos
+de posición ni de base, y devuelven 0 cuando no hay dígitos.
+.SS Otros
+El
+.B for
+basado en rango recorre los caracteres
+.RB ( "for( char c : name )" ).
+.B "using namespace std;"
+o
+.B "using std::string;"
+permiten escribir
+.BR string ;
+lo primero hace visibles todos los nombres de
+.BR std ,
+no solo
+.BR string .
+Los iteradores son
+.BR "char *" ;
+no hay nombre de tipo
+.BR string::iterator ,
+ni iterador inverso, ni
+.BR size_t .
+No hay flujos,
+.BR getline ,
+.BR string_view ,
+cadenas anchas ni
+.BR std::swap .
+.SH EJEMPLOS
+.RS
+.nf
+#include <string>
+#include "video.h"
+
+std::string label( int score )
+{
+    std::string text = "SCORE ";
+    text += std::to_string( score );
+    return text;
+}
+
+void main()
+{
+    std::string name = "PLAYER 1";
+    if( name.starts_with( "PLAYER" ) )
+      name.replace( 0, 6, "P" );            // "P 1"
+
+    print_at( 10, 10, label( 1500 ).c_str() );
+    print_at( 10, 40, name.c_str() );
+}
+.fi
+.RE
+.SH ERRORES
+.B to_string( float )
+convierte la parte entera a un
+.BR int ,
+así que los valores de 2147483648 o más salen mal.
+.SH VÉASE TAMBIÉN
+.BR v32c++\-vector (3v32),
+.BR string.hpp (3v32),
+.BR string.h (3v32),
+.BR v32c++ (1)
+.PP
+.I docs/STRING.es.md
+en la distribución del código fuente de v32c++.
+.SH AUTOR
+Matthew Haas
