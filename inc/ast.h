@@ -834,6 +834,15 @@ struct AstNode {
     int ival;
     double fval;
 
+    /* 1 on an `unsigned` type (an AST_IDENT built from `unsigned`,
+     * `unsigned int`, `unsigned char`...) and on an integer literal that
+     * is unsigned (a `u` suffix, or a value above INT_MAX). Vircon32 has
+     * one integer type, a signed word, so the type is plain `int` in the
+     * generated C and sema treats it as `int` everywhere; the flag exists
+     * only so that lower.c knows a `>>` on it must stay a logical shift
+     * (see the signed right shift in lower.c, docs/VIRCON32_QUIRKS.md #14). */
+    int is_unsigned;
+
     /* AST_INT_LIT / AST_FLOAT_LIT / AST_CHAR_LIT only: the object-like
      * macro this literal came from (`#define MAX 5` ... `MAX`), or NULL.
      * The pre-scan expands every macro before parsing, so the parser sees

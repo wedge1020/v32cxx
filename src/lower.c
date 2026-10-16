@@ -6123,6 +6123,261 @@ static void v32_split_compound_stmt(AstNode **slot, AstNode *cls, LocalVarType *
         "Vircon32 C evaluates that target twice");
 }
 
+/* ---- signed right shift (phase 11) -------------------------------------
+ *
+ * Vircon32's CPU has one shift instruction, SHL, and a negative count
+ * shifts right LOGICALLY: `-8 >> 1` is 0x7FFFFFFC, not -4. C leaves `>>`
+ * on a negative int implementation-defined, but every compiler people test
+ * against shifts arithmetically, so a signed `>>` is rewritten here:
+ *
+ *      x >> n   ->   ((x ^ s) >> n) ^ s       with s = -(x >> 31)
+ *
+ * s is 0 for x >= 0 and -1 for x < 0 (the inner `>> 31` is the logical one
+ * and gives 0 or 1). For a negative x, ~x is non-negative, so shifting it
+ * logically IS arithmetic, and complementing the result gives floor(x/2^n)
+ * -- the arithmetic shift. For x >= 0 s is 0 and nothing changes. n = 0 is
+ * fine (the two xors cancel); like C, n must be 0..31.
+ *
+ * x appears three times, so it is only written out when it is a cheap,
+ * side-effect-free expression (a variable, a member, an element...). Any
+ * other x goes through one call of __v32_sar(x, n), emitted once at the
+ * top of the file when it is used. `x >>= n` becomes `x = x >> n`
+ * rewritten the same way (Vircon32 C evaluates the target of a compound
+ * assignment twice itself, see #25, and the statement-level split of phase
+ * 11 has already made a side-effecting target safe by now).
+ *
+ * Left alone: operands that are `unsigned` (their `>>` is logical in C
+ * too; see AstNode.is_unsigned), values known to be non-negative (a
+ * literal, `x & 0xFF`, a comparison), and everything under
+ * --no-signed-shift. Two constants are folded. */
+
+static int g_sar_needed = 0;
+
+static const AstNode *v32_plain_type(const AstNode *t) {
+    t = resolve_typedef_chain(t);
+    while (t != NULL && t->kind == AST_CONST_TYPE) t = resolve_typedef_chain(t->a);
+    return t;
+}
+
+/* Is this expression (after C's usual conversions) unsigned? Unknown
+ * types count as signed: the Vircon32 library's own values all are. */
+static int v32_expr_unsigned(const AstNode *e, AstNode *cls, LocalVarType *locals) {
+    if (e == NULL) return 0;
+    switch (e->kind) {
+        case AST_INT_LIT:
+            return e->is_unsigned;
+        case AST_CAST: {
+            const AstNode *t = v32_plain_type(e->type);
+            return t != NULL && t->kind == AST_IDENT && t->is_unsigned;
+        }
+        case AST_BINOP: {
+            const char *op = e->str1;
+            if (op == NULL) return 0;
+            if (strcmp(op, ">>") == 0 || strcmp(op, "<<") == 0)
+                return v32_expr_unsigned(e->a, cls, locals);
+            if (strcmp(op, "+") == 0 || strcmp(op, "-") == 0 || strcmp(op, "*") == 0 ||
+                strcmp(op, "/") == 0 || strcmp(op, "%") == 0 || strcmp(op, "&") == 0 ||
+                strcmp(op, "|") == 0 || strcmp(op, "^") == 0)
+                return v32_expr_unsigned(e->a, cls, locals) || v32_expr_unsigned(e->b, cls, locals);
+            return 0;
+        }
+        case AST_UNOP:
+            if (e->str1 != NULL && (strcmp(e->str1, "neg") == 0 || strcmp(e->str1, "~") == 0 ||
+                                    v32_is_step(e)))
+                return v32_expr_unsigned(e->a, cls, locals);
+            break;
+        case AST_ASSIGN:
+            return v32_expr_unsigned(e->a, cls, locals);
+        default:
+            break;
+    }
+    const AstNode *t = v32_plain_type(infer_expr_type(e, cls, locals));
+    return t != NULL && t->kind == AST_IDENT && t->is_unsigned;
+}
+
+/* Provably >= 0 for a signed int? (Only the cheap, common cases.) */
+static int v32_expr_nonneg(const AstNode *e) {
+    if (e == NULL) return 0;
+    switch (e->kind) {
+        case AST_INT_LIT:  return e->ival >= 0;
+        case AST_CHAR_LIT: return e->ival >= 0;
+        case AST_BOOL_LIT: return 1;
+        case AST_SIZEOF:   return 1;
+        case AST_UNOP:     return e->str1 != NULL && strcmp(e->str1, "!") == 0;
+        case AST_BINOP: {
+            const char *op = e->str1;
+            if (op == NULL) return 0;
+            if (!strcmp(op, "==") || !strcmp(op, "!=") || !strcmp(op, "<") || !strcmp(op, ">") ||
+                !strcmp(op, "<=") || !strcmp(op, ">=") || !strcmp(op, "&&") || !strcmp(op, "||"))
+                return 1;
+            if (!strcmp(op, "&"))
+                return (e->a != NULL && e->a->kind == AST_INT_LIT && e->a->ival >= 0) ||
+                       (e->b != NULL && e->b->kind == AST_INT_LIT && e->b->ival >= 0);
+            return 0;
+        }
+        default:
+            return 0;
+    }
+}
+
+/* An operand cheap and pure enough to write out three times. */
+static int v32_shift_cheap(const AstNode *e, int depth) {
+    if (e == NULL || depth > 3) return 0;
+    switch (e->kind) {
+        case AST_IDENT:
+        case AST_INT_LIT:
+        case AST_CHAR_LIT:
+        case AST_BOOL_LIT:
+            return 1;
+        case AST_MEMBER:
+            return v32_shift_cheap(e->a, depth + 1);
+        case AST_UNOP:
+            return e->str1 != NULL && strcmp(e->str1, "deref") == 0 && v32_shift_cheap(e->a, depth + 1);
+        case AST_SUBSCRIPT:
+            return v32_shift_cheap(e->a, depth + 1) && v32_shift_cheap(e->b, depth + 1);
+        default:
+            return 0;
+    }
+}
+
+/* The value of a constant integer expression (a literal, optionally
+ * negated), or 0 if it is not one. */
+static int v32_const_int(const AstNode *e, int *out) {
+    if (e == NULL) return 0;
+    if (e->kind == AST_INT_LIT || e->kind == AST_CHAR_LIT) { *out = e->ival; return 1; }
+    if (e->kind == AST_UNOP && e->str1 != NULL && strcmp(e->str1, "neg") == 0) {
+        int v;
+        if (v32_const_int(e->a, &v)) { *out = -v; return 1; }
+    }
+    return 0;
+}
+
+static AstNode *v32_bin(const char *op, AstNode *a, AstNode *b, int line) {
+    AstNode *n = ast_new(AST_BINOP, line);
+    n->str1 = strdup(op);
+    n->a = a;
+    n->b = b;
+    return n;
+}
+
+/* `x >> n` as an arithmetic shift. `x` is consumed (and cloned where it
+ * is repeated). */
+static AstNode *v32_make_sar(AstNode *x, AstNode *n, int line) {
+    if (!v32_shift_cheap(x, 0)) {
+        g_sar_needed = 1;
+        AstNode *call = ast_new(AST_CALL, line);
+        call->a = ast_ident("__v32_sar", line);
+        ast_list_append(&call->list, x);
+        ast_list_append(&call->list, n);
+        return call;
+    }
+    AstNode *sign = ast_new(AST_UNOP, line);
+    sign->str1 = strdup("neg");
+    sign->a = v32_bin(">>", ast_clone_expr(x), tern_int(31, line), line);
+    AstNode *inner = v32_bin("^", x, sign, line);
+    return v32_bin("^", v32_bin(">>", inner, n, line), ast_clone_expr(sign), line);
+}
+
+/* `(x >> n) & mask` with a non-negative constant mask that fits in the
+ * 32 - n bits a logical shift leaves (`(state >> 16) & 32767`, `(c >> 4) &
+ * 15`): the bits an arithmetic shift would fill in are masked off again, so
+ * the plain shift is right and costs one instruction. The shift is marked
+ * (is_unsigned on a `>>` node means "leave it") for v32_signed_shift. */
+static void v32_mark_masked_shift(AstNode *and_node) {
+    if (and_node->str1 == NULL || strcmp(and_node->str1, "&") != 0) return;
+    for (int side = 0; side < 2; side++) {
+        AstNode *lit = side == 0 ? and_node->b : and_node->a;
+        AstNode *sh  = side == 0 ? and_node->a : and_node->b;
+        int nv;
+        if (lit == NULL || lit->kind != AST_INT_LIT || lit->ival < 0) continue;
+        if (sh == NULL || sh->kind != AST_BINOP || sh->str1 == NULL || strcmp(sh->str1, ">>") != 0) continue;
+        if (!v32_const_int(sh->b, &nv) || nv < 1 || nv > 31) continue;
+        if (((unsigned)lit->ival >> (32 - nv)) == 0) sh->is_unsigned = 1;
+    }
+}
+
+/* Rewrites `*slot` (a `>>` BINOP, or a `>>=` ASSIGN) when it shifts a
+ * signed value. */
+static void v32_signed_shift(AstNode **slot, AstNode *cls, LocalVarType *locals) {
+    AstNode *n = *slot;
+    if (!g_signed_shift || n == NULL || n->str1 == NULL) return;
+    int compound = (n->kind == AST_ASSIGN && strcmp(n->str1, ">>=") == 0);
+    if (!compound && !(n->kind == AST_BINOP && strcmp(n->str1, ">>") == 0)) return;
+    if (n->kind == AST_BINOP && n->is_unsigned) return;      /* masked, see above */
+    if (v32_expr_unsigned(n->a, cls, locals)) return;
+    int line = n->line;
+
+    int xv, nv;
+    int have_n = v32_const_int(n->b, &nv);
+    if (!compound) {
+        if (have_n && nv == 0) { *slot = n->a; return; }                  /* x >> 0 */
+        if (v32_expr_nonneg(n->a)) return;
+        if (have_n && v32_const_int(n->a, &xv) && nv > 0 && nv < 32) {    /* -8 >> 1 */
+            AstNode *lit = tern_int(xv >> nv, line);
+            *slot = (xv >> nv) < 0 ? NULL : lit;
+            if (*slot == NULL) {                                          /* a negative constant: -(...) */
+                AstNode *neg = ast_new(AST_UNOP, line);
+                neg->str1 = strdup("neg");
+                neg->a = tern_int(-(xv >> nv), line);
+                *slot = neg;
+            }
+            lower_note(line, "folded a constant `>>` of a negative value (Vircon32's shift is logical)");
+            return;
+        }
+        lower_note(line, "rewrote a signed `>>` as an arithmetic shift (Vircon32's shift is logical; "
+                         "--no-signed-shift to keep it, or use `unsigned`)");
+        *slot = v32_make_sar(n->a, n->b, line);
+        return;
+    }
+    /* x >>= n  ->  x = (x >> n, arithmetic) */
+    if (have_n && nv == 0) return;                                         /* no change at all */
+    lower_note(line, "rewrote a signed `>>=` as an arithmetic shift (Vircon32's shift is logical; "
+                     "--no-signed-shift to keep it, or use `unsigned`)");
+    AstNode *rhs = v32_make_sar(ast_clone_expr(n->a), n->b, line);
+    free(n->str1);
+    n->str1 = strdup("=");
+    n->b = rhs;
+}
+
+/* The one function every non-trivial operand goes through. Added to the
+ * top of the program after the rewrite, so it is not itself rewritten. */
+static void v32_add_sar_helper(AstNode *program) {
+    if (!g_sar_needed) return;
+    int line = 0;
+    AstNode *fn = ast_new(AST_FUNC_DEF, line);
+    fn->str1 = strdup("__v32_sar");
+    fn->type = ast_ident("int", line);
+    fn->access = ACC_PUBLIC;
+    AstNode *px = ast_new(AST_PARAM, line);
+    px->str1 = strdup("x");
+    px->type = ast_ident("int", line);
+    AstNode *pn = ast_new(AST_PARAM, line);
+    pn->str1 = strdup("n");
+    pn->type = ast_ident("int", line);
+    ast_list_append(&fn->list, px);
+    ast_list_append(&fn->list, pn);
+    AstNode *body = ast_new(AST_BLOCK, line);
+    AstNode *sdecl = ast_new(AST_VAR_DECL, line);
+    sdecl->str1 = strdup("s");
+    sdecl->type = ast_ident("int", line);
+    AstNode *neg = ast_new(AST_UNOP, line);
+    neg->str1 = strdup("neg");
+    neg->a = v32_bin(">>", ast_ident("x", line), tern_int(31, line), line);
+    sdecl->a = neg;
+    ast_list_append(&body->list, sdecl);
+    AstNode *ret = ast_new(AST_RETURN, line);
+    ret->a = v32_bin("^", v32_bin(">>", v32_bin("^", ast_ident("x", line), ast_ident("s", line), line),
+                                  ast_ident("n", line), line),
+                     ast_ident("s", line), line);
+    ast_list_append(&body->list, ret);
+    fn->a = body;
+    AstList out = ast_list_new();
+    ast_list_append(&out, fn);
+    for (int i = 0; i < program->list.count; i++) ast_list_append(&out, program->list.items[i]);
+    program->list = out;
+    g_sar_needed = 0;
+}
+
 static void v32_compat_expr(AstNode **slot, AstNode *cls, LocalVarType *locals) {
     AstNode *n = *slot;
     if (n == NULL) return;
@@ -6134,12 +6389,14 @@ static void v32_compat_expr(AstNode **slot, AstNode *cls, LocalVarType *locals) 
     }
     switch (n->kind) {
         case AST_BINOP:
+            v32_mark_masked_shift(n);
             v32_compat_expr(&n->a, cls, locals);
             v32_compat_expr(&n->b, cls, locals);
             if (v32_op_decays(n->str1)) {
                 v32_decay_array(&n->a, cls, locals);
                 v32_decay_array(&n->b, cls, locals);
             }
+            v32_signed_shift(slot, cls, locals);
             break;
         case AST_ASSIGN:
             v32_compat_expr(&n->a, cls, locals);
@@ -6147,6 +6404,7 @@ static void v32_compat_expr(AstNode **slot, AstNode *cls, LocalVarType *locals) 
             if (n->str1 != NULL && strcmp(n->str1, "=") == 0) {
                 v32_unconst_read(&n->b, cls, locals);
             }
+            v32_signed_shift(slot, cls, locals);
             break;
         case AST_SUBSCRIPT:
             v32_compat_expr(&n->a, cls, locals);
@@ -7563,6 +7821,7 @@ static void cxx_hoist_strings(AstNode *program) {
 
 int lower_run(AstNode *program) {
     g_hoisted_names = NULL;                 /* phase 12/12b's literal table: per run */
+    g_sar_needed = 0;
     lower_notes_reset(); /* always start this run's log empty -- see
         lower_notes_print's own doc comment */
     compute_struct_layouts(&program->list);
@@ -7622,6 +7881,7 @@ int lower_run(AstNode *program) {
         if (errors > 0) return errors;
         v32_compat_classes(&program->list);           /* phase 11 */
         v32_compat_free_functions(&program->list);
+        v32_add_sar_helper(program);                  /* phase 11, signed >> */
         if (g_c_mode) c_input_fixups(program);        /* phase 12 */
         else cxx_hoist_strings(program);              /* phase 12b */
     }

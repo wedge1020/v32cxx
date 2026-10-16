@@ -1,4 +1,4 @@
-.TH V32C++ 1 "October 15, 2026" "v32c++ 20261015-dev" "User Commands"
+.TH V32C++ 1 "October 16, 2026" "v32c++ 20261015-dev" "User Commands"
 .SH NAME
 v32c++ \- transpile a subset of C++ to Vircon32 C
 .SH SYNOPSIS
@@ -18,6 +18,7 @@ v32c++ \- transpile a subset of C++ to Vircon32 C
 .RB [ \-g ]
 .RB [ \-\-target=vircon32 | standard ]
 .RB [ \-\-reject\-bit\-fields ]
+.RB [ \-\-no\-signed\-shift ]
 .RB [ \-\-no\-inline\-containers ]
 .I input.cpp
 .br
@@ -231,6 +232,25 @@ and
 instead of writing each one in place as a direct access to the
 container's fields. Slower on the console; useful for reading the
 generated C next to the class it came from.
+.TP
+.B \-\-no\-signed\-shift
+Print
+.B >>
+and
+.B >>=
+as written. Vircon32's only shift is logical, so by default a right shift
+of a signed value is rewritten into an arithmetic one, as C does
+.RI ( "\-8 >> 1" " is " \-4 ):
+a few extra instructions per shift, or a call for an operand that is not
+a plain variable or member. A value declared
+.B unsigned
+is shifted logically, as in C, and is never rewritten, nor is a constant
+or a shift masked by a small non-negative constant
+.RI ( "(x >> 4) & 15" ).
+Use this flag when every shifted value is known to be non-negative and the
+extra code costs too much. No effect under
+.BR \-\-target=standard ,
+which never rewrites it.
 .TP
 .B \-\-reject\-bit\-fields
 Treat a bit-field member
@@ -618,7 +638,7 @@ names, the rest are dropped or merged);
 .BR unsigned ", " signed ", " short " and " long
 as the one 32-bit integer type
 .RB ( unsigned
-with a warning); bit-fields, as full words with a warning (see
+with a warning: its \fB>>\fR stays logical, but \fB/\fR, \fB%\fR and comparisons behave as signed above INT_MAX); bit-fields, as full words with a warning (see
 .BR \-\-reject\-bit\-fields ).
 .PP
 .B dynamic_cast

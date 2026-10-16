@@ -95,6 +95,16 @@ static char *take_lit_macro(void) {
     return m;
 }
 
+/* Is this integer literal unsigned? A `u` suffix says so, and so does a
+ * value above INT_MAX (a 32-bit pattern with the top bit set: 0xFFFFFFFF,
+ * 4000000000). A negative macro constant never is. Only lower.c's
+ * right-shift handling reads it (AstNode.is_unsigned). */
+static int lit_unsigned_flag(const char *text, unsigned long v);
+#define lit_unsigned(text, v) (g_lit_negate ? 0 : lit_unsigned_flag((text), (v)))
+static int lit_unsigned_flag(const char *text, unsigned long v) {
+    return strpbrk(text, "uU") != NULL || v > 0x7FFFFFFFUL;
+}
+
 /* The sign a "@NAME@-" annotation folded away, applied to the literal. */
 #define LIT_SIGN (g_lit_negate ? -1 : 1)
 
@@ -277,7 +287,7 @@ ALNUM   [A-Za-z0-9_]
 "switch"     { g_last_ident_sym = NULL; return SWITCH; }
 "case"       { g_last_ident_sym = NULL; return CASE; }
 "default"    { g_last_ident_sym = NULL; return DEFAULT; }
-"int"        { g_last_ident_sym = NULL; return INT_KW; }
+"int"        { g_last_ident_sym = NULL; yylval.ival = 0; return INT_KW; }
 "float"      { g_last_ident_sym = NULL; return FLOAT_KW; }
     /* `double` and `long double` are `float`: Vircon32 has exactly one
      * floating-point type, a 32-bit float (its C compiler accepts
@@ -362,12 +372,14 @@ ALNUM   [A-Za-z0-9_]
      * identifier. */
 ("unsigned"|"signed"|"short"|"long")([ \t]+("unsigned"|"signed"|"short"|"long"|"int"|"char"))*/[^A-Za-z0-9_]  {
     g_last_ident_sym = NULL;
+    yylval.ival = (strstr(yytext, "unsigned") != NULL);   /* the type remembers it: see AstNode.is_unsigned */
     if (strstr(yytext, "unsigned") != NULL) {
         static int warned = 0;
         if (!warned) {
             fprintf(stderr, "%s:%d: warning: `unsigned` is treated as plain int "
-                    "(Vircon32 has only a signed 32-bit integer): >>, /, %% and "
-                    "comparisons behave as signed (reported once)\n",
+                    "(Vircon32 has only a signed 32-bit integer): /, %% and "
+                    "comparisons behave as signed; >> on it stays a logical shift "
+                    "(reported once)\n",
                     g_current_filename, g_lex_lineno);
             warned = 1;
         }
@@ -452,6 +464,7 @@ ALNUM   [A-Za-z0-9_]
      * (see lib/string). */
     g_last_ident_sym = NULL;
     yylval.lit.ival = -1;
+    yylval.lit.uns = 0;
     yylval.lit.macro = NULL;
     return INT_LITERAL;
 }
@@ -510,7 +523,13 @@ ALNUM   [A-Za-z0-9_]
     return IDENTIFIER;
 }
 
-{DIGIT}+"."{DIGIT}+([eE][+-]?{DIGIT}+)?[fF]?  {
+{DIGIT}+"."{DIGIT}*([eE][+-]?{DIGIT}+)?[fF]?  |
+"."{DIGIT}+([eE][+-]?{DIGIT}+)?[fF]?          |
+{DIGIT}+[eE][+-]?{DIGIT}+[fF]?  {
+    /* Every C float spelling: 3.9, 3., .5, 1e3, 1.5e-3, 2E+2, and any of
+     * them with an f suffix. (Only `digits . digits` used to match, so 1e3,
+     * 5. and .5 were syntax errors; codegen prints a fixed-point form,
+     * since Vircon32 C has no exponent -- docs/VIRCON32_QUIRKS.md #16.) */
     /* Trailing f/F (real C++'s own "this is a float, not a double"
      * suffix) is matched and simply ignored -- atof() itself already
      * stops at the first character it can't parse, so `atof("3.9f")`
@@ -536,6 +555,7 @@ ALNUM   [A-Za-z0-9_]
      * on for atof(). */
     g_last_ident_sym = NULL;
     yylval.lit.ival = LIT_SIGN * (int)strtol(yytext, NULL, 16);
+    yylval.lit.uns = lit_unsigned(yytext, strtoul(yytext, NULL, 16));
     yylval.lit.macro = take_lit_macro();
     return INT_LITERAL;
 }
@@ -555,6 +575,7 @@ ALNUM   [A-Za-z0-9_]
      * same way the hex/decimal rules do. */
     g_last_ident_sym = NULL;
     yylval.lit.ival = LIT_SIGN * (int)strtol(yytext + 2, NULL, 2);
+    yylval.lit.uns = lit_unsigned(yytext, strtoul(yytext + 2, NULL, 2));
     yylval.lit.macro = take_lit_macro();
     return INT_LITERAL;
 }
@@ -582,6 +603,7 @@ ALNUM   [A-Za-z0-9_]
      * above. */
     g_last_ident_sym = NULL;
     yylval.lit.ival = LIT_SIGN * (int)strtol(yytext, NULL, 8);
+    yylval.lit.uns = lit_unsigned(yytext, strtoul(yytext, NULL, 8));
     yylval.lit.macro = take_lit_macro();
     return INT_LITERAL;
 }
@@ -600,6 +622,7 @@ ALNUM   [A-Za-z0-9_]
     g_last_ident_sym = NULL;
     yylval.lit.ival = LIT_SIGN * (int)strtoul(yytext, NULL, 10); /* strtoul, not
         atoi: 4000000000u must wrap to its 32-bit pattern, not saturate */
+    yylval.lit.uns = lit_unsigned(yytext, strtoul(yytext, NULL, 10));
     yylval.lit.macro = take_lit_macro();
     return INT_LITERAL;
 }

@@ -1,4 +1,4 @@
-.TH STRING.HPP 3v32 "October 15, 2026" "v32c++ 20261015-dev" "v32c++ Library"
+.TH STRING.HPP 3v32 "October 16, 2026" "v32c++ 20261015-dev" "v32c++ Library"
 .SH NAME
 v32/string.hpp \- v32::String, a fixed-capacity string over the Vircon32 SDK
 .SH SYNOPSIS

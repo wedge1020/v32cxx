@@ -31,6 +31,7 @@ PreprocessorLines g_preprocessor_lines = {NULL, 0, 0};
 int g_uses_new_or_delete = 0;
 CodegenTarget g_target = TARGET_VIRCON32;
 int g_reject_bit_fields = 0;   /* --reject-bit-fields */
+int g_signed_shift = 1;        /* cleared by --no-signed-shift */
 CartResourceList g_cart_textures = {NULL, 0, 0};
 CartResourceList g_cart_sounds = {NULL, 0, 0};
 char *g_cart_title = NULL;
@@ -39,9 +40,16 @@ char *g_cart_version = NULL;
 extern FILE *yyin;
 
 static void print_usage(const char *prog_name) {
-    fprintf(stderr, "usage: %s [-o output.c] [-c] [-v[v[v]]] [-I dir] [-D name[=value]] [-U name] [-x] [-b] [-g] [--target=vircon32|standard] [--reject-bit-fields] [--no-inline-containers] [--version] <input.cpp>\n", prog_name);
+    fprintf(stderr, "usage: %s [-o output.c] [-c] [-v[v[v]]] [-I dir] [-D name[=value]] [-U name] [-x] [-b] [-g] [--target=vircon32|standard] [--reject-bit-fields] [--no-signed-shift] [--no-inline-containers] [--version] <input.cpp>\n", prog_name);
     fprintf(stderr, "  -o output.c   write generated Vircon32 C to this file (default:\n"
                      "                <input> with its extension replaced by .c)\n");
+    fprintf(stderr,  "  --no-signed-shift\n"
+                     "                leave `>>` and `>>=` as written. Vircon32's shift\n"
+                     "                is logical, so by default a shift of a SIGNED\n"
+                     "                value is rewritten to shift arithmetically, as in\n"
+                     "                C (-8 >> 1 is -4); `unsigned` values are left\n"
+                     "                alone. Use this when every shifted value is known\n"
+                     "                to be non-negative and the extra code costs too much\n");
     fprintf(stderr,  "  --no-inline-containers\n"
                      "                keep std::array/std::vector accessors (v[i],\n"
                      "                v.size(), ...) as function calls instead of\n"
@@ -248,6 +256,7 @@ int  main (int  argc, char **argv)
         { "target",  required_argument, 0, 'T' },
         { "reject-bit-fields", no_argument, 0, 'B' },
         { "no-inline-containers", no_argument, 0, 'N' },
+        { "no-signed-shift", no_argument, 0, 'S' },
         { 0,         0,                 0, 0   }
     };
 
@@ -323,6 +332,10 @@ int  main (int  argc, char **argv)
                 /* --reject-bit-fields: a bit-field is a hard error
                  * instead of a warning plus a full-word member. */
                 g_reject_bit_fields = 1;
+                break;
+            case 'S':
+                /* --no-signed-shift: print `>>`/`>>=` as written. */
+                g_signed_shift = 0;
                 break;
             case 'N':
                 /* --no-inline-containers: std::array/std::vector accessors

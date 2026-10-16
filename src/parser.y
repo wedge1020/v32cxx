@@ -773,7 +773,7 @@ static AstNode *finish_declarators(AstNode *first, AstNode *base, AstList more, 
      * the token's own semantic value -- never a side global -- because a
      * GLR parse may run this token's action long after the lexer moved
      * on. */
-    struct { int ival; double fval; char *macro; } lit;
+    struct { int ival; double fval; char *macro; int uns; } lit;
 }
 
 %token <str> IDENTIFIER TYPE_NAME TAG_NAME STRING_LITERAL
@@ -783,7 +783,8 @@ static AstNode *finish_declarators(AstNode *first, AstNode *base, AstList more, 
 %token CLASS STRUCT ENUM UNION PUBLIC PRIVATE PROTECTED NAMESPACE TYPEDEF USING
 %token RETURN IF ELSE DO WHILE FOR BREAK CONTINUE GOTO
 %token SWITCH CASE DEFAULT
-%token INT_KW FLOAT_KW VOID_KW BOOL_KW CHAR_KW
+%token <ival> INT_KW
+%token FLOAT_KW VOID_KW BOOL_KW CHAR_KW
 %token NEW DELETE THIS VIRTUAL TRUE_KW FALSE_KW NULLPTR_KW OPERATOR SIZEOF CONST FRIEND
 %token STATIC_CAST DYNAMIC_CAST CONST_CAST REINTERPRET_CAST
 %token COLONCOLON ARROW EQ NE LE GE ANDAND OROR
@@ -1901,7 +1902,7 @@ tag_def_type:
     ;
 
 type_spec:
-      INT_KW        { $$ = ast_ident("int", @1.first_line); }
+      INT_KW        { $$ = ast_ident("int", @1.first_line); $$->is_unsigned = $1; }
     | FLOAT_KW      { $$ = ast_ident("float", @1.first_line); }
     | VOID_KW       { $$ = ast_ident("void", @1.first_line); }
     | BOOL_KW       { $$ = ast_ident("bool", @1.first_line); }
@@ -3095,7 +3096,7 @@ switch_body:
 
 primary_expr:
       IDENTIFIER        { $$ = ast_ident($1, @1.first_line); }
-    | INT_LITERAL         { $$ = ast_new(AST_INT_LIT, @1.first_line); $$->ival = $1.ival; $$->macro_name = $1.macro; }
+    | INT_LITERAL         { $$ = ast_new(AST_INT_LIT, @1.first_line); $$->ival = $1.ival; $$->macro_name = $1.macro; $$->is_unsigned = $1.uns; }
     | FLOAT_LITERAL        { $$ = ast_new(AST_FLOAT_LIT, @1.first_line); $$->fval = $1.fval; $$->macro_name = $1.macro; }
     | string_seq            { $$ = ast_new(AST_STRING_LIT, @1.first_line); $$->str1 = $1; }
     | CHAR_LITERAL            { $$ = ast_new(AST_CHAR_LIT, @1.first_line); $$->ival = $1.ival; $$->macro_name = $1.macro; }

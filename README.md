@@ -312,6 +312,15 @@ Checked against  the current  transpiler and  the real  Vircon32 compiler
 - **`goto`** works, but  does not run destructors  for class-typed locals
   it jumps out of; keep it to  scopes without them. A `goto` to a missing
   label is caught by the Vircon32 compiler, not by v32c++.
+- **`>>` of a signed value costs a few instructions.** Vircon32's shift is
+  logical, so v32c++ rewrites `x >> n` and `x >>= n` into an arithmetic shift
+  (`-8 >> 1` is `-4`, as in C). A variable or member is written out in place
+  (about five instructions instead of one), anything else goes through a
+  small helper. `unsigned` values, constants, and shifts masked by a small
+  positive constant (`(x >> 4) & 15`) stay a single instruction;
+  `--no-signed-shift` turns the rewrite off. `/`, `%` and comparisons of an
+  `unsigned` value above `INT_MAX` still behave as signed.
+  See `docs/VIRCON32_QUIRKS.md` #14.
 - **`const` is not enforced** — violations are left to the C compiler.
 - **Control codes in string literals are rewritten**:  the Vircon32 toolchain
   can't assemble a string holding the BIOS font's codes 14–31 (`┌ ─ ┐ │ ░ ▒ ▓ █`
@@ -465,6 +474,7 @@ v32c++ -I path/to/v32c++ -o obj/game.c game.cpp
 | `--target=vircon32`/`v32` | Vircon32 C (the default) |
 | `--target=standard`/`std` | portable standard C instead |
 | `--reject-bit-fields` | make a bit-field an error instead of a warning |
+| `--no-signed-shift` | print `>>` / `>>=` as written (Vircon32's shift is logical; by default a signed shift is rewritten to be arithmetic) |
 | `--no-inline-containers` | keep `std::array`/`std::vector` accessors as calls |
 | `--version` | print the version and exit |
 

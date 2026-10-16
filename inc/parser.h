@@ -157,7 +157,7 @@ union YYSTYPE
      * the token's own semantic value -- never a side global -- because a
      * GLR parse may run this token's action long after the lexer moved
      * on. */
-    struct { int ival; double fval; char *macro; } lit;
+    struct { int ival; double fval; char *macro; int uns; } lit;
 
 #line 163 "inc/parser.h"
 

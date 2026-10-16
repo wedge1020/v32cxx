@@ -1315,8 +1315,14 @@ static void print_expr(FILE *out, const AstNode *e) {
             /* A negative value only arises from a negative named constant
              * (`#define LOW -1`) whose name can't be printed; parenthesized
              * so `x - LOW` can never come out as the decrement `x --1`. */
-            if (!print_macro_name(out, e))
-                fprintf(out, e->ival < 0 ? "(%d)" : "%d", e->ival);
+            if (!print_macro_name(out, e)) {
+                /* INT_MIN has no positive twin: Vircon32 C reads
+                 * "2147483648" first and rejects it ("number out of range
+                 * for a 32-bit integer"), so 0x80000000 and -2147483648
+                 * are spelled as a subtraction. */
+                if (e->ival == -2147483647 - 1) fprintf(out, "(-2147483647 - 1)");
+                else fprintf(out, e->ival < 0 ? "(%d)" : "%d", e->ival);
+            }
             break;
         case AST_INIT_LIST:
             /* `{1, 2, 3}` -- positional, same reasoning as

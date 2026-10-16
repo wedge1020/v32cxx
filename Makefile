@@ -239,6 +239,12 @@ test: all | $(OUT_DIR)
 	$(BIN)  -vvv    -o out/130program.c tests/130sample.cpp 1> out/130sample.txt 2>&1
 	$(BIN)  -vvv -I . -o out/131program.c tests/131sample.cpp 1> out/131sample.txt 2>&1
 	$(BIN)  -vvv    -o out/132program.c tests/132sample.cpp 1> out/132sample.txt 2>&1
+	$(BIN)  -vvv    -o out/133program.c tests/133sample.cpp 1> out/133sample.txt 2>&1
+	$(BIN)  -vvv    -o out/134program.c tests/134sample.c   1> out/134sample.txt 2>&1
+	$(BIN)  -vvv    -o out/135program.c tests/135sample.cpp 1> out/135sample.txt 2>&1
+	$(BIN)  -vvv    -o out/136program.c tests/136sample.cpp 1> out/136sample.txt 2>&1
+	$(BIN)  -vvv --no-signed-shift -o out/137program.c tests/137sample.cpp 1> out/137sample.txt 2>&1
+	$(BIN)  -vvv    -o out/138program.c tests/138sample.c   1> out/138sample.txt 2>&1
 # `-vvv` (this project's own verbosity flag, a later round -- see
 # main.c) is passed to every sample specifically so `make test`'s own
 # output still captures the full AST/semantic-analysis/lowering dumps

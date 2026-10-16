@@ -26,6 +26,61 @@ conditional branch.
 
 ---
 
+## What this document is -- and is not
+
+**These entries describe Vircon32 C, the OUTPUT language, not what you may
+write.** Your C++ (or C) source stays ordinary: v32c++ rewrites every
+construct below that Vircon32 C cannot take, so none of them is a
+restriction on your input unless the table says so. The headings state
+the Vircon32 C rule ("no ternary operator") because the rule is what the
+rewrite works around; each entry says what v32c++ does about it. For what
+you can and cannot WRITE, read the table below, and the README's "Known
+limitations" for the language itself.
+
+**Also fine, and needing no entry at all:** `//` and `/* */` comments
+(a backslash at the end of a `//` line continues the comment, as in C++),
+adjacent string literals (`"ab" "cd"`, across lines or around a comment),
+a backslash-newline inside a literal or a `#define`, function-like
+macros, the ternary operator, the comma operator, hex/octal/binary
+literals, `1e3`, `.5` and `5.` (`tests/133sample.cpp`, `134sample.c`,
+`135sample.cpp` check these on the real toolchain and emulator).
+
+| # | Vircon32 C rule | In your source | Status |
+|---|---|---|---|
+| 1 | no `struct` keyword on a type | write C++ as usual | handled |
+| 2 | `type[n] name` array declarators | `int a[4]` or `int[4] a` | handled |
+| 3, 4 | reversed function-pointer syntax | standard or Vircon32 form | handled |
+| 5 | pointer null needs `NULL` | `p = 0;`, `p == 0` | handled |
+| 6 | `void main(void)` only | `int main()` and `return 0;` | handled |
+| 7 | prototype parameters need names | names optional | handled |
+| 8 | no `new`/`delete` | `new`/`delete` work (malloc-based); `new T[n]` skips per-element constructors | handled, with caveats |
+| 9 | `misc.h` for `malloc`/`rand`... | `<cstdlib>`, `<cstring>` | handled |
+| 10 | no ternary operator | `?:` anywhere | **lowered** |
+| 11 | one-word parameters and returns | structs and classes by value | **lowered** (unions larger than a word still can't) |
+| 12 | no pointer or reference returns | return them freely | **fixed** |
+| 13 | no empty structs | allowed | **fixed** |
+| 14 | `>>` does not sign-extend | `-8 >> 1` is `-4`; `unsigned` shifts logically | **lowered** (`--no-signed-shift` turns it off) |
+| 15 | types before use | as in C++ | n/a |
+| 16 | no exponent in float literals | `1e3`, `1.5e-3f`, `.5`, `5.` | handled (printed fixed-point) |
+| 17 | few escapes | octal, `\0`, `\x` | handled |
+| 18 | no declarations after a `case` label | brace the case body | **your code** |
+| 19 | constant array sizes | macros, enums, constant arithmetic | handled |
+| 21 | no comma operator | `a, b` anywhere, `for(i=0,j=n;..;i++,j--)` | **lowered** |
+| 22 | arrays decay only in `=`, init, argument | `arr + n`, `*arr`, `p == arr` | **lowered** |
+| 23 | `const` follows a value that is read | read const values freely | **lowered** (not a `const T*` to `T*` discard) |
+| 24 | no `static`, `extern`, `volatile`, `unsigned`... | accepted; `unsigned` is signed (warning); `static` class members and unnamed bit-fields are errors | handled, with caveats |
+| 25 | `a op= b` evaluates the target twice | any | **lowered** as a statement; as a value inside a bigger expression: warning |
+| 26 | pointer vs `void *` compare | C input: handled | handled |
+| 27 | writing through a returned pointer runs the call 2-3 times | any | **lowered** as a statement |
+| 28 | control codes in string literals can't be assembled | any literal, `"\025"` | **lowered** |
+
+Not covered by any entry because v32c++ has no workaround: templates,
+exceptions, RTTI, multiple inheritance, `enum class`, `constexpr`, lambdas,
+`mutable`, nested classes, `static` class members -- see the README's
+"Known limitations".
+
+---
+
 ## 1. No `struct` keyword on a type reference
 
 - **Vircon32 requires**: `struct` only in a forward declaration
@@ -192,7 +247,7 @@ important default to protect.
   (*)(Params))expr`, confirmed directly against `tests/sample14.cpp`'s
   own output.
 
-## 5. Pointer null-initialization requires `NULL`, not `0`
+## 5. Pointer null-initialization requires `NULL`, not `0` -- HANDLED
 
 - **Vircon32 requires**: `NULL` (or an explicit cast, `(Type *)0`) for a
   null pointer. A bare `0` is rejected ("cannot assign int to ...
@@ -202,17 +257,13 @@ important default to protect.
 - **Status**: Confirmed against the real compiler
   (`(Node *) 0` tested directly, per DESIGN_NOTES.md's receiver-cast
   round).
-- **Where**: not yet acted on by any codegen phase -- nothing this
-  project currently emits initializes a pointer to null. The first
-  phase that does (destructor invocation's eventual "already freed"
-  bookkeeping? a future feature?) needs to emit `NULL` specifically in
-  Vircon32 mode.
+- **For Vircon32 mode**: **HANDLED**: a literal 0 assigned to, compared
+  with or returned as a pointer is printed `NULL` (`p = 0;`, `p != 0`,
+  `fn = 0;`; see #24 for the preprocessor side). `tests/135sample.cpp`.
 - **For a standard-C mode**: emitting a bare `0` would already be
   correct standard C, so -- like #1 -- standard-C mode is the simpler,
   unmodified default; Vircon32 mode is the one that needs the
-  substitution -- **N/A for now**, since nothing yet emits a null
-  pointer at all; revisit whenever the first phase that does gets
-  built.
+  substitution.
 
 ## 6. `void main(void)`, unconditionally, regardless of source declaration
 
@@ -299,7 +350,7 @@ important default to protect.
 
 ---
 
-## 10. The ternary operator is not supported at all, not just spelled differently
+## 10. Vircon32 C has no ternary operator -- LOWERED (`?:` is fine in your source)
 
 - Not a declarator-shape or keyword divergence like every entry above
   -- Matthew reported the real Vircon32 C compiler rejects `cond ? a :
@@ -627,20 +678,57 @@ important default to protect.
 
 ---
 
-## 14. Right shift does not sign-extend negative values
+## 14. Right shift does not sign-extend negative values -- LOWERED
 
-Worth  noting for  your  quirks doc:  "shift-right  does not  sign-extend
-negative values"  is a  new Vircon32 C  entry in the  same family  as the
-arg-staging bug — and this  one is particularly sneaky because standard
-C  makes  >> on  negative  ints  implementation-defined, so  gcc-verified
-output  can silently  diverge  from  Vircon32 behavior.  If  you want,  a
---target=vircon32 lowering  rewrite (expanding  x >>  n on  signed values
-into  the mask-and-subtract  form)  would be  the  v32c++-side fix,  same
-pattern as the ternary rewrite. ---
+- **Vircon32 C**: `>>` is a logical shift. The CPU has one shift
+  instruction, `SHL`, and a negative count shifts right without
+  extending the sign, so `-8 >> 1` is `0x7FFFFFFC`, not `-4`. Standard C
+  leaves `>>` on a negative int implementation-defined, but gcc, clang
+  and every compiler a program gets tested with shift arithmetically.
+- **For Vircon32 mode**: **LOWERED** (20261016, lower.c phase 11,
+  `v32_signed_shift`). A `>>` or `>>=` of a SIGNED value becomes
+
+  ```c
+  x >> n    ->   ((x ^ s) >> n) ^ s        s = -(x >> 31)     // 0, or -1 if x < 0
+  ```
+
+  For a negative x, `~x` is non-negative, so shifting it logically IS
+  arithmetic, and complementing the result gives `floor(x / 2^n)`. n = 0
+  works; like C, n must be 0 to 31. x is written three times, so it is
+  only written out when it is a variable, a member, a `*p`, or an element
+  with a simple index (no calls, no `++`); any other operand goes through
+  one call of `__v32_sar(x, n)`, a small function added to the top of the
+  generated C when it is needed. `x >>= n` becomes `x = <the above>`
+  (Vircon32 C evaluates a compound target twice itself, see #25; a target
+  with a side effect has been split out of the statement before this).
+- **What stays a plain, one-instruction `>>`**:
+  - an `unsigned` operand, which C shifts logically too. This is what
+    `unsigned` is for now: the type remembers it (`AstNode.is_unsigned`,
+    set by the lexer for `unsigned`, a `u` suffix, or a literal above
+    INT_MAX; through typedefs, casts and arithmetic on it), even though
+    it prints as `int`;
+  - a value known to be non-negative: a literal, `x & 0xFF`, a comparison;
+  - a shift masked by a small positive constant, `(x >> 4) & 15`,
+    `(state >> 16) & 32767`: the bits an arithmetic shift would fill in
+    are masked off again;
+  - `x >> 0` (just x), and two constants, which are folded (`-8 >> 1` is
+    written `(-4)`).
+- **Cost**: about five instructions instead of one for a variable
+  operand; a call for anything else. In a hot loop of fixed-point math,
+  declare the value `unsigned` if it is never negative, or build with
+  `--no-signed-shift` to print every `>>` as written (then a negative
+  operand shifts logically, as before; `tests/137sample.cpp`).
+- **Not done**: `unsigned` is still a signed word for `/`, `%`, `<`, `>`,
+  `<=`, `>=` and conversions, so those misbehave above INT_MAX (the
+  lexer says so once). Only its `>>` is right.
+- Standard target: nothing to do. `tests/136sample.cpp` (C++),
+  `tests/138sample.c` (C) and `tests/137sample.cpp` (the flag) check all of
+  it on the emulator, including negative odd values, INT_MIN, a side effect
+  in the target, and unsigned operands.
 
 ---
 
-## 15. Types must be declared before use
+## 15. Types must be declared before use (as in C++)
 
 types must be declared before use — an enum used before its declaration
 fails with a  misleading expecting COLONCOLON error,  because the lexer's
@@ -650,7 +738,7 @@ would make this much easier to spot than the parser error.
 
 ---
 
-## 16. Float literals: no exponent form, and a whole number needs its `.0`
+## 16. Float literals: no exponent form, and a whole number needs its `.0` -- FIXED
 
 - **Vircon32 C**: rejects exponent notation outright -- `1e8`, `1.0e8`
   and `1.5e-3` all fail with "bad floating point literal" (confirmed
@@ -662,6 +750,10 @@ would make this much easier to spot than the parser error.
   pull-back that never moved), and also hit `v32/math.hpp`'s
   `value / 2147483647.0` -- and (b) switches to exponent form below
   1e-4, which the Vircon32 lexer then rejects.
+- **Input spellings (20261016)**: the lexer takes every C float form --
+  `1e3`, `1e3f`, `5.`, `.5`, `1.e3`, `2E+2`, `3.14f`. (Until then only
+  `digits.digits` matched: `1e3` and `.5` were syntax errors.)
+  `tests/135sample.cpp`.
 - **For Vircon32 mode (and standard)**: **FIXED** -- `codegen.c`'s
   `format_float_literal` prints fixed-point with the fewest decimals that
   read back as the same value (`34.0`, `0.1`, `0.00001`), never an
@@ -669,7 +761,7 @@ would make this much easier to spot than the parser error.
 
 ---
 
-## 17. Escapes: no octal, no `\0`, `\x` takes exactly two digits
+## 17. Escapes: no octal, no `\0`, `\x` takes exactly two digits -- FIXED
 
 - **Vircon32 C**: its lexer knows `\n \r \t \\ \' \"` and `\xHH` with
   EXACTLY two hex digits. Anything else -- including `\0` and every octal
@@ -685,7 +777,7 @@ would make this much easier to spot than the parser error.
 
 ---
 
-## 18. No declarations in a switch body after a case label
+## 18. No declarations in a switch body after a case label -- brace the case body
 
 - **Vircon32 C**: "variables cannot be declared in a switch after
   case/default are used" -- any declaration at the top level of a switch
@@ -732,7 +824,7 @@ would make this much easier to spot than the parser error.
 
 ---
 
-## 21. A comma operator doesn't exist
+## 21. A comma operator doesn't exist -- LOWERED
 
 - **Vircon32 C**: no comma operator (`a, b` as one expression).
 - **For Vircon32 mode**: **LOWERED** (20261001-dev), in the same phase as
@@ -799,7 +891,7 @@ would make this much easier to spot than the parser error.
 
 ---
 
-## 24. No `static`, `extern`, `volatile`, `unsigned`/`signed`/`short`/`long`
+## 24. No `static`, `extern`, `volatile`, `unsigned`/`signed`/`short`/`long` -- accepted, rewritten
 
 - **Vircon32 C**: none of these keywords exist ("identifier "static" has
   not been declared"); an `extern int x;` with no definition is "declared
@@ -815,8 +907,10 @@ would make this much easier to spot than the parser error.
   - `static` in a class body is still an error (no static members);
   - `signed`, `short`, `long`, `long long` and their `int`/`char`
     combinations are `int`. So is `unsigned`, with a warning (once per
-    run): values above INT_MAX, and `>>`, `/`, `%`, comparisons on them,
-    behave as signed. `4000000000u` keeps its 32-bit pattern.
+    run): values above INT_MAX, and `/`, `%`, comparisons on them, behave
+    as signed (`>>` does not: see #14). INT_MIN and `0x80000000` are
+    printed `(-2147483647 - 1)`, since Vircon32 C rejects the literal
+    2147483648. `4000000000u` keeps its 32-bit pattern.
 - Also accepted now, passed straight through (Vircon32 C has them):
   `%=`, struct and nested braced initializers, `int a, b[ 4 ];`. `int
   t[] = { ... }` gets its length from the initializer (Vircon32 C has no

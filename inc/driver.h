@@ -121,6 +121,14 @@ extern int g_c_mode;
  * what that changes. 1: it is an error. Read by parser.y. */
 extern int g_reject_bit_fields;
 
+/* --no-signed-shift. Default 1: for the Vircon32 target, `>>` and `>>=` on
+ * a SIGNED value are rewritten into an arithmetic shift (Vircon32's own
+ * shift is logical, so -8 >> 1 would not be -4). 0: `>>` is printed as
+ * written, for speed, when every shifted value is known to be
+ * non-negative. `unsigned` values never need it: their `>>` is logical in
+ * C too. Read by lower.c. */
+extern int g_signed_shift;
+
 /*
  * Cart hints: `#texture NAME "file.png"` and `#sound NAME "file.wav"`,
  * recognized directly by the lexer (a targeted special-case, NOT the
