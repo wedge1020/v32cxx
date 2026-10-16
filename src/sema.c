@@ -3474,6 +3474,40 @@ static void check_node(AstNode *n, AstNode *current_class, LocalVarType **locals
             break;
         case AST_RETURN: {
             check_node(n->a, current_class, locals);
+            /* `return value;` in a function that returns void is an error in
+             * C++ -- and would otherwise be lowered to a variable of type
+             * void ("variables of type void cannot be instanced" from the
+             * Vircon32 compiler, pointing into the generated C). The one
+             * leniency: `main`, which Vircon32 wants as `void main()` while a
+             * C++ programmer's habit is `return 0;`; the value is dropped. */
+            if (n->a != NULL && g_current_function_being_checked != NULL &&
+                (g_current_function_being_checked->type == NULL ||
+                 (g_current_function_being_checked->type->kind == AST_IDENT &&
+                  g_current_function_being_checked->type->str1 != NULL &&
+                  strcmp(g_current_function_being_checked->type->str1, "void") == 0))) {
+                if (current_class == NULL && g_current_function_being_checked->str1 != NULL &&
+                    strcmp(g_current_function_being_checked->str1, "main") == 0) {
+                    AstNode *value = n->a;
+                    n->a = NULL;
+                    if (value->kind != AST_INT_LIT && value->kind != AST_IDENT) {
+                        /* keep its side effects: { value; return; } */
+                        AstNode *stmt = ast_new(AST_EXPR_STMT, n->line);
+                        stmt->a = value;
+                        stmt->file = n->file;
+                        AstNode *ret = ast_new(AST_RETURN, n->line);
+                        ret->file = n->file;
+                        n->kind = AST_BLOCK;
+                        n->list = ast_list_new();
+                        ast_list_append(&n->list, stmt);
+                        ast_list_append(&n->list, ret);
+                    }
+                    break;
+                }
+                sema_error(n->line, "'return' with a value, in function '%s' returning void",
+                           g_current_function_being_checked->str1 != NULL
+                               ? g_current_function_being_checked->str1 : "?");
+                break;
+            }
             /* `return counter;` from a function returning int: through
              * the class's conversion operator */
             if (n->a != NULL && g_current_function_being_checked != NULL &&
