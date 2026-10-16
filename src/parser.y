@@ -2168,15 +2168,16 @@ var_decl:
             /* `int b[ 4 ], a;` -- further declarators after an array one */
             $$ = finish_declarators(first, $1, $6, @1.first_line);
         }
-    | type_spec array_bracket_list IDENTIFIER opt_array_initializer
+    | type_spec pointer_opt array_bracket_list IDENTIFIER opt_array_initializer
         {
             /* Vircon32-native-style array declarator, accepted as an
              * ALTERNATE valid C++-side input form -- same meaning as
              * the standard-C alternative above, length BEFORE the name
              * instead of after (`int [8] scores;`, or multi-dimensional
              * `int [8][4] grid;`), matching Vircon32 C itself.
-             * Deliberately no pointer_opt here (unlike the standard-C
-             * form) -- this form exists specifically to let someone
+             * A pointer element type may precede the bracket
+             * (`Gnode* [4] rooms;` is an array of 4 pointers, as in
+             * Vircon32 C) -- this form exists specifically to let someone
              * already fluent in Vircon32 C, or transitioning from it,
              * keep writing what's already familiar to them without
              * having to also learn a second, unrelated declarator
@@ -2187,12 +2188,12 @@ var_decl:
              * required form regardless of which one the source used, so
              * this choice is purely a source-reading preference, never
              * a behavioral one. */
-            symtab_insert(g_symtab, g_symtab->current, $3, SYM_VAR);
-            $$ = ast_new(AST_VAR_DECL, @3.first_line);
-            $$->str1 = strdup($3);
-            size_unsized_array($2, $4, @3.first_line);
-            $$->type = ast_wrap_array_dims($1, $2, @1.first_line);
-            $$->a = $4;
+            symtab_insert(g_symtab, g_symtab->current, $4, SYM_VAR);
+            $$ = ast_new(AST_VAR_DECL, @4.first_line);
+            $$->str1 = strdup($4);
+            size_unsized_array($3, $5, @4.first_line);
+            $$->type = ast_wrap_array_dims(apply_ptr($1, $2, @1.first_line), $3, @1.first_line);
+            $$->a = $5;
         }
     | type_spec pointer_opt '(' '*' IDENTIFIER ')' '(' opt_func_ptr_param_list ')' opt_initializer
         {

@@ -959,6 +959,20 @@ static void attach_out_of_line(AstList *decls) {
 
         target->kind = AST_FUNC_DEF;
         target->a = n->a;
+        /* The body names its parameters as the DEFINITION spells them, which
+         * C++ lets differ from the in-class declaration's (`int f(int dir)`
+         * declared, `int A::f(int direction)` defined). The emitted function
+         * takes its parameter names from this node, so give it the
+         * definition's -- otherwise the body refers to names that do not
+         * exist. (Default values stay on the declaration's parameters.) */
+        for (int k = 0; k < target->list.count && k < n->list.count; k++) {
+            AstNode *tp = target->list.items[k];
+            AstNode *dp = n->list.items[k];
+            if (tp->kind == AST_PARAM && dp->kind == AST_PARAM && dp->str1 != NULL) {
+                free(tp->str1);
+                tp->str1 = strdup(dp->str1);
+            }
+        }
         target->c = n->c;    /* the member-initializer list, if any -- a real
             bug, found and fixed the same round this field was added: only
             ->a (the body) used to be copied here, since ->c didn't exist
