@@ -494,6 +494,7 @@ v32c++ -I path/to/v32c++ -o obj/game.c game.cpp
 | `-D name[=value]`, `-U name` | define / elimina la definición de una macro |
 | `-v`, `-vv`, `-vvv` | progreso; más comentarios explicativos en el C generado; más volcados del AST, semánticos y de bajada y el registro de notas de bajada |
 | `-x`, `--no-xml` | no escribe el XML del cartucho |
+| `--xml-preserve-paths` | conserva en el XML las rutas de `#texture`/`#sound` tal como se escribieron, y escribe el XML junto al fuente |
 | `-b` | transpila una BIOS en lugar de un cartucho |
 | `-g` | escribe un mapa de depuración línea de C / línea de C++, `<salida>.c.debug` |
 | `--target=vircon32`/`v32` | C de Vircon32 (el valor por defecto) |
@@ -547,8 +548,18 @@ utilizable en cualquier lugar donde se admita un entero
 (`select_texture( Background )`), y rellena `<textures>`/`<sounds>` del XML en
 ese orden con la extensión cambiada a `.vtex`/`.vsnd`. `#title`/`#version`
 establecen los atributos de `<rom>` (en caso contrario «Vircon32 Program» /
-«1.0»). El `<binary path>` del XML es la ruta de `-o` con `.vbin`, así que
-empaqueta desde el directorio en el que transpilaste.
+«1.0»). El `<binary path>` del XML es la ruta de `-o` con `.vbin`.
+
+`packrom` lee todas las rutas del XML relativas al propio XML, así que por
+defecto el XML contiene solo nombres de archivo: con `-o obj/game.c` y
+`#texture Ship "textures/ship.png"` se obtiene `obj/game.xml` con
+`<binary path="game.vbin" />` y `<texture path="ship.vtex" />`; es decir,
+se espera que los `.vbin`/`.vtex`/`.vsnd` estén junto al XML (dos recursos
+que acaben con el mismo nombre provocan una advertencia).
+`--xml-preserve-paths` conserva en cambio la ruta de cada directiva tal
+como se escribió (`textures/ship.vtex`), escribe el XML en el directorio
+del *archivo fuente* y hace que `<binary>` sea la ruta del `.vbin`
+relativa a él.
 
 ## Dialectos de salida
 

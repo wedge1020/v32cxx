@@ -36,12 +36,33 @@
  * the time emit_cart_xml runs for a -b build, those constraints are
  * already known to hold.
  *
+ * Paths inside the XML. packrom resolves every path in the XML relative
+ * to the XML file itself, so:
+ *
+ *  - default (`preserve_paths` = 0): the XML is written next to the
+ *    generated C (`-o obj/game.c` -> obj/game.xml), and every path in it
+ *    is just a file name -- `<binary path="game.vbin" />`,
+ *    `<texture path="spaceship.vtex" />` for `#texture S "textures/
+ *    spaceship.png"` -- i.e. the produced .vbin/.vtex/.vsnd are expected
+ *    to sit beside the XML. Two assets that collapse to the same file
+ *    name draw a warning.
+ *
+ *  - `preserve_paths` = 1 (--xml-preserve-paths): each #texture/#sound
+ *    path is kept exactly as written in the hint, the XML goes in the
+ *    directory of `source_filename` (the hints' own point of reference),
+ *    and <binary> is the .vbin path made relative to that directory.
+ *
  * Writes an error to stderr and returns without creating anything if
  * the XML file can't be opened for writing -- does not abort the
  * overall transpile (the .c output this function runs after has
  * already been written successfully by this point; a failed XML write
  * is a real problem worth reporting, but not one that should undo an
  * otherwise-successful transpile). */
-void emit_cart_xml(const char *output_filename, int is_bios);
+/* Where the XML goes (malloc'd; caller frees) -- see "Paths inside the XML". */
+char *cart_xml_filename(const char *output_filename, const char *source_filename,
+                        int preserve_paths);
+
+void emit_cart_xml(const char *output_filename, const char *source_filename,
+                   int is_bios, int preserve_paths);
 
 #endif /* CARTXML_H */

@@ -15,6 +15,7 @@ v32c++ \- transpile un sous-ensemble de C++ en C Vircon32
 .RB [ \-U
 .IR nom ]...
 .RB [ \-x ]
+.RB [ \-\-xml\-preserve\-paths ]
 .RB [ \-b ]
 .RB [ \-g ]
 .RB [ \-\-target=vircon32 | standard ]
@@ -227,6 +228,22 @@ ci-dessous). Il est généré par défaut chaque fois qu'un fichier
 est effectivement écrit ; jamais généré avec
 .BR \-\-target=standard ,
 avec ou sans cette option.
+.TP
+.B \-\-xml\-preserve\-paths
+Conserve dans le XML le chemin de chaque
+.B #texture
+/
+.B #sound
+tel qu'écrit dans la directive (seule l'extension change), écrit le XML dans le
+répertoire du fichier source plutôt qu'à côté du C généré, et fait de
+.B <binary>
+le chemin du
+.I .vbin
+relatif à ce répertoire. Par défaut le XML se trouve à côté du C généré et ne
+contient que des noms de fichier (\fIship.vtex\fR, pas \fItextures/ship.vtex\fR),
+car
+.B packrom
+résout tous les chemins du XML relativement au XML lui-même.
 .TP
 .B \-\-no\-inline\-containers
 Conserve les accesseurs de

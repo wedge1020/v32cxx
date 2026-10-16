@@ -2491,6 +2491,13 @@ a failed XML write is reported to stderr but doesn't undo an otherwise-
 successful transpile (`emit_cart_xml`'s own error path never touches
 `rc`).
 
+**Paths in the XML (later change)**: `packrom` resolves every path in the XML
+relative to the XML itself, so storing `-o`-relative paths broke packing from
+anywhere but the transpile directory. Default now: XML beside the `.c`, and only
+file names inside it (`game.vbin`, `ship.vtex`); a basename collision warns.
+`--xml-preserve-paths` keeps hint paths as written, puts the XML in the source
+file's directory, and makes `<binary>` relative to it (`path_relative_to`).
+
 **Verified directly, both the specific behavior and the full suite**:
 transpiled a real test file with `-v`, confirmed the generated
 `<binary path="...vbin">` correctly points at the `.vbin` derived from

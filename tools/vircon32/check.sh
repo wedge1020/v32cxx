@@ -48,11 +48,8 @@ for c in "$OUT"/*program.c; do
     # .vtex/.vsnd next to the XML. Test samples that declare assets don't
     # ship them, so a pack that fails ONLY for a missing asset is reported
     # but not counted as a failure; any other packer error is.
-    # v32c++ writes <binary path> exactly as -o was given ("out/NNprogram.vbin"),
-    # meant for packing from the directory v32c++ ran in. packrom resolves
-    # paths relative to the XML's own directory, so packing out/NN.xml
-    # directly would look for out/out/NN.vbin. Pack a temporary copy whose
-    # binary path is just the file name instead; the real XML is untouched.
+    # The XML holds bare file names (packrom resolves paths relative to the
+    # XML), so it packs as is; the sed is a no-op kept for older XMLs.
     sed 's|<binary path="[^"]*/\([^"/]*\)"|<binary path="\1"|' "$OUT/$n.xml" > "$OUT/$n.pack.xml"
     if ! ( cd "$OUT" && "$BIN/packrom" "$n.pack.xml" -o "$n.v32" > "$n.pack.log" 2>&1 ); then
         if grep -q "cannot open \(texture\|sound\) file" "$OUT/$n.pack.log"; then

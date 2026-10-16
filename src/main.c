@@ -40,7 +40,7 @@ char *g_cart_version = NULL;
 extern FILE *yyin;
 
 static void print_usage(const char *prog_name) {
-    fprintf(stderr, "usage: %s [-o output.c] [-c] [-v[v[v]]] [-I dir] [-D name[=value]] [-U name] [-x] [-b] [-g] [--target=vircon32|standard] [--reject-bit-fields] [--no-signed-shift] [--no-inline-containers] [--version] <input.cpp>\n", prog_name);
+    fprintf(stderr, "usage: %s [-o output.c] [-c] [-v[v[v]]] [-I dir] [-D name[=value]] [-U name] [-x] [--xml-preserve-paths] [-b] [-g] [--target=vircon32|standard] [--reject-bit-fields] [--no-signed-shift] [--no-inline-containers] [--version] <input.cpp>\n", prog_name);
     fprintf(stderr, "  -o output.c   write generated Vircon32 C to this file (default:\n"
                      "                <input> with its extension replaced by .c)\n");
     fprintf(stderr,  "  --no-signed-shift\n"
@@ -244,6 +244,7 @@ int  main (int  argc, char **argv)
     int         require_main       = 1;
     int         verbosity          = 0;
     int         emit_xml           = 1;
+    int         xml_preserve_paths = 0;
     int         is_bios            = 0;
     int         emit_debug         = 0;
     int         opt                = 0;
@@ -252,6 +253,7 @@ int  main (int  argc, char **argv)
     static struct option long_options[] = {
         { "version", no_argument,       0, 'V' },
         { "no-xml",  no_argument,       0, 'x' },
+        { "xml-preserve-paths", no_argument, 0, 'P' },
         { "include", required_argument, 0, 'I' },
         { "target",  required_argument, 0, 'T' },
         { "reject-bit-fields", no_argument, 0, 'B' },
@@ -301,6 +303,11 @@ int  main (int  argc, char **argv)
                 break;
             case 'x':
                 emit_xml = 0;
+                break;
+            case 'P':
+                /* --xml-preserve-paths: keep #texture/#sound paths as
+                 * written and put the XML beside the source file. */
+                xml_preserve_paths = 1;
                 break;
             case 'b':
                 is_bios = 1;
@@ -546,9 +553,9 @@ int  main (int  argc, char **argv)
                  * already reflects that (reports to stderr, doesn't
                  * touch `rc`). */
                 if (emit_xml) {
-                    emit_cart_xml(output_filename, is_bios);
+                    emit_cart_xml(output_filename, g_current_filename, is_bios, xml_preserve_paths);
                     if (verbosity >= 1) {
-                        char *xml_filename = replace_extension(output_filename, ".xml");
+                        char *xml_filename = cart_xml_filename(output_filename, g_current_filename, xml_preserve_paths);
                         printf("wrote cart config to %s\n", xml_filename);
                         free(xml_filename);
                     }
