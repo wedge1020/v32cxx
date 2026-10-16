@@ -1,11 +1,13 @@
 // *****************************************************************************
-//  demos/cxx/v32io/typewriter.cpp — type text on the screen with a v32io
-//  keyboard (the C++ counterpart of the v32io library's v32kbd.c demo)
 //
-//  NEEDS a v32io keyboard on GAMEPAD 2: the v32io adaptor with a USB
-//  keyboard in it (joystick `v32io:kbd`), or the modified DesktopEmulator
-//  with Gamepads > Gamepad 2 > v32kbd. The stock emulator's "Keyboard"
-//  device will NOT work. See docs/V32IO.md.
+//  demos/cxx/v32io/typewriter.cpp  — type  text on  the screen  with a
+//  v32io keyboard (the  C++ counterpart of the  v32io library's v32kbd.c
+//  demo)
+//
+//  NEEDS  a  v32io  keyboard  on  GAMEPAD  3:  the  v32io  adaptor  with
+//  a  USB  keyboard  in  it  (joystick  `v32io:kbd`),  or  the  modified
+//  DesktopEmulator  with  Gamepads  >  Gamepad 3  >  v32kbd.  The  stock
+//  emulator's "Keyboard" device will NOT work. See docs/V32IO.md.
 //
 //      typing        shift and caps lock apply, as on a US layout; with
 //                    the modified emulator the computer's own layout, dead
@@ -17,6 +19,7 @@
 //      Escape        clear the page
 //
 //  The top line shows the last key's code and which modifiers are held.
+//
 // *****************************************************************************
 
 #title   "v32io typewriter"
@@ -26,7 +29,7 @@
 #include "string.h"
 #include <v32/keyboard.hpp>
 
-#define KEYBOARD_PORT  v32::SecondGamepadPort   // Gamepad 2
+#define KEYBOARD_PORT  v32::ThirdGamepadPort    // Gamepad 3
 #define COLUMNS        64                       // 640 / 10-pixel glyphs
 #define ROWS           15                       // lines of text on screen
 #define TEXT_MAX       (COLUMNS * ROWS)
@@ -182,7 +185,7 @@ void main()
         if( !keyboard.connected() )
         {
             set_multiply_color( color_red );
-            print_at( 0, 340, "No device on Gamepad 2 -- see docs/V32IO.md" );
+            print_at( 0, 340, "No device on Gamepad 3 -- see docs/V32IO.md" );
             set_multiply_color( color_white );
         }
 

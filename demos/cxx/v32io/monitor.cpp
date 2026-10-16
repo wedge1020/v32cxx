@@ -2,8 +2,8 @@
 //  demos/cxx/v32io/monitor.cpp — what is each gamepad port sending?
 //
 //  A setup and troubleshooting tool. For all four gamepad ports it shows
-//  the 11 controls exactly as the console sees them (the packed controls of
-//  v32::IoDevice), and what they would mean to each v32io driver:
+//  the 11 controls exactly as the console sees them (the packed controls
+//  of v32::IoDevice), and what they would mean to each v32io driver:
 //
 //      KBD    the strobe side, press/release, and the 7-bit key code
 //      MOUSE  the two movement-counter positions (0-11) and the buttons
@@ -19,9 +19,10 @@
 //     showing "--" means an impossible state (Left and Right both on);
 //   - an ordinary gamepad shows up too: handy to tell which port is which.
 //
-//  It works with no v32io device at all (then it is just a gamepad viewer),
-//  but needs the v32io adaptor or the modified DesktopEmulator to show v32io
-//  traffic. See docs/V32IO.md.
+//  It works  with no  v32io device  at all  (then it  is just  a gamepad
+//  viewer), but needs the v32io  adaptor or the modified DesktopEmulator
+//  to show v32io traffic. See docs/V32IO.md.
+//
 // *****************************************************************************
 
 #title   "v32io monitor"

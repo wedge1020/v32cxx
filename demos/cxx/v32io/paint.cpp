@@ -1,18 +1,20 @@
 // *****************************************************************************
-//  demos/cxx/v32io/paint.cpp — draw on the screen with a v32io mouse (the
-//  C++ counterpart of the v32io library's v32mouse.c demo)
 //
-//  NEEDS a v32io mouse on GAMEPAD 2: the v32io adaptor with a USB mouse in
-//  it (joystick `v32io:mouse`), or the modified DesktopEmulator with
-//  Gamepads > Gamepad 2 > v32mouse (the emulator captures the pointer when
-//  its window is focused: left Ctrl + left Alt releases it). The stock
-//  emulator has no mouse device at all. See docs/V32IO.md.
+//  demos/cxx/v32io/paint.cpp — draw  on the screen with  a v32io mouse
+//  (the C++ counterpart of the v32io library's v32mouse.c demo)
+//
+//  NEEDS a v32io mouse on GAMEPAD 4:  the v32io adaptor with a USB mouse
+//  in it (joystick `v32io:mouse`),  or the modified DesktopEmulator with
+//  Gamepads >  Gamepad 4 >  v32mouse (the emulator captures  the pointer
+//  when its  window is focused: left  Ctrl + left Alt  releases it). The
+//  stock emulator has no mouse device at all. See docs/V32IO.md.
 //
 //      left button     hold to draw
 //      right button    clear the drawing
 //      middle button   next colour
 //
 //  The top line shows the pointer, the latest movement and the buttons.
+//
 // *****************************************************************************
 
 #title   "v32io paint"
@@ -23,9 +25,9 @@
 #include <v32/math.hpp>
 #include <v32/mouse.hpp>
 
-#define MOUSE_PORT  v32::SecondGamepadPort   // Gamepad 2
+#define MOUSE_PORT  v32::FourthGamepadPort   // Gamepad 4
 #define DOTS_MAX    1200
-#define DOT_SPACING 4                       // pixels between dots in a stroke
+#define DOT_SPACING 4                        // pixels between dots in a stroke
 #define COLORS      5
 
 // -----------------------------------------------------------------------------
@@ -172,7 +174,7 @@ void main()
         if( !mouse.connected() )
         {
             set_multiply_color( color_red );
-            print_at( 0, 340, "No device on Gamepad 2 -- see docs/V32IO.md" );
+            print_at( 0, 340, "No device on Gamepad 4 -- see docs/V32IO.md" );
         }
 
         set_multiply_color( color_cyan );

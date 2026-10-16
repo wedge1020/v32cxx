@@ -1,13 +1,13 @@
 // *****************************************************************************
 //  demos/cxx/v32io/notepad.cpp — a keyboard AND a mouse at the same time
 //
-//  A page of 64 x 15 character cells. Click a cell to put the cursor there
-//  and type; each device has its own gamepad port and its own driver
-//  object, and both are probed once per frame.
+//  A page  of 64 x 15  character cells. Click  a cell to put  the cursor
+//  there and  type; each  device has  its own gamepad  port and  its own
+//  driver object, and both are probed once per frame.
 //
-//  NEEDS a v32io keyboard on GAMEPAD 2 and a v32io mouse on GAMEPAD 3:
-//  two v32io adaptors (one with a keyboard, one with a mouse), or the
-//  modified DesktopEmulator with Gamepad 2 > v32kbd and Gamepad 3 >
+//  NEEDS a v32io keyboard  on GAMEPAD 3 and a v32io  mouse on GAMEPAD 4:
+//  two v32io  adaptors (one with a  keyboard, one with a  mouse), or the
+//  modified  DesktopEmulator with  Gamepad 3  > v32kbd  and Gamepad  4 >
 //  v32mouse. Gamepad 1 stays an ordinary gamepad. See docs/V32IO.md.
 //
 //      left click            move the cursor to that cell
@@ -19,6 +19,7 @@
 //      Backspace / Delete    erase before / at the cursor
 //      Enter                 start of the next line
 //      Ctrl + Escape         erase the whole page
+//
 // *****************************************************************************
 
 #title   "v32io notepad"
@@ -28,8 +29,8 @@
 #include <v32/keyboard.hpp>
 #include <v32/mouse.hpp>
 
-#define KEYBOARD_PORT  v32::SecondGamepadPort   // Gamepad 2
-#define MOUSE_PORT     v32::ThirdGamepadPort    // Gamepad 3
+#define KEYBOARD_PORT  v32::ThirdGamepadPort    // Gamepad 3
+#define MOUSE_PORT     v32::FourthGamepadPort   // Gamepad 4
 #define COLUMNS        64
 #define ROWS           15
 #define TOP            40                       // first row's y, in pixels
@@ -188,7 +189,7 @@ void main()
 
         clear_screen( color_black );
         set_multiply_color( color_cyan );
-        print_at( 0, 0, "v32io notepad -- keyboard on Gamepad 2, mouse on Gamepad 3" );
+        print_at( 0, 0, "v32io notepad -- keyboard on Gamepad 4, mouse on Gamepad 4" );
         if( !keyboard.connected() || !mouse.connected() )
         {
             set_multiply_color( color_red );

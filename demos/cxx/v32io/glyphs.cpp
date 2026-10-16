@@ -17,8 +17,8 @@
 //    SCENE    a window, languages, symbols and shades -- all font glyphs
 //
 //  The MAP and SCENE pages need no device at all. COMPOSE needs a v32io
-//  keyboard on GAMEPAD 2 (the adaptor, or the modified DesktopEmulator with
-//  Gamepads > Gamepad 2 > v32kbd). The stock "Keyboard" device won't work.
+//  keyboard on GAMEPAD 3 (the adaptor, or the modified DesktopEmulator with
+//  Gamepads > Gamepad 3 > v32kbd). The stock "Keyboard" device won't work.
 //
 //      F1 F2 F3        pick a page          Tab, Right, Left   next / previous
 //      gamepad 1:      Left / Right (or L / R) previous / next
@@ -26,12 +26,13 @@
 //
 //  With no input for a while the pages turn by themselves.
 //
-//  Characters are written with octal escapes ("\351" is é) because the BIOS
-//  font codes are not Unicode; the text each one spells is in the comment
-//  beside it. Codes 14 to 31 (the box drawing set) work in string literals
-//  too, "\031\025\030" being ┌─┐: the Vircon32 toolchain can't carry those
-//  in a literal, so v32c++ moves such literals into hidden global arrays
-//  (see docs/VIRCON32_QUIRKS.md).
+//  Characters are written with octal  escapes ("\351" is é) because the
+//  BIOS font codes are  not Unicode; the text each one  spells is in the
+//  comment  beside it.  Codes 14  to 31  (the box  drawing set)  work in
+//  string  literals too,  "\031\025\030" being  ┌─┐: the  Vircon32
+//  toolchain  can't carry  those  in  a literal,  so  v32c++ moves  such
+//  literals into hidden global arrays (see docs/VIRCON32_QUIRKS.md).
+//
 // *****************************************************************************
 
 #title   "v32io glyphs"
@@ -42,7 +43,7 @@
 #include "string.h"
 #include <v32/keyboard.hpp>
 
-#define KEYBOARD_PORT  v32::SecondGamepadPort   // Gamepad 2
+#define KEYBOARD_PORT  v32::ThirdGamepadPort   // Gamepad 3
 #define PAGES          3
 #define AUTO_FRAMES    480                      // idle frames before the page turns
 #define TYPED_COLUMNS  58                       // the box on the COMPOSE page
@@ -132,12 +133,12 @@ void draw_chrome()
     if( keyboard.connected() )
     {
         colored( color_green );
-        print_at( 400, 0, "keyboard: Gamepad 2" );
+        print_at( 400, 0, "keyboard: Gamepad 3" );
     }
     else
     {
         colored( color_red );
-        print_at( 400, 0, "no keyboard: Gamepad 2" );
+        print_at( 400, 0, "no keyboard: Gamepad 3" );
     }
 
     colored( color_white );
