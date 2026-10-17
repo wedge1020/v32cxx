@@ -1,4 +1,4 @@
-.TH V32C++\-HEADERS 3v32 "October 16, 2026" "v32c++ 20261016-dev" "v32c++ Library"
+.TH V32C++\-HEADERS 3v32 "October 17, 2026" "v32c++ 20261017-dev" "v32c++ Library"
 .SH NAME
 v32c++\-headers \- the C++ headers and the C library that come with v32c++
 .SH SYNOPSIS

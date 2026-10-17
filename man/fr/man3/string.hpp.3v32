@@ -1,5 +1,5 @@
 '\" -*- coding: UTF-8 -*-
-.TH STRING.HPP 3v32 "16 octobre 2026" "v32c++ 20261016-dev" "Bibliothèque v32c++"
+.TH STRING.HPP 3v32 "17 octobre 2026" "v32c++ 20261017-dev" "Bibliothèque v32c++"
 .SH NOM
 v32/string.hpp \- v32::String, une chaîne à capacité fixe au-dessus du SDK de Vircon32
 .SH SYNOPSIS

@@ -1,4 +1,4 @@
-.TH V32IO.HPP 3v32 "October 16, 2026" "v32c++ 20261016-dev" "v32c++ Library"
+.TH V32IO.HPP 3v32 "October 17, 2026" "v32c++ 20261017-dev" "v32c++ Library"
 .SH NAME
 v32/v32io.hpp \- v32::IoDevice, a gamepad port read as v32io data
 .SH SYNOPSIS

@@ -551,8 +551,13 @@ Program » / « 1.0 »). Le `<binary path>` du XML est le chemin de `-o` avec
 défaut le XML ne contient donc que des noms de fichier : avec `-o obj/game.c`
 et `#texture Ship "textures/ship.png"` on obtient `obj/game.xml` avec
 `<binary path="game.vbin" />` et `<texture path="ship.vtex" />`, c'est-à-dire
-que les `.vbin`/`.vtex`/`.vsnd` sont attendus à côté du XML (deux ressources
-qui aboutissent au même nom donnent un avertissement). `--xml-preserve-paths`
+que les `.vbin`/`.vtex`/`.vsnd` sont attendus à côté du XML. Si deux
+ressources aboutissent au même nom, la première le garde et la suivante
+conserve juste assez de répertoires pour se distinguer : `textures/ship.png`
+puis `textures/extra/ship.png` donnent `ship.vtex` et `extra/ship.vtex` (le
+second `.vtex` est attendu dans `obj/extra/`). Un jumeau pour la version
+optimisée est écrit à côté (`obj/gameOpt.xml`, dont `<binary>` est
+`gameOpt.vbin`). `--xml-preserve-paths`
 conserve au contraire le chemin de chaque directive tel qu'écrit
 (`textures/ship.vtex`), écrit le XML dans le répertoire du *fichier source*
 et fait de `<binary>` le chemin du `.vbin` relatif à celui-ci.

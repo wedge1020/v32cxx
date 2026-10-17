@@ -1,5 +1,5 @@
 '\" -*- coding: UTF-8 -*-
-.TH MEMCARD.HPP 3v32 "16 octobre 2026" "v32c++ 20261016-dev" "Bibliothèque v32c++"
+.TH MEMCARD.HPP 3v32 "17 octobre 2026" "v32c++ 20261017-dev" "Bibliothèque v32c++"
 .SH NOM
 v32/memcard.hpp \- v32::MemoryCard, un emplacement de sauvegarde à signature vérifiée
 .SH SYNOPSIS

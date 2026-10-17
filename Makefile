@@ -296,11 +296,14 @@ test: all | $(OUT_DIR)
 	$(BIN)  -vvv    -o out/143program.c tests/143sample.cpp 1> out/143sample.txt 2>&1
 	grep -q '<binary path="143program.vbin" />' out/143program.xml
 	grep -q '<texture path="ship.vtex" /> <!-- SHIP -->' out/143program.xml
-	grep -q 'both become' out/143sample.txt
+	grep -q '<texture path="extra/ship.vtex" /> <!-- BULLET -->' out/143program.xml
+	grep -q '<binary path="143programOpt.vbin" />' out/143programOpt.xml
+	grep -q '<texture path="extra/ship.vtex" /> <!-- BULLET -->' out/143programOpt.xml
 	cp tests/143sample.cpp out/144src.cpp
 	$(BIN)  -vvv --xml-preserve-paths -o out/144program.c out/144src.cpp 1> out/144sample.txt 2>&1
 	grep -q '<binary path="144program.vbin" />' out/144program.xml
 	grep -q '<texture path="textures/extra/ship.vtex" />' out/144program.xml
+	grep -q '<binary path="144programOpt.vbin" />' out/144programOpt.xml
 # `-vvv` (this project's own verbosity flag, a later round -- see
 # main.c) is passed to every sample specifically so `make test`'s own
 # output still captures the full AST/semantic-analysis/lowering dumps

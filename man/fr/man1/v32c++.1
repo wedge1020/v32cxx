@@ -1,5 +1,5 @@
 '\" -*- coding: UTF-8 -*-
-.TH V32C++ 1 "16 octobre 2026" "v32c++ 20261016-dev" "Commandes utilisateur"
+.TH V32C++ 1 "17 octobre 2026" "v32c++ 20261017-dev" "Commandes utilisateur"
 .SH NOM
 v32c++ \- transpile un sous-ensemble de C++ en C Vircon32
 .SH SYNOPSIS
@@ -243,7 +243,12 @@ relatif à ce répertoire. Par défaut le XML se trouve à côté du C généré
 contient que des noms de fichier (\fIship.vtex\fR, pas \fItextures/ship.vtex\fR),
 car
 .B packrom
-résout tous les chemins du XML relativement au XML lui-même.
+résout tous les chemins du XML relativement au XML lui-même. Si deux ressources
+partagent un nom de fichier, la première le garde et chacune des suivantes
+conserve juste assez de répertoires pour se distinguer (\fItextures/extra/ship.png\fR
+après \fItextures/ship.png\fR devient \fIextra/ship.vtex\fR, attendu dans un
+sous-répertoire à côté du XML). Un jumeau pour la version optimisée,
+\fInom\fROpt.xml, qui référence \fInom\fROpt.vbin, est écrit à côté du XML.
 .TP
 .B \-\-no\-inline\-containers
 Conserve les accesseurs de

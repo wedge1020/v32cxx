@@ -54,11 +54,6 @@ obj/$(DEMO).asm: prep obj/$(DEMO).c
 ifneq ($(HAVE_OPTIMIZER),)
 	$(OPTIMIZER)  $(DEBUG_FLAGS) -o obj/$(DEMO)Opt.asm obj/$(DEMO).asm
 endif
-	mv obj/$(DEMO).xml .
-ifneq ($(HAVE_OPTIMIZER),)
-	cat $(DEMO).xml | sed 's/\.vbin/Opt.vbin/g' > $(DEMO)Opt.xml
-endif
-
 # Assemble Assembly to Binary
 vbin: obj/$(DEMO).vbin
 
@@ -69,38 +64,38 @@ ifneq ($(HAVE_OPTIMIZER),)
 endif
 
 # Process PNG sprite sheet to Vircon texture
-vtex: textures/$(DEMO)_sprites.vtex
+vtex: obj/$(DEMO)_sprites.vtex
 
-textures/$(DEMO)_sprites.vtex: textures/$(DEMO)_sprites.png
-	$(TEXTURE_TOOL) textures/$(DEMO)_sprites.png -o textures/$(DEMO)_sprites.vtex
+obj/$(DEMO)_sprites.vtex: textures/$(DEMO)_sprites.png | prep
+	$(TEXTURE_TOOL) textures/$(DEMO)_sprites.png -o obj/$(DEMO)_sprites.vtex
 
-vsnd:
-	$(SOUND_TOOL)   sounds/alien_death.wav  -o sounds/alien_death.vsnd
-	$(SOUND_TOOL)   sounds/bunker_hit.wav   -o sounds/bunker_hit.vsnd
-	$(SOUND_TOOL)   sounds/extra_life.wav   -o sounds/extra_life.vsnd
-	$(SOUND_TOOL)   sounds/march0.wav       -o sounds/march0.vsnd
-	$(SOUND_TOOL)   sounds/march1.wav       -o sounds/march1.vsnd
-	$(SOUND_TOOL)   sounds/march2.wav       -o sounds/march2.vsnd
-	$(SOUND_TOOL)   sounds/march3.wav       -o sounds/march3.vsnd
-	$(SOUND_TOOL)   sounds/march4.wav       -o sounds/march4.vsnd
-	$(SOUND_TOOL)   sounds/march5.wav       -o sounds/march5.vsnd
-	$(SOUND_TOOL)   sounds/march6.wav       -o sounds/march6.vsnd
-	$(SOUND_TOOL)   sounds/menu_move.wav    -o sounds/menu_move.vsnd
-	$(SOUND_TOOL)   sounds/menu_select.wav  -o sounds/menu_select.vsnd
-	$(SOUND_TOOL)   sounds/music_game.wav   -o sounds/music_game.vsnd
-	$(SOUND_TOOL)   sounds/music_title.wav  -o sounds/music_title.vsnd
-	$(SOUND_TOOL)   sounds/player_death.wav -o sounds/player_death.vsnd
-	$(SOUND_TOOL)   sounds/saucer_death.wav -o sounds/saucer_death.vsnd
-	$(SOUND_TOOL)   sounds/saucer.wav       -o sounds/saucer.vsnd
-	$(SOUND_TOOL)   sounds/shoot.wav        -o sounds/shoot.vsnd
+vsnd: | prep
+	$(SOUND_TOOL)   sounds/alien_death.wav  -o obj/alien_death.vsnd
+	$(SOUND_TOOL)   sounds/bunker_hit.wav   -o obj/bunker_hit.vsnd
+	$(SOUND_TOOL)   sounds/extra_life.wav   -o obj/extra_life.vsnd
+	$(SOUND_TOOL)   sounds/march0.wav       -o obj/march0.vsnd
+	$(SOUND_TOOL)   sounds/march1.wav       -o obj/march1.vsnd
+	$(SOUND_TOOL)   sounds/march2.wav       -o obj/march2.vsnd
+	$(SOUND_TOOL)   sounds/march3.wav       -o obj/march3.vsnd
+	$(SOUND_TOOL)   sounds/march4.wav       -o obj/march4.vsnd
+	$(SOUND_TOOL)   sounds/march5.wav       -o obj/march5.vsnd
+	$(SOUND_TOOL)   sounds/march6.wav       -o obj/march6.vsnd
+	$(SOUND_TOOL)   sounds/menu_move.wav    -o obj/menu_move.vsnd
+	$(SOUND_TOOL)   sounds/menu_select.wav  -o obj/menu_select.vsnd
+	$(SOUND_TOOL)   sounds/music_game.wav   -o obj/music_game.vsnd
+	$(SOUND_TOOL)   sounds/music_title.wav  -o obj/music_title.vsnd
+	$(SOUND_TOOL)   sounds/player_death.wav -o obj/player_death.vsnd
+	$(SOUND_TOOL)   sounds/saucer_death.wav -o obj/saucer_death.vsnd
+	$(SOUND_TOOL)   sounds/saucer.wav       -o obj/saucer.vsnd
+	$(SOUND_TOOL)   sounds/shoot.wav        -o obj/shoot.vsnd
 
 # Pack ROM cartridge (Depends on the binary and texture to ensure they are built first)
 v32: vsnd bin/$(DEMO).v32
 
 bin/$(DEMO).v32: obj/$(DEMO).vbin
-	$(PACKER) $(DEMO).xml    -o bin/$(DEMO).v32
+	$(PACKER) obj/$(DEMO).xml    -o bin/$(DEMO).v32
 ifneq ($(HAVE_OPTIMIZER),)
-	$(PACKER) $(DEMO)Opt.xml -o bin/$(DEMO)Opt.v32
+	$(PACKER) obj/$(DEMO)Opt.xml -o bin/$(DEMO)Opt.v32
 endif
 
 context:
@@ -111,4 +106,4 @@ context:
 
 # --- Clean Up ---
 clean:
-	rm -f bin/*.v32 obj/* textures/*.vtex sounds/*.vsnd *.xml
+	rm -f bin/*.v32 obj/*

@@ -35,12 +35,11 @@ prep:
 	@mkdir -p bin obj
 
 # C++ -> C. v32c++ also writes obj/<name>.xml, whose <binary path> is
-# obj/<name>.vbin; it moves up here, where packrom runs.
+# <name>.vbin, resolved by packrom relative to the XML (so beside it in obj/).
 HEADERS       = ../../../v32/v32io.hpp ../../../v32/keyboard.hpp ../../../v32/mouse.hpp
 
 obj/%.c: %.cpp $(HEADERS) | prep
 	$(TRANSPILER) $(DEBUG_FLAGS) -o obj/$*.c $*.cpp
-	mv obj/$*.xml .
 
 obj/%.asm: obj/%.c
 	$(COMPILER) $(DEBUG_FLAGS) -o obj/$*.asm obj/$*.c
@@ -49,7 +48,7 @@ obj/%.vbin: obj/%.asm
 	$(ASSEMBLER) $(ASM_DEBUG_FLAGS) -o obj/$*.vbin obj/$*.asm
 
 bin/%.v32: obj/%.vbin
-	$(PACKER) $*.xml -o bin/$*.v32
+	$(PACKER) obj/$*.xml -o bin/$*.v32
 
 clean:
-	rm -f bin/*.v32 obj/* *.xml
+	rm -f bin/*.v32 obj/*

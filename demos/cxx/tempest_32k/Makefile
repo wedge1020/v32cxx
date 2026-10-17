@@ -56,11 +56,6 @@ obj/$(DEMO).asm: prep obj/$(DEMO).c
 ifneq ($(HAVE_OPTIMIZER),)
 	$(OPTIMIZER)  $(DEBUG_FLAGS) -o obj/$(DEMO)Opt.asm obj/$(DEMO).asm
 endif
-	mv obj/$(DEMO).xml .
-ifneq ($(HAVE_OPTIMIZER),)
-	cat $(DEMO).xml | sed 's/\.vbin/Opt.vbin/g' > $(DEMO)Opt.xml
-endif
-
 
 # Assemble Assembly to Binary
 vbin: obj/$(DEMO).vbin
@@ -72,38 +67,38 @@ ifneq ($(HAVE_OPTIMIZER),)
 endif
 
 # Process PNG sprite sheet to Vircon texture
-vtex: textures/$(DEMO)_sprites.vtex
+vtex: obj/$(DEMO)_sprites.vtex
 
-textures/$(DEMO)_sprites.vtex: textures/$(DEMO)_sprites.png
-	$(TEXTURE_TOOL) textures/$(DEMO)_sprites.png -o textures/$(DEMO)_sprites.vtex
+obj/$(DEMO)_sprites.vtex: textures/$(DEMO)_sprites.png | prep
+	$(TEXTURE_TOOL) textures/$(DEMO)_sprites.png -o obj/$(DEMO)_sprites.vtex
 
-vsnd:
+vsnd: | prep
 	$(FFMPEG_TOOL)  -i sounds/m_title.m4a       sounds/m_title.wav
 	$(FFMPEG_TOOL)  -i sounds/m_track1.m4a      sounds/m_track1.wav
 	$(FFMPEG_TOOL)  -i sounds/m_track2.m4a      sounds/m_track2.wav
 	$(FFMPEG_TOOL)  -i sounds/m_track3.m4a      sounds/m_track3.wav
 	$(FFMPEG_TOOL)  -i sounds/m_track4.m4a      sounds/m_track4.wav
-	$(SOUND_TOOL)      sounds/blip.wav       -o sounds/blip.vsnd
-	$(SOUND_TOOL)      sounds/boom.wav       -o sounds/boom.vsnd
-	$(SOUND_TOOL)      sounds/clear.wav      -o sounds/clear.vsnd
-	$(SOUND_TOOL)      sounds/death.wav      -o sounds/death.vsnd
-	$(SOUND_TOOL)      sounds/jump.wav       -o sounds/jump.vsnd
-	$(SOUND_TOOL)      sounds/m_title.wav    -o sounds/m_title.vsnd
-	$(SOUND_TOOL)      sounds/m_track1.wav   -o sounds/m_track1.vsnd
-	$(SOUND_TOOL)      sounds/m_track2.wav   -o sounds/m_track2.vsnd
-	$(SOUND_TOOL)      sounds/m_track3.wav   -o sounds/m_track3.vsnd
-	$(SOUND_TOOL)      sounds/m_track4.wav   -o sounds/m_track4.vsnd
-	$(SOUND_TOOL)      sounds/pickup.wav     -o sounds/pickup.vsnd
-	$(SOUND_TOOL)      sounds/shootsound.wav -o sounds/shootsound.vsnd
-	$(SOUND_TOOL)      sounds/zap.wav        -o sounds/zap.vsnd
+	$(SOUND_TOOL)      sounds/blip.wav       -o obj/blip.vsnd
+	$(SOUND_TOOL)      sounds/boom.wav       -o obj/boom.vsnd
+	$(SOUND_TOOL)      sounds/clear.wav      -o obj/clear.vsnd
+	$(SOUND_TOOL)      sounds/death.wav      -o obj/death.vsnd
+	$(SOUND_TOOL)      sounds/jump.wav       -o obj/jump.vsnd
+	$(SOUND_TOOL)      sounds/m_title.wav    -o obj/m_title.vsnd
+	$(SOUND_TOOL)      sounds/m_track1.wav   -o obj/m_track1.vsnd
+	$(SOUND_TOOL)      sounds/m_track2.wav   -o obj/m_track2.vsnd
+	$(SOUND_TOOL)      sounds/m_track3.wav   -o obj/m_track3.vsnd
+	$(SOUND_TOOL)      sounds/m_track4.wav   -o obj/m_track4.vsnd
+	$(SOUND_TOOL)      sounds/pickup.wav     -o obj/pickup.vsnd
+	$(SOUND_TOOL)      sounds/shootsound.wav -o obj/shootsound.vsnd
+	$(SOUND_TOOL)      sounds/zap.wav        -o obj/zap.vsnd
 
 # Pack ROM cartridge (Depends on the binary and texture to ensure they are built first)
 v32: vsnd bin/$(DEMO).v32
 
 bin/$(DEMO).v32: obj/$(DEMO).vbin
-	$(PACKER) $(DEMO).xml    -o bin/$(DEMO).v32
+	$(PACKER) obj/$(DEMO).xml    -o bin/$(DEMO).v32
 ifneq ($(HAVE_OPTIMIZER),)
-	$(PACKER) $(DEMO)Opt.xml -o bin/$(DEMO)Opt.v32
+	$(PACKER) obj/$(DEMO)Opt.xml -o bin/$(DEMO)Opt.v32
 endif
 
 context:
@@ -114,4 +109,4 @@ context:
 
 # --- Clean Up ---
 clean:
-	rm -f bin/*.v32 obj/* textures/*.vtex sounds/*.vsnd *.xml sounds/m_t*.wav
+	rm -f bin/*.v32 obj/* sounds/m_t*.wav

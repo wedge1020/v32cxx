@@ -44,13 +44,22 @@
  *    is just a file name -- `<binary path="game.vbin" />`,
  *    `<texture path="spaceship.vtex" />` for `#texture S "textures/
  *    spaceship.png"` -- i.e. the produced .vbin/.vtex/.vsnd are expected
- *    to sit beside the XML. Two assets that collapse to the same file
- *    name draw a warning.
+ *    to sit beside the XML. When two assets collapse to the same file
+ *    name, the first keeps it and each later one keeps just enough of
+ *    its directories to be unique: `textures/ship.png` followed by
+ *    `textures/extra/ship.png` gives `ship.vtex` and `extra/ship.vtex`
+ *    (the latter expected in <xml dir>/extra/). Only two assets whose
+ *    whole paths collapse to the same name (differing just by
+ *    extension, say) still draw a warning.
  *
  *  - `preserve_paths` = 1 (--xml-preserve-paths): each #texture/#sound
  *    path is kept exactly as written in the hint, the XML goes in the
  *    directory of `source_filename` (the hints' own point of reference),
  *    and <binary> is the .vbin path made relative to that directory.
+ *
+ * Alongside every XML a twin for the optimized build is written:
+ * `-o obj/game.c` gives obj/game.xml (-> game.vbin) and obj/gameOpt.xml
+ * (-> gameOpt.vbin), identical otherwise.
  *
  * Writes an error to stderr and returns without creating anything if
  * the XML file can't be opened for writing -- does not abort the

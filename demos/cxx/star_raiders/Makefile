@@ -57,11 +57,6 @@ obj/$(DEMO).asm: prep obj/$(DEMO).c
 ifneq ($(HAVE_OPTIMIZER),)
 	$(OPTIMIZER)  $(DEBUG_FLAGS) -o obj/$(DEMO)Opt.asm obj/$(DEMO).asm
 endif
-	mv obj/$(DEMO).xml .
-ifneq ($(HAVE_OPTIMIZER),)
-	cat $(DEMO).xml | sed 's/\.vbin/Opt.vbin/g' > $(DEMO)Opt.xml
-endif
-
 
 # Assemble Assembly to Binary
 vbin: obj/$(DEMO).vbin
@@ -73,29 +68,29 @@ ifneq ($(HAVE_OPTIMIZER),)
 endif
 
 # Process PNG sprite sheet to Vircon texture
-vtex: textures/$(DEMO)_sprites.vtex
+vtex: obj/$(DEMO)_sprites.vtex
 
-textures/$(DEMO)_sprites.vtex: textures/$(DEMO)_sprites.png
-	$(TEXTURE_TOOL) textures/$(DEMO)_sprites.png -o textures/$(DEMO)_sprites.vtex
+obj/$(DEMO)_sprites.vtex: textures/$(DEMO)_sprites.png | prep
+	$(TEXTURE_TOOL) textures/$(DEMO)_sprites.png -o obj/$(DEMO)_sprites.vtex
 
-vsnd:
-	$(SOUND_TOOL)   sounds/alert.wav      -o sounds/alert.vsnd
-	$(SOUND_TOOL)   sounds/beep.wav       -o sounds/beep.vsnd
-	$(SOUND_TOOL)   sounds/gameplay.wav   -o sounds/gameplay.vsnd
-	$(SOUND_TOOL)   sounds/engine.wav     -o sounds/engine.vsnd
-	$(SOUND_TOOL)   sounds/explosion.wav  -o sounds/explosion.vsnd
-	$(SOUND_TOOL)   sounds/hyperspace.wav -o sounds/hyperspace.vsnd
-	$(SOUND_TOOL)   sounds/missile.wav    -o sounds/missile.vsnd
-	$(SOUND_TOOL)   sounds/replenish.wav  -o sounds/replenish.vsnd
-	$(SOUND_TOOL)   sounds/title.wav      -o sounds/title.vsnd
+vsnd: | prep
+	$(SOUND_TOOL)   sounds/alert.wav      -o obj/alert.vsnd
+	$(SOUND_TOOL)   sounds/beep.wav       -o obj/beep.vsnd
+	$(SOUND_TOOL)   sounds/gameplay.wav   -o obj/gameplay.vsnd
+	$(SOUND_TOOL)   sounds/engine.wav     -o obj/engine.vsnd
+	$(SOUND_TOOL)   sounds/explosion.wav  -o obj/explosion.vsnd
+	$(SOUND_TOOL)   sounds/hyperspace.wav -o obj/hyperspace.vsnd
+	$(SOUND_TOOL)   sounds/missile.wav    -o obj/missile.vsnd
+	$(SOUND_TOOL)   sounds/replenish.wav  -o obj/replenish.vsnd
+	$(SOUND_TOOL)   sounds/title.wav      -o obj/title.vsnd
 
 # Pack ROM cartridge (Depends on the binary and texture to ensure they are built first)
 v32: vsnd bin/$(DEMO).v32
 
 bin/$(DEMO).v32: obj/$(DEMO).vbin
-	$(PACKER) $(DEMO).xml    -o bin/$(DEMO).v32
+	$(PACKER) obj/$(DEMO).xml    -o bin/$(DEMO).v32
 ifneq ($(HAVE_OPTIMIZER),)
-	$(PACKER) $(DEMO)Opt.xml -o bin/$(DEMO)Opt.v32
+	$(PACKER) obj/$(DEMO)Opt.xml -o bin/$(DEMO)Opt.v32
 endif
 
 context:
@@ -106,4 +101,4 @@ context:
 
 # --- Clean Up ---
 clean:
-	rm -f bin/*.v32 obj/* textures/*.vtex sounds/*.vsnd *.xml
+	rm -f bin/*.v32 obj/*

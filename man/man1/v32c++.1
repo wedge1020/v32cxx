@@ -1,4 +1,4 @@
-.TH V32C++ 1 "October 16, 2026" "v32c++ 20261016-dev" "User Commands"
+.TH V32C++ 1 "October 17, 2026" "v32c++ 20261017-dev" "User Commands"
 .SH NAME
 v32c++ \- transpile a subset of C++ to Vircon32 C
 .SH SYNOPSIS
@@ -239,7 +239,12 @@ path relative to that directory. By default the XML sits beside the generated C
 and holds bare file names only (\fIship.vtex\fR, not \fItextures/ship.vtex\fR),
 because
 .BR packrom
-resolves every path in the XML relative to the XML itself.
+resolves every path in the XML relative to the XML itself. When two assets
+share a file name, the first keeps it and each later one keeps just enough
+directories to differ (\fItextures/extra/ship.png\fR after
+\fItextures/ship.png\fR becomes \fIextra/ship.vtex\fR, expected in a
+subdirectory beside the XML). A twin XML for the optimized build,
+\fIname\fROpt.xml referencing \fIname\fROpt.vbin, is written next to the XML.
 .TP
 .B \-\-no\-inline\-containers
 Keep the accessors of

@@ -554,9 +554,13 @@ establecen los atributos de `<rom>` (en caso contrario «Vircon32 Program» /
 defecto el XML contiene solo nombres de archivo: con `-o obj/game.c` y
 `#texture Ship "textures/ship.png"` se obtiene `obj/game.xml` con
 `<binary path="game.vbin" />` y `<texture path="ship.vtex" />`; es decir,
-se espera que los `.vbin`/`.vtex`/`.vsnd` estén junto al XML (dos recursos
-que acaben con el mismo nombre provocan una advertencia).
-`--xml-preserve-paths` conserva en cambio la ruta de cada directiva tal
+se espera que los `.vbin`/`.vtex`/`.vsnd` estén junto al XML. Si dos
+recursos acaban con el mismo nombre, el primero lo conserva y el segundo
+mantiene los directorios justos para distinguirse: `textures/ship.png`
+seguido de `textures/extra/ship.png` da `ship.vtex` y `extra/ship.vtex` (el
+segundo `.vtex` se espera en `obj/extra/`). Junto al XML se escribe un gemelo
+para la compilación optimizada (`obj/gameOpt.xml`, cuyo `<binary>` es
+`gameOpt.vbin`). `--xml-preserve-paths` conserva en cambio la ruta de cada directiva tal
 como se escribió (`textures/ship.vtex`), escribe el XML en el directorio
 del *archivo fuente* y hace que `<binary>` sea la ruta del `.vbin`
 relativa a él.

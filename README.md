@@ -529,8 +529,13 @@ to  `.vtex`/`.vsnd`.  `#title`/`#version`   set  the  `<rom>`  attributes
 default the XML holds bare file names only: with `-o obj/game.c` and
 `#texture Ship "textures/ship.png"` you get `obj/game.xml` containing
 `<binary path="game.vbin" />` and `<texture path="ship.vtex" />`, i.e.
-the `.vbin`/`.vtex`/`.vsnd` files are expected beside the XML (two assets
-that end up with the same name draw a warning). `--xml-preserve-paths`
+the `.vbin`/`.vtex`/`.vsnd` files are expected beside the XML. If two
+assets end up with the same name, the first keeps it and the later one keeps
+just enough of its directories to differ: `textures/ship.png` followed by
+`textures/extra/ship.png` gives `ship.vtex` and `extra/ship.vtex` (so the
+second `.vtex` is expected in `obj/extra/`). A twin XML for the optimized
+build is written alongside (`obj/gameOpt.xml`, whose `<binary>` is
+`gameOpt.vbin`). `--xml-preserve-paths`
 instead keeps each hint's path as written
 (`textures/ship.vtex`), writes the XML into the *source file's*
 directory, and makes `<binary>` the `.vbin` path relative to it.

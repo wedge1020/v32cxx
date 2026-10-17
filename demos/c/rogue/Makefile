@@ -67,11 +67,6 @@ obj/$(DEMO).asm: obj/$(DEMO).c
 ifneq ($(HAVE_OPTIMIZER),)
 	$(OPTIMIZER)  $(DEBUG_FLAGS) -o obj/$(DEMO)Opt.asm obj/$(DEMO).asm
 endif
-	cp obj/$(DEMO).xml .
-ifneq ($(HAVE_OPTIMIZER),)
-	cat $(DEMO).xml | sed 's/\.vbin/Opt.vbin/g' > $(DEMO)Opt.xml
-endif
-
 # Assemble to binary
 vbin: obj/$(DEMO).vbin
 
@@ -85,11 +80,11 @@ endif
 v32: bin/$(DEMO).v32
 
 bin/$(DEMO).v32: obj/$(DEMO).vbin
-	$(PACKER) $(DEMO).xml    -o bin/$(DEMO).v32
+	$(PACKER) obj/$(DEMO).xml    -o bin/$(DEMO).v32
 ifneq ($(HAVE_OPTIMIZER),)
-	$(PACKER) $(DEMO)Opt.xml -o bin/$(DEMO)Opt.v32
+	$(PACKER) obj/$(DEMO)Opt.xml -o bin/$(DEMO)Opt.v32
 endif
 
 # --- Clean Up ---
 clean:
-	rm -f bin/*.v32 obj/* *.xml
+	rm -f bin/*.v32 obj/*
