@@ -4,6 +4,7 @@
 #include "cartxml.h"
 #include "driver.h"
 #include "pathutil.h"
+#include "buildscript.h"
 
 /* Collision warnings are printed once per run, not once per XML written. */
 static int g_warn_collisions = 1;
@@ -127,8 +128,9 @@ char *cart_xml_filename(const char *output_filename, const char *source_filename
                         int preserve_paths) {
     char *xml_name = replace_extension(output_filename, ".xml");
     if (!preserve_paths) return xml_name;
-    /* Same file name as the default, but in the source file's directory. */
-    char *dir = path_dirname(source_filename);
+    /* Same file name as the default, but beside the source -- or in its
+     * parent for the src/ + obj/ layout (see buildscript.h). */
+    char *dir = build_script_dir(output_filename, source_filename);
     size_t cap = strlen(dir) + strlen(xml_name) + 2;
     char *result = malloc(cap);
     snprintf(result, cap, "%s/%s", dir, path_basename(xml_name));

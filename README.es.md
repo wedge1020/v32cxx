@@ -230,6 +230,13 @@ unifican, las funciones variádicas funcionan, el puntero nulo es 0 y se acepta
 basta para construir el juego de Unix Rogue a partir de sus fuentes
 (`demos/c/rogue`). Ver [`docs/C_INPUT.es.md`](docs/C_INPUT.es.md).
 
+`v32c` es el mismo programa con un segundo nombre, para C: `v32c juego.c` y
+`v32c++ juego.c` hacen hoy exactamente lo mismo (decide la extensión del
+archivo), y `make`/`cmake` construyen e instalan ambos. Los scripts de
+compilación llaman al nombre con el que ejecutaste. La salida por defecto de un
+archivo C sería él mismo (`juego.c` → `juego.c`), así que sin `-o` v32c++ escribe
+`juego-transpiled.c`, y un `-o` que nombre la entrada es un error.
+
 ## Cabeceras de C++ para la API de Vircon32
 
 `v32/` contiene cabeceras de C++ en el espacio de nombres `v32::`, una por cada
@@ -488,7 +495,7 @@ v32c++ -I path/to/v32c++ -o obj/game.c game.cpp
 
 | Opción | Significado |
 | ------ | ----------- |
-| `-o file.c` | ruta de salida (por defecto: el nombre de la entrada con `.c`) |
+| `-o file.c` | ruta de salida (por defecto: el nombre de la entrada con `.c`; `nombre-transpiled.c` si eso sobrescribiría la entrada, como con un archivo `.c`) |
 | `-c` | no exige un `main` (un fragmento de biblioteca/módulo) |
 | `-I dir`, `--include=dir` | añade un directorio a la ruta de búsqueda de `.hpp`/`.cpp` (repetible) |
 | `-D name[=value]`, `-U name` | define / elimina la definición de una macro |
@@ -712,7 +719,7 @@ la comunidad (los archivos de v32opt, y las cabeceras de v32lua en
 
 | | Linux / macOS | Windows (CMake) |
 | --- | --- | --- |
-| transpilador | `/usr/local/bin/v32c++` | `C:\Program Files\Vircon32\v32tools\v32c++.exe` |
+| transpilador (`v32c` es una copia) | `/usr/local/bin/v32c++`, `/usr/local/bin/v32c` | `C:\Program Files\Vircon32\v32tools\v32c++.exe`, `v32c.exe` |
 | páginas de manual (las de v32c++, y las del SDK de Vircon32 de `man/vircon32/`, juntas) | `/usr/local/share/man/man1/*.1.gz`, `/usr/local/share/man/man3/*.3v32.gz` (comprimidas con gzip; los alias son enlaces simbólicos) | `...\v32tools\docs\v32c++\man1`, `...\man3` |
 | cabeceras de C++ (`v32/`) | `/usr/local/Vircon32/v32tools/include/v32c++/v32` | `...\v32tools\include\v32c++\v32` |
 | biblioteca de C (`libc/`) | `/usr/local/Vircon32/v32tools/include/v32c++/libc` | `...\v32tools\include\v32c++\libc` |

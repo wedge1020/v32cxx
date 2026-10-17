@@ -1,6 +1,6 @@
 .TH V32C++ 1 "October 16, 2026" "v32c++ 20261016-dev" "User Commands"
 .SH NAME
-v32c++ \- transpile a subset of C++ to Vircon32 C
+v32c++, v32c \- transpile a subset of C++ (or C) to Vircon32 C
 .SH SYNOPSIS
 .B v32c++
 .RB [ \-o
@@ -86,7 +86,18 @@ becomes
 .IR foo/bar.c .
 This also matches the Vircon32 C compiler's and
 .BR v32lua (1)'s
-own default naming.
+own default naming. When that name would be the input itself (a
+.I .c
+file), the output is
+.I name\-transpiled.c
+instead, with a note on stderr; an explicit
+.B \-o
+naming the input is an error.
+.PP
+.B v32c
+is the same program under a second name, for C input (the extension of the
+input decides the language either way); the build scripts call whichever name
+was run.
 .TP
 .B \-c
 Transpile without requiring a

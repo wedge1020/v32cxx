@@ -3,6 +3,7 @@
 #include <string.h>
 #include <getopt.h>
 #include <unistd.h> /* access() */
+#include <sys/stat.h>
 #include "driver.h"
 #include "parser.h"
 #include "sema.h"
@@ -41,6 +42,36 @@ char *g_cart_title_opt = NULL;
 int   g_cart_no_diff_opt_title = 0;
 
 extern FILE *yyin;
+
+/* Do `a` and `b` name the same file? (Compared lexically, with "." and ".."
+ * folded, and -- when both exist -- by device/inode, which also catches
+ * links and a differently spelled path.) */
+static int same_file(const char *a, const char *b) {
+    char *na = path_relative_to(".", a);
+    char *nb = path_relative_to(".", b);
+    int same = (strcmp(na, nb) == 0);
+    free(na);
+    free(nb);
+    if (!same) {
+        struct stat sa, sb;
+        if (stat(a, &sa) == 0 && stat(b, &sb) == 0 &&
+            sa.st_ino != 0 && sa.st_ino == sb.st_ino && sa.st_dev == sb.st_dev)
+            same = 1;
+    }
+    return same;
+}
+
+/* The name this program was invoked as ("v32c++" or "v32c"), without
+ * directory or .exe; the build scripts call it by that same name. */
+static char *invoked_name(const char *argv0) {
+    const char *base = path_basename(argv0);
+    size_t len = strlen(base);
+    if (len > 4 && strcmp(base + len - 4, ".exe") == 0) len -= 4;
+    char *name = malloc(len + 1);
+    memcpy(name, base, len);
+    name[len] = '\0';
+    return name;
+}
 
 static void print_usage(const char *prog_name) {
     fprintf(stderr, "usage: %s [-o output.c] [-c] [-v[v[v]]] [-I dir] [-D name[=value]] [-U name] [-x] [--xml-preserve-paths] [--no-build-scripts] [--title-opt=TEXT] [--no-diff-opt-title] [-b] [-g] [--target=vircon32|standard] [--reject-bit-fields] [--no-signed-shift] [--no-inline-containers] [--version] <input.cpp>\n", prog_name);
@@ -472,7 +503,24 @@ int  main (int  argc, char **argv)
         /* Same default the real Vircon32 C compiler and v32lua both
          * use: the input's own extension, replaced with ".c". */
         derived_output = replace_extension(input_filename, ".c");
+        if (same_file(derived_output, input_filename)) {
+            /* A C source (file.c) would be overwritten by its own
+             * output: write file-transpiled.c instead. */
+            free(derived_output);
+            char *stem = replace_extension(input_filename, "");
+            size_t cap = strlen(stem) + sizeof "-transpiled.c";
+            derived_output = malloc(cap);
+            snprintf(derived_output, cap, "%s-transpiled.c", stem);
+            free(stem);
+            fprintf(stderr, "note: %s would overwrite its own input; writing %s instead "
+                            "(use -o to choose another name)\n",
+                    input_filename, derived_output);
+        }
         output_filename = derived_output;
+    } else if (same_file(output_filename, input_filename)) {
+        fprintf(stderr, "---- error: the output file %s is the input file; "
+                        "choose another name with -o ----\n", output_filename);
+        return 1;
     }
 
     g_symtab = symtab_create();
@@ -633,8 +681,10 @@ int  main (int  argc, char **argv)
                             }
                             sargs[n] = a; spath[n++] = 0;
                         }
-                        emit_build_scripts(output_filename, g_current_filename, is_bios,
+                        char *prog = invoked_name(orig_argv[0]);
+                        emit_build_scripts(prog, output_filename, g_current_filename, is_bios,
                                            xml_preserve_paths, sargs, spath, n);
+                        free(prog);
                         free(sargs);
                         free(spath);
                         if (verbosity >= 1) {

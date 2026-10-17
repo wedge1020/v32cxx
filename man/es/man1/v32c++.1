@@ -1,7 +1,7 @@
 '\" -*- coding: UTF-8 -*-
 .TH V32C++ 1 "16 de octubre de 2026" "v32c++ 20261016-dev" "Comandos de usuario"
 .SH NOMBRE
-v32c++ \- transpila un subconjunto de C++ a C de Vircon32
+v32c++, v32c \- transpila un subconjunto de C++ (o C) a C de Vircon32
 .SH SINOPSIS
 .B v32c++
 .RB [ \-o
@@ -90,6 +90,18 @@ pasa a ser
 Esto también coincide con el nombre por defecto que usan el compilador de C de
 Vircon32 y
 .BR v32lua (1).
+Si ese nombre fuera la propia entrada (un archivo
+.IR .c ),
+la salida es
+.I nombre\-transpiled.c
+y se avisa por stderr; un
+.B \-o
+que nombre la entrada es un error.
+.PP
+.B v32c
+es el mismo programa con un segundo nombre, para entrada en C (en ambos casos
+decide la extensión de la entrada); los scripts de compilación llaman al nombre
+con el que se ejecutó.
 .TP
 .B \-c
 Transpila sin exigir que exista una función

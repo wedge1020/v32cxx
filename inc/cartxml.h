@@ -56,8 +56,11 @@
  *
  *  - `preserve_paths` = 1 (--xml-preserve-paths): each #texture/#sound
  *    path is kept exactly as written in the hint, the XML goes in the
- *    directory of `source_filename` (the hints' own point of reference),
- *    and <binary> is the .vbin path made relative to that directory.
+ *    directory of `source_filename` (the hints' own point of reference) --
+ *    or in that directory's parent when the source is in a `src`
+ *    directory whose parent has (or, via -o, receives) an `obj`, the same
+ *    place the build scripts go -- and <binary> is the .vbin path made
+ *    relative to that directory.
  *
  * Alongside every XML a twin for the optimized build is written:
  * `-o obj/game.c` gives obj/game.xml (-> game.vbin) and obj/gameOpt.xml

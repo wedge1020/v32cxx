@@ -1,7 +1,7 @@
 '\" -*- coding: UTF-8 -*-
 .TH V32C++ 1 "16 octobre 2026" "v32c++ 20261016-dev" "Commandes utilisateur"
 .SH NOM
-v32c++ \- transpile un sous-ensemble de C++ en C Vircon32
+v32c++, v32c \- transpile un sous-ensemble de C++ (ou de C) en C Vircon32
 .SH SYNOPSIS
 .B v32c++
 .RB [ \-o
@@ -89,6 +89,18 @@ devient
 .IR foo/bar.c .
 Cela correspond aussi au nom par défaut du compilateur C de Vircon32 et de
 .BR v32lua (1).
+Si ce nom était l'entrée elle-même (un fichier
+.IR .c ),
+la sortie est
+.I nom\-transpiled.c
+avec une note sur stderr ; un
+.B \-o
+qui désigne l'entrée est une erreur.
+.PP
+.B v32c
+est le même programme sous un second nom, pour l'entrée en C (dans les deux cas
+l'extension de l'entrée décide) ; les scripts de compilation appellent le nom
+qui a été lancé.
 .TP
 .B \-c
 Transpile sans exiger qu'une fonction

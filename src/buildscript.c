@@ -61,6 +61,7 @@ static void set_free(StrSet *s) {
 typedef struct { char *in; char *out; } Asset;
 
 typedef struct {
+    const char *prog;
     char  *script_dir;
     char  *src, *c, *asm_, *vbin, *asm_opt, *vbin_opt;
     char  *xml, *xml_opt, *rom, *rom_opt;
@@ -86,15 +87,15 @@ static void add_dir_of(Plan *pl, const char *file) {
 }
 
 static void collect_assets(Plan *pl, const CartResourceList *list, const char *tag,
-                           const char *ext, int preserve, const char *src_dir,
+                           const char *ext, int preserve, const char *base_dir,
                            const char *out_dir, Asset **assets, int *count) {
     if (list->count == 0) return;
     char **names = cart_resource_names(list, tag, ext, preserve);
     *assets = calloc((size_t)list->count, sizeof **assets);
     for (int i = 0; i < list->count; i++) {
         const char *hint = list->items[i].filename;
-        char *in_full  = preserve ? join_path(src_dir, hint) : strdup(hint);
-        char *out_full = join_path(preserve ? src_dir : out_dir, names[i]);
+        char *in_full  = preserve ? join_path(base_dir, hint) : strdup(hint);
+        char *out_full = join_path(preserve ? base_dir : out_dir, names[i]);
         char *in_rel = rel(pl->script_dir, in_full);
         char *out_rel = rel(pl->script_dir, out_full);
         int dup = 0;
@@ -160,7 +161,8 @@ static void write_sh(FILE *f, const Plan *pl) {
     fputs("# the tools this build needs\n"
           "need_tool()\n{\n"
           "    command -v \"$1\" >/dev/null 2>&1 || { echo \"ERROR: $1 is needed to build, but was not found in PATH\"; abort_build; }\n}\n\n", f);
-    fputs("need_tool v32c++\nneed_tool compile\nneed_tool assemble\nneed_tool packrom\n", f);
+    fprintf(f, "need_tool %s\n", pl->prog);
+    fputs("need_tool compile\nneed_tool assemble\nneed_tool packrom\n", f);
     if (pl->ntex) fputs("need_tool png2vircon\n", f);
     if (pl->nsnd) fputs("need_tool wav2vircon\n", f);
     fputs("\n# the optimizer is optional: without it only the regular build is made\n"
@@ -174,7 +176,7 @@ static void write_sh(FILE *f, const Plan *pl) {
     }
 
     sh_section(f, "Transpile to Vircon32 C");
-    fputs("v32c++", f);
+    fputs(pl->prog, f);
     for (int i = 0; i < pl->nargs; i++) { fputc(' ', f); put_sh(f, pl->args[i]); }
     fputs(" --no-build-scripts -o ", f); put_sh(f, pl->c);
     fputc(' ', f); put_sh(f, pl->src); fputs(" || abort_build\n", f);
@@ -235,7 +237,7 @@ static void write_bat(FILE *f, const Plan *pl) {
           "REM the source (or use --no-build-scripts and keep a hand-written script)\r\n"
           "REM rather than this file: it is rewritten on every v32c++ run.\r\n\r\n", f);
     fputs("REM the tools this build needs\r\n", f);
-    const char *needed[] = { "v32c++", "compile", "assemble", "packrom", "png2vircon", "wav2vircon" };
+    const char *needed[] = { pl->prog, "compile", "assemble", "packrom", "png2vircon", "wav2vircon" };
     for (int i = 0; i < 6; i++) {
         if (i == 4 && !pl->ntex) continue;
         if (i == 5 && !pl->nsnd) continue;
@@ -255,7 +257,7 @@ static void write_bat(FILE *f, const Plan *pl) {
     }
 
     bat_section(f, "Transpile to Vircon32 C");
-    fputs("v32c++", f);
+    fputs(pl->prog, f);
     for (int i = 0; i < pl->nargs; i++) {
         fputc(' ', f);
         if (pl->is_path[i]) put_bat_path(f, pl->args[i]); else put_bat(f, pl->args[i]);
@@ -320,25 +322,46 @@ static void write_script(const char *dir, const char *name, int bat, const Plan 
         free(path);
         return;
     }
+    /* Render to memory first: when the file already holds exactly this
+     * text it is left untouched (no needless rewrite, mtime kept). */
+    FILE *tmp = tmpfile();
+    if (tmp == NULL) { perror("tmpfile"); free(path); return; }
+    if (bat) write_bat(tmp, pl); else write_sh(tmp, pl);
+    long size = ftell(tmp);
+    rewind(tmp);
+    char *text = malloc((size_t)size + 1);
+    size_t got = fread(text, 1, (size_t)size, tmp);
+    fclose(tmp);
+    int unchanged = 0;
+    FILE *old = fopen(path, "rb");
+    if (old != NULL) {
+        char *prev = malloc((size_t)size + 2);
+        size_t n = fread(prev, 1, (size_t)size + 1, old);
+        unchanged = (n == got && memcmp(prev, text, got) == 0);
+        free(prev);
+        fclose(old);
+    }
+    if (unchanged) { free(text); free(path); return; }
     FILE *f = fopen(path, "wb");
-    if (f == NULL) { perror(path); free(path); return; }
-    if (bat) write_bat(f, pl); else write_sh(f, pl);
+    if (f == NULL) { perror(path); free(text); free(path); return; }
+    fwrite(text, 1, got, f);
     fclose(f);
+    free(text);
 #ifndef _WIN32
     if (!bat) chmod(path, 0755);
 #endif
     free(path);
 }
 
-void emit_build_scripts(const char *output_filename, const char *source_filename,
+void emit_build_scripts(const char *prog, const char *output_filename, const char *source_filename,
                         int is_bios, int preserve_paths,
                         const char *const *args, const int *arg_is_path,
                         int arg_count) {
     (void)is_bios;   /* -b arrives through `args`; the pack step is the same */
     Plan pl;
     memset(&pl, 0, sizeof pl);
+    pl.prog = prog;
     pl.script_dir = build_script_dir(output_filename, source_filename);
-    char *src_dir = path_dirname(source_filename);
     char *out_dir = path_dirname(output_filename);
 
     pl.src      = rel(pl.script_dir, source_filename);
@@ -361,9 +384,9 @@ void emit_build_scripts(const char *output_filename, const char *source_filename
 
     add_dir_of(&pl, pl.c);   /* obj/ first, then any asset subdirectories */
     collect_assets(&pl, &g_cart_textures, "texture", ".vtex", preserve_paths,
-                   src_dir, out_dir, &pl.tex, &pl.ntex);
+                   pl.script_dir, out_dir, &pl.tex, &pl.ntex);
     collect_assets(&pl, &g_cart_sounds, "sound", ".vsnd", preserve_paths,
-                   src_dir, out_dir, &pl.snd, &pl.nsnd);
+                   pl.script_dir, out_dir, &pl.snd, &pl.nsnd);
 
     pl.nargs = arg_count;
     pl.args = calloc((size_t)arg_count + 1, sizeof *pl.args);
@@ -384,5 +407,5 @@ void emit_build_scripts(const char *output_filename, const char *source_filename
     set_free(&pl.dirs);
     free(pl.script_dir); free(pl.src); free(pl.c); free(pl.asm_); free(pl.vbin);
     free(pl.asm_opt); free(pl.vbin_opt); free(pl.xml); free(pl.xml_opt);
-    free(pl.rom); free(pl.rom_opt); free(src_dir); free(out_dir);
+    free(pl.rom); free(pl.rom_opt); free(out_dir);
 }

@@ -41,8 +41,8 @@ trap 'rm -rf "$tmp"' EXIT INT TERM
 
 sh "$src/scripts/stage_package.sh" "$bin" "$tmp/pkg" >/dev/null || fail "could not stage the package"
 case "$bin" in
-    *.exe) exe=v32c++.exe ;;
-    *)     exe=v32c++ ;;
+    *.exe) exe=v32c++.exe; exec_c=v32c.exe ;;
+    *)     exe=v32c++;     exec_c=v32c ;;
 esac
 mkdir -p "$tmp/work"
 cd "$tmp/work"
@@ -87,7 +87,8 @@ void main()
     length = length + 1;
 }
 SRC
-"$tmp/pkg/$exe" -o smokec_out.c smokec.c > smokec.log 2>&1 || { cat smokec.log; fail "a C program using the C library did not transpile"; }
+"$tmp/pkg/$exec_c" --version >/dev/null 2>&1 || fail "'$exec_c --version' did not run"
+"$tmp/pkg/$exec_c" -o smokec_out.c smokec.c > smokec.log 2>&1 || { cat smokec.log; fail "a C program using the C library did not transpile"; }
 
 # 4. Every alias page in the staged manual tree points at a page that exists.
 root="$tmp/pkg/docs/v32c++"

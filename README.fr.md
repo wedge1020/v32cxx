@@ -233,6 +233,13 @@ unifiés, les fonctions variadiques fonctionnent, le pointeur nul est 0, et
 `libc/`, cela suffit pour construire le jeu Unix Rogue à partir de ses sources
 (`demos/c/rogue`). Voir [`docs/C_INPUT.fr.md`](docs/C_INPUT.fr.md).
 
+`v32c` est le même programme sous un second nom, pour le C : `v32c jeu.c` et
+`v32c++ jeu.c` font aujourd'hui exactement la même chose (l'extension du fichier
+décide), et `make`/`cmake` construisent et installent les deux. Les scripts de
+compilation appellent le nom que vous avez lancé. La sortie par défaut d'un
+fichier C serait lui-même (`jeu.c` → `jeu.c`) ; sans `-o`, v32c++ écrit donc
+`jeu-transpiled.c`, et un `-o` qui désigne l'entrée est une erreur.
+
 ## En-têtes C++ pour l'API Vircon32
 
 `v32/` contient des en-têtes C++ dans l'espace de noms `v32::`, un par en-tête
@@ -487,7 +494,7 @@ v32c++ -I path/to/v32c++ -o obj/game.c game.cpp
 
 | Option | Signification |
 | ------ | ------------- |
-| `-o file.c` | chemin de sortie (par défaut : le nom de l'entrée avec `.c`) |
+| `-o file.c` | chemin de sortie (par défaut : le nom de l'entrée avec `.c` ; `nom-transpiled.c` si cela écraserait l'entrée, comme pour un fichier `.c`) |
 | `-c` | n'exige pas de `main` (un fragment de bibliothèque/module) |
 | `-I dir`, `--include=dir` | ajoute un répertoire au chemin de recherche des `.hpp`/`.cpp` (répétable) |
 | `-D name[=value]`, `-U name` | définit / supprime la définition d'une macro |
@@ -711,7 +718,7 @@ communauté (les fichiers de v32opt, et les en-têtes de v32lua dans
 
 | | Linux / macOS | Windows (CMake) |
 | --- | --- | --- |
-| transpileur | `/usr/local/bin/v32c++` | `C:\Program Files\Vircon32\v32tools\v32c++.exe` |
+| transpileur (`v32c` en est une copie) | `/usr/local/bin/v32c++`, `/usr/local/bin/v32c` | `C:\Program Files\Vircon32\v32tools\v32c++.exe`, `v32c.exe` |
 | pages de manuel (celles de v32c++, et celles du SDK Vircon32 de `man/vircon32/`, côte à côte) | `/usr/local/share/man/man1/*.1.gz`, `/usr/local/share/man/man3/*.3v32.gz` (compressées avec gzip ; les alias sont des liens symboliques) | `...\v32tools\docs\v32c++\man1`, `...\man3` |
 | en-têtes C++ (`v32/`) | `/usr/local/Vircon32/v32tools/include/v32c++/v32` | `...\v32tools\include\v32c++\v32` |
 | bibliothèque C (`libc/`) | `/usr/local/Vircon32/v32tools/include/v32c++/libc` | `...\v32tools\include\v32c++\libc` |

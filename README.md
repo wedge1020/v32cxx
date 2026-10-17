@@ -222,6 +222,13 @@ With  the small  C  library and  curses  in `libc/`,  that  is enough  to
 build  the  Unix  game  Rogue from  its  sources  (`demos/c/rogue`).  See
 [`docs/C_INPUT.md`](docs/C_INPUT.md).
 
+`v32c` is the same program under a second name, for C: `v32c game.c` and
+`v32c++ game.c` do exactly the same today (the file's extension decides),
+and `make`/`cmake` build and install both. Build scripts call whichever
+name you ran. A C file's default output would be itself (`game.c` →
+`game.c`), so without `-o` v32c++ writes `game-transpiled.c` instead, and
+`-o` naming the input is an error.
+
 ## C++ headers for the Vircon32 API
 
 `v32/` holds  C++ headers in  the `v32::`  namespace, one per  SDK header
@@ -465,7 +472,7 @@ v32c++ -I path/to/v32c++ -o obj/game.c game.cpp
 
 | Option | Meaning |
 | ------ | ------- |
-| `-o file.c` | output path (default: the input's name with `.c`) |
+| `-o file.c` | output path (default: the input's name with `.c`; `name-transpiled.c` when that would overwrite the input, as for a `.c` file) |
 | `-c` | don't require a `main` (a library/module fragment) |
 | `-I dir`, `--include=dir` | add a directory to the `.hpp`/`.cpp` search path (repeatable) |
 | `-D name[=value]`, `-U name` | define / undefine a macro |
@@ -544,7 +551,7 @@ build is written alongside (`obj/gameOpt.xml`, whose `<binary>` is
 `gameOpt.vbin`). `--xml-preserve-paths`
 instead keeps each hint's path as written
 (`textures/ship.vtex`), writes the XML into the *source file's*
-directory, and makes `<binary>` the `.vbin` path relative to it.
+directory — or its parent, when the source is in a `src/` directory whose parent has (or, via `-o`, gets) an `obj/`, the same place the build scripts go — and makes `<binary>` the `.vbin` path relative to it.
 
 ### Build scripts
 
@@ -684,7 +691,7 @@ the  community  tools share  (v32opt's  files,  and v32lua's  headers  in
 
 | | Linux / macOS | Windows (CMake) |
 | --- | --- | --- |
-| transpiler | `/usr/local/bin/v32c++` | `C:\Program Files\Vircon32\v32tools\v32c++.exe` |
+| transpiler (`v32c` is a copy of it) | `/usr/local/bin/v32c++`, `/usr/local/bin/v32c` | `C:\Program Files\Vircon32\v32tools\v32c++.exe`, `v32c.exe` |
 | man pages (v32c++'s, and the Vircon32 SDK's from `man/vircon32/`, side by side) | `/usr/local/share/man/man1/*.1.gz`, `/usr/local/share/man/man3/*.3v32.gz` (gzipped; aliases are symbolic links) | `...\v32tools\docs\v32c++\man1`, `...\man3` |
 | C++ headers (`v32/`) | `/usr/local/Vircon32/v32tools/include/v32c++/v32` | `...\v32tools\include\v32c++\v32` |
 | C library (`libc/`) | `/usr/local/Vircon32/v32tools/include/v32c++/libc` | `...\v32tools\include\v32c++\libc` |

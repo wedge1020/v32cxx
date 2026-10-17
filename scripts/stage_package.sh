@@ -10,6 +10,7 @@
 #   and macOS, /usr/local/Vircon32/v32tools):
 #
 #       v32c++[.exe]
+#       v32c[.exe]                    a copy of it, for C input
 #       LICENSE
 #       include/v32c++/v32/*.hpp      the C++ headers
 #       include/v32c++/libc/          the C library for C input (+ sys/)
@@ -50,8 +51,8 @@ fail() {
 [ -d v32 ] && [ -d libc ] && [ -d man ] || fail "run this from the top of the v32c++ source tree"
 
 case "$bin" in
-    *.exe) exe=v32c++.exe ;;
-    *)     exe=v32c++ ;;
+    *.exe) exe=v32c++.exe; exec_c=v32c.exe ;;
+    *)     exe=v32c++;     exec_c=v32c ;;
 esac
 
 rm -rf "$dest"
@@ -62,6 +63,7 @@ for lang in es fr; do
 done
 
 cp "$bin" "$dest/$exe"
+cp "$bin" "$dest/$exec_c"    # v32c: the same program, named for C input
 [ -f LICENSE ] && cp LICENSE "$dest/"
 
 cp v32/*.hpp                "$dest/include/v32c++/v32/"
@@ -88,6 +90,7 @@ done
 # Sanity: the pieces a package is useless without.
 ls "$dest"/include/v32c++/v32/*.hpp >/dev/null 2>&1 || fail "no C++ headers were packaged"
 [ -f "$dest/docs/v32c++/man1/v32c++.1" ]            || fail "v32c++.1 was not packaged"
+[ -f "$dest/docs/v32c++/man1/v32c.1" ]              || fail "v32c.1 was not packaged"
 [ -f "$dest/docs/v32c++/man1/compile.1" ]           || fail "the Vircon32 pages were not packaged"
 [ -f "$dest/docs/v32c++/man3/string.h.3v32" ]       || fail "the Vircon32 C library pages were not packaged"
 
