@@ -2,7 +2,7 @@
 DEMO          = space_invaders
 # -I inc finds the game's own headers (inc/*.hpp), which $(DEMO).cpp pulls
 # into the one translation unit with #include lines.
-TRANSPILER    = v32c++ -I inc
+TRANSPILER    = v32c++ --no-build-scripts -I inc
 SOURCES       = $(DEMO).cpp $(wildcard inc/*.hpp)
 COMPILER      = compile
 OPTIMIZER     = v32opt -O3 -v

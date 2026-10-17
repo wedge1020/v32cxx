@@ -178,6 +178,16 @@ extern CartResourceList g_cart_sounds;
 extern char *g_cart_title;
 extern char *g_cart_version;
 
+/*
+ * `#titleopt "..."` -- the <rom> title of the OPTIMIZED cart's XML
+ * (<name>Opt.xml). NULL unless the hint (or --title-opt=) was given; the
+ * Opt title is then the cart's own title with " [optimized]" appended,
+ * unless g_cart_no_diff_opt_title (--no-diff-opt-title) keeps it identical
+ * to the plain cart's. See cart_opt_title() in cartxml.h.
+ */
+extern char *g_cart_title_opt;
+extern int   g_cart_no_diff_opt_title;
+
 int yylex(void);
 void yyerror(const char *msg);
 

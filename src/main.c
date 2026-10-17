@@ -12,6 +12,7 @@
 #include "config.h"
 #include "pathutil.h"
 #include "cartxml.h"
+#include "buildscript.h"
 #include "debugmap.h"
 #include "prescan.h"
 #include "cmode.h"
@@ -36,11 +37,13 @@ CartResourceList g_cart_textures = {NULL, 0, 0};
 CartResourceList g_cart_sounds = {NULL, 0, 0};
 char *g_cart_title = NULL;
 char *g_cart_version = NULL;
+char *g_cart_title_opt = NULL;
+int   g_cart_no_diff_opt_title = 0;
 
 extern FILE *yyin;
 
 static void print_usage(const char *prog_name) {
-    fprintf(stderr, "usage: %s [-o output.c] [-c] [-v[v[v]]] [-I dir] [-D name[=value]] [-U name] [-x] [--xml-preserve-paths] [-b] [-g] [--target=vircon32|standard] [--reject-bit-fields] [--no-signed-shift] [--no-inline-containers] [--version] <input.cpp>\n", prog_name);
+    fprintf(stderr, "usage: %s [-o output.c] [-c] [-v[v[v]]] [-I dir] [-D name[=value]] [-U name] [-x] [--xml-preserve-paths] [--no-build-scripts] [--title-opt=TEXT] [--no-diff-opt-title] [-b] [-g] [--target=vircon32|standard] [--reject-bit-fields] [--no-signed-shift] [--no-inline-containers] [--version] <input.cpp>\n", prog_name);
     fprintf(stderr, "  -o output.c   write generated Vircon32 C to this file (default:\n"
                      "                <input> with its extension replaced by .c)\n");
     fprintf(stderr,  "  --no-signed-shift\n"
@@ -80,6 +83,19 @@ static void print_usage(const char *prog_name) {
                      "                whenever a .c file is actually written; never\n"
                      "                generated at all for --target=standard, with or\n"
                      "                without this flag)\n");
+    fprintf(stderr,  "  --xml-preserve-paths\n"
+                     "                keep #texture/#sound paths in the XML as written,\n"
+                     "                and write the XML beside the source file\n"
+                     "  --no-build-scripts\n"
+                     "                don't write Make.sh / Make.bat (generated beside\n"
+                     "                the source, or in its parent when the source is in\n"
+                     "                a src/ directory next to obj/, whenever the XML is)\n"
+                     "  --title-opt=TEXT\n"
+                     "                title of the optimized cart (<name>Opt.xml); same as\n"
+                     "                a #titleopt hint, and overrides it\n"
+                     "  --no-diff-opt-title\n"
+                     "                give the optimized cart the same title as the\n"
+                     "                regular one (default: \"<title> [optimized]\")\n");
     fprintf(stderr,  "  -b            transpile a Vircon32 BIOS, not an ordinary cartridge:\n"
                      "                the generated XML's <rom> gets type=\"bios\"; requires\n"
                      "                exactly one #texture, at most one #sound, and a\n"
@@ -245,6 +261,8 @@ int  main (int  argc, char **argv)
     int         verbosity          = 0;
     int         emit_xml           = 1;
     int         xml_preserve_paths = 0;
+    int         emit_scripts       = 1;
+    const char *cli_title_opt      = NULL;
     int         is_bios            = 0;
     int         emit_debug         = 0;
     int         opt                = 0;
@@ -254,6 +272,9 @@ int  main (int  argc, char **argv)
         { "version", no_argument,       0, 'V' },
         { "no-xml",  no_argument,       0, 'x' },
         { "xml-preserve-paths", no_argument, 0, 'P' },
+        { "no-build-scripts", no_argument, 0, 'K' },
+        { "title-opt", required_argument, 0, 'O' },
+        { "no-diff-opt-title", no_argument, 0, 'Q' },
         { "include", required_argument, 0, 'I' },
         { "target",  required_argument, 0, 'T' },
         { "reject-bit-fields", no_argument, 0, 'B' },
@@ -261,6 +282,11 @@ int  main (int  argc, char **argv)
         { "no-signed-shift", no_argument, 0, 'S' },
         { 0,         0,                 0, 0   }
     };
+
+    /* getopt_long permutes argv; keep the original order for the build
+     * scripts, which repeat the user's own options. */
+    char **orig_argv = malloc(((size_t)argc + 1) * sizeof *orig_argv);
+    memcpy(orig_argv, argv, ((size_t)argc + 1) * sizeof *orig_argv);
 
     while ((opt = getopt_long(argc, argv, "o:cvxbgI:D:U:", long_options, NULL)) != -1) {
         switch (opt) {
@@ -308,6 +334,15 @@ int  main (int  argc, char **argv)
                 /* --xml-preserve-paths: keep #texture/#sound paths as
                  * written and put the XML beside the source file. */
                 xml_preserve_paths = 1;
+                break;
+            case 'K':
+                emit_scripts = 0;
+                break;
+            case 'O':
+                cli_title_opt = optarg;
+                break;
+            case 'Q':
+                g_cart_no_diff_opt_title = 1;
                 break;
             case 'b':
                 is_bios = 1;
@@ -553,11 +588,60 @@ int  main (int  argc, char **argv)
                  * already reflects that (reports to stderr, doesn't
                  * touch `rc`). */
                 if (emit_xml) {
+                    /* --title-opt= wins over a #titleopt hint (read by now). */
+                    if (cli_title_opt != NULL) {
+                        free(g_cart_title_opt);
+                        g_cart_title_opt = strdup(cli_title_opt);
+                    }
                     emit_cart_xml(output_filename, g_current_filename, is_bios, xml_preserve_paths);
                     if (verbosity >= 1) {
                         char *xml_filename = cart_xml_filename(output_filename, g_current_filename, xml_preserve_paths);
                         printf("wrote cart config to %s\n", xml_filename);
                         free(xml_filename);
+                    }
+                    /* Make.sh / Make.bat, from the same information. The
+                     * options they repeat when they run v32c++ are the
+                     * user's own, minus the input, -o, -x, -v and
+                     * --no-build-scripts; an -I directory is flagged as a
+                     * path so it can be made relative to the script. */
+                    if (emit_scripts) {
+                        const char **sargs = calloc((size_t)argc + 2, sizeof *sargs);
+                        int *spath = calloc((size_t)argc + 2, sizeof *spath);
+                        int n = 0;
+                        for (int i = 1; i < argc; i++) {
+                            const char *a = orig_argv[i];
+                            if (a == input_filename) continue;
+                            if (strcmp(a, "-o") == 0) { i++; continue; }
+                            if (strncmp(a, "-o", 2) == 0) continue;
+                            if (strcmp(a, "-x") == 0 || strcmp(a, "--no-xml") == 0 ||
+                                strcmp(a, "--no-build-scripts") == 0) continue;
+                            if (a[0] == '-' && a[1] == 'v' && strspn(a + 1, "v") == strlen(a + 1)) continue;
+                            if (strcmp(a, "-I") == 0 || strcmp(a, "--include") == 0) {
+                                if (i + 1 < argc) { sargs[n] = "-I"; spath[n++] = 0;
+                                                    sargs[n] = orig_argv[++i]; spath[n++] = 1; }
+                                continue;
+                            }
+                            if (strncmp(a, "-I", 2) == 0 && a[2] != '\0') {
+                                sargs[n] = "-I"; spath[n++] = 0;
+                                sargs[n] = a + 2; spath[n++] = 1;
+                                continue;
+                            }
+                            if (strncmp(a, "--include=", 10) == 0) {
+                                sargs[n] = "-I"; spath[n++] = 0;
+                                sargs[n] = a + 10; spath[n++] = 1;
+                                continue;
+                            }
+                            sargs[n] = a; spath[n++] = 0;
+                        }
+                        emit_build_scripts(output_filename, g_current_filename, is_bios,
+                                           xml_preserve_paths, sargs, spath, n);
+                        free(sargs);
+                        free(spath);
+                        if (verbosity >= 1) {
+                            char *dir = build_script_dir(output_filename, g_current_filename);
+                            printf("wrote build scripts (Make.sh, Make.bat) to %s\n", dir);
+                            free(dir);
+                        }
                     }
                 }
                 /* -g: <output>.c.debug (APPENDED, not extension-swapped

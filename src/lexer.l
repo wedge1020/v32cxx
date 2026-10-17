@@ -192,6 +192,15 @@ ALNUM   [A-Za-z0-9_]
     }
 }
 
+    /* `#titleopt "..."`: the title of the optimized cart (see driver.h). */
+^[ \t]*"#titleopt"[ \t]+\"[^"\n]*\"[^\n]* {
+    char title[256] = {0};
+    if (sscanf(yytext, "#titleopt \"%255[^\"]\"", title) == 1) {
+        free(g_cart_title_opt);
+        g_cart_title_opt = strdup(title);
+    }
+}
+
 ^[ \t]*"#version"[ \t]+[^ \t\n]+[^\n]* {
     char version[64] = {0};
     if (sscanf(yytext, "#version %63s", version) == 1) {

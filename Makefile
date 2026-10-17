@@ -5,6 +5,8 @@ BIN_DIR = bin
 OUT_DIR = out
 
 BIN     = $(BIN_DIR)/v32c++
+# `make test` runs v32c++ over tests/*, which must not grow Make.sh/Make.bat
+TBIN    = $(BIN) --no-build-scripts
 
 CC      = gcc
 CFLAGS  = -Wall -Wextra -g -I$(INC_DIR) -MMD -MP
@@ -138,7 +140,7 @@ $(BIN_DIR)/v32c++: $(OBJ_DIR)/parser.o   $(OBJ_DIR)/lexer.o   \
                    $(OBJ_DIR)/ast.o      $(OBJ_DIR)/symtab.o  \
 				   $(OBJ_DIR)/prescan.o  $(OBJ_DIR)/sema.o    \
                    $(OBJ_DIR)/lower.o    $(OBJ_DIR)/codegen.o \
-				   $(OBJ_DIR)/pathutil.o $(OBJ_DIR)/compat.o $(OBJ_DIR)/generic.o $(OBJ_DIR)/stdstring.o $(OBJ_DIR)/cartxml.o \
+				   $(OBJ_DIR)/pathutil.o $(OBJ_DIR)/compat.o $(OBJ_DIR)/generic.o $(OBJ_DIR)/stdstring.o $(OBJ_DIR)/cartxml.o $(OBJ_DIR)/buildscript.o \
 				   $(OBJ_DIR)/debugmap.o $(OBJ_DIR)/macro.o    \
 				   $(OBJ_DIR)/cmode.o    \
 				   $(OBJ_DIR)/main.o | $(BIN_DIR)
@@ -148,162 +150,189 @@ $(BIN_DIR)/v32c++: $(OBJ_DIR)/parser.o   $(OBJ_DIR)/lexer.o   \
 # %option noyywrap; most don't).
 
 test: all | $(OUT_DIR)
-	$(BIN)  -vvv -c -o out/01partial.c tests/01sample.cpp 1> out/01sample.txt 2>&1
-	$(BIN)  -vvv    -o out/02program.c tests/02sample.cpp 1> out/02sample.txt 2>&1
-	$(BIN)  -vvv -c -o out/03partial.c tests/03sample.cpp 1> out/03sample.txt 2>&1
-	-$(BIN) -vvv -c -o out/04failure.c tests/04sample.cpp 1> out/04sample.txt 2>&1
-	-$(BIN) -vvv -c -o out/05failure.c tests/05sample.cpp 1> out/05sample.txt 2>&1
-	$(BIN)  -vvv -c -o out/06partial.c tests/06sample.cpp 1> out/06sample.txt 2>&1
-	$(BIN)  -vvv -c -o out/07partial.c tests/07sample.cpp 1> out/07sample.txt 2>&1
-	$(BIN)  -vvv -c -o out/08partial.c tests/08sample.cpp 1> out/08sample.txt 2>&1
-	$(BIN)  -vvv -c -o out/09partial.c tests/09sample.cpp 1> out/09sample.txt 2>&1
-	-$(BIN) -vvv -c -o out/10failure.c tests/10sample.cpp 1> out/10sample.txt 2>&1
-	-$(BIN) -vvv -c -o out/11failure.c tests/11sample.cpp 1> out/11sample.txt 2>&1
-	$(BIN)  -vvv -c -o out/12partial.c tests/12sample.cpp 1> out/12sample.txt 2>&1
-	$(BIN)  -vvv -c -o out/13partial.c tests/13sample.cpp 1> out/13sample.txt 2>&1
-	$(BIN)  -vvv    -o out/14program.c tests/14sample.cpp 1> out/14sample.txt 2>&1
-	$(BIN)  -vvv -c -o out/15partial.c tests/15sample.cpp 1> out/15sample.txt 2>&1
-	$(BIN)  -vvv -c -o out/16partial.c tests/16sample.cpp 1> out/16sample.txt 2>&1
-	$(BIN)  -vvv -c -o out/17partial.c tests/17sample.cpp 1> out/17sample.txt 2>&1
-	$(BIN)  -vvv -c -o out/18partial.c tests/18sample.cpp 1> out/18sample.txt 2>&1
-	-$(BIN) -vvv -c -o out/19failure.c tests/19sample.cpp 1> out/19sample.txt 2>&1
-	-$(BIN) -vvv -c -o out/20failure.c tests/20sample.cpp 1> out/20sample.txt 2>&1
-	$(BIN)  -vvv    -o out/21program.c tests/21sample.cpp 1> out/21sample.txt 2>&1
-	$(BIN)  -vvv    -o out/22program.c tests/22sample.cpp 1> out/22sample.txt 2>&1
-	$(BIN)  -vvv    -o out/23program.c tests/23sample.cpp 1> out/23sample.txt 2>&1
-	$(BIN)  -vvv    -o out/24program.c tests/24sample.cpp 1> out/24sample.txt 2>&1
-	$(BIN)  -vvv    -o out/25program.c tests/25sample.cpp 1> out/25sample.txt 2>&1
-	$(BIN)  -vvv    -o out/26program.c tests/26sample.cpp 1> out/26sample.txt 2>&1
-	$(BIN)  -vvv    -o out/27program.c tests/27sample.cpp 1> out/27sample.txt 2>&1
-	$(BIN)  -vvv    -o out/28program.c tests/28sample.cpp 1> out/28sample.txt 2>&1
-	$(BIN)  -vvv    -o out/29program.c tests/29sample.cpp 1> out/29sample.txt 2>&1
-	$(BIN)  -vvv    -o out/30program.c tests/30sample.cpp 1> out/30sample.txt 2>&1
-	-$(BIN) -vvv -c -o out/failureXX.c tests/31sample.cpp 1> out/31sample.txt 2>&1
-	$(BIN)  -vvv    -o out/32program.c tests/32sample.cpp 1> out/32sample.txt 2>&1
-	$(BIN)  -vvv -g -o out/33program.c tests/33sample.cpp 1> out/33sample.txt 2>&1
-	$(BIN)  -vvv -bgo  out/34program.c tests/34sample.cpp 1> out/34sample.txt 2>&1
-	$(BIN)  -vvv    -o out/35program.c tests/35sample.cpp 1> out/35sample.txt 2>&1
-	-$(BIN) -vvv    -o out/36failure.c tests/36sample.cpp 1> out/36sample.txt 2>&1
-	$(BIN)  -vvv    -o out/37program.c tests/37sample.cpp 1> out/37sample.txt 2>&1
-	$(BIN)  -vvv    -o out/38program.c tests/38sample.cpp 1> out/38sample.txt 2>&1
-	$(BIN)  -vvv    -o out/39program.c tests/39sample.cpp 1> out/39sample.txt 2>&1
-	$(BIN)  -vvv    -o out/40program.c tests/40sample.cpp 1> out/40sample.txt 2>&1
-	$(BIN)  -vvv    -o out/41program.c tests/41sample.cpp 1> out/41sample.txt 2>&1
-	-$(BIN) -vvv    -o out/42failure.c tests/42sample.cpp 1> out/42sample.txt 2>&1
-	$(BIN)  -vvv    -o out/43program.c tests/43sample.cpp 1> out/43sample.txt 2>&1
-	$(BIN)  -vvv    -o out/44program.c tests/44sample.cpp 1> out/44sample.txt 2>&1
-	-$(BIN) -vvv    -o out/45failure.c tests/45sample.cpp 1> out/45sample.txt 2>&1
-	$(BIN)  -vvv    -o out/46program.c tests/46sample.cpp 1> out/46sample.txt 2>&1
-	$(BIN)  -vvv    -o out/47program.c tests/47sample.cpp 1> out/47sample.txt 2>&1
-	$(BIN)  -vvv    -o out/48program.c tests/48sample.cpp 1> out/48sample.txt 2>&1
-	-$(BIN) -vvv    -o out/49failure.c tests/49sample.cpp 1> out/49sample.txt 2>&1
-	$(BIN)  -vvv    -o out/50program.c tests/50sample.cpp 1> out/50sample.txt 2>&1
-	$(BIN)  -vvv    -o out/51program.c tests/51sample.cpp 1> out/51sample.txt 2>&1
-	$(BIN)  -vvv    -o out/52program.c tests/52sample.cpp 1> out/52sample.txt 2>&1
-	-$(BIN) -vvv    -o out/53failure.c tests/53sample.cpp 1> out/53sample.txt 2>&1
-	$(BIN)  -vvv    -o out/54program.c tests/54sample.cpp 1> out/54sample.txt 2>&1
-	$(BIN)  -vvv    -o out/55program.c tests/55sample.cpp 1> out/55sample.txt 2>&1
-	$(BIN)  -vvv    -o out/56program.c tests/56sample.cpp 1> out/56sample.txt 2>&1
-	$(BIN)  -vvv    -o out/57program.c tests/57sample.cpp 1> out/57sample.txt 2>&1
-	$(BIN)  -vvv    -o out/58program.c tests/58sample.cpp 1> out/58sample.txt 2>&1
-	$(BIN)  -vvv    -o out/59program.c tests/59sample.cpp 1> out/59sample.txt 2>&1
-	$(BIN)  -vvv    -o out/60program.c tests/60sample.cpp 1> out/60sample.txt 2>&1
-	$(BIN)  -vvv    -o out/61program.c tests/61sample.cpp 1> out/61sample.txt 2>&1
-	$(BIN)  -vvv    -o out/62program.c tests/62sample.cpp 1> out/62sample.txt 2>&1
-	$(BIN)  -vvv    -o out/63program.c tests/63sample.cpp 1> out/63sample.txt 2>&1
-	$(BIN)  -vvv    -o out/64program.c tests/64sample.cpp 1> out/64sample.txt 2>&1
-	$(BIN)  -vvv    -o out/65program.c tests/65sample.cpp 1> out/65sample.txt 2>&1
-	$(BIN)  -vvv    -o out/66program.c tests/66sample.cpp 1> out/66sample.txt 2>&1
-	$(BIN)  -vvv    -o out/67program.c tests/67sample.cpp 1> out/67sample.txt 2>&1
-	$(BIN)  -vvv    -o out/68program.c tests/68sample.cpp 1> out/68sample.txt 2>&1
-	$(BIN)  -vvv    -o out/69program.c tests/69sample.cpp 1> out/69sample.txt 2>&1
-	$(BIN)  -vvv    -o out/70program.c tests/70sample.cpp 1> out/70sample.txt 2>&1
-	$(BIN)  -vvv    -o out/71program.c tests/71sample.cpp 1> out/71sample.txt 2>&1
-	$(BIN)  -vvv    -o out/72program.c tests/72sample.cpp 1> out/72sample.txt 2>&1
-	$(BIN)  -vvv    -o out/73program.c tests/73sample.cpp 1> out/73sample.txt 2>&1
-	$(BIN)  -vvv    -o out/74program.c tests/74sample.cpp 1> out/74sample.txt 2>&1
-	$(BIN)  -vvv    -o out/75program.c tests/75sample.cpp 1> out/75sample.txt 2>&1
-	$(BIN)  -vvv    -o out/76program.c tests/76sample.cpp 1> out/76sample.txt 2>&1
-	$(BIN)  -vvv    -o out/77program.c tests/77sample.cpp 1> out/77sample.txt 2>&1
-	$(BIN)  -vvv    -o out/78program.c tests/78sample.cpp 1> out/78sample.txt 2>&1
-	$(BIN)  -vvv    -o out/79program.c tests/79sample.cpp 1> out/79sample.txt 2>&1
-	-$(BIN) -vvv    -o out/80failure.c tests/80sample.cpp 1> out/80sample.txt 2>&1
-	$(BIN)  -vvv    -o out/81program.c tests/81sample.cpp 1> out/81sample.txt 2>&1
-	$(BIN)  -vvv    -o out/82program.c tests/82sample.cpp 1> out/82sample.txt 2>&1
-	$(BIN)  -vvv    -o out/83program.c tests/83sample.cpp 1> out/83sample.txt 2>&1
-	$(BIN)  -vvv    -o out/84program.c tests/84sample.cpp 1> out/84sample.txt 2>&1
-	$(BIN)  -vvv    -o out/85program.c tests/85sample.cpp 1> out/85sample.txt 2>&1
-	$(BIN)  -vvv    -o out/86program.c tests/86sample.cpp 1> out/86sample.txt 2>&1
-	$(BIN)  -vvv    -o out/87program.c tests/87sample.cpp 1> out/87sample.txt 2>&1
-	$(BIN)  -vvv    -o out/88program.c tests/88sample.cpp 1> out/88sample.txt 2>&1
-	$(BIN)  -vvv    -o out/89program.c tests/89sample.cpp 1> out/89sample.txt 2>&1
-	$(BIN)  -vvv    -o out/90program.c tests/90sample.cpp 1> out/90sample.txt 2>&1
-	-$(BIN) -vvv    -o out/91failure.c tests/91sample.cpp 1> out/91sample.txt 2>&1
-	$(BIN)  -vvv    -o out/92program.c tests/92sample.cpp 1> out/92sample.txt 2>&1
-	-$(BIN) -vvv    -o out/93failure.c tests/93sample.cpp 1> out/93sample.txt 2>&1
-	$(BIN)  -vvv -I . -o out/94program.c tests/94sample.cpp 1> out/94sample.txt 2>&1
-	$(BIN)  -vvv -D FROM_CMDLINE=7 -o out/95program.c tests/95sample.cpp 1> out/95sample.txt 2>&1
-	-$(BIN) -vvv    -o out/96failure.c tests/96sample.cpp 1> out/96sample.txt 2>&1
-	$(BIN)  -vvv    -o out/97program.c tests/97sample.cpp 1> out/97sample.txt 2>&1
+	$(TBIN)  -vvv -c -o out/01partial.c tests/01sample.cpp 1> out/01sample.txt 2>&1
+	$(TBIN)  -vvv    -o out/02program.c tests/02sample.cpp 1> out/02sample.txt 2>&1
+	$(TBIN)  -vvv -c -o out/03partial.c tests/03sample.cpp 1> out/03sample.txt 2>&1
+	-$(TBIN) -vvv -c -o out/04failure.c tests/04sample.cpp 1> out/04sample.txt 2>&1
+	-$(TBIN) -vvv -c -o out/05failure.c tests/05sample.cpp 1> out/05sample.txt 2>&1
+	$(TBIN)  -vvv -c -o out/06partial.c tests/06sample.cpp 1> out/06sample.txt 2>&1
+	$(TBIN)  -vvv -c -o out/07partial.c tests/07sample.cpp 1> out/07sample.txt 2>&1
+	$(TBIN)  -vvv -c -o out/08partial.c tests/08sample.cpp 1> out/08sample.txt 2>&1
+	$(TBIN)  -vvv -c -o out/09partial.c tests/09sample.cpp 1> out/09sample.txt 2>&1
+	-$(TBIN) -vvv -c -o out/10failure.c tests/10sample.cpp 1> out/10sample.txt 2>&1
+	-$(TBIN) -vvv -c -o out/11failure.c tests/11sample.cpp 1> out/11sample.txt 2>&1
+	$(TBIN)  -vvv -c -o out/12partial.c tests/12sample.cpp 1> out/12sample.txt 2>&1
+	$(TBIN)  -vvv -c -o out/13partial.c tests/13sample.cpp 1> out/13sample.txt 2>&1
+	$(TBIN)  -vvv    -o out/14program.c tests/14sample.cpp 1> out/14sample.txt 2>&1
+	$(TBIN)  -vvv -c -o out/15partial.c tests/15sample.cpp 1> out/15sample.txt 2>&1
+	$(TBIN)  -vvv -c -o out/16partial.c tests/16sample.cpp 1> out/16sample.txt 2>&1
+	$(TBIN)  -vvv -c -o out/17partial.c tests/17sample.cpp 1> out/17sample.txt 2>&1
+	$(TBIN)  -vvv -c -o out/18partial.c tests/18sample.cpp 1> out/18sample.txt 2>&1
+	-$(TBIN) -vvv -c -o out/19failure.c tests/19sample.cpp 1> out/19sample.txt 2>&1
+	-$(TBIN) -vvv -c -o out/20failure.c tests/20sample.cpp 1> out/20sample.txt 2>&1
+	$(TBIN)  -vvv    -o out/21program.c tests/21sample.cpp 1> out/21sample.txt 2>&1
+	$(TBIN)  -vvv    -o out/22program.c tests/22sample.cpp 1> out/22sample.txt 2>&1
+	$(TBIN)  -vvv    -o out/23program.c tests/23sample.cpp 1> out/23sample.txt 2>&1
+	$(TBIN)  -vvv    -o out/24program.c tests/24sample.cpp 1> out/24sample.txt 2>&1
+	$(TBIN)  -vvv    -o out/25program.c tests/25sample.cpp 1> out/25sample.txt 2>&1
+	$(TBIN)  -vvv    -o out/26program.c tests/26sample.cpp 1> out/26sample.txt 2>&1
+	$(TBIN)  -vvv    -o out/27program.c tests/27sample.cpp 1> out/27sample.txt 2>&1
+	$(TBIN)  -vvv    -o out/28program.c tests/28sample.cpp 1> out/28sample.txt 2>&1
+	$(TBIN)  -vvv    -o out/29program.c tests/29sample.cpp 1> out/29sample.txt 2>&1
+	$(TBIN)  -vvv    -o out/30program.c tests/30sample.cpp 1> out/30sample.txt 2>&1
+	-$(TBIN) -vvv -c -o out/failureXX.c tests/31sample.cpp 1> out/31sample.txt 2>&1
+	$(TBIN)  -vvv    -o out/32program.c tests/32sample.cpp 1> out/32sample.txt 2>&1
+	$(TBIN)  -vvv -g -o out/33program.c tests/33sample.cpp 1> out/33sample.txt 2>&1
+	$(TBIN)  -vvv -bgo  out/34program.c tests/34sample.cpp 1> out/34sample.txt 2>&1
+	$(TBIN)  -vvv    -o out/35program.c tests/35sample.cpp 1> out/35sample.txt 2>&1
+	-$(TBIN) -vvv    -o out/36failure.c tests/36sample.cpp 1> out/36sample.txt 2>&1
+	$(TBIN)  -vvv    -o out/37program.c tests/37sample.cpp 1> out/37sample.txt 2>&1
+	$(TBIN)  -vvv    -o out/38program.c tests/38sample.cpp 1> out/38sample.txt 2>&1
+	$(TBIN)  -vvv    -o out/39program.c tests/39sample.cpp 1> out/39sample.txt 2>&1
+	$(TBIN)  -vvv    -o out/40program.c tests/40sample.cpp 1> out/40sample.txt 2>&1
+	$(TBIN)  -vvv    -o out/41program.c tests/41sample.cpp 1> out/41sample.txt 2>&1
+	-$(TBIN) -vvv    -o out/42failure.c tests/42sample.cpp 1> out/42sample.txt 2>&1
+	$(TBIN)  -vvv    -o out/43program.c tests/43sample.cpp 1> out/43sample.txt 2>&1
+	$(TBIN)  -vvv    -o out/44program.c tests/44sample.cpp 1> out/44sample.txt 2>&1
+	-$(TBIN) -vvv    -o out/45failure.c tests/45sample.cpp 1> out/45sample.txt 2>&1
+	$(TBIN)  -vvv    -o out/46program.c tests/46sample.cpp 1> out/46sample.txt 2>&1
+	$(TBIN)  -vvv    -o out/47program.c tests/47sample.cpp 1> out/47sample.txt 2>&1
+	$(TBIN)  -vvv    -o out/48program.c tests/48sample.cpp 1> out/48sample.txt 2>&1
+	-$(TBIN) -vvv    -o out/49failure.c tests/49sample.cpp 1> out/49sample.txt 2>&1
+	$(TBIN)  -vvv    -o out/50program.c tests/50sample.cpp 1> out/50sample.txt 2>&1
+	$(TBIN)  -vvv    -o out/51program.c tests/51sample.cpp 1> out/51sample.txt 2>&1
+	$(TBIN)  -vvv    -o out/52program.c tests/52sample.cpp 1> out/52sample.txt 2>&1
+	-$(TBIN) -vvv    -o out/53failure.c tests/53sample.cpp 1> out/53sample.txt 2>&1
+	$(TBIN)  -vvv    -o out/54program.c tests/54sample.cpp 1> out/54sample.txt 2>&1
+	$(TBIN)  -vvv    -o out/55program.c tests/55sample.cpp 1> out/55sample.txt 2>&1
+	$(TBIN)  -vvv    -o out/56program.c tests/56sample.cpp 1> out/56sample.txt 2>&1
+	$(TBIN)  -vvv    -o out/57program.c tests/57sample.cpp 1> out/57sample.txt 2>&1
+	$(TBIN)  -vvv    -o out/58program.c tests/58sample.cpp 1> out/58sample.txt 2>&1
+	$(TBIN)  -vvv    -o out/59program.c tests/59sample.cpp 1> out/59sample.txt 2>&1
+	$(TBIN)  -vvv    -o out/60program.c tests/60sample.cpp 1> out/60sample.txt 2>&1
+	$(TBIN)  -vvv    -o out/61program.c tests/61sample.cpp 1> out/61sample.txt 2>&1
+	$(TBIN)  -vvv    -o out/62program.c tests/62sample.cpp 1> out/62sample.txt 2>&1
+	$(TBIN)  -vvv    -o out/63program.c tests/63sample.cpp 1> out/63sample.txt 2>&1
+	$(TBIN)  -vvv    -o out/64program.c tests/64sample.cpp 1> out/64sample.txt 2>&1
+	$(TBIN)  -vvv    -o out/65program.c tests/65sample.cpp 1> out/65sample.txt 2>&1
+	$(TBIN)  -vvv    -o out/66program.c tests/66sample.cpp 1> out/66sample.txt 2>&1
+	$(TBIN)  -vvv    -o out/67program.c tests/67sample.cpp 1> out/67sample.txt 2>&1
+	$(TBIN)  -vvv    -o out/68program.c tests/68sample.cpp 1> out/68sample.txt 2>&1
+	$(TBIN)  -vvv    -o out/69program.c tests/69sample.cpp 1> out/69sample.txt 2>&1
+	$(TBIN)  -vvv    -o out/70program.c tests/70sample.cpp 1> out/70sample.txt 2>&1
+	$(TBIN)  -vvv    -o out/71program.c tests/71sample.cpp 1> out/71sample.txt 2>&1
+	$(TBIN)  -vvv    -o out/72program.c tests/72sample.cpp 1> out/72sample.txt 2>&1
+	$(TBIN)  -vvv    -o out/73program.c tests/73sample.cpp 1> out/73sample.txt 2>&1
+	$(TBIN)  -vvv    -o out/74program.c tests/74sample.cpp 1> out/74sample.txt 2>&1
+	$(TBIN)  -vvv    -o out/75program.c tests/75sample.cpp 1> out/75sample.txt 2>&1
+	$(TBIN)  -vvv    -o out/76program.c tests/76sample.cpp 1> out/76sample.txt 2>&1
+	$(TBIN)  -vvv    -o out/77program.c tests/77sample.cpp 1> out/77sample.txt 2>&1
+	$(TBIN)  -vvv    -o out/78program.c tests/78sample.cpp 1> out/78sample.txt 2>&1
+	$(TBIN)  -vvv    -o out/79program.c tests/79sample.cpp 1> out/79sample.txt 2>&1
+	-$(TBIN) -vvv    -o out/80failure.c tests/80sample.cpp 1> out/80sample.txt 2>&1
+	$(TBIN)  -vvv    -o out/81program.c tests/81sample.cpp 1> out/81sample.txt 2>&1
+	$(TBIN)  -vvv    -o out/82program.c tests/82sample.cpp 1> out/82sample.txt 2>&1
+	$(TBIN)  -vvv    -o out/83program.c tests/83sample.cpp 1> out/83sample.txt 2>&1
+	$(TBIN)  -vvv    -o out/84program.c tests/84sample.cpp 1> out/84sample.txt 2>&1
+	$(TBIN)  -vvv    -o out/85program.c tests/85sample.cpp 1> out/85sample.txt 2>&1
+	$(TBIN)  -vvv    -o out/86program.c tests/86sample.cpp 1> out/86sample.txt 2>&1
+	$(TBIN)  -vvv    -o out/87program.c tests/87sample.cpp 1> out/87sample.txt 2>&1
+	$(TBIN)  -vvv    -o out/88program.c tests/88sample.cpp 1> out/88sample.txt 2>&1
+	$(TBIN)  -vvv    -o out/89program.c tests/89sample.cpp 1> out/89sample.txt 2>&1
+	$(TBIN)  -vvv    -o out/90program.c tests/90sample.cpp 1> out/90sample.txt 2>&1
+	-$(TBIN) -vvv    -o out/91failure.c tests/91sample.cpp 1> out/91sample.txt 2>&1
+	$(TBIN)  -vvv    -o out/92program.c tests/92sample.cpp 1> out/92sample.txt 2>&1
+	-$(TBIN) -vvv    -o out/93failure.c tests/93sample.cpp 1> out/93sample.txt 2>&1
+	$(TBIN)  -vvv -I . -o out/94program.c tests/94sample.cpp 1> out/94sample.txt 2>&1
+	$(TBIN)  -vvv -D FROM_CMDLINE=7 -o out/95program.c tests/95sample.cpp 1> out/95sample.txt 2>&1
+	-$(TBIN) -vvv    -o out/96failure.c tests/96sample.cpp 1> out/96sample.txt 2>&1
+	$(TBIN)  -vvv    -o out/97program.c tests/97sample.cpp 1> out/97sample.txt 2>&1
 	@if [ -f tools/vircon32/bin/include/video.h ]; then \
 	    echo "V32CXX_SDK_INCLUDE=tools/vircon32/bin/include $(BIN) -vvv -o out/98program.c tests/98sample.cpp"; \
 	    V32CXX_SDK_INCLUDE=tools/vircon32/bin/include $(BIN) -vvv -o out/98program.c tests/98sample.cpp 1> out/98sample.txt 2>&1; \
 	else echo "skipping sample 98: needs the SDK headers (run tools/vircon32/build-tools.sh)"; fi
-	$(BIN)  -vvv    -o out/99program.c tests/99sample.cpp 1> out/99sample.txt 2>&1
-	$(BIN)  -vvv    -o out/100program.c tests/100sample.cpp 1> out/100sample.txt 2>&1
-	$(BIN)  -vvv    -o out/101program.c tests/101sample.cpp 1> out/101sample.txt 2>&1
-	$(BIN)  -vvv    -o out/102program.c tests/102sample.cpp 1> out/102sample.txt 2>&1
-	$(BIN)  -vvv    -o out/103program.c tests/103sample.cpp 1> out/103sample.txt 2>&1
-	$(BIN)  -vvv    -o out/104program.c tests/104sample.cpp 1> out/104sample.txt 2>&1
-	$(BIN)  -vvv    -o out/105program.c tests/105sample.cpp 1> out/105sample.txt 2>&1
-	$(BIN)  -vvv    -o out/106program.c tests/106sample.cpp 1> out/106sample.txt 2>&1
-	$(BIN)  -vvv    -o out/107program.c tests/107sample.cpp 1> out/107sample.txt 2>&1
-	$(BIN)  -vvv    -o out/108program.c tests/108sample.cpp 1> out/108sample.txt 2>&1
-	$(BIN)  -vvv    -o out/109program.c tests/109sample.cpp 1> out/109sample.txt 2>&1
-	$(BIN)  -vvv    -o out/110program.c tests/110sample.cpp 1> out/110sample.txt 2>&1
-	$(BIN)  -vvv    -o out/111program.c tests/111sample.cpp 1> out/111sample.txt 2>&1
-	$(BIN)  -vvv    -o out/112program.c tests/112sample.cpp 1> out/112sample.txt 2>&1
-	$(BIN)  -vvv    -o out/113program.c tests/113sample.cpp 1> out/113sample.txt 2>&1
-	$(BIN)  -vvv    -o out/114program.c tests/114sample.cpp 1> out/114sample.txt 2>&1
-	$(BIN)  -vvv    -o out/115program.c tests/115sample.cpp 1> out/115sample.txt 2>&1
-	$(BIN)  -vvv    -o out/116program.c tests/116sample.c   1> out/116sample.txt 2>&1
-	$(BIN)  -vvv    -o out/117program.c tests/117sample.c   1> out/117sample.txt 2>&1
-	$(BIN)  -vvv    -o out/118program.c tests/118sample.c   1> out/118sample.txt 2>&1
-	$(BIN)  -vvv -I . -o out/119program.c tests/119sample.cpp 1> out/119sample.txt 2>&1
-	$(BIN)  -vvv    -o out/120program.c tests/120sample.cpp 1> out/120sample.txt 2>&1
-	$(BIN)  -vvv    -o out/121program.c tests/121sample.cpp 1> out/121sample.txt 2>&1
-	$(BIN)  -vvv    -o out/122program.c tests/122sample.cpp 1> out/122sample.txt 2>&1
-	$(BIN)  -vvv    -o out/123program.c tests/123sample.cpp 1> out/123sample.txt 2>&1
-	$(BIN)  -vvv    -o out/124program.c tests/124sample.cpp 1> out/124sample.txt 2>&1
-	$(BIN)  -vvv -I . -o out/125program.c tests/125sample.cpp 1> out/125sample.txt 2>&1
-	$(BIN)  -vvv    -o out/126program.c tests/126sample.cpp 1> out/126sample.txt 2>&1
-	$(BIN)  -vvv    -o out/127program.c tests/127sample.cpp 1> out/127sample.txt 2>&1
-	$(BIN)  -vvv    -o out/128program.c tests/128sample.c   1> out/128sample.txt 2>&1
-	$(BIN)  -vvv    -o out/129program.c tests/129sample.cpp 1> out/129sample.txt 2>&1
-	$(BIN)  -vvv    -o out/130program.c tests/130sample.cpp 1> out/130sample.txt 2>&1
-	$(BIN)  -vvv -I . -o out/131program.c tests/131sample.cpp 1> out/131sample.txt 2>&1
-	$(BIN)  -vvv    -o out/132program.c tests/132sample.cpp 1> out/132sample.txt 2>&1
-	$(BIN)  -vvv    -o out/133program.c tests/133sample.cpp 1> out/133sample.txt 2>&1
-	$(BIN)  -vvv    -o out/134program.c tests/134sample.c   1> out/134sample.txt 2>&1
-	$(BIN)  -vvv    -o out/135program.c tests/135sample.cpp 1> out/135sample.txt 2>&1
-	$(BIN)  -vvv    -o out/136program.c tests/136sample.cpp 1> out/136sample.txt 2>&1
-	$(BIN)  -vvv --no-signed-shift -o out/137program.c tests/137sample.cpp 1> out/137sample.txt 2>&1
-	$(BIN)  -vvv    -o out/138program.c tests/138sample.c   1> out/138sample.txt 2>&1
-	$(BIN)  -vvv    -o out/139program.c tests/139sample.c   1> out/139sample.txt 2>&1
-	$(BIN)  -vvv    -o out/140program.c tests/140sample.cpp 1> out/140sample.txt 2>&1
-	$(BIN)  -vvv    -o out/141program.c tests/141sample.cpp 1> out/141sample.txt 2>&1
-	-$(BIN) -vvv    -o out/142failure.c tests/142sample.cpp 1> out/142sample.txt 2>&1
-	$(BIN)  -vvv    -o out/143program.c tests/143sample.cpp 1> out/143sample.txt 2>&1
+	$(TBIN)  -vvv    -o out/99program.c tests/99sample.cpp 1> out/99sample.txt 2>&1
+	$(TBIN)  -vvv    -o out/100program.c tests/100sample.cpp 1> out/100sample.txt 2>&1
+	$(TBIN)  -vvv    -o out/101program.c tests/101sample.cpp 1> out/101sample.txt 2>&1
+	$(TBIN)  -vvv    -o out/102program.c tests/102sample.cpp 1> out/102sample.txt 2>&1
+	$(TBIN)  -vvv    -o out/103program.c tests/103sample.cpp 1> out/103sample.txt 2>&1
+	$(TBIN)  -vvv    -o out/104program.c tests/104sample.cpp 1> out/104sample.txt 2>&1
+	$(TBIN)  -vvv    -o out/105program.c tests/105sample.cpp 1> out/105sample.txt 2>&1
+	$(TBIN)  -vvv    -o out/106program.c tests/106sample.cpp 1> out/106sample.txt 2>&1
+	$(TBIN)  -vvv    -o out/107program.c tests/107sample.cpp 1> out/107sample.txt 2>&1
+	$(TBIN)  -vvv    -o out/108program.c tests/108sample.cpp 1> out/108sample.txt 2>&1
+	$(TBIN)  -vvv    -o out/109program.c tests/109sample.cpp 1> out/109sample.txt 2>&1
+	$(TBIN)  -vvv    -o out/110program.c tests/110sample.cpp 1> out/110sample.txt 2>&1
+	$(TBIN)  -vvv    -o out/111program.c tests/111sample.cpp 1> out/111sample.txt 2>&1
+	$(TBIN)  -vvv    -o out/112program.c tests/112sample.cpp 1> out/112sample.txt 2>&1
+	$(TBIN)  -vvv    -o out/113program.c tests/113sample.cpp 1> out/113sample.txt 2>&1
+	$(TBIN)  -vvv    -o out/114program.c tests/114sample.cpp 1> out/114sample.txt 2>&1
+	$(TBIN)  -vvv    -o out/115program.c tests/115sample.cpp 1> out/115sample.txt 2>&1
+	$(TBIN)  -vvv    -o out/116program.c tests/116sample.c   1> out/116sample.txt 2>&1
+	$(TBIN)  -vvv    -o out/117program.c tests/117sample.c   1> out/117sample.txt 2>&1
+	$(TBIN)  -vvv    -o out/118program.c tests/118sample.c   1> out/118sample.txt 2>&1
+	$(TBIN)  -vvv -I . -o out/119program.c tests/119sample.cpp 1> out/119sample.txt 2>&1
+	$(TBIN)  -vvv    -o out/120program.c tests/120sample.cpp 1> out/120sample.txt 2>&1
+	$(TBIN)  -vvv    -o out/121program.c tests/121sample.cpp 1> out/121sample.txt 2>&1
+	$(TBIN)  -vvv    -o out/122program.c tests/122sample.cpp 1> out/122sample.txt 2>&1
+	$(TBIN)  -vvv    -o out/123program.c tests/123sample.cpp 1> out/123sample.txt 2>&1
+	$(TBIN)  -vvv    -o out/124program.c tests/124sample.cpp 1> out/124sample.txt 2>&1
+	$(TBIN)  -vvv -I . -o out/125program.c tests/125sample.cpp 1> out/125sample.txt 2>&1
+	$(TBIN)  -vvv    -o out/126program.c tests/126sample.cpp 1> out/126sample.txt 2>&1
+	$(TBIN)  -vvv    -o out/127program.c tests/127sample.cpp 1> out/127sample.txt 2>&1
+	$(TBIN)  -vvv    -o out/128program.c tests/128sample.c   1> out/128sample.txt 2>&1
+	$(TBIN)  -vvv    -o out/129program.c tests/129sample.cpp 1> out/129sample.txt 2>&1
+	$(TBIN)  -vvv    -o out/130program.c tests/130sample.cpp 1> out/130sample.txt 2>&1
+	$(TBIN)  -vvv -I . -o out/131program.c tests/131sample.cpp 1> out/131sample.txt 2>&1
+	$(TBIN)  -vvv    -o out/132program.c tests/132sample.cpp 1> out/132sample.txt 2>&1
+	$(TBIN)  -vvv    -o out/133program.c tests/133sample.cpp 1> out/133sample.txt 2>&1
+	$(TBIN)  -vvv    -o out/134program.c tests/134sample.c   1> out/134sample.txt 2>&1
+	$(TBIN)  -vvv    -o out/135program.c tests/135sample.cpp 1> out/135sample.txt 2>&1
+	$(TBIN)  -vvv    -o out/136program.c tests/136sample.cpp 1> out/136sample.txt 2>&1
+	$(TBIN)  -vvv --no-signed-shift -o out/137program.c tests/137sample.cpp 1> out/137sample.txt 2>&1
+	$(TBIN)  -vvv    -o out/138program.c tests/138sample.c   1> out/138sample.txt 2>&1
+	$(TBIN)  -vvv    -o out/139program.c tests/139sample.c   1> out/139sample.txt 2>&1
+	$(TBIN)  -vvv    -o out/140program.c tests/140sample.cpp 1> out/140sample.txt 2>&1
+	$(TBIN)  -vvv    -o out/141program.c tests/141sample.cpp 1> out/141sample.txt 2>&1
+	-$(TBIN) -vvv    -o out/142failure.c tests/142sample.cpp 1> out/142sample.txt 2>&1
+	$(TBIN)  -vvv    -o out/143program.c tests/143sample.cpp 1> out/143sample.txt 2>&1
 	grep -q '<binary path="143program.vbin" />' out/143program.xml
 	grep -q '<texture path="ship.vtex" /> <!-- SHIP -->' out/143program.xml
 	grep -q '<texture path="extra/ship.vtex" /> <!-- BULLET -->' out/143program.xml
 	grep -q '<binary path="143programOpt.vbin" />' out/143programOpt.xml
 	grep -q '<texture path="extra/ship.vtex" /> <!-- BULLET -->' out/143programOpt.xml
 	cp tests/143sample.cpp out/144src.cpp
-	$(BIN)  -vvv --xml-preserve-paths -o out/144program.c out/144src.cpp 1> out/144sample.txt 2>&1
+	$(TBIN)  -vvv --xml-preserve-paths -o out/144program.c out/144src.cpp 1> out/144sample.txt 2>&1
 	grep -q '<binary path="144program.vbin" />' out/144program.xml
 	grep -q '<texture path="textures/extra/ship.vtex" />' out/144program.xml
 	grep -q '<binary path="144programOpt.vbin" />' out/144programOpt.xml
+	grep -q 'title="Paths"' out/143program.xml
+	grep -q 'title="Paths \[optimized\]"' out/143programOpt.xml
+	$(TBIN)  -vvv -o out/145program.c tests/145sample.cpp 1> out/145sample.txt 2>&1
+	grep -q 'title="Title Test"' out/145program.xml
+	grep -q 'title="Title Test: Turbo Edition"' out/145programOpt.xml
+	$(TBIN)  -vvv --title-opt=Cmdline -o out/145cli.c tests/145sample.cpp 1> out/145cli.txt 2>&1
+	grep -q 'title="Cmdline"' out/145cliOpt.xml
+	$(TBIN)  -vvv --no-diff-opt-title -o out/145same.c tests/143sample.cpp 1> out/145same.txt 2>&1
+	grep -q 'title="Paths"' out/145sameOpt.xml
+	rm -rf out/146 && mkdir -p out/146/src out/146/obj
+	cp tests/143sample.cpp out/146/src/game.cpp
+	cd out/146 && ../../$(BIN) -vvv -I src -DFOO=1 -o obj/game.c src/game.cpp 1> ../146sample.txt 2>&1
+	test -x out/146/Make.sh && test -f out/146/Make.bat && test ! -e out/146/src/Make.sh
+	bash -n out/146/Make.sh
+	grep -q 'v32c++ -I src -DFOO=1 --no-build-scripts -o obj/game.c src/game.cpp' out/146/Make.sh
+	grep -q 'png2vircon textures/extra/ship.png -o obj/extra/ship.vtex' out/146/Make.sh
+	grep -q 'packrom obj/gameOpt.xml -o bin/gameOpt.v32' out/146/Make.sh
+	grep -q 'command -v v32opt' out/146/Make.sh
+	grep -q 'where v32opt' out/146/Make.bat
+	grep -q 'png2vircon textures\\extra\\ship.png -o obj\\extra\\ship.vtex' out/146/Make.bat
+	rm -rf out/147 && mkdir -p out/147
+	cp tests/143sample.cpp out/147/game.cpp
+	echo "my own script" > out/147/Make.sh
+	$(BIN)   -vvv -o out/147/game.c out/147/game.cpp 1> out/147sample.txt 2>&1
+	grep -q 'my own script' out/147/Make.sh && grep -q 'not generated by v32c++' out/147sample.txt && test -f out/147/Make.bat
+	$(BIN)   -vvv --no-build-scripts -o out/147/other.c out/147/game.cpp 1> out/147b.txt 2>&1
+	test ! -e out/147/other.sh
 # `-vvv` (this project's own verbosity flag, a later round -- see
 # main.c) is passed to every sample specifically so `make test`'s own
 # output still captures the full AST/semantic-analysis/lowering dumps

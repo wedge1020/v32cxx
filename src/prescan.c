@@ -874,7 +874,7 @@ static int expand_file_mode(const char *path, FILE *out,
             /* the null directive: a lone '#' */
         }
         else {
-            /* #texture / #sound / #title / #version cart hints (lexer.l
+            /* #texture / #sound / #title / #titleopt / #version cart hints (lexer.l
              * recognizes those), and anything else: verbatim, as always. */
             consumed = 0;
         }

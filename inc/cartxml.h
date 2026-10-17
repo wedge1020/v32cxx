@@ -1,6 +1,8 @@
 #ifndef CARTXML_H
 #define CARTXML_H
 
+#include "driver.h"
+
 /* Generates a Vircon32 cartridge-packing XML file alongside the
  * generated C output -- the manual, repetitive step Matthew asked to
  * have automated, matching v32lua's own emit_cart_xml format exactly
@@ -25,7 +27,7 @@
  * program that doesn't use them.
  *
  * title/version reflect driver.h's g_cart_title/g_cart_version
- * (#title/#version hints) when set, falling back to v32lua's own
+ * (#title/#version hints) when set (the Opt XML's title: cart_opt_title(), below), falling back to v32lua's own
  * documented defaults ("Vircon32 Program" / "1.0") otherwise.
  *
  * `is_bios`: when true, the <rom> element's own `type` attribute is
@@ -67,6 +69,18 @@
  * already been written successfully by this point; a failed XML write
  * is a real problem worth reporting, but not one that should undo an
  * otherwise-successful transpile). */
+/* Title of the optimized cart (<name>Opt.xml's <rom title>; malloc'd): the
+ * `#titleopt` hint / --title-opt= when given, else the cart's title with
+ * " [optimized]" appended, or the cart's title unchanged under
+ * --no-diff-opt-title. */
+char *cart_opt_title(void);
+
+/* The XML path of every entry of g_cart_textures / g_cart_sounds
+ * (tag "texture"/"sound", ext ".vtex"/".vsnd"), as emit_cart_xml writes
+ * them: a NULL-terminated, malloc'd array of malloc'd strings. */
+char **cart_resource_names(const CartResourceList *list, const char *tag,
+                           const char *ext, int preserve_paths);
+
 /* Where the XML goes (malloc'd; caller frees) -- see "Paths inside the XML". */
 char *cart_xml_filename(const char *output_filename, const char *source_filename,
                         int preserve_paths);

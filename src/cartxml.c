@@ -52,7 +52,8 @@ static char *name_with_depth(const char *filename, int depth, const char *ext,
     return result;
 }
 
-/* Works out the XML path of every entry of `list` (malloc'd array of
+/* (Exported: buildscript.c needs the same names.)
+ * Works out the XML path of every entry of `list` (malloc'd array of
  * malloc'd strings; caller frees). With `preserve_paths` it is the
  * path as written. Otherwise it is the bare file name -- unless an
  * EARLIER, different asset already took that name, in which case the
@@ -60,8 +61,8 @@ static char *name_with_depth(const char *filename, int depth, const char *ext,
  * "textures/ship.png" then "textures/extra/ship.png" give "ship.vtex"
  * and "extra/ship.vtex" (so packrom wants the second in <xml dir>/extra/).
  * The first asset to claim a name always keeps the short form. */
-static char **resolve_names(const CartResourceList *list, const char *tag,
-                            const char *ext, int preserve_paths) {
+char **cart_resource_names(const CartResourceList *list, const char *tag,
+                           const char *ext, int preserve_paths) {
     char **names = calloc((size_t)list->count + 1, sizeof *names);
     for (int i = 0; i < list->count; i++) {
         if (preserve_paths) {
@@ -111,7 +112,7 @@ static void emit_resource_list(FILE *xml, const CartResourceList *list,
         fprintf(xml, "<%ss />\n", tag);
         return;
     }
-    char **names = resolve_names(list, tag, ext, preserve_paths);
+    char **names = cart_resource_names(list, tag, ext, preserve_paths);
     fprintf(xml, "<%ss>\n", tag);
     for (int i = 0; i < list->count; i++) {
         fprintf(xml, "    <%s path=\"%s\" /> <!-- %s -->\n",
@@ -133,6 +134,17 @@ char *cart_xml_filename(const char *output_filename, const char *source_filename
     snprintf(result, cap, "%s/%s", dir, path_basename(xml_name));
     free(dir);
     free(xml_name);
+    return result;
+}
+
+char *cart_opt_title(void) {
+    const char *title = (g_cart_title != NULL) ? g_cart_title : "Vircon32 Program";
+    if (g_cart_title_opt != NULL) return strdup(g_cart_title_opt);
+    if (g_cart_no_diff_opt_title) return strdup(title);
+    const char *suffix = " [optimized]";
+    char *result = malloc(strlen(title) + strlen(suffix) + 1);
+    strcpy(result, title);
+    strcat(result, suffix);
     return result;
 }
 
@@ -179,10 +191,13 @@ static void write_cart_xml(const char *output_filename, const char *source_filen
      * matching the sibling project's own convention was the point). */
     fprintf(xml, "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"no\" ?>\n");
     fprintf(xml, "<rom-definition version=\"1.0\">\n");
+    char *opt_title = (variant[0] != '\0') ? cart_opt_title() : NULL;
     fprintf(xml, "    <rom type=\"%s\" title=\"%s\" version=\"%s\" />\n",
             is_bios ? "bios" : "cartridge",
-            (g_cart_title != NULL) ? g_cart_title : "Vircon32 Program",
+            (opt_title != NULL) ? opt_title
+                : (g_cart_title != NULL) ? g_cart_title : "Vircon32 Program",
             (g_cart_version != NULL) ? g_cart_version : "1.0");
+    free(opt_title);
     fprintf(xml, "<binary path=\"%s\" />\n", vbin_path);
     emit_resource_list(xml, &g_cart_textures, "texture", ".vtex", preserve_paths);
     emit_resource_list(xml, &g_cart_sounds, "sound", ".vsnd", preserve_paths);

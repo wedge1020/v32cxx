@@ -15,7 +15,7 @@ DEMO          = rogue
 # port's config.h; -I src finds rogue.h from the files in v32/. The whole
 # program is pooled into one translation unit by the #include lines in
 # $(DEMO).c -- Vircon32 C compiles exactly one file.
-TRANSPILER    = v32c++ -I ../../../libc -I v32 -I src
+TRANSPILER    = v32c++ --no-build-scripts -I ../../../libc -I v32 -I src
 SOURCES       = $(DEMO).c $(wildcard src/*.c) $(wildcard src/*.h) \
                 $(wildcard v32/*.c) $(wildcard v32/*.h) \
                 $(wildcard ../../../libc/*.c) $(wildcard ../../../libc/*.h)

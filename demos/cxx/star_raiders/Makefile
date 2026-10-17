@@ -1,6 +1,6 @@
 # --- Configuration ---
 DEMO          = star_raiders
-TRANSPILER    = v32c++
+TRANSPILER    = v32c++ --no-build-scripts
 COMPILER      = compile
 OPTIMIZER     = v32opt -O3 -v
 ASSEMBLER     = assemble

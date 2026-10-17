@@ -1,5 +1,5 @@
 '\" -*- coding: UTF-8 -*-
-.TH V32C++ 1 "17 octobre 2026" "v32c++ 20261017-dev" "Commandes utilisateur"
+.TH V32C++ 1 "16 octobre 2026" "v32c++ 20261016-dev" "Commandes utilisateur"
 .SH NOM
 v32c++ \- transpile un sous-ensemble de C++ en C Vircon32
 .SH SYNOPSIS
@@ -16,6 +16,10 @@ v32c++ \- transpile un sous-ensemble de C++ en C Vircon32
 .IR nom ]...
 .RB [ \-x ]
 .RB [ \-\-xml\-preserve\-paths ]
+.RB [ \-\-no\-build\-scripts ]
+.RB [ \-\-title\-opt=\c
+.IR texte ]
+.RB [ \-\-no\-diff\-opt\-title ]
 .RB [ \-b ]
 .RB [ \-g ]
 .RB [ \-\-target=vircon32 | standard ]
@@ -249,6 +253,29 @@ conserve juste assez de répertoires pour se distinguer (\fItextures/extra/ship.
 après \fItextures/ship.png\fR devient \fIextra/ship.vtex\fR, attendu dans un
 sous-répertoire à côté du XML). Un jumeau pour la version optimisée,
 \fInom\fROpt.xml, qui référence \fInom\fROpt.vbin, est écrit à côté du XML.
+.TP
+.B \-\-no\-build\-scripts
+N'écrit pas les scripts de compilation
+.I Make.sh
+et
+.I Make.bat
+(voir
+.B SCRIPTS DE COMPILATION
+plus bas). Ils sont aussi omis avec
+.BR \-x .
+.TP
+.BI \-\-title\-opt= texte
+Titre de la cartouche optimisée (le titre de
+.B <rom>
+dans
+.IR nom Opt.xml ),
+comme une indication
+.BR #titleopt ,
+qu'il remplace.
+.TP
+.B \-\-no\-diff\-opt\-title
+Donne à la cartouche optimisée le même titre qu'à la normale, au lieu d'ajouter
+« [optimized]».
 .TP
 .B \-\-no\-inline\-containers
 Conserve les accesseurs de
@@ -1108,6 +1135,13 @@ de
 Si l'une ou l'autre indication apparaît plusieurs fois, la dernière rencontrée
 l'emporte.
 .PP
+.B #titleopt
+"titre" fixe le titre dans le XML de la cartouche optimisée
+.RI ( nom Opt.xml ) ;
+sans elle, ce titre est celui de la cartouche suivi de « [optimized]»
+(voir
+.BR \-\-no\-diff\-opt\-title ).
+.PP
 Pas encore pris en charge : une vérification de noms en double entre les indications
 .B #texture
 /
@@ -1120,6 +1154,56 @@ produisent deux lignes
 .B #define
 pour lui, que le compilateur C de Vircon32 accepte sans se plaindre : l'id postérieur
 l'emporte en silence, tandis que les deux fichiers entrent tout de même dans le XML.
+.SH SCRIPTS DE COMPILATION
+Chaque fois que le XML est écrit,
+.B v32c++
+écrit aussi
+.I Make.sh
+(bash) et
+.I Make.bat
+(Windows) à partir des mêmes informations : il relance
+.B v32c++
+(avec les mêmes options
+.BR \-I / \-D / \-U / \-b / \-g
+et
+.BR \-\-no\-build\-scripts ),
+puis
+.BR compile ,
+.BR assemble ,
+.B png2vircon
+pour chaque
+.BR #texture ,
+.B wav2vircon
+pour chaque
+.B #sound
+et
+.BR packrom .
+Ils sont écrits à côté du fichier source, ou dans son répertoire parent quand le
+source est dans un répertoire
+.I src
+et que ce parent a (ou, selon
+.BR \-o ,
+reçoit) un répertoire
+.IR obj ;
+tous leurs chemins sont relatifs à ce répertoire. Chaque script vérifie d'abord
+que les outils utilisés sont dans le PATH et s'arrête avec « X is needed to
+build » s'il en manque un. Si
+.B v32opt
+est trouvé à l'exécution du script, la version optimisée
+.RB ( v32opt
+.BR \-O3 ,
+.IR nom Opt.vbin ,
+.IR nom Opt.xml ,
+.IR bin/nom Opt.v32 )
+est aussi produite ; sinon elle est ignorée avec une note. Un
+.I Make.sh
+ou
+.I Make.bat
+que
+.B v32c++
+n'a pas écrit n'est jamais écrasé (un avertissement est affiché).
+.B \-\-no\-build\-scripts
+désactive tout cela.
 .SH MODE BIOS
 .B \-b
 (voir OPTIONS, ci-dessus) transpile un

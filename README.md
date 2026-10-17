@@ -472,6 +472,9 @@ v32c++ -I path/to/v32c++ -o obj/game.c game.cpp
 | `-v`, `-vv`, `-vvv` | progress; plus explanatory comments in the generated C; plus AST, semantic and lowering dumps and the lowering-notes log |
 | `-x`, `--no-xml` | don't write the cart XML |
 | `--xml-preserve-paths` | keep `#texture`/`#sound` paths in the XML as written, and write the XML beside the source file |
+| `--no-build-scripts` | don't write `Make.sh` / `Make.bat` (see below) |
+| `--title-opt=TEXT` | title of the optimized cart, like a `#titleopt` hint (and overriding it) |
+| `--no-diff-opt-title` | give the optimized cart the regular cart's title, without ` [optimized]` |
 | `-b` | transpile a BIOS rather than a cartridge |
 | `-g` | write a C-line/C++-line debug map, `<output>.c.debug` |
 | `--target=vircon32`/`v32` | Vircon32 C (the default) |
@@ -507,11 +510,12 @@ v32c++ checks  for exactly  one `#texture`,  at most  one `#sound`  and a
 ## Cart packaging
 
 A cart-packing  XML is written next  to the generated C  (`game.xml`), so
-`packrom` needs  no hand-written file. Four  hints in the source  fill it
+`packrom` needs  no hand-written file. Five  hints in the source  fill it
 in, modeled on v32lua's:
 
 ```cpp
 #title   "My Game"
+#titleopt "My Game (fast)"
 #version 1.0
 #texture Background "background.png"
 #sound   jump_sfx   "jump.wav"
@@ -522,7 +526,9 @@ Each  `#texture`/`#sound`  name  becomes  a   `#define`  of  its  id  (0,
 anywhere an  integer is (`select_texture(  Background )`), and  fills the
 XML's `<textures>`/`<sounds>`  in that  order with the  extension swapped
 to  `.vtex`/`.vsnd`.  `#title`/`#version`   set  the  `<rom>`  attributes
-(otherwise "Vircon32 Program" / "1.0").  The XML's `<binary path>` is the
+(otherwise "Vircon32 Program" / "1.0"). `#titleopt` (optional) sets the title
+in the optimized cart's XML, `gameOpt.xml`; without it that title is the
+cart's with ` [optimized]` appended (`--no-diff-opt-title` keeps them equal).  The XML's `<binary path>` is the
 `-o` path with `.vbin`.
 
 `packrom` reads every path in the XML relative to the XML itself, so by
@@ -539,6 +545,24 @@ build is written alongside (`obj/gameOpt.xml`, whose `<binary>` is
 instead keeps each hint's path as written
 (`textures/ship.vtex`), writes the XML into the *source file's*
 directory, and makes `<binary>` the `.vbin` path relative to it.
+
+### Build scripts
+
+Whenever the XML is written, v32c++ also writes `Make.sh` (bash) and
+`Make.bat` (Windows), in the style of the Vircon32 sample projects, from the
+same information: transpile (v32c++ again, with your `-I`/`-D`/`-U`/`-b`/`-g`
+options and `--no-build-scripts`), `compile`, `assemble`, `png2vircon` for
+each `#texture`, `wav2vircon` for each `#sound`, and `packrom`. They sit next
+to the source file, or in its parent when the source is in a `src/`
+directory and that parent has (or, via `-o`, gets) an `obj/` — and every
+path in them is relative to that folder, so run them from there. Each
+script checks first that the tools it uses are in `PATH` (a missing
+`v32c++`, `compile`... stops the build with "X is needed to build"). If
+`v32opt` is found when the script runs, the optimized build — `v32opt -O3`,
+`gameOpt.vbin`, `gameOpt.xml`, `bin/gameOpt.v32` — is made too; otherwise it
+is skipped with a note. A `Make.sh`/`Make.bat` that v32c++ did not write
+is never overwritten (a warning is printed). `--no-build-scripts` turns all
+this off, as does `-x`.
 
 ## Output dialects
 

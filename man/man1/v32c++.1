@@ -1,4 +1,4 @@
-.TH V32C++ 1 "October 17, 2026" "v32c++ 20261017-dev" "User Commands"
+.TH V32C++ 1 "October 16, 2026" "v32c++ 20261016-dev" "User Commands"
 .SH NAME
 v32c++ \- transpile a subset of C++ to Vircon32 C
 .SH SYNOPSIS
@@ -15,6 +15,10 @@ v32c++ \- transpile a subset of C++ to Vircon32 C
 .IR name ]...
 .RB [ \-x ]
 .RB [ \-\-xml\-preserve\-paths ]
+.RB [ \-\-no\-build\-scripts ]
+.RB [ \-\-title\-opt=\c
+.IR text ]
+.RB [ \-\-no\-diff\-opt\-title ]
 .RB [ \-b ]
 .RB [ \-g ]
 .RB [ \-\-target=vircon32 | standard ]
@@ -245,6 +249,29 @@ directories to differ (\fItextures/extra/ship.png\fR after
 \fItextures/ship.png\fR becomes \fIextra/ship.vtex\fR, expected in a
 subdirectory beside the XML). A twin XML for the optimized build,
 \fIname\fROpt.xml referencing \fIname\fROpt.vbin, is written next to the XML.
+.TP
+.B \-\-no\-build\-scripts
+Don't write the build scripts
+.I Make.sh
+and
+.I Make.bat
+(see
+.B BUILD SCRIPTS
+below). Also skipped with
+.BR \-x .
+.TP
+.BI \-\-title\-opt= text
+Title of the optimized cart (the
+.B <rom>
+title in
+.IR name Opt.xml ),
+like a
+.B #titleopt
+hint, which it overrides.
+.TP
+.B \-\-no\-diff\-opt\-title
+Give the optimized cart the same title as the regular one instead of
+appending " [optimized]".
 .TP
 .B \-\-no\-inline\-containers
 Keep the accessors of
@@ -1093,6 +1120,13 @@ own
 .B \-\-#version
 hint). If either hint appears more than once, the last one seen wins.
 .PP
+.B #titleopt
+"title" sets the title in the optimized cart's XML
+.RI ( name Opt.xml );
+without it that title is the cart's own with " [optimized]" appended
+(see
+.BR \-\-no\-diff\-opt\-title ).
+.PP
 Not yet supported: a duplicate-name check across
 .B #texture
 /
@@ -1105,6 +1139,56 @@ produce two
 .B #define
 lines for it, which the Vircon32 C compiler accepts without complaint:
 the later id silently wins, while both files still go into the XML.
+.SH BUILD SCRIPTS
+Whenever the XML is written,
+.B v32c++
+also writes
+.I Make.sh
+(bash) and
+.I Make.bat
+(Windows) from the same information: it runs
+.B v32c++
+again (with the same
+.BR \-I / \-D / \-U / \-b / \-g
+options and
+.BR \-\-no\-build\-scripts ),
+then
+.BR compile ,
+.BR assemble ,
+.B png2vircon
+for each
+.BR #texture ,
+.B wav2vircon
+for each
+.BR #sound ,
+and
+.BR packrom .
+They are written next to the source file, or in its parent when the source is
+in a
+.I src
+directory and that parent has (or, per
+.BR \-o ,
+receives) an
+.I obj
+directory; all paths in them are relative to that directory. Each script first
+checks that the tools it uses are in PATH and stops with "X is needed to build"
+if one is missing. If
+.B v32opt
+is found when the script runs, the optimized build
+.RB ( v32opt
+.BR \-O3 ,
+.IR name Opt.vbin ,
+.IR name Opt.xml ,
+.IR bin/name Opt.v32 )
+is made too; otherwise it is skipped with a note. A
+.I Make.sh
+or
+.I Make.bat
+that
+.B v32c++
+did not write is never overwritten (a warning is printed).
+.B \-\-no\-build\-scripts
+turns all of this off.
 .SH BIOS MODE
 .B \-b
 (see OPTIONS, above) transpiles a Vircon32

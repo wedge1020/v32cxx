@@ -3,7 +3,7 @@ DEMO          = tempest_32k
 # -I ../../.. finds <v32/...>; -I inc finds this project's own headers
 # (tempest.hpp, config.hpp, state.hpp). The modules in src/ are pooled
 # into the one translation unit by #include lines in $(DEMO).cpp.
-TRANSPILER    = v32c++ -I ../../.. -I inc
+TRANSPILER    = v32c++ --no-build-scripts -I ../../.. -I inc
 SOURCES       = $(DEMO).cpp $(wildcard src/*.cpp) $(wildcard inc/*.hpp)
 COMPILER      = compile
 OPTIMIZER     = v32opt -O3 -v

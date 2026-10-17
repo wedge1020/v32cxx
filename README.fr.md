@@ -493,6 +493,9 @@ v32c++ -I path/to/v32c++ -o obj/game.c game.cpp
 | `-D name[=value]`, `-U name` | définit / supprime la définition d'une macro |
 | `-v`, `-vv`, `-vvv` | progression ; plus des commentaires explicatifs dans le C généré ; plus des vidages de l'AST, sémantiques et d'abaissement et le journal des notes d'abaissement |
 | `-x`, `--no-xml` | n'écrit pas le XML de la cartouche |
+| `--no-build-scripts` | n'écrit pas `Make.sh` / `Make.bat` (voir plus bas) |
+| `--title-opt=TEXTE` | titre de la cartouche optimisée, comme une directive `#titleopt` (et la remplace) |
+| `--no-diff-opt-title` | donne à la cartouche optimisée le même titre qu'à la normale, sans ` [optimized]` |
 | `--xml-preserve-paths` | conserve dans le XML les chemins de `#texture`/`#sound` tels qu'écrits, et écrit le XML à côté du source |
 | `-b` | transpile un BIOS plutôt qu'une cartouche |
 | `-g` | écrit une carte de débogage ligne C / ligne C++, `<sortie>.c.debug` |
@@ -529,11 +532,12 @@ error_handler()`, en signalant toutes les violations à la fois.
 ## Empaquetage de la cartouche
 
 Un XML d'empaquetage de cartouche est écrit à côté du C généré (`game.xml`), de
-sorte que `packrom` n'a pas besoin d'un fichier écrit à la main. Quatre
+sorte que `packrom` n'a pas besoin d'un fichier écrit à la main. Cinq
 indications dans la source le remplissent, sur le modèle de celles de v32lua :
 
 ```cpp
 #title   "My Game"
+#titleopt "My Game (fast)"
 #version 1.0
 #texture Background "background.png"
 #sound   jump_sfx   "jump.wav"
@@ -544,7 +548,9 @@ Chaque nom de `#texture`/`#sound` devient un `#define` de son identifiant (0, 1,
 entier est admis (`select_texture( Background )`), et remplit `<textures>` /
 `<sounds>` du XML dans cet ordre avec l'extension changée en `.vtex`/`.vsnd`.
 `#title`/`#version` définissent les attributs de `<rom>` (sinon « Vircon32
-Program » / « 1.0 »). Le `<binary path>` du XML est le chemin de `-o` avec
+Program » / « 1.0 »). `#titleopt` (facultatif) fixe le titre dans le XML de la
+version optimisée, `gameOpt.xml` ; sans lui, ce titre est celui de la cartouche
+suivi de ` [optimized]` (`--no-diff-opt-title` les garde identiques). Le `<binary path>` du XML est le chemin de `-o` avec
 `.vbin`.
 
 `packrom` lit tous les chemins du XML relativement au XML lui-même ; par
@@ -561,6 +567,24 @@ optimisée est écrit à côté (`obj/gameOpt.xml`, dont `<binary>` est
 conserve au contraire le chemin de chaque directive tel qu'écrit
 (`textures/ship.vtex`), écrit le XML dans le répertoire du *fichier source*
 et fait de `<binary>` le chemin du `.vbin` relatif à celui-ci.
+
+### Scripts de compilation
+
+Chaque fois que le XML est écrit, v32c++ écrit aussi `Make.sh` (bash) et
+`Make.bat` (Windows), dans le style des projets d'exemple Vircon32, à partir des
+mêmes informations : transpiler (v32c++ de nouveau, avec vos options
+`-I`/`-D`/`-U`/`-b`/`-g` et `--no-build-scripts`), `compile`, `assemble`,
+`png2vircon` pour chaque `#texture`, `wav2vircon` pour chaque `#sound`, et
+`packrom`. Ils sont écrits à côté du source, ou dans son répertoire parent quand
+le source est dans un répertoire `src/` et que ce parent a (ou, via `-o`, reçoit)
+un `obj/` ; tous les chemins sont relatifs à ce dossier, on les lance donc depuis
+lui. Chaque script vérifie d'abord que les outils utilisés sont dans le `PATH`
+(si `v32c++`, `compile`... manque, il s'arrête avec « X is needed to build »). Si
+`v32opt` est trouvé à l'exécution, la version optimisée (`v32opt -O3`,
+`gameOpt.vbin`, `gameOpt.xml`, `bin/gameOpt.v32`) est aussi produite ; sinon elle
+est ignorée avec une note. Un `Make.sh`/`Make.bat` que v32c++ n'a pas écrit n'est
+jamais écrasé (un avertissement est affiché). `--no-build-scripts` désactive
+tout cela, tout comme `-x`.
 
 ## Dialectes de sortie
 

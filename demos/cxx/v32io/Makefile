@@ -14,7 +14,7 @@
 # the examples build without `make sysinstall`.
 
 DEMOS         = typewriter paint monitor notepad glyphs
-TRANSPILER    = v32c++ -I ../../..
+TRANSPILER    = v32c++ --no-build-scripts -I ../../..
 COMPILER      = compile
 ASSEMBLER     = assemble
 PACKER        = packrom
