@@ -244,12 +244,15 @@ static int build_sdk_include_dirs(char **dirs, int max) {
     return n;
 }
 
-static void print_version(void) {
-    /* Matches v32lua's own --version format exactly, for consistency
-     * between the two sibling projects -- see v32cxx.h for VERSION/
-     * AUTHOR/URL themselves. */
-    printf("v32c++ %s\n", VERSION);
-    printf("C++ Transpiler for Vircon32 (v32c++) by %s\n", AUTHOR);
+static void print_version(const char *argv0) {
+    /* Same layout as v32lua's own --version, for consistency between
+     * the two sibling projects -- see v32cxx.h for VERSION/AUTHOR/URL
+     * themselves. The first line names the binary actually run (v32c++
+     * or v32c); the second names the project (v32cxx). */
+    char *prog = invoked_name(argv0);
+    printf("%s %s\n", prog, VERSION);
+    free(prog);
+    printf("C/C++ Transpiler for Vircon32 (v32cxx) by %s\n", AUTHOR);
     printf("  github: %s\n", URL);
 }
 
@@ -418,7 +421,7 @@ int  main (int  argc, char **argv)
                 g_no_inline_containers = 1;
                 break;
             case 'V':
-                print_version();
+                print_version(argv[0]);
                 return 0;
             default:
                 print_usage(argv[0]);

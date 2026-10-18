@@ -2,7 +2,7 @@
 
 [Versión en inglés / in English](README.md) | [Versión en francés / en français](README.fr.md) <!-- langlinks -->
 
-**Un transpilador de un subconjunto de C++ a C, orientado al compilador de C de la
+**Un transpilador de un subconjunto de C/C++ a C, orientado al compilador de C de la
 consola de fantasía [Vircon32](https://www.vircon32.com).**
 
 `v32c++` te permite escribir juegos y programas para Vircon32 en un subconjunto

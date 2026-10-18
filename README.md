@@ -1,8 +1,8 @@
-# v32c++
+# v32c/v32c++
 
 [Spanish version / en español](README.es.md) | [French version / en français](README.fr.md) <!-- langlinks -->
 
-**A        C++-subset-to-C        transpiler,        targeting        the
+**A  C/C++-subset-to-C  transpiler,  targeting  the
 [Vircon32](https://www.vircon32.com) fantasy console's C compiler.**
 
 `v32c++` lets  you write games and  programs for Vircon32 in  a subset of
@@ -46,10 +46,10 @@ Four audiences, one project:
 
 3. **A normal C gateway.** The Vircon32 C compiler implements a subset of
    C with various syntactical quirks (array declarations and the function
-   pointer declaration syntax, among others). Using `v32c++` as the front
-   end code parser, it will also translate normal C into the  Vircon32  C
-   dialect for compilation, minimizing the learning curve for getting the
-   development process started.
+   pointer declaration  syntax, among  others). Using  `v32c`/`v32c++` as
+   the front  end code parser, it  will also translate normal  C into the
+   Vircon32 C dialect for compilation,  minimizing the learning curve for
+   getting the development process started.
 
 It is **not** an attempt to support  all of C++ — see [Deliberately out
 of scope](#deliberately-out-of-scope).
@@ -288,13 +288,12 @@ if( mouse.pressed( v32::MouseLeft ) ) click( mouse.x(), mouse.y() );
 > or the stock emulator with  the v32io repository's patches applied. The
 > stock emulator's own *Keyboard* device is **not** a v32io keyboard.
 
-Full   documentation  —   setup,  the   API,  the   protocols,  porting
-from   the   C   library,   typing  accented   and   box   drawing
-characters,   testing   without  a   device   —   is   in
-**[`docs/V32IO.md`](docs/V32IO.md)**.  Five  ready-to-build  examples  (a
-typewriter,   a   paint   program,    a   port   monitor   for   checking
-a    setup,   a    notepad   using    both    devices,   and   a   tour   of
-every   glyph   in   the  BIOS   font   and   how   to   type   it)   are   in
+Full  documentation  — setup,  the  API,  the protocols,  porting  from
+the  C  library, typing  accented  and  box drawing  characters,  testing
+without  a device  — is  in **[`docs/V32IO.md`](docs/V32IO.md)**.  Five
+ready-to-build examples  (a typewriter, a  paint program, a  port monitor
+for  checking  a  setup,  a  notepad  using  both  devices,  and  a  tour
+of  every  glyph  in   the  BIOS  font  and  how  to   type  it)  are  in
 [`demos/cxx/v32io`](demos/cxx/v32io/README.md).
 
 ## Known limitations
@@ -493,8 +492,8 @@ v32c++ -I path/to/v32c++ -o obj/game.c game.cpp
 
 It is  silent on success, like  the Vircon32 compiler and  v32lua; errors
 and warnings go  to standard error with  the file and line,  and the exit
-status is non-zero  on any error. The manual  page (`man ./man/man1/v32c++.1`)
-describes every option in full.
+status is non-zero on any error. The manual page (`man v32c++`) describes
+every option in full.
 
 **`-vv`** sprinkles comments  into the generated `.c`  where the C++-to-C
 translation  is least  obvious  — vtables,  the  explicit `this`,  what
@@ -533,43 +532,46 @@ Each  `#texture`/`#sound`  name  becomes  a   `#define`  of  its  id  (0,
 anywhere an  integer is (`select_texture(  Background )`), and  fills the
 XML's `<textures>`/`<sounds>`  in that  order with the  extension swapped
 to  `.vtex`/`.vsnd`.  `#title`/`#version`   set  the  `<rom>`  attributes
-(otherwise "Vircon32 Program" / "1.0"). `#titleopt` (optional) sets the title
-in the optimized cart's XML, `gameOpt.xml`; without it that title is the
-cart's with ` [optimized]` appended (`--no-diff-opt-title` keeps them equal).  The XML's `<binary path>` is the
-`-o` path with `.vbin`.
+(otherwise "Vircon32  Program" / "1.0"). `#titleopt`  (optional) sets the
+title in the  optimized cart's XML, `gameOpt.xml`; without  it that title
+is the  cart's with ` [optimized]`  appended (`--no-diff-opt-title` keeps
+them equal). The XML's `<binary path>` is the `-o` path with `.vbin`.
 
-`packrom` reads every path in the XML relative to the XML itself, so by
-default the XML holds bare file names only: with `-o obj/game.c` and
-`#texture Ship "textures/ship.png"` you get `obj/game.xml` containing
-`<binary path="game.vbin" />` and `<texture path="ship.vtex" />`, i.e.
-the `.vbin`/`.vtex`/`.vsnd` files are expected beside the XML. If two
-assets end up with the same name, the first keeps it and the later one keeps
-just enough of its directories to differ: `textures/ship.png` followed by
-`textures/extra/ship.png` gives `ship.vtex` and `extra/ship.vtex` (so the
-second `.vtex` is expected in `obj/extra/`). A twin XML for the optimized
-build is written alongside (`obj/gameOpt.xml`, whose `<binary>` is
-`gameOpt.vbin`). `--xml-preserve-paths`
-instead keeps each hint's path as written
-(`textures/ship.vtex`), writes the XML into the *source file's*
-directory — or its parent, when the source is in a `src/` directory whose parent has (or, via `-o`, gets) an `obj/`, the same place the build scripts go — and makes `<binary>` the `.vbin` path relative to it.
+`packrom` reads every path  in the XML relative to the  XML itself, so by
+default  the  XML  holds  bare  file names  only:  with  `-o  obj/game.c`
+and   `#texture   Ship   "textures/ship.png"`  you   get   `obj/game.xml`
+containing `<binary  path="game.vbin" />` and  `<texture path="ship.vtex"
+/>`,  i.e.  the `.vbin`/`.vtex`/`.vsnd`  files  are  expected beside  the
+XML.  If  two  assets  end  up  with  the  same  name,  the  first  keeps
+it  and  the   later  one  keeps  just  enough  of   its  directories  to
+differ: `textures/ship.png`  followed by  `textures/extra/ship.png` gives
+`ship.vtex`  and `extra/ship.vtex`  (so  the second  `.vtex` is  expected
+in  `obj/extra/`).  A  twin  XML  for  the  optimized  build  is  written
+alongside  (`obj/gameOpt.xml`,   whose  `<binary>`   is  `gameOpt.vbin`).
+`--xml-preserve-paths`  instead   keeps  each  hint's  path   as  written
+(`textures/ship.vtex`), writes the XML into the *source file's* directory
+— or its parent, when the source  is in a `src/` directory whose parent
+has (or, via `-o`,  gets) an `obj/`, the same place  the build scripts go
+— and makes `<binary>` the `.vbin` path relative to it.
 
 ### Build scripts
 
-Whenever the XML is written, v32c++ also writes `Make.sh` (bash) and
-`Make.bat` (Windows), in the style of the Vircon32 sample projects, from the
-same information: transpile (v32c++ again, with your `-I`/`-D`/`-U`/`-b`/`-g`
-options and `--no-build-scripts`), `compile`, `assemble`, `png2vircon` for
-each `#texture`, `wav2vircon` for each `#sound`, and `packrom`. They sit next
-to the source file, or in its parent when the source is in a `src/`
-directory and that parent has (or, via `-o`, gets) an `obj/` — and every
-path in them is relative to that folder, so run them from there. Each
-script checks first that the tools it uses are in `PATH` (a missing
-`v32c++`, `compile`... stops the build with "X is needed to build"). If
-`v32opt` is found when the script runs, the optimized build — `v32opt -O3`,
-`gameOpt.vbin`, `gameOpt.xml`, `bin/gameOpt.v32` — is made too; otherwise it
-is skipped with a note. A `Make.sh`/`Make.bat` that v32c++ did not write
-is never overwritten (a warning is printed). `--no-build-scripts` turns all
-this off, as does `-x`.
+Whenever  the  XML  is  written,  v32c++  also  writes  `Make.sh`  (bash)
+and  `Make.bat`   (Windows),  in  the   style  of  the   Vircon32  sample
+projects, from the  same information: transpile (v32c++  again, with your
+`-I`/`-D`/`-U`/`-b`/`-g`  options  and `--no-build-scripts`),  `compile`,
+`assemble`,  `png2vircon`  for  each `#texture`,  `wav2vircon`  for  each
+`#sound`, and  `packrom`. They  sit next  to the source  file, or  in its
+parent when the source is in a  `src/` directory and that parent has (or,
+via `-o`, gets) an `obj/` — and  every path in them is relative to that
+folder, so run  them from there. Each script checks  first that the tools
+it uses are  in `PATH` (a missing `v32c++`, `compile`...  stops the build
+with "X is needed to build"). If  `v32opt` is found when the script runs,
+the  optimized build  —  `v32opt  -O3`, `gameOpt.vbin`,  `gameOpt.xml`,
+`bin/gameOpt.v32` — is made too; otherwise it is skipped with a note. A
+`Make.sh`/`Make.bat` that  v32c++ did not  write is never  overwritten (a
+warning is  printed). `--no-build-scripts`  turns all  this off,  as does
+`-x`.
 
 ## Output dialects
 
@@ -614,9 +616,9 @@ when it is installed).
 | [`docs/DESIGN_NOTES.md`](docs/DESIGN_NOTES.md) | internals and the full development history |
 | [`docs/TRANSPILER_REPORT.md`](docs/TRANSPILER_REPORT.md) | the gap report from the first Space Invaders port, with current status |
 
-The README and the reference documents (all but `DESIGN_NOTES.md` and
-`TRANSPILER_REPORT.md`) are also available in Spanish (`.es.md`) and French
-(`.fr.md`), and the manual pages in `man/es/` and `man/fr/`.
+The README  and the  reference documents  (all but  `DESIGN_NOTES.md` and
+`TRANSPILER_REPORT.md`)  are also  available  in  Spanish (`.es.md`)  and
+French (`.fr.md`), and the manual pages in `man/es/` and `man/fr/`.
 
 ## Project layout
 
@@ -718,20 +720,20 @@ only  v32c++'s own  files, and  then `v32tools/`  (and on  Linux /  macOS
 `Vircon32/`)  only  if nothing  else  is  left  in  it. On  Windows,  add
 `C:\Program Files\Vircon32\v32tools` to your `PATH`, as for the DevTools.
 
-**Documentation language.** By default both builds install the documents in
-every language (`README.md`, `README.es.md`, `README.fr.md`,
-`docs/V32IO.es.md`, ...) and the English manual pages plus the translated ones
-in the standard per-language trees (`man/es/` goes to
+**Documentation   language.**  By   default  both   builds  install   the
+documents in every language (`README.md`, `README.es.md`, `README.fr.md`,
+`docs/V32IO.es.md`,  ...)   and  the   English  manual  pages   plus  the
+translated ones  in the  standard per-language  trees (`man/es/`  goes to
 `/usr/local/share/man/es/man1` and `man3`, `man/fr/` to `.../fr/man1` and
-`man3`, so `man` picks the language from `LANG`). `DEST_LANG=es` or
-`DEST_LANG=fr` (`sudo make sysinstall DEST_LANG=es`, or `cmake -S . -B build
--DDEST_LANG=es`) installs only that language instead: the translated README and
-documents under those plain names (with the links between them adjusted), next
-to the documents that exist only in English (`docs/DESIGN_NOTES.md`, ...), and
-the manual pages in that language directly in `man1` and `man3`.
-`DEST_LANG=en` installs only the English documents and manual pages. The
-Vircon32 SDK's pages (`man/vircon32/`) exist only in English and are always
-installed.
+`man3`,  so `man`  picks  the language  from  `LANG`). `DEST_LANG=es`  or
+`DEST_LANG=fr`  (`sudo  make sysinstall  DEST_LANG=es`,  or  `cmake -S  .
+-B  build  -DDEST_LANG=es`)  installs  only that  language  instead:  the
+translated README and  documents under those plain names  (with the links
+between them adjusted), next to the  documents that exist only in English
+(`docs/DESIGN_NOTES.md`,  ...), and  the  manual pages  in that  language
+directly in `man1`  and `man3`. `DEST_LANG=en` installs  only the English
+documents and  manual pages.  The Vircon32 SDK's  pages (`man/vircon32/`)
+exist only in English and are always installed.
 
 `make  install`  / `make  uninstall`  instead  copy  just the  binary  to
 `~/bin`.  Installation  defaults  for  the  Makefile  build  (the  header
@@ -749,10 +751,11 @@ The   version   is   `YYYYMMDD-status`  (`-dev`   or   `-release`),   the
 same  scheme   as  v32lua,   and  lives  in   one  place:   `VERSION`  in
 [`inc/v32cxx.h`](inc/v32cxx.h),  which  `v32c++   --version`  prints.  To
 change it,  edit it there and  run `make version`, which  stamps it (with
-today's date)  into the  `.TH` header  of every  manual page  in `man/man1`
-and `man/man3` that names v32c++, and in those of `man/es/` and `man/fr/` (with
-the date in each one's language). Alias pages and pages of other projects
-(the Vircon32 SDK's, in `man/vircon32/`) are left alone, and a page already up to date is not rewritten.
+today's date)  into the `.TH` header  of every manual page  in `man/man1`
+and `man/man3` that names v32c++, and in those of `man/es/` and `man/fr/`
+(with the  date in each one's  language). Alias pages and  pages of other
+projects (the Vircon32  SDK's, in `man/vircon32/`) are left  alone, and a
+page already up to date is not rewritten.
 
 ## Releases and automated builds
 
@@ -768,12 +771,13 @@ tab, as a `test` or a `release` run (nothing runs on push). The jobs:
 | Build | Windows (x86_64, arm64), macOS (x86_64, arm64), Linux (x86_64, arm64, Raspberry Pi), and, optionally, OpenBSD and Haiku, each smoke-tested (`scripts/smoke_test.sh`) and zipped (`scripts/stage_package.sh`) |
 | Create Draft Release | for a `release` run: a draft GitHub release `v<VERSION>` with every zip |
 
-A release zip unpacks straight into `v32tools/` (`/usr/local/Vircon32/v32tools`
-or `<Program Files>/Vircon32/v32tools`): the binary, `include/v32c++/`
-(`v32/` and `libc/`) and `docs/v32c++/` with the documents and the manual
-pages in `man1/` and `man3/`, v32c++'s and the Vircon32 SDK's together
-(`man -M docs/v32c++ 3v32 string.h`). To release: set `VERSION`, run
-`make version`, commit, and start the workflow with `release`.
+A     release      zip     unpacks     straight      into     `v32tools/`
+(`/usr/local/Vircon32/v32tools` or  `<Program Files>/Vircon32/v32tools`):
+the  binary, `include/v32c++/`  (`v32/` and  `libc/`) and  `docs/v32c++/`
+with the documents and the manual  pages in `man1/` and `man3/`, v32c++'s
+and the Vircon32 SDK's together  (`man -M docs/v32c++ 3v32 string.h`). To
+release:  set  `VERSION`,  run  `make version`,  commit,  and  start  the
+workflow with `release`.
 
 ## AI Collaboration
 

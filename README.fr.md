@@ -2,7 +2,7 @@
 
 [Version anglaise / in English](README.md) | [Version espagnole / en español](README.es.md) <!-- langlinks -->
 
-**Un transpileur d'un sous-ensemble de C++ vers C, destiné au compilateur C de
+**Un transpileur d'un sous-ensemble de C/C++ vers C, destiné au compilateur C de
 la console de fantaisie [Vircon32](https://www.vircon32.com).**
 
 `v32c++` vous permet d'écrire des jeux et des programmes pour Vircon32 dans un

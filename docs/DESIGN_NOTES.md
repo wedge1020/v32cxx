@@ -1320,9 +1320,13 @@ a convention this project is locked into.
 `v32lua --version`'s own format exactly:
 ```
 v32c++ 20260914-dev
-C++ Transpiler for Vircon32 (v32c++) by Matthew Haas
+C/C++ Transpiler for Vircon32 (v32cxx) by Matthew Haas
   github: https://github.com/wedge1020/v32cxx
 ```
+(Later: the first line names the binary actually run -- `v32c++` or
+`v32c` -- and the second says "C/C++ Transpiler for Vircon32 (v32cxx)",
+v32cxx being the project name.)
+
 `--version` is deliberately long-option-only, with no `-v` short alias --
 a bare `-v` is reserved for the still-future verbosity-level flag (see
 the CLI-considerations section above), and giving `--version` a `-v`
