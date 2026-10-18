@@ -1,4 +1,4 @@
-.TH VIDEO.HPP 3v32 "October 17, 2026" "v32c++ 20261017-dev" "v32c++ Library"
+.TH VIDEO.HPP 3v32 "October 18, 2026" "v32c++ 20261018-dev" "v32c++ Library"
 .SH NAME
 v32/video.hpp \- C++ helpers for the Vircon32 GPU
 .SH SYNOPSIS

@@ -1,4 +1,4 @@
-.TH V32FILE 3v32 "October 17, 2026" "v32c++ 20261017-dev" "v32c++ Library"
+.TH V32FILE 3v32 "October 18, 2026" "v32c++ 20261018-dev" "v32c++ Library"
 .SH NAME
 v32file \- C stdio files on the Vircon32 memory card
 .SH SYNOPSIS

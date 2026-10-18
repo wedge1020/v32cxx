@@ -1,5 +1,5 @@
 '\" -*- coding: UTF-8 -*-
-.TH MATH.HPP 3v32 "17 octobre 2026" "v32c++ 20261017-dev" "Bibliothèque v32c++"
+.TH MATH.HPP 3v32 "18 octobre 2026" "v32c++ 20261018-dev" "Bibliothèque v32c++"
 .SH NOM
 v32/math.hpp \- surcharges et aides C++ pour les mathématiques de Vircon32
 .SH SYNOPSIS

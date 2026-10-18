@@ -1,5 +1,5 @@
 '\" -*- coding: UTF-8 -*-
-.TH V32TERM 3v32 "17 octobre 2026" "v32c++ 20261017-dev" "Bibliothèque v32c++"
+.TH V32TERM 3v32 "18 octobre 2026" "v32c++ 20261018-dev" "Bibliothèque v32c++"
 .SH NOM
 v32term \- un écran texte de 80\(mu24, la lecture de la manette et un clavier à l'écran
 .SH SYNOPSIS
