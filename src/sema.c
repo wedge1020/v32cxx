@@ -858,6 +858,17 @@ static char *mangle(const char *class_name, const char *method_name, const AstLi
          * read like ordinary C++ was judged more valuable here). */
         return strdup("main");
     }
+    if (class_name == NULL && strcmp(method_name, "error_handler") == 0 &&
+        (params == NULL || params->count == 0)) {
+        /* A BIOS (`-b`) must define `void error_handler()`: the Vircon32
+         * compiler looks the function up BY NAME ("function
+         * \"error_handler\" is not declared" otherwise; it also emits
+         * `call __function_error_handler` at the BIOS entry point). So,
+         * like `main`, the parameterless free function keeps its bare
+         * name instead of becoming `error_handler__void`. Overloads
+         * taking parameters, and methods, are mangled as usual. */
+        return strdup("error_handler");
+    }
     if (class_name == NULL && g_c_mode) {
         /* C has no overloading: a function's name is its name. */
         return strdup(method_name);
