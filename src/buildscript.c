@@ -65,6 +65,7 @@ typedef struct { char *in; char *out; } Asset;
 
 typedef struct {
     const char *prog;
+    int    bios;               /* -b: compile and assemble as a BIOS */
     char  *script_dir;
     char  *src, *c, *asm_, *vbin, *asm_opt, *vbin_opt;
     char  *xml, *xml_opt, *rom, *rom_opt;
@@ -185,15 +186,15 @@ static void write_sh(FILE *f, const Plan *pl) {
     fputc(' ', f); put_sh(f, pl->src); fputs(" || abort_build\n", f);
 
     sh_section(f, "Compile the C code");
-    fputs("compile ", f); put_sh(f, pl->c); fputs(" -o ", f); put_sh(f, pl->asm_);
+    fputs(pl->bios ? "compile -b " : "compile ", f); put_sh(f, pl->c); fputs(" -o ", f); put_sh(f, pl->asm_);
     fputs(" || abort_build\n", f);
     fputs("if [ \"$HAVE_OPT\" = 1 ]; then\n    v32opt -O3 ", f); put_sh(f, pl->asm_);
     fputs(" -o ", f); put_sh(f, pl->asm_opt); fputs(" || abort_build\nfi\n", f);
 
     sh_section(f, "Assemble the ASM code");
-    fputs("assemble ", f); put_sh(f, pl->asm_); fputs(" -o ", f); put_sh(f, pl->vbin);
+    fputs(pl->bios ? "assemble -b " : "assemble ", f); put_sh(f, pl->asm_); fputs(" -o ", f); put_sh(f, pl->vbin);
     fputs(" || abort_build\n", f);
-    fputs("if [ \"$HAVE_OPT\" = 1 ]; then\n    assemble ", f); put_sh(f, pl->asm_opt);
+    fputs(pl->bios ? "if [ \"$HAVE_OPT\" = 1 ]; then\n    assemble -b " : "if [ \"$HAVE_OPT\" = 1 ]; then\n    assemble ", f); put_sh(f, pl->asm_opt);
     fputs(" -o ", f); put_sh(f, pl->vbin_opt); fputs(" || abort_build\nfi\n", f);
 
     if (pl->ntex) {
@@ -269,15 +270,15 @@ static void write_bat(FILE *f, const Plan *pl) {
     fputc(' ', f); put_bat_path(f, pl->src); fputs(" || goto :failed\r\n", f);
 
     bat_section(f, "Compile the C code");
-    fputs("compile ", f); put_bat_path(f, pl->c); fputs(" -o ", f); put_bat_path(f, pl->asm_);
+    fputs(pl->bios ? "compile -b " : "compile ", f); put_bat_path(f, pl->c); fputs(" -o ", f); put_bat_path(f, pl->asm_);
     fputs(" || goto :failed\r\n", f);
     fputs("if \"%HAVE_OPT%\"==\"1\" v32opt -O3 ", f); put_bat_path(f, pl->asm_);
     fputs(" -o ", f); put_bat_path(f, pl->asm_opt); fputs(" || goto :failed\r\n", f);
 
     bat_section(f, "Assemble the ASM code");
-    fputs("assemble ", f); put_bat_path(f, pl->asm_); fputs(" -o ", f); put_bat_path(f, pl->vbin);
+    fputs(pl->bios ? "assemble -b " : "assemble ", f); put_bat_path(f, pl->asm_); fputs(" -o ", f); put_bat_path(f, pl->vbin);
     fputs(" || goto :failed\r\n", f);
-    fputs("if \"%HAVE_OPT%\"==\"1\" assemble ", f); put_bat_path(f, pl->asm_opt);
+    fputs(pl->bios ? "if \"%HAVE_OPT%\"==\"1\" assemble -b " : "if \"%HAVE_OPT%\"==\"1\" assemble ", f); put_bat_path(f, pl->asm_opt);
     fputs(" -o ", f); put_bat_path(f, pl->vbin_opt); fputs(" || goto :failed\r\n", f);
 
     if (pl->ntex) {
@@ -373,10 +374,10 @@ void emit_build_scripts(const char *prog, const char *output_filename, const cha
                         int is_bios, int preserve_paths,
                         const char *const *args, const int *arg_is_path,
                         int arg_count) {
-    (void)is_bios;   /* -b arrives through `args`; the pack step is the same */
     Plan pl;
     memset(&pl, 0, sizeof pl);
     pl.prog = prog;
+    pl.bios = is_bios;   /* -b also arrives through `args` (for the transpile step) */
     pl.script_dir = build_script_dir(output_filename, source_filename);
     char *out_dir = path_dirname(output_filename);
 

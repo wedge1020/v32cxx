@@ -662,6 +662,24 @@ int  main (int  argc, char **argv)
                         for (int i = 1; i < argc; i++) {
                             const char *a = orig_argv[i];
                             if (a == input_filename) continue;
+                            /* A bundle of short flags such as "-bgo" (or "-vvx"): drop
+                             * the -o/-x/-v parts, keep the rest; "o" takes the next
+                             * argument (or the rest of the bundle) with it. */
+                            if (a[0] == '-' && a[1] != '\0' && a[1] != '-' && a[2] != '\0' &&
+                                strspn(a + 1, "cbgxvo") == strlen(a + 1) && strpbrk(a + 1, "xvo") != NULL &&
+                                !(a[1] == 'v' && strspn(a + 1, "v") == strlen(a + 1))) {
+                                char *kept = malloc(strlen(a) + 1);
+                                size_t k = 0;
+                                kept[k++] = '-';
+                                for (const char *c = a + 1; *c; c++) {
+                                    if (*c == 'o') { if (c[1] == '\0') i++; break; }
+                                    if (*c == 'x' || *c == 'v') continue;
+                                    kept[k++] = *c;
+                                }
+                                kept[k] = '\0';
+                                if (k > 1) { sargs[n] = kept; spath[n++] = 0; } else free(kept);
+                                continue;
+                            }
                             if (strcmp(a, "-o") == 0) { i++; continue; }
                             if (strncmp(a, "-o", 2) == 0) continue;
                             if (strcmp(a, "-x") == 0 || strcmp(a, "--no-xml") == 0 ||
