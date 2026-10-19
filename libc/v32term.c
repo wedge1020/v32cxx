@@ -8,6 +8,8 @@
 
 /* ---- the screen ----------------------------------------------------------- */
 
+int v32term_paper = 0xFF000000;             /* see v32term.h */
+
 static int v32term_want[V32TERM_CELLS];     /* what should be on screen */
 static int v32term_shown[V32TERM_CELLS];    /* what is; -1 = unknown */
 static int v32term_ready = 0;
@@ -275,7 +277,7 @@ void v32term_flush(void)
                 end_frame();
             ch = cell & V32TERM_CHAR;
             ink = v32term_palette[(cell >> 12) & 15];
-            paper = color_black;
+            paper = v32term_paper;
             if (cell & V32TERM_REVERSE) {
                 swap = ink;
                 ink = paper;

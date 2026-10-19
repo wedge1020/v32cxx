@@ -28,6 +28,11 @@
 #define V32TERM_CELL_W 8
 #define V32TERM_CELL_H 15
 
+/* The colour a cell's background is painted in (the paper): black unless a
+ * program sets it, as BASIC's COLOR does. The macro says this library has it. */
+#define V32TERM_PAPER  1
+extern int v32term_paper;
+
 /* A cell is one word: the character, plus attribute bits. */
 #define V32TERM_CHAR    0x00FF
 #define V32TERM_REVERSE 0x0100              /* black on colour */
