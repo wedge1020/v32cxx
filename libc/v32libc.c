@@ -205,12 +205,10 @@ int atoi(char *s)
     return negative ? -n : n;
 }
 
-#ifndef MATH_H
-int abs(int n)
+int v32_abs(int n)
 {
     return n < 0 ? -n : n;
 }
-#endif
 
 char *getenv(char *name)
 {

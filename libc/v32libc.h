@@ -116,9 +116,16 @@ void v32_free(void *ptr);
 #define free(ptr)               v32_free(ptr)
 
 int atoi(char *s);
-#ifndef MATH_H
-int abs(int n);
-#endif
+/* abs(): the SDK's math.h defines an abs() of its own. Defining another
+ * one here would collide with it -- and whether the two meet depends on
+ * include order and on whether v32c++ can read math.h at all -- so this
+ * library's version has a private name, like malloc and strcat above:
+ * a program's abs() calls reach v32_abs() whether or not it includes
+ * math.h, in either order, with nothing to define or pass on the command
+ * line. (Do not -D MATH_H: v32c++ writes -D definitions ahead of the
+ * generated program's #includes, so math.h would skip itself.) */
+int v32_abs(int n);
+#define abs(n)                  v32_abs(n)
 char *getenv(char *name);
 void abort(void);
 

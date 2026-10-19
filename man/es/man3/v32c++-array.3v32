@@ -1,5 +1,5 @@
 '\" -*- coding: UTF-8 -*-
-.TH V32C++\-ARRAY 3v32 "18 de octubre de 2026" "v32c++ 20261018-dev" "Biblioteca v32c++"
+.TH V32C++\-ARRAY 3v32 "19 de octubre de 2026" "v32c++ 20261019-dev" "Biblioteca v32c++"
 .SH NOMBRE
 v32c++\-array \- std::array en v32c++, un contenedor de tamaño fijo
 .SH SINOPSIS

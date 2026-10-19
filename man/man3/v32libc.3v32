@@ -1,4 +1,4 @@
-.TH V32LIBC 3v32 "October 18, 2026" "v32c++ 20261018-dev" "v32c++ Library"
+.TH V32LIBC 3v32 "October 19, 2026" "v32c++ 20261019-dev" "v32c++ Library"
 .SH NAME
 v32libc \- standard C library functions for C programs transpiled by v32c++
 .SH SYNOPSIS
@@ -178,11 +178,13 @@ Search a string.
 Character classes missing from the SDK (ASCII).
 .TP
 .BR atoi ", " abs
-Conversion and absolute value
-.RB ( abs
-only when the SDK's
+Conversion and absolute value.
+.B abs
+is a macro for the library's own
+.BR v32_abs ,
+so it never collides with the
 .I math.h
-is not included).
+of the SDK, included or not.
 .SH ERRORS AND SIGNALS
 .TP
 .B errno

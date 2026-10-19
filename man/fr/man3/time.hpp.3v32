@@ -1,5 +1,5 @@
 '\" -*- coding: UTF-8 -*-
-.TH TIME.HPP 3v32 "18 octobre 2026" "v32c++ 20261018-dev" "Bibliothèque v32c++"
+.TH TIME.HPP 3v32 "19 octobre 2026" "v32c++ 20261019-dev" "Bibliothèque v32c++"
 .SH NOM
 v32/time.hpp \- aides C++ pour la temporisation, la date et l'heure de Vircon32
 .SH SYNOPSIS

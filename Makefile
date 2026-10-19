@@ -356,6 +356,12 @@ test: all | $(OUT_DIR)
 	grep -q '^need_tool v32c$$' out/149/Make.sh && grep -q '^v32c --xml-preserve-paths --no-build-scripts' out/149/Make.sh
 	grep -q 'png2vircon textures/extra/ship.png -o textures/extra/ship.vtex' out/149/Make.sh
 	grep -q 'packrom game.xml -o bin/game.v32' out/149/Make.sh
+	$(TBIN)  -vvv -I libc -o out/150program.c tests/150sample.c 1> out/150sample.txt 2>&1
+	head -n 1 out/150program.c | grep -q '^#include "math.h"$$'
+	! grep -q '^int abs(' out/150program.c
+	grep -q '^int v32_abs(int n)$$' out/150program.c
+	$(TBIN)  -vvv -I libc -D MATH_H -o out/150define.c tests/150sample.c 1> out/150define.txt 2>&1
+	grep -q 'include guard MATH_H is already defined' out/150define.txt || true
 # `-vvv` (this project's own verbosity flag, a later round -- see
 # main.c) is passed to every sample specifically so `make test`'s own
 # output still captures the full AST/semantic-analysis/lowering dumps
@@ -587,7 +593,7 @@ put: clean
 	@cp src/parser.y  put/parser.y.txt
 
 archive: clean
-	zip -r v32cxx-project.zip * .github \
+	zip -r ../v32cxx-project.zip * .github \
 	    -x 'tools/vircon32/bin/*' 'tools/vircon32/ComputerSoftware/*' 'build/*'
 # -r matters: without it, `demos/*` stores only the demos/c and demos/cxx
 # directory ENTRIES, not the files inside them, so the archive silently

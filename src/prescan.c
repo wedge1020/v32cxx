@@ -607,6 +607,7 @@ static int expand_file_mode(const char *path, FILE *out,
     char *line;
     int first, nphys;
     int in_block_comment = 0;
+    int saw_directive = 0;
     int rc = 0;
 
     while (rc == 0 && (line = read_logical(&reader, &first, &nphys)) != NULL) {
@@ -633,6 +634,8 @@ static int expand_file_mode(const char *path, FILE *out,
 
         const char *rest;
         char *word = directive_word(hash, &rest);
+        int first_directive = !saw_directive;
+        saw_directive = 1;
         int consumed = 1;       /* default: the line does not reach the output */
         char *emit_text = NULL; /* what reaches it otherwise (NULL: `line`) */
         int extra_lines = 0;    /* lines emit_text adds beyond the one it replaces */
@@ -650,6 +653,18 @@ static int expand_file_mode(const char *path, FILE *out,
                     int defined = macro_lookup(name) != NULL ||
                                   strcmp(name, "__FILE__") == 0 || strcmp(name, "__LINE__") == 0;
                     value = (word[2] == 'd') ? defined : !defined;
+                    /* A pass-through header whose very first directive is
+                     * `#ifndef GUARD` and whose guard is already defined:
+                     * the header is skipped here, and -- because a -D or
+                     * #define reaches the generated C ahead of the
+                     * #include -- by the Vircon32 C compiler too, so
+                     * nothing in it gets declared. Say so. */
+                    if (harvest && first_directive && conds.count == 0 &&
+                        word[2] == 'n' && !value)
+                        fprintf(stderr, "%s:%d: warning: include guard %s is already defined, so "
+                                "this header is skipped -- by the Vircon32 C compiler too, because "
+                                "a -D or #define of it reaches the generated C ahead of the "
+                                "#include. Remove that definition.\n", path, lineno, name);
                     free(name);
                 }
             }

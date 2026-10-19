@@ -1,5 +1,5 @@
 '\" -*- coding: UTF-8 -*-
-.TH V32LIBC 3v32 "18 octobre 2026" "v32c++ 20261018-dev" "Bibliothèque v32c++"
+.TH V32LIBC 3v32 "19 octobre 2026" "v32c++ 20261019-dev" "Bibliothèque v32c++"
 .SH NOM
 v32libc \- fonctions de la bibliothèque C standard pour les programmes C transpilés par v32c++
 .SH SYNOPSIS
@@ -177,11 +177,13 @@ Recherchent dans une chaîne.
 Classes de caractères absentes du SDK (ASCII).
 .TP
 .BR atoi ", " abs
-Conversion et valeur absolue
-.RB ( abs
-seulement quand le
+Conversion et valeur absolue.
+.B abs
+est une macro pour
+.B v32_abs
+(la fonction propre à la bibliothèque) : elle n'entre jamais en conflit avec le
 .I math.h
-du SDK n'est pas inclus).
+du SDK, inclus ou non.
 .SH ERREURS ET SIGNAUX
 .TP
 .B errno

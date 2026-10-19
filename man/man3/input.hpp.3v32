@@ -1,4 +1,4 @@
-.TH INPUT.HPP 3v32 "October 18, 2026" "v32c++ 20261018-dev" "v32c++ Library"
+.TH INPUT.HPP 3v32 "October 19, 2026" "v32c++ 20261019-dev" "v32c++ Library"
 .SH NAME
 v32/input.hpp \- C++ helpers for the Vircon32 gamepads
 .SH SYNOPSIS
