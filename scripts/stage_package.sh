@@ -73,18 +73,26 @@ cp libc/sys/*.h             "$dest/include/v32c++/libc/sys/"
 cp README*.md               "$dest/docs/v32c++/"
 cp docs/*.md                "$dest/docs/v32c++/"
 
+# A page name cannot hold "::" on Windows, so the alias pages for the v32::
+# names are stored as v32__<name>; on a system that can have the colons
+# they are packaged under the real name (man 3v32 v32::clamp).
+case "$(uname -s)" in
+    MINGW*|MSYS*|CYGWIN*|Windows*) real_name() { echo "$1"; } ;;
+    *) real_name() { echo "$1" | sed 's/^v32__/v32::/'; } ;;
+esac
+
 # v32c++'s own pages, then the Vircon32 SDK's (man/vircon32/): same
 # man1 / man3, no page name is shared between the two sets.
 for set in man man/vircon32; do
     for page in "$set"/man1/*.1;     do [ -f "$page" ] && cp "$page" "$dest/docs/v32c++/man1/"; done
-    for page in "$set"/man3/*.3v32;  do [ -f "$page" ] && cp "$page" "$dest/docs/v32c++/man3/"; done
+    for page in "$set"/man3/*.3v32;  do [ -f "$page" ] && cp "$page" "$dest/docs/v32c++/man3/$(real_name "${page##*/}")"; done
 done
 
 # The Spanish and French pages: v32c++'s own only, in their own man roots
 # (their alias pages resolve relative to that root).
 for lang in es fr; do
     for page in man/$lang/man1/*.1;    do [ -f "$page" ] && cp "$page" "$dest/docs/v32c++/$lang/man1/"; done
-    for page in man/$lang/man3/*.3v32; do [ -f "$page" ] && cp "$page" "$dest/docs/v32c++/$lang/man3/"; done
+    for page in man/$lang/man3/*.3v32; do [ -f "$page" ] && cp "$page" "$dest/docs/v32c++/$lang/man3/$(real_name "${page##*/}")"; done
 done
 
 # Sanity: the pieces a package is useless without.

@@ -251,6 +251,10 @@ jobs:
             [ -f "$MAN/$page" ] || { echo "::error::$page was not installed"; exit 1; }
           done
           [ "$(readlink "$MAN/man3/ftoa.3v32.gz")" = "string.h.3v32.gz" ] || { echo "::error::ftoa(3v32) is not a link to string.h.3v32.gz"; exit 1; }
+          # the v32__<name> alias pages (Windows cannot hold "::" in a file
+          # name) are installed under their real names, v32::<name>
+          [ "$(readlink "$MAN/man3/v32::clamp.3v32.gz")" = "math.hpp.3v32.gz" ] || { echo "::error::v32::clamp(3v32) is not a link to math.hpp.3v32.gz"; exit 1; }
+          ls "$MAN"/man3/v32__* >/dev/null 2>&1 && { echo "::error::a v32__ page name was installed unchanged"; exit 1; }
 
           # the default install (DEST_LANG=all) also carries es and fr
           for lang in es fr; do

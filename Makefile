@@ -495,6 +495,10 @@ uninstall:
 # DEST_LANG=es|fr|en|all (above) picks the documentation language: by default
 # everything is installed, `sudo make sysinstall DEST_LANG=es` only Spanish.
 #
+# The alias pages v32__<name>.3v32 (a file name cannot hold "::" on Windows) are
+# installed under their real names, v32::<name>.3v32, so `man 3v32 v32::clamp`
+# works; see INSTALL_MAN below.
+#
 # Manual pages are installed gzip -9'd (page.3v32.gz), mode 0644. An alias
 # page (a one-line `.so man3/<page>`) becomes a symbolic link to its
 # target's .gz instead -- what Debian's dh_installman does -- since a .so
@@ -526,7 +530,8 @@ define INSTALL_MAN
 	@umask 022; for f in $(1); do \
 	    case "$$f" in *.1) sec=man1 ;; *) sec=man3 ;; esac; \
 	    install -d "$(2)/$$sec"; chmod go+rx "$(2)" "$(2)/$$sec"; \
-	    dest="$(2)/$$sec/$${f##*/}"; \
+	    n=$${f##*/}; case "$$n" in v32__*) n="v32::$${n#v32__}" ;; esac; \
+	    dest="$(2)/$$sec/$$n"; \
 	    rm -f "$$dest" "$$dest.gz"; \
 	    if head -n 1 "$$f" | grep -q '^\.so '; then \
 	        target=`sed -n '1s|^\.so [^/]*/||p' "$$f"`; \
@@ -568,8 +573,9 @@ sysuninstall:
 	    case "$$f" in man/es/*) root="$(MANROOT)/es"; rootplain="$(MANROOT)" ;; \
 	                  man/fr/*) root="$(MANROOT)/fr"; rootplain="$(MANROOT)" ;; \
 	                  *) root="$(MANROOT)"; rootplain="" ;; esac; \
+	    n=$${f##*/}; m=$$n; case "$$n" in v32__*) m="v32::$${n#v32__}" ;; esac; \
 	    for r in $$root $$rootplain; do \
-	        rm -f "$$r/$$sec/$${f##*/}" "$$r/$$sec/$${f##*/}.gz"; \
+	        rm -f "$$r/$$sec/$$n" "$$r/$$sec/$$n.gz" "$$r/$$sec/$$m" "$$r/$$sec/$$m.gz"; \
 	    done; \
 	done
 	-@for d in $(MANROOT)/es/man1 $(MANROOT)/es/man3 $(MANROOT)/es $(MANROOT)/fr/man1 $(MANROOT)/fr/man3 $(MANROOT)/fr; do \

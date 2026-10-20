@@ -10,7 +10,7 @@
 - **Output you can read and debug.** `-vv` explains the generated C as it goes, `-g` writes a C-line to C++-line map, and `--target=standard` emits portable C.
 - **Documented.** Manual pages for the tool and every header, and the README and reference documents in English, Spanish and French.
 - **Checked against the real thing.** `make realcheck` runs the output of 117 test programs through the official Vircon32 compiler and assembler, and boots 48 self-checking programs on a headless console.
-- **Demos.** A Tempest-style tube shooter, Space Invaders++, a Star Raiders-style game, Rogue, and keyboard and mouse examples.
+- **Demos.** A Tempest-style tube shooter, Space Invaders++, a Star Raiders-style game, Spy vs Spy in plain C, Rogue, and keyboard and mouse examples.
 
 ## Downloads
 

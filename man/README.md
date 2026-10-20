@@ -33,7 +33,7 @@ console core.
 | `v32curses.3v32` | curses |
 
 Plus  alias   pages  (`.so`)  for   every  `v32::`  class   and  function
-(`man  v32::Keyboard`, `man  v32::clamp`) and  every `v32_`,  `v32term_`,
+(`man  v32::Keyboard`, `man  v32::clamp`). In the repository they are named `v32__Keyboard.3v32` and so on, because Windows cannot have `::` in a file name; the install steps and the Linux, macOS and BSD packages use the real names) and  every `v32_`,  `v32term_`,
 `v32pad_`, `v32osk_`  and `v32file_`  name. Standard  C and  curses names
 (`printf`, `fopen`, `initscr`,  ...) have no alias, so  they never shadow
 the system's pages.
