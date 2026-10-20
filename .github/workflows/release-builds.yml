@@ -307,13 +307,13 @@ jobs:
             arch: x86_64
             os-runner: windows-latest
             msystem: UCRT64
-            msys-packages: mingw-w64-ucrt-x86_64-gcc mingw-w64-ucrt-x86_64-make zip unzip
+            msys-packages: mingw-w64-ucrt-x86_64-gcc mingw-w64-ucrt-x86_64-make zip unzip diffutils
             smoke: true
           - os: windows
             arch: arm64
             os-runner: windows-11-arm
             msystem: CLANGARM64
-            msys-packages: mingw-w64-clang-aarch64-clang make zip unzip
+            msys-packages: mingw-w64-clang-aarch64-clang make zip unzip diffutils
             smoke: true
 
           # macOS Targets (macos-latest is an Apple Silicon runner; the
@@ -391,6 +391,29 @@ jobs:
           msystem: ${{ matrix.msystem }}
           update: true
           install: ${{ matrix.msys-packages }}
+      # The Windows jobs run in MSYS2's bash (the default shell above), and
+      # only what the `install:` list asked for is certain to be there: a
+      # step that needs a tool that was not installed (cmp, unzip, ...) fails
+      # with "command not found" in the middle of the job. This looks for
+      # every tool the later steps and scripts use (the Makefile,
+      # scripts/stage_package.sh, scripts/smoke_test.sh), installs any that
+      # is missing with pacman, and stops here, naming it, if one still is.
+      - name: Check the MSYS2 Tools (Windows)
+        if: matrix.os == 'windows'
+        run: |
+          NEED="zip:zip unzip:unzip cmp:diffutils diff:diffutils sed:sed grep:grep find:findutils sort:coreutils head:coreutils tr:coreutils wc:coreutils date:coreutils mktemp:coreutils uname:coreutils cp:coreutils ls:coreutils"
+          PKGS=""
+          for pair in $NEED; do
+            command -v "${pair%%:*}" >/dev/null 2>&1 || { echo "missing: ${pair%%:*} (package ${pair#*:})"; PKGS="$PKGS ${pair#*:}"; }
+          done
+          if [ -n "$PKGS" ]; then
+            pacman -S --noconfirm --needed $PKGS
+          fi
+          STILL=0
+          for pair in $NEED; do
+            command -v "${pair%%:*}" >/dev/null 2>&1 || { echo "::error::${pair%%:*} is not available in the MSYS2 shell"; STILL=1; }
+          done
+          [ "$STILL" = 0 ]
       - name: Setup Linux ARM Cross-Compilers
         if: matrix.os == 'linux'
         shell: bash
@@ -514,7 +537,8 @@ jobs:
           cd package
           zip -r "../$ZIP_NAME" ./*
           cd ..
-          unzip -l "$ZIP_NAME"
+          # (only a listing for the log: not worth failing the job over)
+          unzip -l "$ZIP_NAME" || zip -sf "$ZIP_NAME" || true
 
           echo "FINAL_ZIP_NAME=$ZIP_NAME" >> $GITHUB_ENV
 
