@@ -70,6 +70,9 @@ which v32c++ almost always works around.
   manual (`workflow_dispatch`) only: a `release` run builds every platform's zip and creates the
   GitHub release `v<VERSION>` (a draft, unless `publish_release` is ticked) with the zips, a
   `SHA256SUMS.txt` and the text of `.github/release-notes.md`; update that text for each release.
+  Man page names never contain `::` (Windows cannot check such a file out): the `v32::X` alias
+  pages are stored as `man*/man3/v32__X.3v32` and the Makefile, CMake and `stage_package.sh`
+  install them as `v32::X` on Unix.
 - Docs: `README.md` (features, limits), `docs/VIRCON32_QUIRKS.md`,
   `docs/C_INPUT.md`, `docs/V32IO.md`, `docs/STRING.md`, `docs/GENERICS.md`,
   `docs/INLINE_ASSEMBLY_SUPPORT.md`, `docs/NATIVE_PASSTHROUGH.md`;
