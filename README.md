@@ -1,9 +1,12 @@
-# v32c/v32c++
+# v32cxx: C/C++ Transpiler for Vircon32
 
 [Spanish version / en español](README.es.md) | [French version / en français](README.fr.md) <!-- langlinks -->
 
 **A  C/C++-subset-to-C  transpiler,  targeting  the
 [Vircon32](https://www.vircon32.com) fantasy console's C compiler.**
+
+The project is **v32cxx**; it builds two programs, `v32c++` (C++ or C input)
+and `v32c` (the same program, named for C input).
 
 `v32c++` lets  you write games and  programs for Vircon32 in  a subset of
 C++  —  classes,  inheritance, constructors  and  destructors,  virtual
@@ -18,9 +21,10 @@ everything Vircon32's own C dialect does differently.
 > **Status: functional.** The whole  pipeline — preprocessing, parsing,
 > semantic analysis,  lowering and code  generation — works end  to end
 > and is  checked against the  **real** Vircon32 compiler,  assembler and
-> console (`make  realcheck`: 96  programs built  into cartridges,  30 of
+> console (`make  realcheck`: 117  programs compiled  and assembled,  48 of
 > them self-checking  at run time  on a headless console).  Five sizeable
-> demos (three C++ games, and a port  of Rogue) build with it. See [Known
+> demos (three C++ games, a port of Rogue and a plain-C Spy vs Spy) build
+> with it. See [Known
 > limitations](#known-limitations)  for the  honest  picture  of what  is
 > missing.
 
@@ -29,7 +33,7 @@ everything Vircon32's own C dialect does differently.
 Four audiences, one project:
 
 0. **A historical exploration.** The first C++ implementation  (`cfront`)
-   was a transpiler the operates in similar fashion.  Undertaking such an
+   was a transpiler that operates in similar fashion.  Undertaking such an
    endeavour has been quite interesting,  revealing patterns along with a
    number of considerations that might not otherwise have been exposed.
 
@@ -381,7 +385,10 @@ Optionally:
   bison 2.3, frozen  for licensing reasons: `brew install  bison` and put
   it first on your `PATH`.)
 
-Built and  tested on Linux  and macOS. For  Windows (MinGW /  MSYS2), the
+Built and  tested on Linux  and macOS; the release  workflow (see [Releases
+and automated builds](#releases-and-automated-builds)) also builds and smoke-
+tests it on Windows (x86_64 and arm64), Raspberry Pi, and, as optional extras,
+OpenBSD and Haiku. For  Windows (MinGW /  MSYS2), the
 few  POSIX  calls the  source  needs  (`realpath`, `getline`,  `strndup`,
 `tmpfile`, the `PATH`  separator) go through `src/compat.c`,  which has a
 Windows branch for each.
@@ -676,6 +683,12 @@ man/            man1/v32c++.1, the manual page (`man ./man/man1/v32c++.1`);
                 `man -M man/vircon32 3v32 string.h`)
 CMakeLists.txt  the CMake build, install and packaging (see "With CMake")
 cmake/          cmake_uninstall.cmake.in, for CMake's `uninstall` target
+scripts/        smoke_test.sh and stage_package.sh (the release workflow's
+                checks and package layout), install_docs.sh (documentation
+                install, for DEST_LANG)
+.github/        workflows/release-builds.yml, the build and release workflow;
+                release-notes.md, the release page text it publishes
+AGENTS.md       notes for AI coding agents working on the project
 tools/
   embed-header.sh   regenerates src/stdstring.c from lib/string
   vircon32/         build-tools.sh (the real Vircon32 toolchain and the
@@ -697,7 +710,7 @@ the  community  tools share  (v32opt's  files,  and v32lua's  headers  in
 | man pages (v32c++'s, and the Vircon32 SDK's from `man/vircon32/`, side by side) | `/usr/local/share/man/man1/*.1.gz`, `/usr/local/share/man/man3/*.3v32.gz` (gzipped; aliases are symbolic links) | `...\v32tools\docs\v32c++\man1`, `...\man3` |
 | C++ headers (`v32/`) | `/usr/local/Vircon32/v32tools/include/v32c++/v32` | `...\v32tools\include\v32c++\v32` |
 | C library (`libc/`) | `/usr/local/Vircon32/v32tools/include/v32c++/libc` | `...\v32tools\include\v32c++\libc` |
-| documentation | `/usr/local/Vircon32/v32tools/docs/v32c++` (CMake) | `...\v32tools\docs\v32c++` |
+| documentation | `/usr/local/Vircon32/v32tools/docs/v32c++` | `...\v32tools\docs\v32c++` |
 
 Either build does it:
 
@@ -769,15 +782,18 @@ tab, as a `test` or a `release` run (nothing runs on push). The jobs:
 | Test Against the Vircon32 Toolchain | `make realcheck` (above), with the toolchain cached between runs |
 | CMake Build, Test and Install | configure, build, `ctest`, then `cmake --install` into a scratch directory, checking the binary, headers and every manual page, gzipped, aliases as links (Linux and macOS) |
 | Build | Windows (x86_64, arm64), macOS (x86_64, arm64), Linux (x86_64, arm64, Raspberry Pi), and, optionally, OpenBSD and Haiku, each smoke-tested (`scripts/smoke_test.sh`) and zipped (`scripts/stage_package.sh`) |
-| Create Draft Release | for a `release` run: a draft GitHub release `v<VERSION>` with every zip |
+| Release | for a `release` run: a GitHub release `v<VERSION>` for the commit that was built, with every zip, a `SHA256SUMS.txt`, and the text of [`.github/release-notes.md`](.github/release-notes.md). It is left as a draft to review and publish by hand, unless the run was started with `publish_release` ticked, which publishes it at once; a `-dev` version is marked a pre-release |
 
 A     release      zip     unpacks     straight      into     `v32tools/`
 (`/usr/local/Vircon32/v32tools` or  `<Program Files>/Vircon32/v32tools`):
 the  binary, `include/v32c++/`  (`v32/` and  `libc/`) and  `docs/v32c++/`
 with the documents and the manual  pages in `man1/` and `man3/`, v32c++'s
 and the Vircon32 SDK's together  (`man -M docs/v32c++ 3v32 string.h`). To
-release:  set  `VERSION`,  run  `make version`,  commit,  and  start  the
-workflow with `release`.
+release:  set  `VERSION`,  run  `make version`,  update  the  text  in
+`.github/release-notes.md`  (`@VERSION@`  in it  becomes  the  version),
+commit, and start the workflow with `release`; then review the draft on
+the Releases page and press **Publish release** (or tick `publish_release`
+when starting the workflow, to skip that step).
 
 ## AI Collaboration
 

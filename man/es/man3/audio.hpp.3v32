@@ -1,5 +1,5 @@
 '\" -*- coding: UTF-8 -*-
-.TH AUDIO.HPP 3v32 "19 de octubre de 2026" "v32c++ 20261019-dev" "Biblioteca v32c++"
+.TH AUDIO.HPP 3v32 "20 de octubre de 2026" "v32c++ 20261020-release" "Biblioteca v32c++"
 .SH NOMBRE
 v32/audio.hpp \- ayudas de C++ para la SPU de Vircon32: canales y sonidos
 .SH SINOPSIS

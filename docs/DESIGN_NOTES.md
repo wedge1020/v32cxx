@@ -8027,7 +8027,7 @@ with most of the usual members, `+`, comparisons, `to_string`/`stoi`,
 and conversion from literals. It holds its characters in the object
 itself, so it copies by value correctly, and truncates at a fixed
 capacity (63 characters unless `V32_STRING_CAPACITY` says otherwise).
-See [`docs/STRING.md`](docs/STRING.md).
+See [`docs/STRING.md`](STRING.md).
 
 **C input.** A file named `.c` is transpiled as C rather than C++:
 the program's own `.h`/`.c` includes are expanded, struct tags get
@@ -8036,7 +8036,7 @@ their own namespace, prototypes that say less than the definition
 work, the null pointer is 0, and `main(argc, argv)` is accepted. With
 the small C library and curses in `libc/`, this is enough to build the
 Unix game Rogue from its unmodified sources (`demos/c/rogue`). See
-[`docs/C_INPUT.md`](docs/C_INPUT.md).
+[`docs/C_INPUT.md`](C_INPUT.md).
 
 **`auto`** works for local variables (`auto it = v.begin();`) and in the
 range-based `for` (`for (auto &e : enemies)`).
@@ -8046,7 +8046,7 @@ transpiler-level generics: not templates, but two fixed forms the
 transpiler expands into one ordinary class per element type
 (`array_Enemy_8`, `vector_Enemy`), with the usual members and
 STL-compatible spelling. `#include <array>` / `#include <vector>` switch
-them on. See [`docs/GENERICS.md`](docs/GENERICS.md) for what is
+them on. See [`docs/GENERICS.md`](GENERICS.md) for what is
 supported, how it works and the known gaps (a vector treats its elements
 as raw memory). Their accessors (`v[i]`, `v.size()`, ...) are written in
 place rather than called, and range-based `for` (`for (Enemy &e :
@@ -8155,7 +8155,7 @@ compiler's preprocessor would, so the parser sees fully expanded source:
   `-I` directories. Both then fall back to `$V32CXX_INCLUDE` (a
   colon-separated list) and finally the installed header directory,
   `/usr/local/Vircon32/v32c++/include` by default (see
-  [`inc/config.h`](inc/config.h)). `#pragma once` is honored, and an
+  [`inc/config.h`](../inc/config.h)). `#pragma once` is honored, and an
   include cycle without it is an error. `.h` includes pass through to the
   generated C for the Vircon32 C compiler, once each.
 - `#define` and `#undef`, object-like and function-like, with `#`
@@ -8178,7 +8178,7 @@ compiler's preprocessor would, so the parser sees fully expanded source:
   `include/` folder next to the Vircon32 `compile` on your `PATH` (the
   same folder the real compiler uses), then
   `/usr/local/Vircon32/DevTools/include` (the DevTools' default
-  install; see [`inc/config.h`](inc/config.h)). `-v` lists the folders
+  install; see [`inc/config.h`](../inc/config.h)). `-v` lists the folders
   searched. A header found nowhere passes through silently, as before.
 
 Multi-file projects work the usual way: headers in an `inc/` folder
@@ -8254,7 +8254,7 @@ class, struct, or typedef is an error. A native may be declared inside
 a namespace. The name is still emitted bare, since that's what the C
 header defines. The current limit: v32c++ source can hold a pointer to
 a native but can't create one, so the storage must come from the C
-side. See [`docs/NATIVE_PASSTHROUGH.md`](docs/NATIVE_PASSTHROUGH.md)
+side. See [`docs/NATIVE_PASSTHROUGH.md`](NATIVE_PASSTHROUGH.md)
 and `tests/90sample.cpp`/`91sample.cpp`.
 
 **Inline assembly** (`asm { "..." }` statements) passes through
@@ -8264,7 +8264,7 @@ GCC/Clang basic `asm("...")`, `__asm`/`__asm__`, and `asm volatile` are
 accepted too and re-emitted in Vircon32 brace form (or kept
 parenthesized under `--target=standard`). GCC *extended* asm (operand
 constraints) is rejected with a specific diagnostic. See
-[`docs/INLINE_ASSEMBLY_SUPPORT.md`](docs/INLINE_ASSEMBLY_SUPPORT.md).
+[`docs/INLINE_ASSEMBLY_SUPPORT.md`](INLINE_ASSEMBLY_SUPPORT.md).
 
 **Cart-packing XML is generated automatically**, alongside the
 generated `.c`, matching v32lua's own output — one less manual,
@@ -8279,7 +8279,7 @@ counted separately), and populates the generated XML's
 (fixed at "Vircon32 Program"/"1.0" otherwise, matching v32lua's own
 defaults) — last one seen wins if either appears more than once. A
 program with no hints at all still gets an XML, with the previous empty
-`<textures />`/`<sounds />`. See [Trying it out](#trying-it-out) for the
+`<textures />`/`<sounds />`. See [Using it](../README.md#using-it) for the
 `-x` opt-out. Not yet supported: a check for two hints reusing the same
 `NAME` (caught by the C compiler itself, as a redefined macro, rather
 than by `v32c++`).
@@ -8334,9 +8334,9 @@ emitted alongside it.
   order they're *declared*, not the order they're *written* in the
   list).
 - ~~**Standard-C output mode.**~~ — **DONE**: `--target=standard`
-  (see [Trying it out](#trying-it-out)); every place the two dialects
+  (see [Using it](../README.md#using-it)); every place the two dialects
   differ is itemized in
-  [`docs/VIRCON32_QUIRKS.md`](docs/VIRCON32_QUIRKS.md).
+  [`docs/VIRCON32_QUIRKS.md`](VIRCON32_QUIRKS.md).
 - ~~**A real preprocessor.**~~ — **DONE** (20261001-dev): `#define`,
   `#undef`, macro expansion, `#if`/`#ifdef` evaluation, `-D`/`-U`; see
   above. Pass-through `.h` SDK headers are read for their macros and

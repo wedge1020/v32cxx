@@ -1,4 +1,4 @@
-.TH V32C++\-ARRAY 3v32 "October 19, 2026" "v32c++ 20261019-dev" "v32c++ Library"
+.TH V32C++\-ARRAY 3v32 "October 20, 2026" "v32c++ 20261020-release" "v32c++ Library"
 .SH NAME
 v32c++\-array \- std::array in v32c++, a fixed-size container
 .SH SYNOPSIS

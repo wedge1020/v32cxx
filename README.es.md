@@ -1,9 +1,12 @@
-# v32c++
+# v32cxx: transpilador de C/C++ para Vircon32
 
 [Versión en inglés / in English](README.md) | [Versión en francés / en français](README.fr.md) <!-- langlinks -->
 
 **Un transpilador de un subconjunto de C/C++ a C, orientado al compilador de C de la
 consola de fantasía [Vircon32](https://www.vircon32.com).**
+
+El proyecto es **v32cxx**; construye dos programas, `v32c++` (entrada en C++ o
+en C) y `v32c` (el mismo programa, con nombre propio para la entrada en C).
 
 `v32c++` te permite escribir juegos y programas para Vircon32 en un subconjunto
 de C++ — clases, herencia, constructores y destructores, funciones virtuales,
@@ -18,10 +21,10 @@ dialecto de C de Vircon32 hace de forma distinta.
 > **Estado: funcional.** Toda la canalización — preprocesamiento, análisis
 > sintáctico, análisis semántico, bajada (*lowering*) y generación de código —
 > funciona de principio a fin y se comprueba con el compilador, el ensamblador y
-> la consola **reales** de Vircon32 (`make realcheck`: 96 programas construidos
-> como cartuchos, 30 de ellos con autocomprobación en tiempo de ejecución en una
+> la consola **reales** de Vircon32 (`make realcheck`: 117 programas compilados
+> y ensamblados, 48 de ellos con autocomprobación en tiempo de ejecución en una
 > consola sin pantalla). Con él se construyen cinco demos de buen tamaño (tres
-> juegos en C++ y un port de Rogue). Consulta las [Limitaciones
+> juegos en C++, un port de Rogue y un Spy vs Spy en C puro). Consulta las [Limitaciones
 > conocidas](#limitaciones-conocidas) para ver con honestidad lo que falta.
 
 ## Por qué existe esto
@@ -402,7 +405,10 @@ Opcionalmente:
   bison 2.3, congelado por razones de licencia: `brew install bison` y ponlo
   primero en tu `PATH`.)
 
-Construido y probado en Linux y macOS. Para Windows (MinGW / MSYS2), las pocas
+Construido y probado en Linux y macOS; el flujo de trabajo de lanzamientos (véase
+[Lanzamientos y compilaciones automáticas](#lanzamientos-y-compilaciones-automáticas))
+también lo construye y le pasa una prueba de humo en Windows (x86_64 y arm64) y
+Raspberry Pi y, como extras opcionales, en OpenBSD y Haiku. Para Windows (MinGW / MSYS2), las pocas
 llamadas POSIX que necesita el código fuente (`realpath`, `getline`,
 `strndup`, `tmpfile`, el separador de `PATH`) pasan por `src/compat.c`, que
 tiene una rama para Windows para cada una.
@@ -698,6 +704,12 @@ man/            man1/v32c++.1, the manual page (`man ./man/man1/v32c++.1`);
                 `man -M man/vircon32 3v32 string.h`)
 CMakeLists.txt  the CMake build, install and packaging (see "With CMake")
 cmake/          cmake_uninstall.cmake.in, for CMake's `uninstall` target
+scripts/        smoke_test.sh and stage_package.sh (the release workflow's
+                checks and package layout), install_docs.sh (documentation
+                install, for DEST_LANG)
+.github/        workflows/release-builds.yml, the build and release workflow;
+                release-notes.md, the release page text it publishes
+AGENTS.md       notes for AI coding agents working on the project
 tools/
   embed-header.sh   regenerates src/stdstring.c from lib/string
   vircon32/         build-tools.sh (the real Vircon32 toolchain and the
@@ -796,15 +808,18 @@ hacer push). Los trabajos:
 | Test Against the Vircon32 Toolchain | `make realcheck` (arriba), con la cadena de herramientas en caché entre ejecuciones |
 | CMake Build, Test and Install | configurar, construir, `ctest`, y luego `cmake --install` en un directorio temporal, comprobando el binario, las cabeceras y cada página de manual, comprimida, con los alias como enlaces (Linux y macOS) |
 | Build | Windows (x86_64, arm64), macOS (x86_64, arm64), Linux (x86_64, arm64, Raspberry Pi) y, opcionalmente, OpenBSD y Haiku, cada uno con prueba de humo (`scripts/smoke_test.sh`) y comprimido en zip (`scripts/stage_package.sh`) |
-| Create Draft Release | para una ejecución `release`: un borrador de lanzamiento de GitHub `v<VERSION>` con todos los zips |
+| Release | para una ejecución `release`: un lanzamiento de GitHub `v<VERSION>` para el commit que se construyó, con todos los zips, un `SHA256SUMS.txt` y el texto de [`.github/release-notes.md`](.github/release-notes.md). Se deja como borrador para revisarlo y publicarlo a mano, salvo que la ejecución se iniciara con `publish_release` marcado, lo que lo publica de inmediato; una versión `-dev` se marca como prelanzamiento |
 
 Un zip de lanzamiento se descomprime directamente en `v32tools/`
 (`/usr/local/Vircon32/v32tools` o `<Program Files>/Vircon32/v32tools`): el
 binario, `include/v32c++/` (`v32/` y `libc/`) y `docs/v32c++/` con los
 documentos y las páginas de manual en `man1/` y `man3/`, las de v32c++ y las
 del SDK de Vircon32 juntas (`man -M docs/v32c++ 3v32 string.h`). Para hacer un
-lanzamiento: establece `VERSION`, ejecuta `make version`, haz commit e inicia
-el flujo de trabajo con `release`.
+lanzamiento: establece `VERSION`, ejecuta `make version`, actualiza el texto de
+`.github/release-notes.md` (`@VERSION@` se convierte en la versión), haz commit
+e inicia el flujo de trabajo con `release`; después revisa el borrador en la
+página de Releases y pulsa **Publish release** (o marca `publish_release` al
+iniciar el flujo de trabajo, para saltarte ese paso).
 
 ## Colaboración con IA
 

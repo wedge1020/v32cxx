@@ -131,8 +131,11 @@ static void print_usage(const char *prog_name) {
                      "                the generated XML's <rom> gets type=\"bios\"; requires\n"
                      "                exactly one #texture, at most one #sound, and a\n"
                      "                `void error_handler()` function in addition to `main`\n");
-    fprintf(stderr,  "  -g            also write <output>.debug, a C-line <-> C++-line\n"
-                     "                mapping alongside the generated C\n");
+    fprintf(stderr,  "  -g            also write <output>.debug (game.c -> game.c.debug), a\n"
+                     "                C-line <-> C++-line mapping alongside the generated C\n");
+    fprintf(stderr,  "  --reject-bit-fields\n"
+                     "                make a bit-field an error instead of a warning (by\n"
+                     "                default it becomes a full-word member)\n");
     fprintf(stderr,  "  --target=X    output C dialect: \"vircon32\" (or \"v32\", the default)\n"
                      "                for the real Vircon32 compiler's own quirks, or\n"
                      "                \"standard\" (or \"std\") for plain, portable C --\n"

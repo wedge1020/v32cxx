@@ -1,5 +1,5 @@
 '\" -*- coding: UTF-8 -*-
-.TH V32C++\-HEADERS 3v32 "19 octobre 2026" "v32c++ 20261019-dev" "Bibliothèque v32c++"
+.TH V32C++\-HEADERS 3v32 "20 octobre 2026" "v32c++ 20261020-release" "Bibliothèque v32c++"
 .SH NOM
 v32c++\-headers \- les en-têtes C++ et la bibliothèque C qui accompagnent v32c++
 .SH SYNOPSIS
