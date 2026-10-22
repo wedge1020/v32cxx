@@ -1,5 +1,5 @@
 '\" -*- coding: UTF-8 -*-
-.TH INPUT.HPP 3v32 "20 de octubre de 2026" "v32c++ 20261020-release" "Biblioteca v32c++"
+.TH INPUT.HPP 3v32 "22 de octubre de 2026" "v32c++ 20261022-dev" "Biblioteca v32c++"
 .SH NOMBRE
 v32/input.hpp \- ayudas de C++ para los mandos de Vircon32
 .SH SINOPSIS

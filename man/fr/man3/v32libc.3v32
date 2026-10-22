@@ -1,5 +1,5 @@
 '\" -*- coding: UTF-8 -*-
-.TH V32LIBC 3v32 "20 octobre 2026" "v32c++ 20261020-release" "Bibliothèque v32c++"
+.TH V32LIBC 3v32 "22 octobre 2026" "v32c++ 20261022-dev" "Bibliothèque v32c++"
 .SH NOM
 v32libc \- fonctions de la bibliothèque C standard pour les programmes C transpilés par v32c++
 .SH SYNOPSIS

@@ -1,5 +1,5 @@
 '\" -*- coding: UTF-8 -*-
-.TH V32IO.HPP 3v32 "20 octobre 2026" "v32c++ 20261020-release" "Bibliothèque v32c++"
+.TH V32IO.HPP 3v32 "22 octobre 2026" "v32c++ 20261022-dev" "Bibliothèque v32c++"
 .SH NOM
 v32/v32io.hpp \- v32::IoDevice, un port de manette lu comme des données v32io
 .SH SYNOPSIS

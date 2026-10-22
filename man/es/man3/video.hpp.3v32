@@ -1,5 +1,5 @@
 '\" -*- coding: UTF-8 -*-
-.TH VIDEO.HPP 3v32 "20 de octubre de 2026" "v32c++ 20261020-release" "Biblioteca v32c++"
+.TH VIDEO.HPP 3v32 "22 de octubre de 2026" "v32c++ 20261022-dev" "Biblioteca v32c++"
 .SH NOMBRE
 v32/video.hpp \- ayudas de C++ para la GPU de Vircon32
 .SH SINOPSIS

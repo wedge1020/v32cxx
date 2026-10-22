@@ -1,5 +1,5 @@
 '\" -*- coding: UTF-8 -*-
-.TH V32C++\-VECTOR 3v32 "20 octobre 2026" "v32c++ 20261020-release" "Bibliothèque v32c++"
+.TH V32C++\-VECTOR 3v32 "22 octobre 2026" "v32c++ 20261022-dev" "Bibliothèque v32c++"
 .SH NOM
 v32c++\-vector \- std::vector dans v32c++, un conteneur extensible
 .SH SYNOPSIS

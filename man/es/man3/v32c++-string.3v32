@@ -1,5 +1,5 @@
 '\" -*- coding: UTF-8 -*-
-.TH V32C++\-STRING 3v32 "20 de octubre de 2026" "v32c++ 20261020-release" "Biblioteca v32c++"
+.TH V32C++\-STRING 3v32 "22 de octubre de 2026" "v32c++ 20261022-dev" "Biblioteca v32c++"
 .SH NOMBRE
 v32c++\-string \- std::string en v32c++, una cadena de capacidad fija
 .SH SINOPSIS

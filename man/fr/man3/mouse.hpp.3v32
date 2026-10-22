@@ -1,5 +1,5 @@
 '\" -*- coding: UTF-8 -*-
-.TH MOUSE.HPP 3v32 "20 octobre 2026" "v32c++ 20261020-release" "Bibliothèque v32c++"
+.TH MOUSE.HPP 3v32 "22 octobre 2026" "v32c++ 20261022-dev" "Bibliothèque v32c++"
 .SH NOM
 v32/mouse.hpp \- v32::Mouse, une souris v32io sur un port de manette
 .SH SYNOPSIS
