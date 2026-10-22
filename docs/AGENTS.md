@@ -19,7 +19,9 @@ templates); `static` locals and file-scope `static`/`extern`/`volatile`; float
 literals of any C form (`1e3`, `.5`, `5.f`); octal/hex/binary literals and
 escapes; `int main()` with `return 0;`; `0` as a null pointer; `<v32/*.hpp>`
 wrappers around the Vircon32 libraries (see `docs/V32IO.md` for the keyboard
-and mouse); `va_list`/`...`; inline `asm { "..." }`; `native Name;` types.
+and mouse); `va_list`/`...`; inline `asm { "..." }`; `native Name;` types (a plain C struct in an SDK
+header, like `malloc_block`, is read, so `b->size` works); `#include` inside a
+function or `asm { }` body (expanded where it stands).
 String literals holding control codes (BIOS glyphs 14-31, `"\025"`) are rewritten
 into hidden arrays for you.
 
@@ -37,6 +39,8 @@ members, `T *&`, 2-D array *parameters*, an object passed through `...`.
 - `goto` out of a scope skips destructors; `const` is not enforced.
 - A class in a namespace keeps its bare C name (don't name your own class
   `String`, `Keyboard`, `Mouse`, `Channel`...).
+- An SDK pointer's null is `-1`, and the SDK compiler drops a function nothing
+  calls (and the `asm` data inside it): see QUIRKS #29.
 - A declaration directly in a `case` body (no braces) is rejected by Vircon32 C.
 - An overloaded call on a raw C API result needs a typed local first.
 - `--target=standard` prints standard C instead (ternary kept, `int main`).

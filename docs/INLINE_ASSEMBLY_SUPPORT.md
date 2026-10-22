@@ -376,3 +376,30 @@ asm
 interpolation resolves it (a member, `{this->...}`, would not be valid;
 hence the local). Checked end to end on the headless console by
 `tests/119sample.cpp`. See `docs/V32IO.md`.
+
+## Data from a file inside an `asm` block (20261022-dev)
+
+An `#include` inside a `{ }` body is expanded where it stands (it used to be
+moved to the top of the output, out of the function, silently). Since the
+lines of an `asm` block are ordinary string literals, a generated table can
+be kept in a file of its own:
+
+```cpp
+int table_address (void)
+{
+    asm
+    {
+        "mov R0, __tbl"
+        "jmp __tbl_end"
+        "__tbl:"
+        #include "data.inc"          // "integer 1, 2, 3"  ...
+        "__tbl_end:"
+    }
+}
+```
+
+Two things about such tables belong to the Vircon32 toolchain, not to
+v32c++: the compiler drops a function nothing calls (and the data in its
+`asm` block with it), so call it; and the assembler rejects some label
+names in operands (`mov R0, bios_romvol` fails with "expected basic
+value"), while names starting with `__` assemble. `tests/151sample.cpp`.

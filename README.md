@@ -189,6 +189,10 @@ of scope](#deliberately-out-of-scope).
   [`docs/NATIVE_PASSTHROUGH.md`](docs/NATIVE_PASSTHROUGH.md).  Struct and
   typedef  names from  SDK headers  v32c++ can  read are  declared native
   automatically.
+  A plain C struct in such a header (ints, floats, bools, pointers, arrays
+  of literal length: the SDK's `malloc_block`) is read, not just named, so
+  `b->size`, `b->next`, `sizeof(malloc_block)` and by-value locals work on
+  it. A struct v32c++ cannot follow stays opaque.
 
 ### A C++-side preprocessor
 
@@ -201,6 +205,12 @@ Before parsing, v32c++ does what a C++ preprocessor would:
   installed headers in `/usr/local/Vircon32/v32tools/include/v32c++` (the
   default,  set in  [`inc/config.h`](inc/config.h)). Multi-file  projects
   work the usual way, and errors name the file they are in.
+- An `#include` inside a `{ }` body (a function, an `asm { }` block) is
+  expanded right where it stands, for a file of any extension, so
+  generated tables (`"integer 1, 2, 3"` lines for an `asm` block) or runs
+  of statements can live in their own files. An SDK header or an
+  unfound file there still passes through, moved to the top of the
+  output, and v32c++ says so with a warning.
 - `#define`/`#undef`   (object-like   and   function-like,   `#`,   `##`,
   `__VA_ARGS__`),   `-D`/`-U`,   predefined   `__V32CXX__`,   `__FILE__`,
   `__LINE__`;  `#if`/`#ifdef`/`#elif`/...   with  `defined()`;  `#error`,
@@ -361,6 +371,13 @@ Checked against  the current  transpiler and  the real  Vircon32 compiler
   each  time  it  appears  (the  C compiler  then  reports  it  missing).
   `docs/DESIGN_NOTES.md`  has  the  more  detailed  development  history,
   including the gaps that have been closed and how.
+- **`NULL` in the SDK is `-1`.** v32c++ prints a `0` used as a null pointer
+  as `NULL`, which is right for every pointer, SDK ones included
+  (`malloc_first_block` is `NULL` before the first `malloc`). Only an
+  integer you compare yourself (`(int)p == 0`) sees the difference.
+- **The Vircon32 compiler drops functions nothing calls.** Data placed in
+  an `asm { }` block of a function that is never called vanishes with it;
+  call the function (or take its address) from somewhere that stays.
 
 ## Deliberately out of scope
 

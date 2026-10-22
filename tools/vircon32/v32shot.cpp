@@ -9,6 +9,7 @@
 //  blending modes), so no window, OpenGL or SDL is involved.
 //
 //  usage: v32shot bios.v32 cart.v32 script out_prefix frame [frame...]
+//         (cart.v32 may be - : no cartridge, to see what a BIOS does alone)
 //         writes out_prefix<frame>.ppm for each listed frame
 //
 //  V32SHOT_CARD=file puts a memory card in the slot (created blank if the
@@ -171,7 +172,8 @@ int main( int argc, char** argv )
     {
         V32Console console;
         console.LoadBios( argv[ 1 ] );
-        console.LoadCartridge( argv[ 2 ] );
+        if( std::string( argv[ 2 ] ) != "-" )         // "-": no cartridge in the slot
+            console.LoadCartridge( argv[ 2 ] );
         if( getenv( "V32SHOT_CARD" ) )
         {
             // a memory card in the slot: created blank if the file does

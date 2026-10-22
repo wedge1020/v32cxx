@@ -1057,6 +1057,20 @@ toolchain and emulator. An upstream fix would be three lines in
 `EscapeCCharacter` (escape the control codes as `\xHH`), after which this
 phase could be dropped.
 
+## 29. The SDK's `NULL` is -1, and a function nothing calls is dropped
+
+- **Vircon32 does**: define `NULL` as `-1`, so an SDK pointer that is
+  "null" holds -1 (`malloc_first_block` before the first `malloc`, the
+  `next` of the last `malloc_block`). Separately, its compiler drops a
+  function that nothing calls, together with the data in an `asm { }`
+  block inside it.
+- **For v32c++**: a `0` used as a pointer prints as `NULL` (#5), so
+  comparing an SDK pointer with `0` or `NULL` in source is right. What is
+  not right is an integer view of the pointer (`(int)p == 0`, a walk over
+  `int *` words that stops at 0): stop at `NULL`, or at -1. A table kept
+  in an `asm` block (`#include`d from a file: see
+  `INLINE_ASSEMBLY_SUPPORT.md`) lives in a function that must be called.
+
 ## What this list does NOT cover
 
 - Anything this project hasn't discovered yet -- this is a record of

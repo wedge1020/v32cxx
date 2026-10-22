@@ -989,6 +989,20 @@ ternaire, un littéral répété, `\x`, DEL, texte mixte) avec la vraie chaîne 
 vrai émulateur. Une correction en amont tiendrait en trois lignes dans `EscapeCCharacter`
 (échapper les codes de contrôle en `\xHH`), après quoi cette phase pourrait être supprimée.
 
+## 29. Le `NULL` du SDK vaut -1, et une fonction que rien n'appelle est supprimée
+
+- **Vircon32 fait** : définir `NULL` comme `-1`, de sorte qu'un pointeur du
+  SDK « nul » contient -1 (`malloc_first_block` avant le premier `malloc`, le
+  `next` du dernier `malloc_block`). Par ailleurs, son compilateur supprime
+  une fonction que rien n'appelle, avec les données d'un bloc `asm { }` qu'elle
+  contient.
+- **Pour v32c++** : un `0` utilisé comme pointeur s'écrit `NULL` (#5) ;
+  comparer un pointeur du SDK à `0` ou `NULL` dans le source est donc juste.
+  Ce qui ne l'est pas : une vue entière du pointeur (`(int)p == 0`, un parcours
+  de mots `int *` qui s'arrête à 0) : arrêtez-vous à `NULL`, ou à -1. Une table
+  gardée dans un bloc `asm` (inclus depuis un fichier : voir
+  `INLINE_ASSEMBLY_SUPPORT.fr.md`) vit dans une fonction qui doit être appelée.
+
 ## Ce que cette liste ne couvre PAS
 
 - Tout ce que ce projet n'a pas encore découvert — c'est un registre des divergences

@@ -196,6 +196,11 @@ du périmètre](#délibérément-hors-du-périmètre).
   voir [`docs/NATIVE_PASSTHROUGH.fr.md`](docs/NATIVE_PASSTHROUGH.fr.md). Les
   noms de structures et de `typedef` des en-têtes du SDK que v32c++ peut lire
   sont déclarés `native` automatiquement.
+  Une structure C simple d'un tel en-tête (entiers, flottants, booléens,
+  pointeurs, tableaux de longueur littérale : le `malloc_block` du SDK) est
+  lue, et pas seulement nommée, si bien que `b->size`, `b->next`,
+  `sizeof(malloc_block)` et les locales par valeur fonctionnent avec elle.
+  Une structure que v32c++ ne sait pas suivre reste opaque.
 
 ### Un préprocesseur côté C++
 
@@ -209,6 +214,13 @@ Avant l'analyse, v32c++ fait ce que ferait un préprocesseur C++ :
   `/usr/local/Vircon32/v32tools/include/v32c++` (la valeur par défaut, définie
   dans [`inc/config.h`](inc/config.h)). Les projets multi-fichiers fonctionnent
   de la manière habituelle, et les erreurs nomment le fichier concerné.
+- Un `#include` à l'intérieur d'un corps `{ }` (une fonction, un bloc
+  `asm { }`) est développé à l'endroit même où il se trouve, pour un fichier
+  de n'importe quelle extension, de sorte que des tables générées (lignes
+  `"integer 1, 2, 3"` pour un bloc `asm`) ou des suites d'instructions
+  peuvent vivre dans leurs propres fichiers. Un en-tête du SDK ou un fichier
+  introuvable passe toujours tel quel, déplacé en tête de la sortie, et
+  v32c++ le signale par un avertissement.
 - `#define`/`#undef` (de type objet et de type fonction, `#`, `##`,
   `__VA_ARGS__`), `-D`/`-U`, les prédéfinis `__V32CXX__`, `__FILE__`,
   `__LINE__` ; `#if`/`#ifdef`/`#elif`/... avec `defined()` ; `#error`,
@@ -380,6 +392,14 @@ Vérifiées avec le transpileur actuel et le vrai compilateur Vircon32 (octobre
   (le compilateur C signale alors qu'il manque). `docs/DESIGN_NOTES.md`
   (en anglais seulement) contient l'historique de développement plus détaillé,
   y compris les lacunes comblées et la façon dont elles l'ont été.
+- **`NULL` dans le SDK vaut `-1`.** v32c++ écrit un `0` utilisé comme pointeur
+  nul sous la forme `NULL`, ce qui est juste pour tout pointeur, ceux du SDK
+  compris (`malloc_first_block` vaut `NULL` avant le premier `malloc`). Seul
+  un entier que vous comparez vous-même (`(int)p == 0`) voit la différence.
+- **Le compilateur Vircon32 supprime les fonctions que rien n'appelle.** Les
+  données d'un bloc `asm { }` d'une fonction jamais appelée disparaissent avec
+  elle ; appelez la fonction (ou prenez son adresse) depuis un endroit qui
+  subsiste.
 
 ## Délibérément hors du périmètre
 

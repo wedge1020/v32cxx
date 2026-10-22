@@ -8,6 +8,7 @@
 #include "codegen.h"
 #include "driver.h" /* g_preprocessor_lines -- see its own doc comment there */
 #include "debugmap.h"
+#include "prescan.h" /* prescan_is_header_struct */
 #include "macro.h"     /* macro_name_is_stable */
 
 /* ---- output-line tracking, for -g's debug map ---------------------------
@@ -2593,6 +2594,20 @@ void codegen_run(const AstNode *program, FILE *out, int verbose_comments) {
         }
     }
     fprintf(out, "/* Auto-generated Vircon32 C -- do not edit by hand. */\n\n");
+    /* Structs read from a pass-through header (prescan.c) are declared for
+     * the transpiler's benefit only: the header defines them in the output
+     * already, so they are left out of everything printed below. */
+    AstList visible = program->list;
+    visible.items = malloc(sizeof(AstNode *) * (size_t)(program->list.count + 1));
+    visible.count = 0;
+    for (int i = 0; i < program->list.count; i++) {
+        AstNode *d = program->list.items[i];
+        if (d != NULL && d->kind == AST_CLASS_DECL && prescan_is_header_struct(d->str1)) continue;
+        visible.items[visible.count++] = d;
+    }
+    AstNode view = *program;
+    view.list = visible;
+    program = &view;
     emit_forward_declarations(out, &program->list);
     fprintf(out, "\n");
     emit_typedefs(out, &program->list);

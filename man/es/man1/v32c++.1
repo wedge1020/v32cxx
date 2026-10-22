@@ -800,6 +800,19 @@ Las inclusiones de
 .I .h
 pasan al C generado, una vez cada una.
 .IP \(bu 2
+Un
+.B #include
+dentro de un cuerpo
+.B { }
+(una función, un bloque
+.B asm { }
+) se sustituye por el contenido del archivo donde está, sea cual sea su
+extensión, de modo que las tablas generadas o series de sentencias pueden
+vivir en archivos propios. Una cabecera del SDK, o un archivo que no se
+encuentra, sigue pasando tal cual (movido al principio de la salida) y
+.B v32c++
+lo avisa con una advertencia.
+.IP \(bu 2
 .B #define
 y
 .B #undef
@@ -939,6 +952,21 @@ void stamp( date_info* out )
 }
 .fi
 .RE
+.PP
+Cuando una cabecera de paso directo define una estructura de C simple cuyos
+miembros son todos primitivos, punteros o arreglos de longitud literal
+.RI ( "struct malloc_block" " en " misc.h ),
+.B v32c++
+lee el cuerpo en lugar de dejar el nombre opaco, y la estructura funciona
+entonces como una del propio programa: miembros con
+.B ->
+y
+.BR . ,
+.BR sizeof ,
+locales por valor. La cabecera sigue definiéndola en el C generado. Cualquier
+otra estructura sigue siendo un tipo
+.B native
+opaco.
 .PP
 .B native
 .I Nombre\fB;

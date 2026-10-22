@@ -264,3 +264,30 @@ tarjeta de memoria insertada. El archivo de la tarjeta contiene después la
 firma en la palabra 0. Las opciones de nativos con tamaño o con disposición de
 arriba siguen siendo la respuesta general para las estructuras de C cuyos campos
 necesita leer el código del juego (`date_info`).
+
+## Disposición de estructuras leída de las cabeceras del SDK (20261022-dev)
+
+`native X;` sigue siendo la respuesta para un tipo cuyos campos no hacen
+falta, pero una estructura de C simple en una cabecera que el preanálisis lee
+ya no tiene por qué seguir siendo opaca. Al recolectar una `.h` de paso
+directo (véase el preprocesador del lado de C++ en el README), `prescan.c`
+lee también el cuerpo de cada `struct NOMBRE { ... };`. Cuando todos los
+miembros son
+
+- `int`, `float`, `bool`, `char`, `short`, `long`, `double`, `unsigned`;
+- un puntero a la propia estructura, a otra estructura o `typedef` que la
+  cabecera nombre, o a cualquiera de los anteriores;
+- cualquiera de ellos como arreglo de longitud literal (`int words[4];`),
+
+la línea `native NOMBRE;` se sustituye por la propia estructura,
+`struct NOMBRE { ... };`, justo después del `#include`. v32c++ la trata
+entonces como una estructura del propio programa: `b->size`, `b->next`,
+`sizeof(NOMBRE)`, locales, parámetros y retornos por valor funcionan (el
+`malloc_block` del SDK es el caso que lo motivó). La generación de código
+omite esa estructura en el C generado (`prescan_is_header_struct`), porque la
+cabecera la define más adelante; definirla dos veces sería un error.
+
+Cualquier otra cosa (un `{` anidado, un miembro puntero a función, un campo
+de bits, una estructura como miembro por valor, un declarador tras la llave de
+cierre) deja la estructura opaca exactamente como antes, con la regla de solo
+puntero. `tests/152sample.cpp` cubre ambos casos.

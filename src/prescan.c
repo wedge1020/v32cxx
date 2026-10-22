@@ -423,6 +423,45 @@ void prescan_add_cmdline_macro(const char *spec, int is_undef) {
     g_cmdline_macro_count++;
 }
 
+/* ---- brace depth --------------------------------------------------------
+ * How many `{` are open at the point the pre-scan is reading, across file
+ * boundaries (an included file is spliced into the stream, so its braces
+ * belong to the same count). An `#include` met while this is above zero
+ * sits inside a function body (an `asm { }` block included) -- or a class
+ * or namespace body -- where hoisting the line to the top of the output
+ * would move it out of its place; see the include handling below.
+ * Braces in comments, strings and character literals do not count (an
+ * asm line such as "mov R0, {x}" is a string). Only active, non-
+ * directive lines are counted. */
+static int g_brace_depth = 0;
+
+static int brace_delta(const char *line, int in_comment) {
+    int delta = 0, in_str = 0, in_chr = 0;
+    for (const char *p = line; *p; p++) {
+        if (in_comment) {
+            if (p[0] == '*' && p[1] == '/') { in_comment = 0; p++; }
+            continue;
+        }
+        if (in_str) {
+            if (p[0] == '\\' && p[1]) p++;
+            else if (*p == '"') in_str = 0;
+            continue;
+        }
+        if (in_chr) {
+            if (p[0] == '\\' && p[1]) p++;
+            else if (*p == '\'') in_chr = 0;
+            continue;
+        }
+        if (p[0] == '/' && p[1] == '/') break;
+        if (p[0] == '/' && p[1] == '*') { in_comment = 1; p++; continue; }
+        if (*p == '"') in_str = 1;
+        else if (*p == '\'') in_chr = 1;
+        else if (*p == '{') delta++;
+        else if (*p == '}') delta--;
+    }
+    return delta;
+}
+
 /* Expands one code line (plus however many following lines a multi-line
  * function-like invocation needs) and writes it out. Returns 0 or -1. */
 static int emit_code_line(FILE *out, LineReader *r, char *line, int first, int nphys,
@@ -493,13 +532,219 @@ void prescan_set_sdk_dirs(char *const *dirs, int count) {
 }
 
 static PathSet g_harvest_types;     /* struct/typedef names found this harvest */
+/* Parallel to g_harvest_types: the `struct NAME { ... };` text to declare
+ * in place of the opaque `native NAME;` when the header's struct body was
+ * simple enough to read (see build_struct_text), else NULL. */
+static char **g_harvest_text = NULL;
+static int g_harvest_text_cap = 0;
+/* Names declared with their layout this run: codegen leaves these out of
+ * the generated C (the header still defines them downstream). */
+static PathSet g_layout_structs;
+
+int prescan_is_header_struct(const char *name) {
+    return name != NULL && path_set_contains(&g_layout_structs, name);
+}
+
+static void harvest_add(const char *name) {
+    if (path_set_contains(&g_harvest_types, name)) return;
+    path_set_add(&g_harvest_types, name);
+    if (g_harvest_types.count > g_harvest_text_cap) {
+        g_harvest_text_cap = g_harvest_text_cap ? g_harvest_text_cap * 2 : 16;
+        g_harvest_text = realloc(g_harvest_text, sizeof(char *) * (size_t)g_harvest_text_cap);
+    }
+    g_harvest_text[g_harvest_types.count - 1] = NULL;
+}
+
+static int harvest_index(const char *name) {
+    for (int i = 0; i < g_harvest_types.count; i++)
+        if (strcmp(g_harvest_types.items[i], name) == 0) return i;
+    return -1;
+}
+
+/* ---- struct bodies ---------------------------------------------------------
+ * A plain C struct in a header (`struct malloc_block { malloc_block* next;
+ * int size; ... };`) is read, not just named, so `b->size`, `b->next` and
+ * `sizeof(malloc_block)` work like on any other struct. Only the simple
+ * shapes are understood: members of a primitive type, or a pointer to a
+ * struct/typedef the header names, each optionally an array of a literal
+ * length. Anything else (nested braces, bit-fields, function pointers, a
+ * struct member by value, unions) leaves the struct opaque, `native NAME;`,
+ * exactly as before. */
+static int is_primitive_word(const char *w) {
+    static const char *const names[] = {
+        "int", "float", "bool", "char", "short", "long", "double", "unsigned", "signed", NULL
+    };
+    for (int i = 0; names[i] != NULL; i++)
+        if (strcmp(w, names[i]) == 0) return 1;
+    return 0;
+}
+
+/* One declaration (`int a, *b, c[4]`) appended to `out` in normal form;
+ * returns 0 when its shape is not one of the understood ones. */
+static int append_member_decl(const char *name, char *decl, char **out, size_t *len, size_t *cap) {
+    char base[192] = "";
+    int have_prim = 0, is_tag = 0, is_ident_type = 0, nprim = 0;
+    const char *p = decl;
+    for (;;) {                                   /* the base type */
+        while (*p == ' ' || *p == '\t') p++;
+        const char *st = p;
+        while (macro_is_ident_char((unsigned char)*p)) p++;
+        if (p == st) return 0;
+        char w[96];
+        size_t n = (size_t)(p - st);
+        if (n >= sizeof(w)) return 0;
+        memcpy(w, st, n);
+        w[n] = '\0';
+        if (strcmp(w, "const") == 0) continue;
+        if (strcmp(w, "struct") == 0) {
+            if (have_prim || is_ident_type) return 0;
+            is_tag = 1;
+            continue;
+        }
+        if (is_primitive_word(w)) {
+            if (is_tag || is_ident_type) return 0;
+            if (nprim++) strcat(base, " ");
+            strcat(base, w);
+            have_prim = 1;
+            if (!(strcmp(w, "unsigned") == 0 || strcmp(w, "signed") == 0 ||
+                  strcmp(w, "long") == 0 || strcmp(w, "short") == 0)) break;
+            continue;
+        }
+        if (have_prim) { p = st; break; }       /* `unsigned x`: x is the declarator */
+        if (!is_tag && strcmp(w, name) != 0 && harvest_index(w) < 0) return 0;
+        snprintf(base, sizeof(base), "struct %s", w);
+        is_ident_type = 1;
+        break;
+    }
+    if (base[0] == '\0') return 0;
+    int pointer_only = is_ident_type;            /* layout of a named type is unknown here */
+    for (;;) {                                   /* declarators */
+        while (*p == ' ' || *p == '\t') p++;
+        int stars = 0;
+        while (*p == '*') { stars++; p++; while (*p == ' ' || *p == '\t') p++; }
+        const char *st = p;
+        while (macro_is_ident_char((unsigned char)*p)) p++;
+        if (p == st || !macro_is_ident_start((unsigned char)*st)) return 0;
+        char mname[96];
+        size_t n = (size_t)(p - st);
+        if (n >= sizeof(mname)) return 0;
+        memcpy(mname, st, n);
+        mname[n] = '\0';
+        if (pointer_only && stars == 0) return 0;
+        char dim[32] = "";
+        while (*p == ' ' || *p == '\t') p++;
+        if (*p == '[') {
+            const char *q = ++p;
+            while (*p >= '0' && *p <= '9') p++;
+            if (p == q || *p != ']' || (size_t)(p - q) > 8) return 0;
+            snprintf(dim, sizeof(dim), "[%.*s]", (int)(p - q), q);
+            p++;
+            while (*p == ' ' || *p == '\t') p++;
+        }
+        char item[400];
+        int m = snprintf(item, sizeof(item), " %s %.*s%s%s;", base, stars, "***********", mname, dim);
+        if (m < 0 || (size_t)m >= sizeof(item)) return 0;
+        if (*len + (size_t)m + 1 > *cap) {
+            *cap = (*len + (size_t)m + 1) * 2;
+            *out = realloc(*out, *cap);
+        }
+        memcpy(*out + *len, item, (size_t)m + 1);
+        *len += (size_t)m;
+        if (*p == ',') { p++; continue; }
+        return *p == '\0';
+    }
+}
+
+/* `struct NAME { members };` on one line, or NULL when the body is not
+ * simple enough (the struct then stays opaque). Consumes `body`. */
+static char *build_struct_text(const char *name, char *body) {
+    size_t cap = 256, len = 0;
+    char *out = malloc(cap);
+    int ok = 1, any = 0;
+    len = (size_t)snprintf(out, cap, "struct %s {", name);
+    char *save = NULL;
+    for (char *d = strtok_r(body, ";", &save); d != NULL && ok; d = strtok_r(NULL, ";", &save)) {
+        char *e = d + strlen(d);
+        while (e > d && (e[-1] == ' ' || e[-1] == '\t' || e[-1] == '\r' || e[-1] == '\n')) *--e = '\0';
+        while (*d == ' ' || *d == '\t' || *d == '\r' || *d == '\n') d++;
+        if (*d == '\0') continue;
+        any = 1;
+        ok = append_member_decl(name, d, &out, &len, &cap);
+    }
+    if (!ok || !any) { free(out); return NULL; }
+    if (len + 4 > cap) out = realloc(out, len + 4);
+    strcpy(out + len, " };");
+    return out;
+}
+
+/* State of a struct body being read across lines. */
+static int g_cap_state = 0;            /* 0 none, 1 saw `struct NAME`, waiting for `{`, 2 in the body */
+static char g_cap_name[128];
+static char *g_cap_buf = NULL;
+static size_t g_cap_len = 0, g_cap_cap = 0;
+static int g_cap_bad = 0;              /* a nested `{`, or something after the `}` */
+
+static void cap_append(const char *s, size_t n) {
+    if (g_cap_len + n + 2 > g_cap_cap) {
+        g_cap_cap = (g_cap_len + n + 2) * 2;
+        g_cap_buf = realloc(g_cap_buf, g_cap_cap);
+    }
+    memcpy(g_cap_buf + g_cap_len, s, n);
+    g_cap_len += n;
+    g_cap_buf[g_cap_len++] = ' ';
+    g_cap_buf[g_cap_len] = '\0';
+}
+
+/* Feeds one line of the body (text after the `{` on the first). */
+static void cap_feed(const char *line) {
+    char *copy = strdup(line);
+    char *w = copy;
+    for (const char *r = line; *r; ) {          /* drop comments */
+        if (r[0] == '/' && r[1] == '/') break;
+        if (r[0] == '/' && r[1] == '*') {
+            const char *e = strstr(r + 2, "*/");
+            if (e == NULL) break;
+            r = e + 2;
+            *w++ = ' ';
+            continue;
+        }
+        *w++ = *r++;
+    }
+    *w = '\0';
+    char *brace = NULL;
+    for (char *c = copy; *c; c++) {
+        if (*c == '{') { g_cap_bad = 1; }
+        if (*c == '}') { brace = c; break; }
+    }
+    if (brace == NULL) {
+        cap_append(copy, strlen(copy));
+    } else {
+        cap_append(copy, (size_t)(brace - copy));
+        const char *after = brace + 1;
+        while (*after == ' ' || *after == '\t' || *after == '\r') after++;
+        if (*after != ';') g_cap_bad = 1;       /* `} var;` / `} __attribute__`... */
+        char *text = g_cap_bad ? NULL : build_struct_text(g_cap_name, g_cap_buf);
+        int idx = harvest_index(g_cap_name);
+        if (idx >= 0) g_harvest_text[idx] = text; else free(text);
+        g_cap_state = 0;
+        g_cap_len = 0;
+    }
+    free(copy);
+}
 
 /* Records `struct NAME` (a definition: `{` follows, or nothing more on the
- * line) and `typedef ... NAME;` found on a header's code line. Comment-
- * and string-free enough for SDK headers; anything odder is just missed. */
+ * line) and `typedef ... NAME;` found on a header's code line, reading the
+ * struct's body when it is simple. Comment- and string-free enough for SDK
+ * headers; anything odder is just missed. */
 static void harvest_type_names(const char *line) {
     const char *p = line;
     while (*p == ' ' || *p == '\t') p++;
+    if (g_cap_state == 2) { cap_feed(line); return; }
+    if (g_cap_state == 1) {
+        if (*p == '{') { g_cap_state = 2; g_cap_len = 0; g_cap_bad = 0; cap_feed(p + 1); return; }
+        if (*p == '\0' || *p == '\r' || strncmp(p, "//", 2) == 0) return;
+        g_cap_state = 0;                        /* it was a use after all */
+    }
     if (strncmp(p, "struct", 6) == 0 && (p[6] == ' ' || p[6] == '\t')) {
         p += 6;
         while (*p == ' ' || *p == '\t') p++;
@@ -513,7 +758,12 @@ static void harvest_type_names(const char *line) {
         size_t n = (size_t)(p - st) < sizeof(name) - 1 ? (size_t)(p - st) : sizeof(name) - 1;
         memcpy(name, st, n);
         name[n] = '\0';
-        if (!path_set_contains(&g_harvest_types, name)) path_set_add(&g_harvest_types, name);
+        harvest_add(name);
+        strcpy(g_cap_name, name);
+        g_cap_len = 0;
+        g_cap_bad = 0;
+        if (*q == '{') { g_cap_state = 2; cap_feed(q + 1); }
+        else g_cap_state = 1;
         return;
     }
     if (strncmp(p, "typedef", 7) == 0 && (p[7] == ' ' || p[7] == '\t')) {
@@ -528,7 +778,7 @@ static void harvest_type_names(const char *line) {
         size_t n = (size_t)(e - st) < sizeof(name) - 1 ? (size_t)(e - st) : sizeof(name) - 1;
         memcpy(name, st, n);
         name[n] = '\0';
-        if (!path_set_contains(&g_harvest_types, name)) path_set_add(&g_harvest_types, name);
+        harvest_add(name);
     }
 }
 
@@ -627,6 +877,8 @@ static int expand_file_mode(const char *path, FILE *out,
                 free(line);
                 continue;
             }
+            g_brace_depth += brace_delta(line, state_before);
+            if (g_brace_depth < 0) g_brace_depth = 0;
             rc = emit_code_line(out, &reader, line, first, nphys, state_before,
                                 &in_block_comment, path);
             continue;
@@ -821,7 +1073,29 @@ static int expand_file_mode(const char *path, FILE *out,
                 free(line);
                 continue;
             }
+            else if (target != NULL && !harvest && g_brace_depth > 0 && !is_sdk_header_name(target) &&
+                     (resolved_c = resolve_include(target, angle, path, dirs, ndirs)) != NULL) {
+                /* An #include inside a body -- a function, an `asm { }`
+                 * block -- is text inclusion at that spot, whatever the
+                 * file's extension: generated tables ("integer 1, 2,"
+                 * lines for an asm block) and statement lists live in
+                 * their own files. The pass-through below would hoist the
+                 * line out of the body to the top of the output. */
+                rc = expand_file(resolved_c, out, dirs, ndirs, 0);
+                emit_marker(out, lineno + nphys, path);
+                free(resolved_c);
+                resolved_c = NULL;
+                free(target);
+                free(word);
+                free(line);
+                continue;
+            }
             else if (target != NULL) {
+                if (!harvest && g_brace_depth > 0)
+                    fprintf(stderr, "%s:%d: warning: #include %s%s%s inside a { } body is not expanded "
+                            "in place (%s): the line is moved to the top of the generated file\n",
+                            path, lineno, angle ? "<" : "\"", target, angle ? ">" : "\"",
+                            is_sdk_header_name(target) ? "an SDK header" : "file not found");
                 /* A non-expanding include (the SDK's .h headers, or anything
                  * the prescan doesn't own): resolve it the same way the
                  * expanding branch does, so dedupe keys on the CANONICAL
@@ -846,16 +1120,26 @@ static int expand_file_mode(const char *path, FILE *out,
                         rc = expand_file_mode(resolved, NULL, dirs, ndirs, 0, 1);
                         if (!harvest && g_harvest_types.count > before) {
                             /* `native NAME;` for each new struct/typedef,
-                             * on lines right after the #include itself */
+                             * on lines right after the #include itself --
+                             * or, for a struct whose body was read, the
+                             * struct itself (codegen leaves it out: the
+                             * header defines it downstream) */
                             size_t len = strlen(line) + 1;
                             for (int t = before; t < g_harvest_types.count; t++)
-                                len += strlen(g_harvest_types.items[t]) + 10;
+                                len += strlen(g_harvest_types.items[t]) + 10 +
+                                       (g_harvest_text[t] ? strlen(g_harvest_text[t]) : 0);
                             emit_text = malloc(len);
                             strcpy(emit_text, line);
                             for (int t = before; t < g_harvest_types.count; t++) {
-                                strcat(emit_text, "\nnative ");
-                                strcat(emit_text, g_harvest_types.items[t]);
-                                strcat(emit_text, ";");
+                                if (g_harvest_text[t] != NULL) {
+                                    strcat(emit_text, "\n");
+                                    strcat(emit_text, g_harvest_text[t]);
+                                    path_set_add(&g_layout_structs, g_harvest_types.items[t]);
+                                } else {
+                                    strcat(emit_text, "\nnative ");
+                                    strcat(emit_text, g_harvest_types.items[t]);
+                                    strcat(emit_text, ";");
+                                }
                                 extra_lines++;
                             }
                         }

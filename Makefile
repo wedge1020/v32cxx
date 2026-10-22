@@ -362,6 +362,19 @@ test: all | $(OUT_DIR)
 	grep -q '^int v32_abs(int n)$$' out/150program.c
 	$(TBIN)  -vvv -I libc -D MATH_H -o out/150define.c tests/150sample.c 1> out/150define.txt 2>&1
 	grep -q 'include guard MATH_H is already defined' out/150define.txt || true
+	$(TBIN)  -vvv    -o out/151program.c tests/151sample.cpp 1> out/151sample.txt 2>&1
+	grep -q '^        "integer 11, 22, 33"$$' out/151program.c
+	grep -q '^    total = (total + 40);$$\|^    (total += 40);$$' out/151program.c
+	! grep -q '151table.inc\|151body.inc' out/151program.c
+	$(TBIN)  -vvv -I c_api -o out/152program.c tests/152sample.cpp 1> out/152sample.txt 2>&1
+	grep -q 'b = b->next' out/152program.c
+	! grep -q '^struct malloc_block' out/152program.c
+	rm -rf out/152odd && mkdir -p out/152odd
+	printf 'struct plain { int a; plain *next; float f[2]; };\nstruct hook { int (*fn)(int); int x; };\n' > out/152odd/odd.h
+	printf '#include "odd.h"\nvoid main (void) { plain p; p.a = 1; hook *h = 0; p.next = &p; }\n' > out/152odd/odd.cpp
+	$(TBIN)  -vvv -o out/152odd/odd.c out/152odd/odd.cpp 1> out/152odd.txt 2>&1
+	grep -q 'hook \* h' out/152odd/odd.c
+	! grep -q '^struct plain' out/152odd/odd.c
 # `-vvv` (this project's own verbosity flag, a later round -- see
 # main.c) is passed to every sample specifically so `make test`'s own
 # output still captures the full AST/semantic-analysis/lowering dumps

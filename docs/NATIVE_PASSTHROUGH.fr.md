@@ -262,3 +262,29 @@ insérée. Le fichier de la carte contient ensuite la signature au mot 0. Les
 options de natifs dimensionnés ou à disposition ci-dessus restent la réponse
 générale pour les structures C dont le code du jeu doit lire les champs
 (`date_info`).
+
+## Disposition des structures lue dans les en-têtes du SDK (20261022-dev)
+
+`native X;` reste la réponse pour un type dont les champs ne servent pas,
+mais une structure C simple d'un en-tête que le pré-scan lit n'a plus à
+rester opaque. En moissonnant un `.h` transmis tel quel (voir le préprocesseur
+côté C++ dans le README), `prescan.c` lit aussi le corps de chaque
+`struct NOM { ... };`. Quand tous les membres sont
+
+- `int`, `float`, `bool`, `char`, `short`, `long`, `double`, `unsigned` ;
+- un pointeur vers la structure elle-même, vers une autre structure ou un
+  `typedef` que l'en-tête nomme, ou vers l'un des précédents ;
+- l'un d'eux sous forme de tableau de longueur littérale (`int words[4];`),
+
+la ligne `native NOM;` est remplacée par la structure elle-même,
+`struct NOM { ... };`, juste après le `#include`. v32c++ la traite alors
+comme une structure du programme : `b->size`, `b->next`, `sizeof(NOM)`, les
+locales, paramètres et retours par valeur fonctionnent (le `malloc_block` du
+SDK est le cas qui l'a motivé). La génération de code omet cette structure du
+C produit (`prescan_is_header_struct`), car l'en-tête la définit en aval ; la
+définir deux fois serait une erreur.
+
+Tout le reste (un `{` imbriqué, un membre pointeur de fonction, un champ de
+bits, une structure membre par valeur, un déclarateur après l'accolade
+fermante) laisse la structure opaque exactement comme avant, avec la règle du
+pointeur seul. `tests/152sample.cpp` couvre les deux cas.

@@ -393,3 +393,31 @@ asm
 `{param}` del compilador de Vircon32 la resuelve (un miembro, `{this->...}`, no
 sería válido; de ahí la variable local). Comprobado de extremo a extremo en la
 consola sin pantalla con `tests/119sample.cpp`. Ver `docs/V32IO.es.md`.
+
+## Datos de un archivo dentro de un bloque `asm` (20261022-dev)
+
+Un `#include` dentro de un cuerpo `{ }` se expande donde está (antes se movía
+al principio de la salida, fuera de la función, sin avisar). Como las líneas
+de un bloque `asm` son literales de cadena corrientes, una tabla generada
+puede guardarse en su propio archivo:
+
+```cpp
+int table_address (void)
+{
+    asm
+    {
+        "mov R0, __tbl"
+        "jmp __tbl_end"
+        "__tbl:"
+        #include "data.inc"          // "integer 1, 2, 3"  ...
+        "__tbl_end:"
+    }
+}
+```
+
+Dos cosas de esas tablas pertenecen a la cadena de herramientas de Vircon32,
+no a v32c++: el compilador descarta una función a la que nada llama (y con
+ella los datos de su bloque `asm`), así que hay que llamarla; y el
+ensamblador rechaza algunos nombres de etiqueta como operandos
+(`mov R0, bios_romvol` falla con «expected basic value»), mientras que los
+nombres que empiezan por `__` se ensamblan. `tests/151sample.cpp`.

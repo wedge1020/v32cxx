@@ -1053,6 +1053,20 @@ ternario, un literal repetido, `\x`, DEL, texto mixto) con la cadena de herramie
 el emulador reales. Una corrección aguas arriba serían tres líneas en `EscapeCCharacter`
 (escapar los códigos de control como `\xHH`), tras lo cual esta fase podría eliminarse.
 
+## 29. El `NULL` del SDK es -1, y una función a la que nada llama se descarta
+
+- **Vircon32 hace**: definir `NULL` como `-1`, de modo que un puntero del SDK
+  «nulo» vale -1 (`malloc_first_block` antes del primer `malloc`, el `next`
+  del último `malloc_block`). Aparte, su compilador descarta una función a la
+  que nada llama, junto con los datos de un bloque `asm { }` que contenga.
+- **Para v32c++**: un `0` usado como puntero se escribe `NULL` (#5), así que
+  comparar un puntero del SDK con `0` o `NULL` en el código fuente es
+  correcto. Lo que no lo es: una vista entera del puntero (`(int)p == 0`, un
+  recorrido sobre palabras `int *` que se detiene en 0): detente en `NULL`, o
+  en -1. Una tabla guardada en un bloque `asm` (con `#include` desde un
+  archivo: véase `INLINE_ASSEMBLY_SUPPORT.es.md`) vive en una función que debe
+  llamarse.
+
 ## Qué NO cubre esta lista
 
 - Nada de lo que este proyecto aún no haya descubierto — es un registro de divergencias

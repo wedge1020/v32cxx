@@ -66,6 +66,14 @@ FILE *prescan_expand(const char *input_filename, char *const *include_dirs, int 
 const char *prescan_intern_filename(const char *filename);
 
 /*
+ * True iff `name` is a struct whose body was read from a pass-through
+ * header (e.g. the SDK's `malloc_block`) and declared in the source stream
+ * so its members and sizeof work. The header still defines it downstream,
+ * so codegen leaves it out of the generated C.
+ */
+int prescan_is_header_struct(const char *name);
+
+/*
  * Queues a command-line -D (is_undef = 0; "NAME" or "NAME=VALUE") or -U
  * (is_undef = 1; "NAME"), applied in order when prescan_expand starts.
  */

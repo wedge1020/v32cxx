@@ -796,6 +796,19 @@ is inlined at most once, and an include cycle without it is an error.
 .I .h
 includes pass through to the generated C, once each.
 .IP \(bu 2
+An
+.B #include
+inside a
+.B { }
+body (a function, an
+.B asm { }
+block) is replaced by the file's contents where it stands, whatever the
+file's extension, so generated tables or runs of statements can live in
+files of their own. An SDK header, or a file that cannot be found, still
+passes through (moved to the top of the output) and
+.B v32c++
+warns about it.
+.IP \(bu 2
 .B #define
 and
 .B #undef
@@ -935,6 +948,21 @@ void stamp( date_info* out )
 }
 .fi
 .RE
+.PP
+When a pass-through header defines a plain C struct whose members are
+all primitives, pointers or arrays of literal length
+.RI ( "struct malloc_block" " in " misc.h ),
+.B v32c++
+reads the body instead of leaving the name opaque, and the struct then
+works like one of the program's own: members through
+.B ->
+and
+.BR . ,
+.BR sizeof ,
+by-value locals. The header still defines it in the generated C. Any
+other struct stays an opaque
+.B native
+type.
 .PP
 .B native
 .I Name\fB;

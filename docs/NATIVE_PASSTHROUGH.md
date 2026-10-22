@@ -249,3 +249,29 @@ Verified end to end: the real Vircon32 compiler accepts the cast, and
 inserted. The card file afterwards holds the signature at word 0. The
 sized/layout-bearing native options above are still the general answer
 for C structs whose fields game code needs to read (`date_info`).
+
+## Struct layouts read from SDK headers (20261022-dev)
+
+`native X;` is still the answer for a type whose fields are not needed, but
+a plain C struct in a header the pre-scan reads no longer has to stay opaque.
+While harvesting a pass-through `.h` (see the C++-side preprocessor in the
+README), `prescan.c` also reads each `struct NAME { ... };` body. When every
+member is one of
+
+- `int`, `float`, `bool`, `char`, `short`, `long`, `double`, `unsigned`;
+- a pointer to the struct itself, to another struct or typedef the header
+  names, or to any of the above;
+- any of those as an array of literal length (`int words[4];`),
+
+the `native NAME;` line is replaced by the struct itself,
+`struct NAME { ... };`, right after the `#include`. v32c++ then treats it
+like a struct of the program's own: `b->size`, `b->next`, `sizeof(NAME)`,
+by-value locals, parameters and returns all work (the SDK's `malloc_block`
+is the case that prompted this). Codegen leaves such a struct out of the
+generated C (`prescan_is_header_struct`), because the header defines it
+downstream; defining it twice would be an error.
+
+Anything else (a nested `{`, a function-pointer member, a bit-field, a
+struct member by value, a declarator after the closing brace) leaves the
+struct opaque exactly as before, with the pointer-only rule. `tests/152sample.cpp`
+covers both.

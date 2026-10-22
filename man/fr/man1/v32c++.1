@@ -806,6 +806,20 @@ Les inclusions de
 .I .h
 passent dans le C généré, une fois chacune.
 .IP \(bu 2
+Un
+.B #include
+à l'intérieur d'un corps
+.B { }
+(une fonction, un bloc
+.B asm { }
+) est remplacé par le contenu du fichier à l'endroit où il se trouve, quelle
+que soit l'extension, de sorte que des tables générées ou des suites
+d'instructions peuvent vivre dans leurs propres fichiers. Un en-tête du SDK,
+ou un fichier introuvable, passe toujours tel quel (déplacé en tête de la
+sortie) et
+.B v32c++
+le signale par un avertissement.
+.IP \(bu 2
 .B #define
 et
 .B #undef
@@ -946,6 +960,22 @@ void stamp( date_info* out )
 }
 .fi
 .RE
+.PP
+Quand un en-tête transmis tel quel définit une structure C simple dont les
+membres sont tous des primitives, des pointeurs ou des tableaux de longueur
+littérale
+.RI ( "struct malloc_block" " dans " misc.h ),
+.B v32c++
+lit le corps au lieu de laisser le nom opaque, et la structure fonctionne
+alors comme une structure du programme : membres par
+.B ->
+et
+.BR . ,
+.BR sizeof ,
+locales par valeur. L'en-tête la définit toujours dans le C généré. Toute
+autre structure reste un type
+.B native
+opaque.
 .PP
 .B native
 .I Nom\fB;
