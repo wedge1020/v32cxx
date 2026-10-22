@@ -89,6 +89,7 @@ static int is_expanded_extension(const char *target) {
  * to the downstream compiler, and keep passing through (and being
  * harvested for macros and type names) as they always have. */
 int g_c_mode = 0;
+int g_link_mode = 0;
 
 int prescan_is_c_source(const char *filename) {
     return ends_with(filename, ".c");
@@ -1208,8 +1209,8 @@ static int expand_file_mode(const char *path, FILE *out,
     return rc;
 }
 
-FILE *prescan_expand(const char *input_filename, char *const *include_dirs, int include_dir_count,
-                     char *const *system_dirs, int system_dir_count) {
+FILE *prescan_expand_many(const char *const *input_filenames, int nfiles, char *const *include_dirs, int include_dir_count,
+                          char *const *system_dirs, int system_dir_count) {
     g_system_dirs = system_dirs;
     g_system_dir_count = system_dir_count;
     FILE *out = compat_tmpfile();
@@ -1233,10 +1234,24 @@ FILE *prescan_expand(const char *input_filename, char *const *include_dirs, int 
             free(def);
         }
     }
-    if (expand_file(input_filename, out, include_dirs, include_dir_count, 1) != 0) {
-        fclose(out);
-        return NULL;
+    /* Several inputs are one stream, expanded in order with the macro and
+     * #pragma once state carried across (a header both files include is
+     * expanded once, as in a unity build). Each file after a marker
+     * declaration `int __v32_tu_begin_N;` that link.c uses to tell which
+     * file a declaration came from, and then removes. */
+    for (int i = 0; i < nfiles; i++) {
+        if (nfiles > 1) fprintf(out, "int %s%d;\n", LINK_TU_MARKER, i);
+        if (expand_file(input_filenames[i], out, include_dirs, include_dir_count, 1) != 0) {
+            fclose(out);
+            return NULL;
+        }
     }
     rewind(out);
     return out;
+}
+
+FILE *prescan_expand(const char *input_filename, char *const *include_dirs, int include_dir_count,
+                     char *const *system_dirs, int system_dir_count) {
+    return prescan_expand_many(&input_filename, 1, include_dirs, include_dir_count,
+                               system_dirs, system_dir_count);
 }

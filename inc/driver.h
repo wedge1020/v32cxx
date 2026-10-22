@@ -115,6 +115,9 @@ extern CodegenTarget g_target;
  * Defined in prescan.c.
  */
 extern int g_c_mode;
+/* 1 when more than one input file is being linked into one program (link.c):
+ * the lexer then keeps file-scope `static` for the grammar to record. */
+extern int g_link_mode;
 
 /* --reject-bit-fields. Default 0: a bit-field member (`int level : 6;`)
  * is accepted as an ordinary full-word member, with a warning that says

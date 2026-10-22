@@ -389,6 +389,8 @@ ALNUM   [A-Za-z0-9_]
         g_parse_errors++;
     } else if (sc->parent != NULL && sc->owner_name == NULL) {
         return STATIC;
+    } else if (sc->parent == NULL && g_link_mode) {
+        return STATIC;      /* file scope, several files linked: link.c needs to know */
     }
 }
 

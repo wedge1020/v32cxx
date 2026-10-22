@@ -17,6 +17,7 @@
 #include "debugmap.h"
 #include "prescan.h"
 #include "cmode.h"
+#include "link.h"
 #include "compat.h"
 #include "generic.h"
 
@@ -75,7 +76,7 @@ static char *invoked_name(const char *argv0) {
 }
 
 static void print_usage(const char *prog_name) {
-    fprintf(stderr, "usage: %s [-o output.c] [-c] [-v[v[v]]] [-I dir] [-D name[=value]] [-U name] [-x] [--xml-preserve-paths] [--no-build-scripts] [--title-opt=TEXT] [--no-diff-opt-title] [-b] [-g] [--target=vircon32|standard] [--reject-bit-fields] [--no-signed-shift] [--silence-unused-args] [--no-inline-containers] [--version] <input.cpp>\n", prog_name);
+    fprintf(stderr, "usage: %s [-o output.c] [-c] [-v[v[v]]] [-I dir] [-D name[=value]] [-U name] [-x] [--xml-preserve-paths] [--no-build-scripts] [--title-opt=TEXT] [--no-diff-opt-title] [-b] [-g] [--target=vircon32|standard] [--reject-bit-fields] [--no-signed-shift] [--silence-unused-args] [--allow-undefined] [--no-inline-containers] [--version] <input.cpp> [more inputs]\n", prog_name);
     fprintf(stderr, "  -o output.c   write generated Vircon32 C to this file (default:\n"
                      "                <input> with its extension replaced by .c)\n");
     fprintf(stderr,  "  --no-signed-shift\n"
@@ -93,6 +94,14 @@ static void print_usage(const char *prog_name) {
                      "                counts as a use: no \"argument is not used\"\n"
                      "                warning (it stops after 10), at the cost of a\n"
                      "                little code per parameter\n");
+    fprintf(stderr,  "  more inputs   several source files are linked into one program:\n"
+                     "                clashing file-scope statics are renamed, a function\n"
+                     "                defined twice or used and never defined is an\n"
+                     "                error (all inputs C, or all C++)\n"
+                     "  --allow-undefined\n"
+                     "                with several inputs, report a used-but-undefined\n"
+                     "                function or extern variable as a warning (the SDK\n"
+                     "                declares its own functions)\n");
     fprintf(stderr,  "  --no-inline-containers\n"
                      "                keep std::array/std::vector accessors (v[i],\n"
                      "                v.size(), ...) as function calls instead of\n"
@@ -320,6 +329,7 @@ int  main (int  argc, char **argv)
     char       *include_dirs[MAX_INCLUDE_DIRS];
     const char *output_filename    = NULL;
     int         require_main       = 1;
+    int         allow_undefined    = 0;
     int         verbosity          = 0;
     int         emit_xml           = 1;
     int         xml_preserve_paths = 0;
@@ -343,6 +353,7 @@ int  main (int  argc, char **argv)
         { "no-inline-containers", no_argument, 0, 'N' },
         { "no-signed-shift", no_argument, 0, 'S' },
         { "silence-unused-args", no_argument, 0, 'A' },
+        { "allow-undefined", no_argument, 0, 'L' },
         { 0,         0,                 0, 0   }
     };
 
@@ -445,6 +456,9 @@ int  main (int  argc, char **argv)
             case 'A':
                 g_silence_unused = 1;
                 break;
+            case 'L':
+                allow_undefined = 1;
+                break;
             case 'N':
                 /* --no-inline-containers: std::array/std::vector accessors
                  * (v[i], v.size(), ...) stay real function calls instead
@@ -484,8 +498,20 @@ int  main (int  argc, char **argv)
     }
 
     const char *input_filename = argv[optind];
+    int nfiles = argc - optind;
     /* A .c file is C, not C++: see driver.h's g_c_mode. */
     g_c_mode = prescan_is_c_source(input_filename);
+    if (nfiles > 1) {
+        /* several files: one program, linked (link.c) */
+        for (int i = 1; i < nfiles; i++) {
+            if (prescan_is_c_source(argv[optind + i]) != g_c_mode) {
+                fprintf(stderr, "---- error: cannot link C and C++ sources together (%s and %s) ----\n",
+                        input_filename, argv[optind + i]);
+                return 1;
+            }
+        }
+        g_link_mode = 1;
+    }
     /* Include pre-scan FIRST: .hpp/.cpp #includes are expanded into a
      * monolithic temp stream here (with line markers to keep the
      * lexer's file/line tracking honest), and .h/system includes are
@@ -511,8 +537,8 @@ int  main (int  argc, char **argv)
         for (int i = 0; i < sdk_dir_count; i++)
             printf("SDK header search: %s\n", sdk_dirs[i]);
     prescan_set_sdk_dirs(sdk_dirs, sdk_dir_count);
-    FILE *f = prescan_expand(input_filename, include_dirs, include_dir_count,
-                             system_dirs, system_dir_count);
+    FILE *f = prescan_expand_many((const char *const *)&argv[optind], nfiles, include_dirs, include_dir_count,
+                                  system_dirs, system_dir_count);
     if (f == NULL) {
         return 1; /* message already printed, with file/line context */
     }
@@ -552,10 +578,14 @@ int  main (int  argc, char **argv)
                     input_filename, derived_output);
         }
         output_filename = derived_output;
-    } else if (same_file(output_filename, input_filename)) {
-        fprintf(stderr, "---- error: the output file %s is the input file; "
-                        "choose another name with -o ----\n", output_filename);
-        return 1;
+    } else {
+        for (int i = 0; i < nfiles; i++) {
+            if (same_file(output_filename, argv[optind + i])) {
+                fprintf(stderr, "---- error: the output file %s is the input file; "
+                                "choose another name with -o ----\n", output_filename);
+                return 1;
+            }
+        }
     }
 
     g_symtab = symtab_create();
@@ -563,6 +593,15 @@ int  main (int  argc, char **argv)
     if (verbosity >= 1) printf("stage 1: running lexer/parser\n");
     int rc = yyparse();
     if (rc == 0 && g_parse_errors > 0) rc = 1; /* messages already printed */
+    /* line markers moved it to the last file parsed; the cart XML, the
+     * build scripts and the debug map are named after the first */
+    if (nfiles > 1) g_current_filename = input_filename;
+
+    /* several files: link them (rename clashing statics, report multiple
+     * and undefined definitions) before anything else sees the tree */
+    if (rc == 0 && g_program != NULL && nfiles > 1 &&
+        link_merge(&g_program->list, (const char *const *)&argv[optind], nfiles, allow_undefined) != 0)
+        rc = 1;
 
     /* std::array<T, N> classes the program named: generated, parsed and
      * spliced in before anything else looks at the AST (generic.h). */
@@ -694,6 +733,11 @@ int  main (int  argc, char **argv)
                         for (int i = 1; i < argc; i++) {
                             const char *a = orig_argv[i];
                             if (a == input_filename) continue;
+                            {   /* the other source files of a linked program: paths, repeated */
+                                int is_input = 0;
+                                for (int k = 1; k < nfiles; k++) if (a == argv[optind + k]) is_input = 1;
+                                if (is_input) { sargs[n] = a; spath[n++] = 1; continue; }
+                            }
                             /* A bundle of short flags such as "-bgo" (or "-vvx"): drop
                              * the -o/-x/-v parts, keep the rest; "o" takes the next
                              * argument (or the rest of the bundle) with it. */

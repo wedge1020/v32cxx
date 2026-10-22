@@ -162,10 +162,45 @@ of change Rogue's save code needed.
 at the top of `main`. Rogue's title screen is that function: its menu
 entries stand for `rogue`, `rogue -r` and `rogue -s`.
 
+## Linking several files
+
+    v32c main.c kernel.c lib.c -o prog.c
+
+Give `v32c` (or `v32c++`, for C++ sources) several files and it links them
+itself, as one program. The Vircon32 compiler has no linker and refuses an
+undefined function or `extern` variable, so the files are merged before
+it ever sees them:
+
+- A prototype or `extern` declaration in one file binds to the definition
+  in another. A header's `#include` guards (or `#pragma once`) and macros
+  carry from one file to the next, so a shared header is read once.
+- A file-scope `static` function or variable is private to its file. If
+  another file has anything of the same name, it is renamed in the file
+  that owns it (`helper` in `b.c` becomes `helper__b`), uses included; a
+  local variable or parameter of the same name still hides it. A `static
+  inline` in a header exists once and is shared.
+- A function defined in two files, or a variable initialised in two, is
+  an error: `multiple definition of 'f' (first defined at a.c:3)`.
+- A function or `extern` variable that is used and never defined is an
+  error: `undefined reference to 'read'`. A prototype nobody calls is
+  fine. `--allow-undefined` makes it a warning: the Vircon32 SDK declares
+  its own functions, so a prototype for one of those would otherwise be
+  reported (an SDK function declared by the SDK header itself needs
+  nothing).
+- All inputs must be C, or all C++ (the undefined-reference check is for C
+  only). The cart XML, `Make.sh` and `Make.bat` are named after the first
+  file; the build scripts repeat the other files.
+- Macros defined in one file stay defined for the files after it (a
+  redefinition is the last one for what follows). A struct, typedef or
+  enum with the same name in two files must be the same type.
+
+Not done yet: libraries (archives of already-transpiled files, so that
+only the functions a program uses are linked in).
+
 ## Limits
 
-- One translation unit, as always: `static` at file scope means nothing,
-  and two files' `static` functions of the same name collide.
+- Several files are linked (see above); a single file has one translation
+  unit, and there `static` at file scope means nothing.
 - `unsigned` is `int` (warned once); `char`, `short` and `long` are one
   32-bit word, so `sizeof(char) == sizeof(int) == 1`.
 - `double` and `long double` are `float`, the one 32-bit floating type

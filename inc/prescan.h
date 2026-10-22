@@ -54,6 +54,15 @@
 FILE *prescan_expand(const char *input_filename, char *const *include_dirs, int include_dir_count,
                      char *const *system_dirs, int system_dir_count);
 
+/* Several source files as ONE stream (whole-program linking, link.c): the
+ * macro table and #pragma once state carry from one file to the next, and
+ * a marker declaration named LINK_TU_MARKER<N> precedes the Nth file (none
+ * when there is a single file, whose output is then identical to
+ * prescan_expand's). */
+#define LINK_TU_MARKER "__v32_tu_begin_"
+FILE *prescan_expand_many(const char *const *input_filenames, int nfiles, char *const *include_dirs,
+                          int include_dir_count, char *const *system_dirs, int system_dir_count);
+
 /*
  * Returns a stable, interned copy of `filename` (a new copy the first
  * time each distinct string is seen, the same pointer every time

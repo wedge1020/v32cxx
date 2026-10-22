@@ -348,6 +348,17 @@ static AstNode *static_assert_decl(AstNode *cond, const char *msg, int line) {
     return ast_new(AST_VAR_DECL_GROUP, line);
 }
 
+/* `static` at file scope, when several files are linked (g_link_mode). */
+static AstNode *mark_file_static(AstNode *d) {
+    if (d == NULL) return d;
+    if (d->kind == AST_VAR_DECL_GROUP) {
+        for (int i = 0; i < d->list.count; i++) d->list.items[i]->is_file_static = 1;
+    } else {
+        d->is_file_static = 1;
+    }
+    return d;
+}
+
 static char *anon_tag_name(void) {
     static int g_anon_tag_counter = 0;
     char buf[40];
@@ -693,7 +704,12 @@ static AstNode *finish_declarators(AstNode *first, AstNode *base, AstList more, 
  * shift/reduce TYPE_NAME already has, in the same four states (2, 26,
  * 218, 324 of parser.output) and nowhere else.
  */
-%expect 68
+/* 68 -> 83 for file-scope `static` (G6, linking several files): `STATIC
+ * plain_top_decl` begins a second copy of the parser states that decide
+ * between a declaration's alternatives, and so repeats the 15 shift/reduce
+ * conflicts of the plain one, each resolved by the same GLR fork as its
+ * twin. No new ambiguity: without that rule the count is 68. */
+%expect 83
 %expect-rr 1
 /* 46 -> 47: the range-based for. After `for (` and a type, an IDENTIFIER
  * either follows an empty pointer_opt (reduce: `for (int x : v)`, and
@@ -900,7 +916,7 @@ static AstNode *finish_declarators(AstNode *first, AstNode *base, AstList more, 
 %type <node> program top_decl namespace_decl class_decl member using_decl using_alias
 %type <node> braced_init init_item
 %type <list> init_items designation
-%type <node> static_assert_stmt
+%type <node> static_assert_stmt plain_top_decl
 %type <node> designator
 %type <node> func_decl func_def func_header var_decl typedef_decl tag_typedef_decl out_of_line_def native_decl
 %type <node> enum_decl enumerator union_decl func_ptr_param_type implicit_int_header anon_tag_decl
@@ -977,17 +993,25 @@ static_assert_stmt:
         { $$ = static_assert_decl($3, $5, @1.first_line); }
     ;
 
+/* The three declarations `static` may start at file scope (g_link_mode).
+ * A nonterminal of their own so the `static` form shares the parser states
+ * (and the GLR conflicts) of the plain one instead of duplicating them. */
+plain_top_decl:
+      func_def           { $$ = $1; }
+    | func_decl ';'      { $$ = $1; }
+    | var_decl ';'       { $$ = $1; }
+    ;
+
 top_decl:
       static_assert_stmt ';'  { $$ = $1; }
+    | STATIC plain_top_decl   { $$ = mark_file_static($2); }
     | namespace_decl     { $$ = $1; }
     | using_decl         { $$ = $1; }
     | using_alias        { $$ = $1; }
     | class_decl ';'     { $$ = $1; }
     | enum_decl ';'      { $$ = $1; }
     | union_decl ';'     { $$ = $1; }
-    | func_def           { $$ = $1; }
-    | func_decl ';'      { $$ = $1; }
-    | var_decl ';'       { $$ = $1; }
+    | plain_top_decl     { $$ = $1; }
     | typedef_decl ';'   { $$ = $1; }
     | tag_typedef_decl ';' { $$ = $1; }
     | anon_tag_decl ';'

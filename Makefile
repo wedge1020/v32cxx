@@ -150,6 +150,7 @@ $(BIN_DIR)/v32c++: $(OBJ_DIR)/parser.o   $(OBJ_DIR)/lexer.o   \
 				   $(OBJ_DIR)/pathutil.o $(OBJ_DIR)/compat.o $(OBJ_DIR)/generic.o $(OBJ_DIR)/stdstring.o $(OBJ_DIR)/cartxml.o $(OBJ_DIR)/buildscript.o \
 				   $(OBJ_DIR)/debugmap.o $(OBJ_DIR)/macro.o    \
 				   $(OBJ_DIR)/cmode.o    \
+				   $(OBJ_DIR)/link.o     \
 				   $(OBJ_DIR)/main.o | $(BIN_DIR)
 	$(CC) $(CFLAGS) -o $@ $^
 # If linking fails looking for yywrap/yy_flex_* symbols on your system,
@@ -408,6 +409,19 @@ test: all | $(OUT_DIR)
 	grep -q '__v32_cl_tmp' out/158program.c
 	! $(TBIN) -o out/158bad.c tests/158bad.c 1> out/158bad.txt 2>&1
 	grep -q 'static assertion failed: arithmetic is broken' out/158bad.txt
+	$(TBIN)  -vvv    -o out/159program.c tests/159sample.c tests/159lib_a.c tests/159lib_b.c 1> out/159sample.txt 2>&1
+	grep -q 'calls__159lib_a' out/159program.c
+	grep -q 'helper__159lib_b\|helper__159lib_a' out/159program.c
+	! grep -q '__v32_tu_begin_' out/159program.c
+	test "`grep -c '^int twice(int v)$$' out/159program.c`" = 1
+	! $(TBIN) -o out/159bad.c tests/159bad_dup.c tests/159bad_dup2.c 1> out/159bad_dup.txt 2>&1
+	grep -q "multiple definition of 'dup'" out/159bad_dup.txt
+	! $(TBIN) -o out/159bad.c tests/159bad_undef.c tests/159bad_undef2.c 1> out/159bad_undef.txt 2>&1
+	grep -q "undefined reference to 'missing'" out/159bad_undef.txt
+	grep -q "undefined reference to 'nowhere'" out/159bad_undef.txt
+	! grep -q "unused_proto" out/159bad_undef.txt
+	$(TBIN) --allow-undefined -o out/159bad.c tests/159bad_undef.c tests/159bad_undef2.c 1> out/159bad_undef_ok.txt 2>&1
+	grep -q "warning: undefined reference to 'missing'" out/159bad_undef_ok.txt
 # `-vvv` (this project's own verbosity flag, a later round -- see
 # main.c) is passed to every sample specifically so `make test`'s own
 # output still captures the full AST/semantic-analysis/lowering dumps

@@ -877,6 +877,11 @@ struct AstNode {
      * hoist_static_locals (ast.c), which moves it to file scope. */
     int is_static_local;
     int is_extern;          /* C input: declared `extern` (a VAR_DECL at file scope) */
+    /* A FUNC_DEF / FUNC_DECL / VAR_DECL written `static` at file scope.
+     * Set only when linking several files (g_link_mode: link.c renames
+     * the ones whose names clash); in a single file `static` means nothing
+     * and the lexer drops it. */
+    int is_file_static;
 
     /* C++11 virt-specifiers. AST_FUNC_DECL/AST_FUNC_DEF (in a class
      * body): VIRT_SPEC_OVERRIDE and/or VIRT_SPEC_FINAL, as written after

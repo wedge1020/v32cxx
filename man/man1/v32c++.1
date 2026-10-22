@@ -25,8 +25,10 @@ v32c++, v32c \- transpile a subset of C/C++ to Vircon32 C
 .RB [ \-\-reject\-bit\-fields ]
 .RB [ \-\-no\-signed\-shift ]
 .RB [ \-\-silence\-unused\-args ]
+.RB [ \-\-allow\-undefined ]
 .RB [ \-\-no\-inline\-containers ]
 .I input.cpp
+.RI [ more-inputs ]
 .br
 .B v32c++
 .B \-\-version
@@ -294,6 +296,12 @@ and
 instead of writing each one in place as a direct access to the
 container's fields. Slower on the console; useful for reading the
 generated C next to the class it came from.
+.TP
+.B \-\-allow\-undefined
+With several input files, report a function or
+.B extern
+variable that is used and never defined as a warning instead of an error.
+Useful when a prototype stands for a function the Vircon32 SDK declares itself.
 .TP
 .B \-\-silence\-unused\-args
 Start every function that ignores one of its parameters with a bare

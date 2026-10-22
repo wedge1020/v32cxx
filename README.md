@@ -511,6 +511,7 @@ v32c++ -I path/to/v32c++ -o obj/game.c game.cpp
 | `--target=standard`/`std` | portable standard C instead |
 | `--reject-bit-fields` | make a bit-field an error instead of a warning |
 | `--no-signed-shift` | print `>>` / `>>=` as written (Vircon32's shift is logical; by default a signed shift is rewritten to be arithmetic) |
+| `--allow-undefined` | with several input files, make a used-but-never-defined function or `extern` variable a warning instead of a link error |
 | `--silence-unused-args` | start every function that ignores a parameter (`this` of a method that touches no member, a callback's argument) with a bare `name;`, which the Vircon32 compiler counts as a use: no `argument "x" is not used` warning (it stops after 10). A little code per parameter |
 | `--no-inline-containers` | keep `std::array`/`std::vector` accessors as calls |
 | `--version` | print the version and exit |
