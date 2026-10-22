@@ -1973,6 +1973,16 @@ param:
             $$->str1 = strdup($5);
             $$->type = ast_wrap_func_ptr(apply_ptr($1, $2, @1.first_line), $8, @1.first_line);
         }
+    | type_spec pointer_opt IDENTIFIER '(' opt_func_ptr_param_list ')'
+        {
+            /* a parameter of function type, `int run(void f(char *), char *s)`:
+             * C adjusts it to a pointer to that function, so it is the
+             * same parameter as `void (*f)(char *)` (G8) */
+            symtab_insert(g_symtab, g_symtab->current, $3, SYM_PARAM);
+            $$ = ast_new(AST_PARAM, @3.first_line);
+            $$->str1 = strdup($3);
+            $$->type = ast_wrap_func_ptr(apply_ptr($1, $2, @1.first_line), $5, @1.first_line);
+        }
     | type_spec pointer_opt '(' '*' ')' '(' opt_func_ptr_param_list ')'
         {
             $$ = ast_new(AST_PARAM, @1.first_line);

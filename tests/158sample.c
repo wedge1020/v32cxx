@@ -3,6 +3,7 @@
  *   G3  compound literals (T){...} and (T[]){...}
  *   G4  enums defined inside a function body (two functions reuse `N`)
  *   G5  _Static_assert / static_assert, checked while transpiling
+ *   G8  a parameter of function type, `int call (int f (int), int v)`
  * Self-checking: test_errors must end at 0. */
 int test_errors = -1;
 
@@ -20,6 +21,9 @@ static_assert (BSIZE == 64);
 static int sum (int *v, int n) { int s = 0; for (int i = 0; i < n; i++) s += v[i]; return s; }
 static int count (char **argv) { int n = 0; while (argv[n]) n++; return n; }
 static int px (struct P p) { return p.x * 10 + p.y; }
+
+static int twice (int v) { return v * 2; }
+static int call (int fn (int), int v) { return fn (v) + 1; }
 
 static int f (void)
 {
@@ -54,5 +58,6 @@ void main (void)
     if ((int[]){10, 20, 30}[2] != 30) e |= 128;
     for (int i = 0; i < 3; i++)
         if (sum ((int[]){i, i}, 2) != 2 * i) e |= 256;
+    if (call (twice, 5) != 11) e |= 512;
     test_errors = e;
 }
