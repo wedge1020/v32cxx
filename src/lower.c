@@ -5360,12 +5360,48 @@ static int is_int_like_type(const AstNode *t) {
             strcmp(t->str1, "bool") == 0);
 }
 
+/* The type a branch of a ternary has as a VALUE: an array decays to a
+ * pointer to its element (`c ? a : b` with two `char[8]` is a `char *`,
+ * and the temporary cannot be an array), a string literal is a `char *`,
+ * and pointer arithmetic keeps the pointer's type (infer_expr_type says
+ * int for `p + 1`). NULL when nothing better than infer_expr_type's own
+ * answer is known. */
+static AstNode *tern_value_type(AstNode *e, TernCtx *cx) {
+    if (e == NULL) return NULL;
+    if (e->kind == AST_STRING_LIT) {
+        AstNode *p = ast_new(AST_POINTER_TYPE, e->line);
+        p->a = ast_ident("char", e->line);
+        return p;
+    }
+    if (e->kind == AST_TERNARY) {
+        AstNode *tb = tern_value_type(e->b, cx);
+        return tb != NULL ? tb : tern_value_type(e->c, cx);
+    }
+    AstNode *t = NULL;
+    if (e->kind == AST_BINOP && e->str1 != NULL && (strcmp(e->str1, "+") == 0 || strcmp(e->str1, "-") == 0)) {
+        AstNode *lt = tern_value_type(e->a, cx);
+        AstNode *rt = tern_value_type(e->b, cx);
+        int lp = lt != NULL && lt->kind == AST_POINTER_TYPE;
+        int rp = rt != NULL && rt->kind == AST_POINTER_TYPE;
+        if (lp && !rp) t = lt;
+        else if (rp && !lp && e->str1[0] == '+') t = rt;
+        else if (lp && rp) return ast_ident("int", e->line);      /* pointer difference */
+    }
+    if (t == NULL) t = infer_expr_type(e, cx->class_decl, cx->locals);
+    if (t != NULL && t->kind == AST_ARRAY_TYPE) {
+        AstNode *p = ast_new(AST_POINTER_TYPE, t->line);
+        p->a = t->a;
+        return p;
+    }
+    return t;
+}
+
 /* The temporary's type: C++'s usual arithmetic conversion where it
  * matters here (int with float gives float, so `c ? 1 : 2.5` can't
  * truncate), else whichever branch's type is known, else int. */
 static AstNode *ternary_type(AstNode *t, TernCtx *cx) {
-    AstNode *tb = infer_expr_type(t->b, cx->class_decl, cx->locals);
-    AstNode *tc = infer_expr_type(t->c, cx->class_decl, cx->locals);
+    AstNode *tb = tern_value_type(t->b, cx);
+    AstNode *tc = tern_value_type(t->c, cx);
     /* An enum meeting anything but the SAME enum converts to int in C++
      * (`on ? v32::BlendAlpha : 0`), and Vircon32 C refuses an int stored
      * into an enum-typed temporary -- so the temporary is an int. */

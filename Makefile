@@ -387,6 +387,10 @@ test: all | $(OUT_DIR)
 	grep -q "has no effect: if 'malloc_block' was meant as a type" out/154sample.txt
 	grep -q '^#ifndef INT_MIN' libc/v32libc.h
 	! grep -q 'environ' libc/v32libc.c
+	$(TBIN)  -vvv    -o out/155program.c tests/155sample.c 1> out/155sample.txt 2>&1
+	! grep -q '^    char \[[0-9]*\] __v32_tern_tmp' out/155program.c
+	! grep -q '^    int __v32_tern_tmp[0-9]*;' out/155program.c
+	grep -q 'char \* __v32_tern_tmp0;' out/155program.c
 # `-vvv` (this project's own verbosity flag, a later round -- see
 # main.c) is passed to every sample specifically so `make test`'s own
 # output still captures the full AST/semantic-analysis/lowering dumps
