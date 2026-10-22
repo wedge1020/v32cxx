@@ -231,7 +231,7 @@ Avant l'analyse, v32c++ fait ce que ferait un préprocesseur C++ :
   `/usr/local/Vircon32/DevTools/include`), de sorte que les macros du SDK comme
   `screen_width` ou `color_red` fonctionnent dans les tailles de tableaux et
   dans `#if`, et sont typées pour la résolution des surcharges. `-v` liste les
-  dossiers consultés.
+  dossiers consultés. Un `compile` qui est un lien symbolique est suivi. Quand un `#include` nomme un en-tête du SDK (`misc.h`, `video.h`, ...) introuvable, v32c++ avertit désormais, car un type qu'il définit (`malloc_block *b;`) serait sinon lu comme une multiplication.
 - Les `#define` sont transmis au C généré, et les constantes nommées y gardent
   leur nom ; les macros que le préprocesseur propre à Vircon32 ne peut pas
   traiter sont développées à la place. Les numéros de ligne dans les
@@ -536,6 +536,7 @@ v32c++ -I path/to/v32c++ -o obj/game.c game.cpp
 | `--target=standard`/`std` | C standard portable à la place |
 | `--reject-bit-fields` | fait d'un champ de bits une erreur au lieu d'un avertissement |
 | `--no-signed-shift` | imprime `>>` / `>>=` tels qu'écrits (le décalage de Vircon32 est logique ; par défaut un décalage signé est réécrit pour être arithmétique) |
+| `--silence-unused-args` | commence toute fonction qui ignore un paramètre (le `this` d'une méthode qui ne touche aucun membre, l'argument d'un callback) par un `nom;` isolé, que le compilateur Vircon32 compte comme un usage : plus d'avertissement `argument "x" is not used` (il s'arrête après 10). Un peu de code par paramètre |
 | `--no-inline-containers` | garde les accesseurs de `std::array`/`std::vector` sous forme d'appels |
 | `--version` | affiche la version et termine |
 

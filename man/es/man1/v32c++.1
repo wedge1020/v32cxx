@@ -25,6 +25,7 @@ v32c++, v32c \- transpila un subconjunto de C++ (o C) a C de Vircon32
 .RB [ \-\-target=vircon32 | standard ]
 .RB [ \-\-reject\-bit\-fields ]
 .RB [ \-\-no\-signed\-shift ]
+.RB [ \-\-silence\-unused\-args ]
 .RB [ \-\-no\-inline\-containers ]
 .I entrada.cpp
 .br
@@ -298,6 +299,20 @@ y
 lugar de escribir cada uno en su sitio como un acceso directo a los campos del
 contenedor. Más lento en la consola; útil para leer el C generado junto a la
 clase de la que procede.
+.TP
+.B \-\-silence\-unused\-args
+Empieza toda función que ignora uno de sus parámetros con una sentencia
+.IB nombre ;
+suelta. El compilador de Vircon32 avisa
+.B argument "x" is not used
+por el
+.B this
+oculto de un método que no toca ningún miembro y por un parámetro de callback
+que exige su tipo de puntero a función, y se detiene tras 10 advertencias; un
+nombre suelto cuenta como uso. Cuesta un poco de código por parámetro, así que
+está desactivada por omisión. Para un solo parámetro,
+.B (void)x;
+en el código fuente hace lo mismo.
 .TP
 .B \-\-no\-signed\-shift
 Imprime
@@ -1434,6 +1449,18 @@ y antes que
 .IR /usr/local/Vircon32/DevTools/include .
 .B \-v
 lista las carpetas en las que se busca.
+.PP
+Se sigue un
+.B compile
+que sea un enlace simbólico (la carpeta
+.I include
+se busca también junto al archivo real). Si un
+.B #include
+nombra una cabecera del SDK (misc.h, video.h, ...) que no se encuentra,
+.B v32c++
+avisa: los tipos que define serían desconocidos, y una declaración como
+.B malloc_block *b;
+se leería como una multiplicación (otra advertencia lo indica también).
 .SH ARCHIVOS (INSTALACIÓN)
 Dónde colocan las cosas
 .B make sysinstall

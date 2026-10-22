@@ -1067,6 +1067,17 @@ el emulador reales. Una corrección aguas arriba serían tres líneas en `Escape
   archivo: véase `INLINE_ASSEMBLY_SUPPORT.es.md`) vive en una función que debe
   llamarse.
 
+## 30. «argument X is not used» — lo avisa el compilador, se silencia a petición
+
+- **Vircon32 hace**: avisar por cada parámetro que una función nunca usa,
+  incluidos el `this` oculto de un método que no toca ningún miembro y un
+  parámetro de callback que exige su tipo de puntero a función; además deja de
+  compilar tras 10 advertencias, así que corregir unas revela otras.
+- **Para v32c++**: `(void)x;` en el código fuente silencia un parámetro. Para
+  todos, `--silence-unused-args` empieza cada función así con un `x;` /
+  `this;` suelto (solo modo Vircon32); cuesta un poco de código, por lo que
+  está desactivada por omisión. `tests/153sample.cpp`.
+
 ## Qué NO cubre esta lista
 
 - Nada de lo que este proyecto aún no haya descubierto — es un registro de divergencias

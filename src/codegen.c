@@ -1902,6 +1902,42 @@ static void emit_function_prototype(FILE *out, const AstNode *func) {
     fprintf(out, ";\n");
 }
 
+/* Does the subtree under `n` use the identifier `name` anywhere? */
+static int uses_ident(const AstNode *n, const char *name) {
+    if (n == NULL) return 0;
+    if (n->kind == AST_IDENT && n->str1 != NULL && strcmp(n->str1, name) == 0) return 1;
+    if (uses_ident(n->a, name) || uses_ident(n->b, name) || uses_ident(n->c, name) ||
+        uses_ident(n->d, name)) return 1;
+    for (int i = 0; i < n->list.count; i++)
+        if (uses_ident(n->list.items[i], name)) return 1;
+    return 0;
+}
+
+/* --silence-unused-args: the Vircon32 compiler warns "argument X is not
+ * used" for every parameter a function ignores -- `this` of a method that
+ * touches no member, a callback's argument its type requires -- and stops
+ * after 10 warnings. A bare `X;` statement counts as a use, so each such
+ * parameter gets one as the first statement of the body. */
+static void silence_unused_params(const AstNode *func) {
+    AstNode *body = func->a;
+    if (body == NULL || body->kind != AST_BLOCK) return;
+    int first = 0;
+    for (int i = 0; i < func->list.count; i++) {
+        const AstNode *param = func->list.items[i];
+        if (param == NULL || param->kind != AST_PARAM || param->str1 == NULL || param->str1[0] == '\0')
+            continue;
+        if (uses_ident(body, param->str1)) continue;
+        AstNode *use = ast_new(AST_IDENT, func->line);
+        use->str1 = strdup(param->str1);
+        AstNode *stmt = ast_new(AST_EXPR_STMT, func->line);
+        stmt->a = use;
+        ast_list_append(&body->list, stmt);               /* then rotate it to the front */
+        for (int j = body->list.count - 1; j > first; j--)
+            body->list.items[j] = body->list.items[j - 1];
+        body->list.items[first++] = stmt;
+    }
+}
+
 static void emit_function_definition(FILE *out, const AstNode *func) {
     FuncSemaInfo *info = (FuncSemaInfo *)func->sema_info;
     const char *name = (info != NULL) ? info->mangled_name : func->str1;
@@ -1949,6 +1985,7 @@ static void emit_function_definition(FILE *out, const AstNode *func) {
     if (func->list.count > 0 && strcmp(func->list.items[0]->str1, "this") == 0) {
         explain(out, 0, "C has no implicit object parameter -- this-injection gives every method an explicit 'this' as its first parameter, standing in for what C++'s own 'this' would otherwise mean");
     }
+    if (g_silence_unused && g_target == TARGET_VIRCON32) silence_unused_params(func);
     emit_function_header(out, func, name);
     fprintf(out, "\n");
     print_stmt(out, func->a, 0, force_void_main); /* func->a is the body, an AST_BLOCK */

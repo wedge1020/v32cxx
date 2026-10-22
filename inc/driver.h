@@ -128,6 +128,7 @@ extern int g_reject_bit_fields;
  * non-negative. `unsigned` values never need it: their `>>` is logical in
  * C too. Read by lower.c. */
 extern int g_signed_shift;
+extern int g_silence_unused;     /* --silence-unused-args: see codegen.c */
 
 /*
  * Cart hints: `#texture NAME "file.png"` and `#sound NAME "file.wav"`,

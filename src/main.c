@@ -34,6 +34,7 @@ int g_uses_new_or_delete = 0;
 CodegenTarget g_target = TARGET_VIRCON32;
 int g_reject_bit_fields = 0;   /* --reject-bit-fields */
 int g_signed_shift = 1;        /* cleared by --no-signed-shift */
+int g_silence_unused = 0;      /* set by --silence-unused-args */
 CartResourceList g_cart_textures = {NULL, 0, 0};
 CartResourceList g_cart_sounds = {NULL, 0, 0};
 char *g_cart_title = NULL;
@@ -74,7 +75,7 @@ static char *invoked_name(const char *argv0) {
 }
 
 static void print_usage(const char *prog_name) {
-    fprintf(stderr, "usage: %s [-o output.c] [-c] [-v[v[v]]] [-I dir] [-D name[=value]] [-U name] [-x] [--xml-preserve-paths] [--no-build-scripts] [--title-opt=TEXT] [--no-diff-opt-title] [-b] [-g] [--target=vircon32|standard] [--reject-bit-fields] [--no-signed-shift] [--no-inline-containers] [--version] <input.cpp>\n", prog_name);
+    fprintf(stderr, "usage: %s [-o output.c] [-c] [-v[v[v]]] [-I dir] [-D name[=value]] [-U name] [-x] [--xml-preserve-paths] [--no-build-scripts] [--title-opt=TEXT] [--no-diff-opt-title] [-b] [-g] [--target=vircon32|standard] [--reject-bit-fields] [--no-signed-shift] [--silence-unused-args] [--no-inline-containers] [--version] <input.cpp>\n", prog_name);
     fprintf(stderr, "  -o output.c   write generated Vircon32 C to this file (default:\n"
                      "                <input> with its extension replaced by .c)\n");
     fprintf(stderr,  "  --no-signed-shift\n"
@@ -84,6 +85,14 @@ static void print_usage(const char *prog_name) {
                      "                C (-8 >> 1 is -4); `unsigned` values are left\n"
                      "                alone. Use this when every shifted value is known\n"
                      "                to be non-negative and the extra code costs too much\n");
+    fprintf(stderr,  "  --silence-unused-args\n"
+                     "                start every function that ignores one of its\n"
+                     "                parameters (`this` of a method that touches no\n"
+                     "                member, a callback's unused argument) with a\n"
+                     "                `name;` statement, which the Vircon32 compiler\n"
+                     "                counts as a use: no \"argument is not used\"\n"
+                     "                warning (it stops after 10), at the cost of a\n"
+                     "                little code per parameter\n");
     fprintf(stderr,  "  --no-inline-containers\n"
                      "                keep std::array/std::vector accessors (v[i],\n"
                      "                v.size(), ...) as function calls instead of\n"
@@ -227,7 +236,23 @@ static int build_sdk_include_dirs(char **dirs, int max) {
             sprintf(inc, "%.*s/include", (int)len, p);
             char *probe = malloc(strlen(inc) + 16);
             sprintf(probe, "%s/video.h", inc);
-            int ok = compat_is_executable(exe) && access(probe, R_OK) == 0;
+            int is_exe = compat_is_executable(exe);
+            int ok = is_exe && access(probe, R_OK) == 0;
+            if (is_exe && !ok) {
+                /* `compile` may be a symlink into the SDK build (~/bin/compile
+                 * -> ~/sdk/bin/compile): look beside the real file too */
+                char *real = compat_realpath(exe);
+                const char *slash = real ? compat_last_separator(real) : NULL;
+                if (slash != NULL) {
+                    free(inc);
+                    inc = malloc(strlen(real) + 16);
+                    sprintf(inc, "%.*s/include", (int)(slash - real), real);
+                    probe = realloc(probe, strlen(inc) + 16);
+                    sprintf(probe, "%s/video.h", inc);
+                    ok = access(probe, R_OK) == 0;
+                }
+                free(real);
+            }
             free(exe);
             free(probe);
             if (ok) {
@@ -317,6 +342,7 @@ int  main (int  argc, char **argv)
         { "reject-bit-fields", no_argument, 0, 'B' },
         { "no-inline-containers", no_argument, 0, 'N' },
         { "no-signed-shift", no_argument, 0, 'S' },
+        { "silence-unused-args", no_argument, 0, 'A' },
         { 0,         0,                 0, 0   }
     };
 
@@ -415,6 +441,9 @@ int  main (int  argc, char **argv)
             case 'S':
                 /* --no-signed-shift: print `>>`/`>>=` as written. */
                 g_signed_shift = 0;
+                break;
+            case 'A':
+                g_silence_unused = 1;
                 break;
             case 'N':
                 /* --no-inline-containers: std::array/std::vector accessors

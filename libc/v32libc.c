@@ -557,8 +557,6 @@ void perror(char *s)
     v32term_putc('\n');
 }
 
-char **environ = NULL;
-
 /* ---- sscanf ----------------------------------------------------------------- */
 
 static int v32_scan_digit(int c, int base)

@@ -42,6 +42,9 @@ members, `T *&`, 2-D array *parameters*, an object passed through `...`.
 - An SDK pointer's null is `-1`, and the SDK compiler drops a function nothing
   calls (and the `asm` data inside it): see QUIRKS #29.
 - A declaration directly in a `case` body (no braces) is rejected by Vircon32 C.
+- The SDK compiler warns "argument X is not used" (and stops after 10 warnings):
+  `(void)x;` in source, or `--silence-unused-args` for every function.
+  An unknown type makes `T * b;` read as a multiplication: v32c++ warns.
 - An overloaded call on a raw C API result needs a typed local first.
 - `--target=standard` prints standard C instead (ternary kept, `int main`).
 

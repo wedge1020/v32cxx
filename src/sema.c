@@ -45,6 +45,14 @@ static void check_native_pointer_only(const AstNode *type, int line)
         type->str1);
 }
 
+/* `T * b;` with an unknown T is read as the multiplication of two
+ * variables, not as a declaration, and prints as a harmless-looking
+ * expression statement; the Vircon32 compiler then fails somewhere
+ * else. Whenever a statement is a plain arithmetic or comparison of two
+ * names (no overloaded operator, no call, no side effect), say so, and
+ * for `A * B;` name the likely cause. */
+static void warn_no_effect(const AstNode *stmt, const AstNode *current_class, LocalVarType *locals);
+
 /* Return type + every parameter of one function/method, prototype or
  * definition alike. Called exactly once per function (see
  * access_check_methods / access_check_free_functions), so a by-value
@@ -3265,6 +3273,27 @@ static AstNode *native_base_of(const AstNode *expr,
     return typedef_registry_is_native(t->str1) ? (AstNode *)t : NULL;
 }
 
+static void warn_no_effect(const AstNode *stmt, const AstNode *current_class, LocalVarType *locals)
+{
+    const AstNode *e = stmt->a;
+    if (e == NULL || e->kind != AST_BINOP || e->str1 == NULL || e->a == NULL || e->b == NULL) return;
+    static const char *const pure[] = { "*", "/", "%", "+", "-", "==", "!=", "<", ">", "<=", ">=", "&&", "||", NULL };
+    int is_pure = 0;
+    for (int i = 0; pure[i] != NULL; i++)
+        if (strcmp(e->str1, pure[i]) == 0) is_pure = 1;
+    if (!is_pure) return;
+    if (e->a->kind != AST_IDENT || e->a->str1 == NULL) return;
+    if (e->b->kind != AST_IDENT && e->b->kind != AST_INT_LIT) return;
+    if (resolve_expr_class(e->a, (AstNode *)current_class, locals) != NULL) return;   /* maybe an operator */
+    if (strcmp(e->str1, "*") == 0 && e->b->kind == AST_IDENT && find_local(locals, e->a->str1) == NULL)
+        sema_warning(stmt->line,
+            "`%s * %s;` has no effect: if '%s' was meant as a type, v32c++ does not know it "
+            "(the SDK headers not found? see $V32CXX_SDK_INCLUDE, or declare it `native %s;`)",
+            e->a->str1, e->b->str1, e->a->str1, e->a->str1);
+    else
+        sema_warning(stmt->line, "statement `%s %s ...;` has no effect", e->a->str1, e->str1);
+}
+
 static void check_node(AstNode *n, AstNode *current_class, LocalVarType **locals);
 
 /* ---- auto ----------------------------------------------------------------
@@ -3554,6 +3583,9 @@ static void check_node(AstNode *n, AstNode *current_class, LocalVarType **locals
             break;
         }
         case AST_EXPR_STMT:
+            check_node(n->a, current_class, locals);
+            warn_no_effect(n, current_class, *locals);
+            break;
         case AST_DELETE:
             check_node(n->a, current_class, locals);
             break;

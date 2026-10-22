@@ -1003,6 +1003,18 @@ vrai émulateur. Une correction en amont tiendrait en trois lignes dans `EscapeC
   gardée dans un bloc `asm` (inclus depuis un fichier : voir
   `INLINE_ASSEMBLY_SUPPORT.fr.md`) vit dans une fonction qui doit être appelée.
 
+## 30. « argument X is not used » — signalé par le compilateur, tu sur demande
+
+- **Vircon32 fait** : avertir pour chaque paramètre qu'une fonction n'utilise
+  jamais, y compris le `this` caché d'une méthode qui ne touche aucun membre et
+  un paramètre de callback qu'exige son type de pointeur de fonction ; il
+  cesse aussi de compiler après 10 avertissements, si bien qu'en corriger
+  certains en révèle d'autres.
+- **Pour v32c++** : `(void)x;` dans le source fait taire un paramètre. Pour
+  tous, `--silence-unused-args` commence chaque fonction ainsi par un `x;` /
+  `this;` isolé (mode Vircon32 seulement) ; cela coûte un peu de code, donc
+  désactivée par défaut. `tests/153sample.cpp`.
+
 ## Ce que cette liste ne couvre PAS
 
 - Tout ce que ce projet n'a pas encore découvert — c'est un registre des divergences

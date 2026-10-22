@@ -54,14 +54,34 @@ typedef int uid_t;
 typedef int gid_t;
 typedef int mode_t;
 
+/* Each guarded: the SDK's math.h defines INT_MAX and INT_MIN too (with a
+ * different spelling of INT_MIN), and a second, differently spelled
+ * #define of the same macro is a warning in every program that includes
+ * both. Whichever header comes first wins; the values are the same. */
+#ifndef INT_MAX
 #define INT_MAX     2147483647
+#endif
+#ifndef INT_MIN
 #define INT_MIN     (-2147483647 - 1)
+#endif
+#ifndef UINT_MAX
 #define UINT_MAX    INT_MAX
+#endif
+#ifndef LONG_MAX
 #define LONG_MAX    INT_MAX
+#endif
+#ifndef LONG_MIN
 #define LONG_MIN    INT_MIN
+#endif
+#ifndef SHRT_MAX
 #define SHRT_MAX    32767
+#endif
+#ifndef CHAR_BIT
 #define CHAR_BIT    32
+#endif
+#ifndef PATH_MAX
 #define PATH_MAX    256
+#endif
 
 #define EXIT_SUCCESS 0
 #define EXIT_FAILURE 1
@@ -208,7 +228,9 @@ struct stat {
 };
 int stat(char *name, struct stat *st);  /* 0, or -1 when there is no such file */
 int unlink(char *name);
-extern char **environ;                  /* always empty */
+/* always empty: a macro, not a variable, so a program that never mentions it
+ * carries no unused global (the Vircon32 compiler warns about those) */
+#define environ ((char **)0)
 
 /* ---- the memory card ------------------------------------------------------
  * Files live on the memory card, under the program's own signature (the

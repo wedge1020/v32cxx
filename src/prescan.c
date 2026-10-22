@@ -1109,6 +1109,11 @@ static int expand_file_mode(const char *path, FILE *out,
                  * own include dir) -- and passes through verbatim. */
                 char *resolved = resolve_header(target, angle, path, dirs, ndirs);
                 int duplicate = 0;
+                if (resolved == NULL && !harvest && is_sdk_header_name(target))
+                    fprintf(stderr, "%s:%d: warning: SDK header \"%s\" not found: v32c++ cannot see its types "
+                            "and macros, so a declaration like `malloc_block *b;` may be read as an "
+                            "expression. Put the SDK's include/ directory beside `compile` on $PATH or "
+                            "set $V32CXX_SDK_INCLUDE\n", path, lineno, target);
                 if (resolved != NULL) {
                     char *canon = canonical_path(resolved);
                     if (path_set_contains(&g_verbatim_set, canon)) duplicate = 1;

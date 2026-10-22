@@ -1071,6 +1071,17 @@ phase could be dropped.
   in an `asm` block (`#include`d from a file: see
   `INLINE_ASSEMBLY_SUPPORT.md`) lives in a function that must be called.
 
+## 30. "argument X is not used" -- warned by the compiler, quieted on request
+
+- **Vircon32 does**: warn for every parameter a function never uses, the
+  hidden `this` of a method that touches no member and a callback's
+  parameter its function-pointer type requires included; it also stops
+  compiling after 10 warnings, so fixing some reveals others.
+- **For v32c++**: `(void)x;` in the source silences one parameter. For all
+  of them, `--silence-unused-args` starts each such function with a bare
+  `x;` / `this;` (Vircon32 mode only); it costs a little code, so it is off
+  by default. `tests/153sample.cpp`.
+
 ## What this list does NOT cover
 
 - Anything this project hasn't discovered yet -- this is a record of

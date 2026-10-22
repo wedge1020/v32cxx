@@ -375,6 +375,18 @@ test: all | $(OUT_DIR)
 	$(TBIN)  -vvv -o out/152odd/odd.c out/152odd/odd.cpp 1> out/152odd.txt 2>&1
 	grep -q 'hook \* h' out/152odd/odd.c
 	! grep -q '^struct plain' out/152odd/odd.c
+	$(TBIN)  -vvv    -o out/153program.c tests/153sample.cpp 1> out/153sample.txt 2>&1
+	! grep -q '^    this;$$' out/153program.c
+	$(TBIN)  -vvv --silence-unused-args -o out/153quiet.c tests/153sample.cpp 1> out/153quiet.txt 2>&1
+	grep -q '^    this;$$' out/153quiet.c
+	grep -q '^    tail;$$' out/153quiet.c
+	grep -q '^    ignored;$$' out/153quiet.c
+	test "`grep -c '^    this;$$' out/153quiet.c`" = 1
+	-V32CXX_SDK_INCLUDE= $(TBIN) -o out/154nosdk.c tests/154sample.c 1> out/154sample.txt 2>&1
+	grep -q 'SDK header "misc.h" not found' out/154sample.txt
+	grep -q "has no effect: if 'malloc_block' was meant as a type" out/154sample.txt
+	grep -q '^#ifndef INT_MIN' libc/v32libc.h
+	! grep -q 'environ' libc/v32libc.c
 # `-vvv` (this project's own verbosity flag, a later round -- see
 # main.c) is passed to every sample specifically so `make test`'s own
 # output still captures the full AST/semantic-analysis/lowering dumps
@@ -619,7 +631,7 @@ archive: clean
 # ships empty demo folders.
 
 clean:
-	rm -f $(BIN_DIR)/* $(OBJ_DIR)/* $(SRC_DIR)/parser.output $(OUT_DIR)/* put/* counterexamples.txt *.zip *.patch ../v32cxx-project.zip
+	rm -f $(BIN_DIR)/* $(OBJ_DIR)/* $(SRC_DIR)/parser.output $(OUT_DIR)/* put/* counterexamples.txt *.zip
 	$(MAKE) -C demos clean
 	#rm -f $(SRC_DIR)/parser.c $(SRC_DIR)/lexer.c $(INC_DIR)/parser.h
 # Removing the bison/flex-generated files here (not just objects/binary) is
