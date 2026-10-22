@@ -130,7 +130,7 @@ exceptions, RTTI, multiple inheritance, `enum class`, `constexpr`, lambdas,
   initializer lists (`= {1, 2, 3}`), both originally scoped out here,
   are now ALSO implemented (a later round) -- see `var_decl`'s own
   grammar comments and ast.h's `AST_INIT_LIST`. The initializer-list
-  VALUE syntax itself (`{1, 2, 3}`) is positional, not C99 designated --
+  VALUE syntax itself (`{1, 2, 3}`) is positional, not C99 designated (v32c++ now accepts C99 designators in its INPUT and writes them out positionally) --
   same reasoning as entry 4's cast-syntax choice below: fewer
   independent pieces of unconfirmed Vircon32-specific syntax to be
   wrong about at once. That specific piece is UNCONFIRMED as of this

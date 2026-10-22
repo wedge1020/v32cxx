@@ -16,6 +16,10 @@ extern AstList g_tag_decls;
 
 void cmode_separate_tags(AstList *decls);
 void cmode_unify_prototypes(AstList *decls);
+/* The return type of a function that was declared but never defined (its
+ * prototype is dropped from the output), or NULL: lets type inference see
+ * through `struct P *me(void);` when only the prototype is in the file. */
+AstNode *cmode_dropped_prototype_type(const char *name);
 void cmode_drop_unused_args(AstList *decls);
 void cmode_lower_main_params(AstList *decls);
 /* Calls through `...` (C and C++): each call's extra arguments become an

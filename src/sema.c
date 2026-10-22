@@ -3,6 +3,7 @@
 #include <string.h>
 #include <stdarg.h>
 #include "sema.h"
+#include "cmode.h"
 #include "driver.h"
 
 static int g_error_count = 0;
@@ -1701,9 +1702,16 @@ AstNode *infer_expr_type(const AstNode *expr, AstNode *current_class, LocalVarTy
                  * deliberately separate from this type-inference helper. */
                 method = find_member_in_hierarchy(current_class, callee->str1, &owner);
             }
+            if (method == NULL && callee != NULL && callee->kind == AST_IDENT && g_c_mode) {
+                /* a C function declared but never defined in this file: its
+                 * prototype was dropped from the output, its type is known */
+                return cmode_dropped_prototype_type(callee->str1);
+            }
             if (method == NULL || (method->kind != AST_FUNC_DECL && method->kind != AST_FUNC_DEF)) return NULL;
             return method->type;
         }
+        case AST_COMPOUND_LIT:
+            return expr->type;
         case AST_SUBSCRIPT: {
             /* `arr[i]`'s type is arr's ELEMENT type, whether `arr`
              * itself is an actual array (AST_ARRAY_TYPE -- unwrap to
@@ -3780,6 +3788,15 @@ static void check_node(AstNode *n, AstNode *current_class, LocalVarType **locals
              * anywhere else yet -- see parser.y's own doc comment on
              * opt_array_initializer for that gap. */
             for (int i = 0; i < n->list.count; i++) check_node(n->list.items[i], current_class, locals);
+            break;
+        case AST_COMPOUND_LIT:
+            check_node(n->a, current_class, locals);
+            break;
+        case AST_DESIG_INIT:
+            /* `[i] = v` / `.f = v`: only the value is an expression (the
+             * designators are an index already folded by the parser, or a
+             * member name lower.c resolves against the declared type) */
+            check_node(n->a, current_class, locals);
             break;
         case AST_IDENT: {
             /* A bare name that resolves to an INHERITED member (not a

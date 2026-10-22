@@ -7855,11 +7855,264 @@ static void cxx_hoist_strings(AstNode *program) {
     c_prepend_hoisted(&program->list);
 }
 
+/* ---- phase 0: designated initializers (G2) -----------------------------
+ *
+ * `{ [SYS_fork] = sys_fork, [SYS_exit] = sys_exit }` and `{ .b = 2, .a = 1 }`
+ * (also nested: `[1].x = 5`, `.a[2] = 7`, `{ [3] = {...} }`) are C99; the
+ * Vircon32 compiler only takes positional lists. The parser keeps each
+ * designated item as an AST_DESIG_INIT (the index already folded to a
+ * number); here, knowing the declared type, every designation becomes a
+ * position and the list is rewritten positionally, a gap filled with the
+ * zero of that element's type (`0`, a null pointer, or `{}` for an
+ * aggregate -- the real compiler zero-fills a short or empty braced list).
+ * Runs first of all, so no later phase ever meets an AST_DESIG_INIT.
+ *
+ * Pointer and function-pointer elements are padded to the end of the
+ * array (or struct) with real null pointers: Vircon32's NULL is not 0, so
+ * an unnamed slot of a dispatch table must be written out, not left to
+ * the zero-fill. An unnamed non-pointer tail is left short.
+ *
+ * Rules: an array designator names a constant index (a literal, a #define,
+ * an enumerator, arithmetic on those); a later item overrides an earlier
+ * one for the same slot; a positional item after a designator continues
+ * from the slot after it, as in C. A union may only designate its first
+ * member (the output is positional). The GNU range `[a ... b]` is not
+ * supported. */
+static int g_desig_errors = 0;
+/* 1 while rewriting a LOCAL's initializer: the real compiler zero-fills a
+ * short braced list only for file-scope data (a local's tail is left
+ * uninitialized), so a local gets every slot written out. */
+static int g_desig_full = 0;
+
+static int desig_pointerish(const AstNode *type) {
+    const AstNode *t = c_resolved_type(type);
+    return t != NULL && (t->kind == AST_POINTER_TYPE || t->kind == AST_FUNC_PTR_TYPE);
+}
+
+static AstNode *desig_zero(const AstNode *type, int line) {
+    const AstNode *t = c_resolved_type(type);
+    AstNode *z;
+    if (desig_pointerish(type)) return ast_new(AST_NULL_LIT, line);
+    if (t != NULL && t->kind == AST_ARRAY_TYPE) {
+        z = ast_new(AST_INIT_LIST, line);
+        if (g_desig_full)
+            for (int i = 0; i < t->ival; i++) ast_list_append(&z->list, desig_zero(t->a, line));
+        return z;
+    }
+    if (t != NULL && t->kind == AST_IDENT) {
+        AstNode *cls = type_to_class(t);
+        const AstNode *u = cls != NULL ? NULL : lower_find_union(t->str1);
+        if (cls != NULL || u != NULL) {
+            const AstList *members = cls != NULL ? &cls->list : &u->list;
+            z = ast_new(AST_INIT_LIST, line);
+            if (g_desig_full) {
+                for (int i = 0; i < members->count; i++) {
+                    const AstNode *m = members->items[i];
+                    if (m == NULL || m->kind != AST_VAR_DECL) continue;
+                    ast_list_append(&z->list, desig_zero(m->type, line));
+                    if (u != NULL) break;
+                }
+            }
+            return z;
+        }
+        if (t->str1 != NULL && (strcmp(t->str1, "float") == 0 || strcmp(t->str1, "double") == 0)) {
+            z = ast_new(AST_FLOAT_LIT, line);
+            z->fval = 0.0;
+            return z;
+        }
+    }
+    z = ast_new(AST_INT_LIT, line);
+    z->ival = 0;
+    return z;
+}
+
+static void desig_error(const AstNode *at, const char *what, const char *name) {
+    fprintf(stderr, "%s:%d: error: %s%s%s\n", at->file != NULL ? at->file : g_current_filename,
+            at->line, what, name != NULL ? " " : "", name != NULL ? name : "");
+    g_desig_errors++;
+}
+
+static void desig_fix(const AstNode *type, AstNode **slot);
+
+/* One designated item, the first designator already used: what is left
+ * of it becomes the designation of the element (or member) it selects. */
+static AstNode *desig_rest(AstNode *it) {
+    AstNode *r = ast_new(AST_DESIG_INIT, it->line);
+    r->a = it->a;
+    for (int i = 1; i < it->list.count; i++) ast_list_append(&r->list, it->list.items[i]);
+    return r;
+}
+
+static void desig_fix(const AstNode *type, AstNode **slot) {
+    AstNode *init = *slot;
+    const AstNode *t = c_resolved_type(type);
+    if (init == NULL || init->kind != AST_INIT_LIST || t == NULL) return;
+
+    /* what each position holds: arrays share one element type, a struct
+     * has one type per member */
+    const AstNode *elem = NULL;
+    const AstNode **mtypes = NULL;
+    const char **mnames = NULL;
+    int nslots = -1;            /* -1: unbounded (an array of unknown length) */
+    int first_only = 0;
+    const char *what = "";
+    if (t->kind == AST_ARRAY_TYPE) {
+        elem = t->a;
+        nslots = t->ival >= 0 ? t->ival : -1;
+        what = "array";
+    } else if (t->kind == AST_IDENT) {
+        const AstList *members = NULL;
+        AstNode *cls = type_to_class(t);
+        const AstNode *u = NULL;
+        if (cls != NULL) {
+            members = &cls->list;
+        } else if ((u = lower_find_union(t->str1)) != NULL) {
+            members = &u->list;
+            first_only = 1;
+        }
+        if (members != NULL) {
+            int n = 0;
+            mtypes = calloc((size_t)members->count + 1, sizeof *mtypes);
+            mnames = calloc((size_t)members->count + 1, sizeof *mnames);
+            for (int i = 0; i < members->count; i++) {
+                const AstNode *m = members->items[i];
+                if (m == NULL || m->kind != AST_VAR_DECL) continue;
+                mtypes[n] = m->type;
+                mnames[n] = m->str1;
+                n++;
+            }
+            nslots = n;
+            what = t->str1;
+        }
+    }
+    if (nslots == -1 && elem == NULL) return;           /* a scalar in braces, etc. */
+
+    int any = 0;
+    for (int i = 0; i < init->list.count; i++)
+        if (init->list.items[i]->kind == AST_DESIG_INIT) any = 1;
+
+    if (any) {
+        AstList out = ast_list_new();
+        int cursor = 0;
+        for (int i = 0; i < init->list.count; i++) {
+            AstNode *it = init->list.items[i];
+            int idx = cursor;
+            AstNode *value = it;
+            if (it->kind == AST_DESIG_INIT) {
+                const AstNode *d = it->list.items[0];
+                if (elem != NULL) {
+                    if (d->kind != AST_INT_LIT) {
+                        desig_error(it, "a member designator in an array initializer: .", d->str1);
+                        continue;
+                    }
+                    idx = d->ival;
+                } else {
+                    if (d->kind != AST_IDENT) {
+                        desig_error(it, "an array designator in the initializer of", what);
+                        continue;
+                    }
+                    idx = -1;
+                    for (int k = 0; k < nslots; k++)
+                        if (mnames[k] != NULL && strcmp(mnames[k], d->str1) == 0) { idx = k; break; }
+                    if (idx < 0) {
+                        char buf[200];
+                        snprintf(buf, sizeof buf, "'%s' has no member named '%s'", what, d->str1);
+                        desig_error(it, buf, NULL);
+                        continue;
+                    }
+                    if (first_only && idx != 0) {
+                        desig_error(it, "only the first member of a union can be given a "
+                                    "designated initializer (the output is positional):", d->str1);
+                        continue;
+                    }
+                }
+                if (it->list.count > 1) {
+                    AstNode *rest = desig_rest(it);
+                    AstNode *cur = idx < out.count ? out.items[idx] : NULL;
+                    if (cur != NULL && cur->kind == AST_INIT_LIST) {
+                        ast_list_append(&cur->list, rest);
+                        value = cur;
+                    } else {
+                        value = ast_new(AST_INIT_LIST, it->line);
+                        ast_list_append(&value->list, rest);
+                    }
+                } else {
+                    value = it->a;
+                }
+            }
+            if (nslots >= 0 && idx >= nslots) {
+                char buf[200];
+                if (elem != NULL)
+                    snprintf(buf, sizeof buf, "initializer index %d is outside the array (length %d)", idx, nslots);
+                else
+                    snprintf(buf, sizeof buf, "too many initializers for '%s'", what);
+                desig_error(it, buf, NULL);
+                continue;
+            }
+            while (out.count <= idx) ast_list_append(&out, NULL);
+            out.items[idx] = value;
+            cursor = idx + 1;
+        }
+        /* pad through the last pointer slot, then fill every hole */
+        int want = out.count;
+        if (g_desig_full && nslots > want) want = nslots;
+        for (int k = want; nslots >= 0 && k < nslots; k++) {
+            const AstNode *kt = elem != NULL ? elem : mtypes[k];
+            if (desig_pointerish(kt)) want = k + 1;
+        }
+        while (out.count < want) ast_list_append(&out, NULL);
+        for (int k = 0; k < out.count; k++) {
+            if (out.items[k] == NULL)
+                out.items[k] = desig_zero(elem != NULL ? elem : mtypes[k], init->line);
+        }
+        init->list = out;
+    }
+
+    for (int i = 0; i < init->list.count; i++) {
+        const AstNode *et = NULL;
+        if (elem != NULL) et = elem;
+        else if (i < nslots) et = mtypes[i];
+        if (et != NULL) desig_fix(et, &init->list.items[i]);
+    }
+    free(mtypes);
+    free(mnames);
+}
+
+static int g_desig_depth = 0;   /* 0 = a file-scope declaration */
+
+static void desig_walk(AstNode **slot) {
+    AstNode *n = *slot;
+    if (n == NULL) return;
+    if (n->kind == AST_VAR_DECL && n->a != NULL && n->a->kind == AST_INIT_LIST) {
+        g_desig_full = g_desig_depth > 0;
+        desig_fix(n->type, &n->a);
+    }
+    g_desig_depth++;
+    desig_walk(&n->a);
+    desig_walk(&n->b);
+    desig_walk(&n->c);
+    desig_walk(&n->d);
+    for (int i = 0; i < n->list.count; i++) desig_walk(&n->list.items[i]);
+    g_desig_depth--;
+}
+
+static int resolve_designated_inits(AstNode *program) {
+    g_lower_unions = &program->list;
+    g_desig_errors = 0;
+    for (int i = 0; i < program->list.count; i++) desig_walk(&program->list.items[i]);
+    return g_desig_errors;
+}
+
+
 int lower_run(AstNode *program) {
     g_hoisted_names = NULL;                 /* phase 12/12b's literal table: per run */
     g_sar_needed = 0;
     lower_notes_reset(); /* always start this run's log empty -- see
         lower_notes_print's own doc comment */
+    {   /* phase 0: designated initializers become positional (G2) */
+        int errors = resolve_designated_inits(program);
+        if (errors > 0) return errors;
+    }
     compute_struct_layouts(&program->list);
     /* (The by-value word-size check that used to run here is gone: a
      * multi-word struct passed or returned by value is now rewritten by

@@ -203,7 +203,18 @@ static AstNode *clone_with_types(const AstNode *n) {
     return c;
 }
 
+static AstList g_dropped_protos;
+static int g_dropped_init = 0;
+
+AstNode *cmode_dropped_prototype_type(const char *name) {
+    if (!g_dropped_init || name == NULL) return NULL;
+    for (int i = 0; i < g_dropped_protos.count; i++)
+        if (strcmp(g_dropped_protos.items[i]->str1, name) == 0) return g_dropped_protos.items[i]->type;
+    return NULL;
+}
+
 void cmode_unify_prototypes(AstList *decls) {
+    if (!g_dropped_init) { g_dropped_protos = ast_list_new(); g_dropped_init = 1; }
     /* local prototypes out of the bodies, onto the end of the file */
     AstList locals = ast_list_new();
     for (int i = 0; i < decls->count; i++)
@@ -226,7 +237,11 @@ void cmode_unify_prototypes(AstList *decls) {
             if (first == NULL) first = o;
             if (def == NULL && o->kind == AST_FUNC_DEF) def = o;
         }
-        if (def == NULL) continue;      /* declared, never defined: nothing to call */
+        if (def == NULL) {              /* declared, never defined: nothing to call */
+            /* ...but its return type is still known (G7): remember it */
+            if (cmode_dropped_prototype_type(n->str1) == NULL) ast_list_append(&g_dropped_protos, n);
+            continue;
+        }
         if (n == def) {
             ast_list_append(&out, n);
         } else if (n == first) {
@@ -472,6 +487,22 @@ static void va_short_circuit(AstNode **slot, VaCtx *cx, AstList *pre, AstList *r
 static void va_expr(AstNode **slot, VaCtx *cx, AstList *pre) {
     AstNode *n = *slot;
     if (n == NULL || n->kind == AST_SIZEOF) return;
+    if (n->kind == AST_COMPOUND_LIT) {
+        /* `(T){...}` -> a hidden local `T tmp = {...};` ahead of the
+         * statement (G3); the literal's value is the temporary (an array
+         * decays, a struct is copied, as the literal itself would) */
+        static int cl_counter = 0;
+        char name[40];
+        snprintf(name, sizeof name, "__v32_cl_tmp%d", cl_counter++);
+        va_expr(&n->a, cx, pre);
+        AstNode *temp = ast_new(AST_VAR_DECL, n->line);
+        temp->str1 = strdup(name);
+        temp->type = n->type;
+        temp->a = n->a;
+        ast_list_append(pre, temp);
+        *slot = ast_ident(name, n->line);
+        return;
+    }
     if (n->kind == AST_BINOP && n->str1 != NULL &&
         (strcmp(n->str1, "&&") == 0 || strcmp(n->str1, "||") == 0)) {
         AstList right_pre = ast_list_new();

@@ -257,6 +257,97 @@ static AstNode *hoist_tag_def(AstNode *decl) {
     return tag_ref(decl->str1, decl->line);
 }
 
+
+/* ---- enums defined inside a function body (gap report G4) --------------
+ *
+ * `enum { N = 250, SZ = 2000 };` as a function-local constant: C scopes
+ * the enumerators to the block, the output has no local enums. The
+ * definition is hoisted to file scope, like a local struct tag. Two
+ * functions may each define their own `N`, which is legal C; the later
+ * one's enumerator is renamed (`N__e1`) and the uses of it in the rest of
+ * its block are rewritten (a block's renames are applied where it closes).
+ * Folding an array size (`char buf[SZ]`) uses the original name, which
+ * the flat enum table already resolves to the latest definition. */
+typedef struct EnumRename { char *from; char *to; } EnumRename;
+static EnumRename *g_enum_renames = NULL;
+static int g_enum_rename_count = 0;
+static int g_enum_rename_marks[512];
+static int g_enum_rename_depth = 0;
+
+static void rename_idents(AstNode *n, const char *from, const char *to) {
+    if (n == NULL) return;
+    if (n->kind == AST_IDENT && n->str1 != NULL && strcmp(n->str1, from) == 0) n->str1 = strdup(to);
+    rename_idents(n->type, from, to);
+    rename_idents(n->a, from, to);
+    rename_idents(n->b, from, to);
+    rename_idents(n->c, from, to);
+    rename_idents(n->d, from, to);
+    for (int i = 0; i < n->list.count; i++) rename_idents(n->list.items[i], from, to);
+}
+
+static void enum_block_open(void) {
+    if (g_enum_rename_depth < 512) g_enum_rename_marks[g_enum_rename_depth] = g_enum_rename_count;
+    g_enum_rename_depth++;
+}
+
+static void enum_block_close(AstNode *block) {
+    g_enum_rename_depth--;
+    int mark = g_enum_rename_depth < 512 ? g_enum_rename_marks[g_enum_rename_depth] : g_enum_rename_count;
+    for (int i = mark; i < g_enum_rename_count; i++)
+        rename_idents(block, g_enum_renames[i].from, g_enum_renames[i].to);
+    g_enum_rename_count = mark;
+}
+
+static int enum_name_count(const char *name) {
+    int n = 0;
+    for (int i = 0; i < g_enum_const_count; i++)
+        if (strcmp(g_enum_consts[i].name, name) == 0) n++;
+    return n;
+}
+
+/* A struct/union/enum definition used as a statement: hoisted. Returns an
+ * empty group, which the statement list flattens away. */
+static AstNode *local_tag_stmt(AstNode *decl, int line) {
+    static int counter = 0;
+    if (decl->kind == AST_ENUM_DECL) {
+        for (int i = 0; i < decl->list.count; i++) {
+            AstNode *ev = decl->list.items[i];
+            if (enum_name_count(ev->str1) < 2) continue;      /* first of its name */
+            char to[200];
+            snprintf(to, sizeof to, "%s__e%d", ev->str1, ++counter);
+            for (int j = i + 1; j < decl->list.count; j++)
+                rename_idents(decl->list.items[j]->a, ev->str1, to);
+            g_enum_renames = realloc(g_enum_renames, (size_t)(g_enum_rename_count + 1) * sizeof *g_enum_renames);
+            g_enum_renames[g_enum_rename_count].from = strdup(ev->str1);
+            g_enum_renames[g_enum_rename_count].to = strdup(to);
+            g_enum_rename_count++;
+            ev->str1 = strdup(to);
+        }
+    }
+    ast_list_append(&g_hoisted_tags, decl);
+    return ast_new(AST_VAR_DECL_GROUP, line);
+}
+
+/* ---- _Static_assert / static_assert (gap report G5) --------------------
+ *
+ * Evaluated here, while parsing, with the same folder an array size uses
+ * (literals, #defines, enumerators, sizeof in words, arithmetic). A zero
+ * is an error carrying the message; something this cannot evaluate is a
+ * warning and is ignored. Nothing is emitted. Returns an empty group. */
+static AstNode *static_assert_decl(AstNode *cond, const char *msg, int line) {
+    int v = 0;
+    if (!ast_fold_int(cond, parse_enum_value, &v)) {
+        fprintf(stderr, "%s:%d: warning: static_assert: the condition is not a constant "
+                "v32c++ can evaluate (a literal, a #define, an enum constant, sizeof or "
+                "arithmetic on those); not checked\n", g_current_filename, line);
+    } else if (v == 0) {
+        fprintf(stderr, "%s:%d: error: static assertion failed%s%s\n", g_current_filename, line,
+                msg != NULL ? ": " : "", msg != NULL ? msg : "");
+        g_parse_errors++;
+    }
+    return ast_new(AST_VAR_DECL_GROUP, line);
+}
+
 static char *anon_tag_name(void) {
     static int g_anon_tag_counter = 0;
     char buf[40];
@@ -503,7 +594,17 @@ static AstNode *tag_typedef_group(AstNode *decl, int ptr, const char *name, int 
 static void size_unsized_array(AstList dims, const AstNode *init, int line) {
     if (dims.count == 0 || dims.items[0]->ival >= 0) return;
     if (init != NULL && init->kind == AST_INIT_LIST && init->list.count > 0) {
-        dims.items[0]->ival = init->list.count;
+        /* with designators the length is the highest index written + 1 */
+        int next = 0, len = 0;
+        for (int i = 0; i < init->list.count; i++) {
+            const AstNode *it = init->list.items[i];
+            if (it->kind == AST_DESIG_INIT && it->list.count > 0 &&
+                it->list.items[0]->kind == AST_INT_LIT)
+                next = it->list.items[0]->ival;
+            next++;
+            if (next > len) len = next;
+        }
+        dims.items[0]->ival = len;
     } else if (init == NULL && g_c_mode) {
         /* `extern char names[];` -- the definition, elsewhere in the
          * file, has the size: merge_tentative_globals (ast.c) takes it
@@ -793,11 +894,14 @@ static AstNode *finish_declarators(AstNode *first, AstNode *base, AstList more, 
 %token ASM VOLATILE NATIVE
 %token MODEQ STATIC
 %token STD_ARRAY STD_VECTOR
+%token STATIC_ASSERT
 %token ELLIPSIS ANON_STRUCT ANON_UNION ANON_ENUM EXTERN VA_ARG
 
 %type <node> program top_decl namespace_decl class_decl member using_decl using_alias
 %type <node> braced_init init_item
-%type <list> init_items
+%type <list> init_items designation
+%type <node> static_assert_stmt
+%type <node> designator
 %type <node> func_decl func_def func_header var_decl typedef_decl tag_typedef_decl out_of_line_def native_decl
 %type <node> enum_decl enumerator union_decl func_ptr_param_type implicit_int_header anon_tag_decl
 %type <node> opt_member_init_list member_init
@@ -866,8 +970,16 @@ top_decl_list:
         }
     ;
 
+static_assert_stmt:
+      STATIC_ASSERT '(' expr ')'
+        { $$ = static_assert_decl($3, NULL, @1.first_line); }
+    | STATIC_ASSERT '(' expr ',' string_seq ')'
+        { $$ = static_assert_decl($3, $5, @1.first_line); }
+    ;
+
 top_decl:
-      namespace_decl     { $$ = $1; }
+      static_assert_stmt ';'  { $$ = $1; }
+    | namespace_decl     { $$ = $1; }
     | using_decl         { $$ = $1; }
     | using_alias        { $$ = $1; }
     | class_decl ';'     { $$ = $1; }
@@ -2257,6 +2369,24 @@ var_decl:
             $$->type->b = $7->a;
             $$->a = $13;
         }
+    | type_spec pointer_opt '(' '*' IDENTIFIER '[' ']' ')' '(' opt_func_ptr_param_list ')' opt_array_initializer
+        {
+            /* `ReturnType (*name[])(ParamTypes) = { f, g };` -- the same
+             * array of function pointers, its length taken from the
+             * initializer (the idiom for a syscall dispatch table). */
+            symtab_insert(g_symtab, g_symtab->current, $5, SYM_VAR);
+            $$ = ast_new(AST_VAR_DECL, @5.first_line);
+            $$->str1 = strdup($5);
+            AstNode *ret = apply_ptr($1, $2, @1.first_line);
+            AstNode *fp = ast_wrap_func_ptr(ret, $10, @1.first_line);
+            AstNode *dim = ast_new(AST_INT_LIT, @6.first_line);
+            dim->ival = -1;
+            AstList dims = ast_list_new();
+            ast_list_append(&dims, dim);
+            size_unsized_array(dims, $12, @5.first_line);
+            $$->type = ast_wrap_array(fp, dim->ival, @1.first_line);
+            $$->a = $12;
+        }
     | type_spec pointer_opt '(' opt_func_ptr_param_list ')' '*' '[' array_dim ']' IDENTIFIER opt_array_initializer
         {
             /* Vircon32-native ARRAY-of-function-pointers declarator.
@@ -2482,6 +2612,39 @@ init_items:
 init_item:
       expr          { $$ = $1; }
     | braced_init   { $$ = $1; }
+    | designation '=' expr
+        { $$ = ast_new(AST_DESIG_INIT, @1.first_line); $$->list = $1; $$->a = $3; }
+    | designation '=' braced_init
+        { $$ = ast_new(AST_DESIG_INIT, @1.first_line); $$->list = $1; $$->a = $3; }
+    ;
+
+/* C99 designators: `[idx]` and `.field`, chained (`[2].x`, `.a[1]`). The
+ * index is folded here, at parse time, exactly like an array size (a
+ * literal, a #define, an enumerator or arithmetic on those). Nothing is
+ * lowered yet: resolve_designated_inits (lower.c) needs the declared type
+ * to turn a designator into a position. */
+designation:
+      designator                { $$ = ast_list_new(); ast_list_append(&$$, $1); }
+    | designation designator    { $$ = $1; ast_list_append(&$$, $2); }
+    ;
+
+designator:
+      '[' expr ']'
+        {
+            int v = 0;
+            if (!ast_fold_int($2, parse_enum_value, &v) || v < 0) {
+                fprintf(stderr, "%s:%d: error: a designator's array index is not a "
+                        "non-negative integer constant expression (use a literal, a "
+                        "#define, an enum constant, or arithmetic on those)\n",
+                        g_current_filename, @1.first_line);
+                g_parse_errors++;
+                v = 0;
+            }
+            $$ = ast_new(AST_INT_LIT, @1.first_line);
+            $$->ival = v;
+        }
+    | '.' IDENTIFIER
+        { $$ = ast_new(AST_IDENT, @1.first_line); $$->str1 = $2; }
     ;
 
 opt_array_initializer:
@@ -2710,11 +2873,12 @@ union_member_list:
 /* ---- statements --------------------------------------------------------- */
 
 block:
-    '{' { symtab_push_scope(g_symtab, NULL, 0); } stmt_list '}'
+    '{' { symtab_push_scope(g_symtab, NULL, 0); enum_block_open(); } stmt_list '}'
         {
             symtab_pop_scope(g_symtab);
             $$ = ast_new(AST_BLOCK, @1.first_line);
             $$->list = $3;
+            enum_block_close($$);
         }
     ;
 
@@ -2725,6 +2889,16 @@ stmt_list:
 
 stmt:
       block                              { $$ = $1; }
+    | enum_decl ';'                      { $$ = local_tag_stmt($1, @1.first_line); }
+    | ANON_ENUM '{' enumerator_list '}' ';'
+        {
+            parse_record_enum_values(&$3);
+            AstNode *e = ast_new(AST_ENUM_DECL, @1.first_line);
+            e->str1 = anon_tag_name();
+            e->list = $3;
+            $$ = local_tag_stmt(e, @1.first_line);
+        }
+    | static_assert_stmt ';'             { $$ = $1; }
     | IF '(' expr ')' stmt  %prec LOWER_THAN_ELSE
         {
             $$ = ast_new(AST_IF, @1.first_line);
@@ -3097,6 +3271,22 @@ switch_body:
 
 primary_expr:
       IDENTIFIER        { $$ = ast_ident($1, @1.first_line); }
+    | '(' type_spec pointer_opt ')' braced_init
+        {
+            /* `(struct P){1, 2}`, `(int){3}`: a C99 compound literal */
+            $$ = ast_new(AST_COMPOUND_LIT, @1.first_line);
+            $$->type = apply_ptr($2, $3, @1.first_line);
+            $$->a = $5;
+        }
+    | '(' type_spec pointer_opt array_bracket_list ')' braced_init
+        {
+            /* `(char *[]){"a", 0}`, `(int[3]){1}`: an array compound
+             * literal; `[]` takes its length from the list */
+            $$ = ast_new(AST_COMPOUND_LIT, @1.first_line);
+            size_unsized_array($4, $6, @1.first_line);
+            $$->type = ast_wrap_array_dims(apply_ptr($2, $3, @1.first_line), $4, @1.first_line);
+            $$->a = $6;
+        }
     | INT_LITERAL         { $$ = ast_new(AST_INT_LIT, @1.first_line); $$->ival = $1.ival; $$->macro_name = $1.macro; $$->is_unsigned = $1.uns; }
     | FLOAT_LITERAL        { $$ = ast_new(AST_FLOAT_LIT, @1.first_line); $$->fval = $1.fval; $$->macro_name = $1.macro; }
     | string_seq            { $$ = ast_new(AST_STRING_LIT, @1.first_line); $$->str1 = $1; }

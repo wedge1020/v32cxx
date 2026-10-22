@@ -249,6 +249,8 @@ static const char *kind_name(AstKind k) {
         case AST_ARRAY_TYPE: return "ArrayType";
         case AST_FUNC_PTR_TYPE: return "FuncPtrType";
         case AST_INIT_LIST: return "InitList";
+        case AST_DESIG_INIT: return "DesigInit";
+        case AST_COMPOUND_LIT: return "CompoundLit";
         case AST_CAST: return "Cast";
         case AST_SIZEOF: return "Sizeof";
         case AST_FRIEND_CLASS: return "FriendClass";

@@ -702,6 +702,25 @@ typedef enum {
                               has no aggregate/struct initializer syntax of
                               its own, so this is array-specific, not a
                               general "braced initializer" concept */
+    AST_DESIG_INIT,       /* a designated initializer item inside an
+                              AST_INIT_LIST: `[3] = v`, `.field = v`,
+                              `[1].x = v`, `.a[2] = v`. a=value (an
+                              expression or a nested AST_INIT_LIST),
+                              list=the designators in order: an
+                              AST_INT_LIT (ival=the folded array index) or
+                              an AST_IDENT (str1=the member name).
+                              lower.c's resolve_designated_inits turns
+                              every one into plain positional items before
+                              any other lowering phase runs, so nothing
+                              after that ever sees this kind (G2). */
+    AST_COMPOUND_LIT,     /* C99 compound literal `(T){...}`, `(T[]){...}`:
+                              type=the object's type (an array's length
+                              already taken from the list), a=the
+                              AST_INIT_LIST. cmode.c's va pass (the one
+                              that hoists statements out of expressions)
+                              replaces each by a hidden local initialised
+                              from the list, so nothing after that sees
+                              this kind (G3). */
     AST_CAST,             /* type=target type, a=expr being cast.
                               ival=1 if this was specifically written as
                               `dynamic_cast<T>(...)` (see cpp_cast_kw in

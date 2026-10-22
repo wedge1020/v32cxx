@@ -42,6 +42,12 @@ covers tags used without their keyword, which only Vircon32 C accepts.
 | `char buf[sizeof table / sizeof table[0]]`, `sizeof "text"` | `sizeof` is evaluated in array sizes (sizes are in words). | `parser.y` |
 | `"\033[2J"`, `"\b \b"` | A string with a control character becomes a file-scope char array. | `lower.c` phase 12 |
 | `struct stats s = { 16, "1x4", 12 };` with `char s_dmg[13]` | The string becomes the member's characters, zero-padded. | `lower.c` phase 12 |
+| `{ [SYS_fork] = sys_fork, ... }`, `{ .b = 2, .a = 1 }`, `.s.b = 9`, `[2].x = 1` | Designated initializers become positional lists. An index is a literal, `#define`, enumerator or arithmetic on those; `[]` takes its length from the highest index; a gap is zero (a null pointer for pointers); a local gets every slot written. A union can designate only its first member; the GNU range `[a ... b]` is not supported. | `parser.y`, `lower.c` phase 0 |
+| `__attribute__((noreturn))`, `__attribute`, `__declspec(...)` | Ignored wherever they stand. | `lexer.l` |
+| `(char *[]){"/init", 0}`, `(struct P){1, 2}`, `&(struct P){...}` | A hidden local `T __v32_cl_tmpN = {...};` ahead of the statement. Not supported at file scope, or in a for-step / do-while condition (the same limits as variadic calls). | `parser.y`, `cmode.c` |
+| `enum { N = 250 };` inside a function | Hoisted to file scope; if another enum already has an enumerator `N`, this one becomes `N__eK` and the rest of its block is rewritten. | `parser.y` |
+| `_Static_assert(cond, "msg")`, `static_assert(cond)` | Evaluated while transpiling (literals, `#define`, enumerators, `sizeof`, arithmetic); a zero is an error with the message; a condition it cannot evaluate is a warning. Nothing is emitted. | `parser.y` |
+| a call through a prototype-only function: `me()->x += n;` | Lowered with one call, as when the definition is visible. | `cmode.c`, `sema.c` |
 | `class`, `new`, `this`, `delete`, `virtual`, ... as names | Ordinary identifiers, written with a trailing underscore (`this_`). | `lexer.l` |
 | `auto`, `register`, `(void) f();` | Accepted and dropped. | `lexer.l`, `lower.c` |
 

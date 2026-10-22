@@ -1,4 +1,5 @@
 %{
+static int g_attr_depth = 0;
 /*
  * lexer.l -- flex scanner.
  *
@@ -135,6 +136,7 @@ static void register_cart_resource(CartResourceList *list, const char *name, con
     /* The scanner proper is yylex_raw(); yylex(), at the end of this
      * file, wraps it for what C input needs. */
 %option nounput
+%x ATTR_WAIT ATTR
 %option noinput
 
 DIGIT   [0-9]
@@ -144,6 +146,25 @@ ALNUM   [A-Za-z0-9_]
 %%
 
 "//"[^\n]*                     { /* line comment, discard */ }
+
+    /* `__attribute__((...))`, `__attribute(...)`, `__declspec(...)`: GNU/MS
+     * annotations (noreturn, format, aligned, nonstring...) with no meaning
+     * on Vircon32. Swallowed, wherever they stand (after a declarator, a
+     * parameter list, a member, before a declaration), as one balanced
+     * parenthesis group; strings inside are skipped whole. Gap report G1. */
+"__attribute__"|"__attribute"|"__declspec"   { BEGIN(ATTR_WAIT); }
+<ATTR_WAIT>"("                  { g_attr_depth = 1; BEGIN(ATTR); }
+<ATTR_WAIT>[ \t\r]+             { }
+<ATTR_WAIT>\n                   { g_lex_lineno++; }
+<ATTR_WAIT>.                    { yyless(0); BEGIN(INITIAL); /* no "(": nothing to swallow */ }
+<ATTR>"("                       { g_attr_depth++; }
+<ATTR>")"                       { if (--g_attr_depth == 0) BEGIN(INITIAL); }
+<ATTR>\"([^"\\\n]|\\.)*\"     { }
+<ATTR>\n                        { g_lex_lineno++; }
+<ATTR>[^()"\n]+                { }
+<ATTR>.                         { }
+<ATTR><<EOF>>                   { fprintf(stderr, "%s:%d: error: unterminated __attribute__\n", g_current_filename, g_lex_lineno); BEGIN(INITIAL); return 0; }
+
 "/*"([^*]|\*+[^*/])*\*+"/"      { for (char *c = yytext; *c; c++) if (*c == '\n') g_lex_lineno++; /* block comment, discard */ }
 
     /* Cart hints -- `#texture NAME "file.png"` / `#sound NAME "file.wav"`.
@@ -265,6 +286,7 @@ ALNUM   [A-Za-z0-9_]
 "class"      { g_last_ident_sym = NULL; return CLASS; }
 "struct"     { g_last_ident_sym = NULL; return STRUCT; }
 "enum"       { g_last_ident_sym = NULL; return ENUM; }
+"_Static_assert"|"static_assert"   { g_last_ident_sym = NULL; return STATIC_ASSERT; }
 "union"      { g_last_ident_sym = NULL; return UNION; }
 "public"     { g_last_ident_sym = NULL; return PUBLIC; }
 "private"    { g_last_ident_sym = NULL; return PRIVATE; }

@@ -391,6 +391,23 @@ test: all | $(OUT_DIR)
 	! grep -q '^    char \[[0-9]*\] __v32_tern_tmp' out/155program.c
 	! grep -q '^    int __v32_tern_tmp[0-9]*;' out/155program.c
 	grep -q 'char \* __v32_tern_tmp0;' out/155program.c
+	$(TBIN)  -vvv    -o out/156program.c tests/156sample.c 1> out/156sample.txt 2>&1
+	! grep -q '= {.*\[[^]]*\] = ' out/156program.c
+	! grep -q '\.b = ' out/156program.c
+	! $(TBIN) -o out/156bad.c tests/156bad.c 1> out/156bad.txt 2>&1
+	grep -q "'S' has no member named 'c'" out/156bad.txt
+	grep -q 'initializer index 5 is outside the array (length 3)' out/156bad.txt
+	$(TBIN) -o out/157g7.c tests/157sample.c 1> out/157sample.txt 2>&1
+	! grep -q 'warning' out/157sample.txt
+	test "`grep -c '__v32_ptr[0-9] = me();' out/157g7.c`" = 4
+	! grep -q '(me()->' out/157g7.c
+	$(TBIN)  -vvv    -o out/158program.c tests/158sample.c 1> out/158sample.txt 2>&1
+	! grep -q '__attribute__' out/158program.c
+	! grep -q 'static_assert' out/158program.c
+	grep -q 'N__e[0-9]' out/158program.c
+	grep -q '__v32_cl_tmp' out/158program.c
+	! $(TBIN) -o out/158bad.c tests/158bad.c 1> out/158bad.txt 2>&1
+	grep -q 'static assertion failed: arithmetic is broken' out/158bad.txt
 # `-vvv` (this project's own verbosity flag, a later round -- see
 # main.c) is passed to every sample specifically so `make test`'s own
 # output still captures the full AST/semantic-analysis/lowering dumps

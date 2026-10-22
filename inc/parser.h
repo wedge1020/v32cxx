@@ -127,14 +127,15 @@ extern int yydebug;
     STATIC = 333,                  /* STATIC  */
     STD_ARRAY = 334,               /* STD_ARRAY  */
     STD_VECTOR = 335,              /* STD_VECTOR  */
-    ELLIPSIS = 336,                /* ELLIPSIS  */
-    ANON_STRUCT = 337,             /* ANON_STRUCT  */
-    ANON_UNION = 338,              /* ANON_UNION  */
-    ANON_ENUM = 339,               /* ANON_ENUM  */
-    EXTERN = 340,                  /* EXTERN  */
-    VA_ARG = 341,                  /* VA_ARG  */
-    SIZEOF_TYPE_PREC = 342,        /* SIZEOF_TYPE_PREC  */
-    LOWER_THAN_ELSE = 343          /* LOWER_THAN_ELSE  */
+    STATIC_ASSERT = 336,           /* STATIC_ASSERT  */
+    ELLIPSIS = 337,                /* ELLIPSIS  */
+    ANON_STRUCT = 338,             /* ANON_STRUCT  */
+    ANON_UNION = 339,              /* ANON_UNION  */
+    ANON_ENUM = 340,               /* ANON_ENUM  */
+    EXTERN = 341,                  /* EXTERN  */
+    VA_ARG = 342,                  /* VA_ARG  */
+    SIZEOF_TYPE_PREC = 343,        /* SIZEOF_TYPE_PREC  */
+    LOWER_THAN_ELSE = 344          /* LOWER_THAN_ELSE  */
   };
   typedef enum yytokentype yytoken_kind_t;
 #endif
@@ -143,7 +144,7 @@ extern int yydebug;
 #if ! defined YYSTYPE && ! defined YYSTYPE_IS_DECLARED
 union YYSTYPE
 {
-#line 763 "src/parser.y"
+#line 864 "src/parser.y"
 
     AstNode *node;
     AstList list;
@@ -159,7 +160,7 @@ union YYSTYPE
      * on. */
     struct { int ival; double fval; char *macro; int uns; } lit;
 
-#line 163 "inc/parser.h"
+#line 164 "inc/parser.h"
 
 };
 typedef union YYSTYPE YYSTYPE;
