@@ -969,7 +969,11 @@ program:
     ;
 
 top_decl_list:
-      /* empty */               { $$ = ast_list_new(); }
+      /* empty */               { $$ = ast_list_new();
+            /* sizeof must fold from the very first declaration on: a
+             * `_Static_assert(sizeof(int) == 1)` or `char b[sizeof(int)]`
+             * at the top of the file (G9) */
+            g_ast_sizeof_hook = parse_fold_sizeof; }
     | top_decl_list top_decl
         {
             $$ = $1;

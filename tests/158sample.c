@@ -4,7 +4,10 @@
  *   G4  enums defined inside a function body (two functions reuse `N`)
  *   G5  _Static_assert / static_assert, checked while transpiling
  *   G8  a parameter of function type, `int call (int f (int), int v)`
+ * G9  sizeof of a builtin type folds even as the file's FIRST declaration
  * Self-checking: test_errors must end at 0. */
+_Static_assert (sizeof (int) == 1 && sizeof (char) == 1, "one word per char");
+char first_buf[sizeof (int) * 4];
 int test_errors = -1;
 
 int exit (int) __attribute__((noreturn));

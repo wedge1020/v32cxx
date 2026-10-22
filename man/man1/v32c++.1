@@ -297,6 +297,26 @@ instead of writing each one in place as a direct access to the
 container's fields. Slower on the console; useful for reading the
 generated C next to the class it came from.
 .TP
+.BI \-\-mklib " lib.v32a"
+Write a library index over the source files given (all of them members):
+for each, the symbols it defines and the names it uses. Nothing is transpiled.
+.TP
+.BI \-L " dir"
+Search
+.I dir
+for libraries named by
+.BR \-l .
+.TP
+.BI \-l name
+Link with
+.IR libname.v32a ,
+found in the
+.B \-L
+directories or the current one. A
+.I lib.v32a
+named on the command line does the same. Only the members that define
+something the program needs are linked in, and those that they need in turn.
+.TP
 .B \-\-allow\-undefined
 With several input files, report a function or
 .B extern

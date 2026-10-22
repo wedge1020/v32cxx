@@ -18,6 +18,7 @@
 #include "prescan.h"
 #include "cmode.h"
 #include "link.h"
+#include "archive.h"
 #include "compat.h"
 #include "generic.h"
 
@@ -76,7 +77,7 @@ static char *invoked_name(const char *argv0) {
 }
 
 static void print_usage(const char *prog_name) {
-    fprintf(stderr, "usage: %s [-o output.c] [-c] [-v[v[v]]] [-I dir] [-D name[=value]] [-U name] [-x] [--xml-preserve-paths] [--no-build-scripts] [--title-opt=TEXT] [--no-diff-opt-title] [-b] [-g] [--target=vircon32|standard] [--reject-bit-fields] [--no-signed-shift] [--silence-unused-args] [--allow-undefined] [--no-inline-containers] [--version] <input.cpp> [more inputs]\n", prog_name);
+    fprintf(stderr, "usage: %s [-o output.c] [-c] [-v[v[v]]] [-I dir] [-D name[=value]] [-U name] [-x] [--xml-preserve-paths] [--no-build-scripts] [--title-opt=TEXT] [--no-diff-opt-title] [-b] [-g] [--target=vircon32|standard] [--reject-bit-fields] [--no-signed-shift] [--silence-unused-args] [--allow-undefined] [-L dir] [-lname] [--mklib lib.v32a] [--no-inline-containers] [--version] <input.cpp> [more inputs] [lib.v32a ...]\n", prog_name);
     fprintf(stderr, "  -o output.c   write generated Vircon32 C to this file (default:\n"
                      "                <input> with its extension replaced by .c)\n");
     fprintf(stderr,  "  --no-signed-shift\n"
@@ -330,6 +331,10 @@ int  main (int  argc, char **argv)
     const char *output_filename    = NULL;
     int         require_main       = 1;
     int         allow_undefined    = 0;
+    int         list_symbols       = 0;
+    const char *mklib_path         = NULL;
+    const char *lib_dirs[MAX_INCLUDE_DIRS], *lib_names[MAX_INCLUDE_DIRS];
+    int         lib_dir_count = 0, lib_name_count = 0;
     int         verbosity          = 0;
     int         emit_xml           = 1;
     int         xml_preserve_paths = 0;
@@ -353,7 +358,9 @@ int  main (int  argc, char **argv)
         { "no-inline-containers", no_argument, 0, 'N' },
         { "no-signed-shift", no_argument, 0, 'S' },
         { "silence-unused-args", no_argument, 0, 'A' },
-        { "allow-undefined", no_argument, 0, 'L' },
+        { "allow-undefined", no_argument, 0, 0x100 },
+        { "list-symbols", no_argument, 0, 0x101 },
+        { "mklib", required_argument, 0, 0x102 },
         { 0,         0,                 0, 0   }
     };
 
@@ -362,7 +369,7 @@ int  main (int  argc, char **argv)
     char **orig_argv = malloc(((size_t)argc + 1) * sizeof *orig_argv);
     memcpy(orig_argv, argv, ((size_t)argc + 1) * sizeof *orig_argv);
 
-    while ((opt = getopt_long(argc, argv, "o:cvxbgI:D:U:", long_options, NULL)) != -1) {
+    while ((opt = getopt_long(argc, argv, "o:cvxbgI:D:U:L:l:", long_options, NULL)) != -1) {
         switch (opt) {
             case 'o':
                 output_filename = optarg;
@@ -456,8 +463,20 @@ int  main (int  argc, char **argv)
             case 'A':
                 g_silence_unused = 1;
                 break;
-            case 'L':
+            case 0x100:
                 allow_undefined = 1;
+                break;
+            case 0x101:
+                list_symbols = 1;       /* internal: what archive.c asks of a child run */
+                break;
+            case 0x102:
+                mklib_path = optarg;
+                break;
+            case 'L':
+                if (lib_dir_count < MAX_INCLUDE_DIRS) lib_dirs[lib_dir_count++] = optarg;
+                break;
+            case 'l':
+                if (lib_name_count < MAX_INCLUDE_DIRS) lib_names[lib_name_count++] = optarg;
                 break;
             case 'N':
                 /* --no-inline-containers: std::array/std::vector accessors
@@ -497,16 +516,69 @@ int  main (int  argc, char **argv)
         return 1;
     }
 
-    const char *input_filename = argv[optind];
-    int nfiles = argc - optind;
+    /* the sources, and the libraries (*.v32a, -lname) among them */
+    const char **inputs = calloc((size_t)(argc - optind) + 1, sizeof *inputs);
+    const char **libs = calloc((size_t)(argc - optind) + (size_t)lib_name_count + 1, sizeof *libs);
+    int nfiles = 0, nlibs = 0;
+    for (int i = optind; i < argc; i++) {
+        if (mklib_path == NULL && path_is_archive(argv[i])) libs[nlibs++] = argv[i];
+        else inputs[nfiles++] = argv[i];
+    }
+    for (int i = 0; i < lib_name_count; i++) {
+        char path[1024];
+        const char *found = NULL;
+        for (int d = 0; d <= lib_dir_count && found == NULL; d++) {
+            snprintf(path, sizeof path, "%s%slib%s.v32a", d < lib_dir_count ? lib_dirs[d] : "",
+                     d < lib_dir_count ? "/" : "", lib_names[i]);
+            FILE *t = fopen(path, "r");
+            if (t != NULL) { fclose(t); found = strdup(path); }
+        }
+        if (found == NULL) {
+            fprintf(stderr, "---- error: library 'lib%s.v32a' not found (see -L) ----\n", lib_names[i]);
+            return 1;
+        }
+        libs[nlibs++] = found;
+    }
+    if (nfiles == 0) {
+        print_usage(argv[0]);
+        return 1;
+    }
+    /* the options a child run needs to read the same source the same way */
+    const char **fwd = calloc((size_t)argc * 2 + 2, sizeof *fwd);
+    int nfwd = 0;
+    for (int i = 1; i < argc; i++) {
+        const char *a = orig_argv[i];
+        if (strcmp(a, "-I") == 0 || strcmp(a, "-D") == 0 || strcmp(a, "-U") == 0 ||
+            strcmp(a, "--include") == 0 || strcmp(a, "--target") == 0) {
+            if (i + 1 < argc) { fwd[nfwd++] = a; fwd[nfwd++] = orig_argv[++i]; }
+        } else if (((a[0] == '-' && (a[1] == 'I' || a[1] == 'D' || a[1] == 'U') && a[2] != '\0')) ||
+                   strncmp(a, "--include=", 10) == 0 || strncmp(a, "--target=", 9) == 0) {
+            fwd[nfwd++] = a;
+        }
+    }
+    if (mklib_path != NULL) {
+        for (int i = 0; i < nfiles; i++) {
+            if (path_is_archive(inputs[i])) {
+                fprintf(stderr, "---- error: a library cannot be a member of a library ('%s') ----\n", inputs[i]);
+                return 1;
+            }
+        }
+        return archive_make(mklib_path, orig_argv[0], fwd, nfwd, inputs, nfiles);
+    }
+    int nexplicit = nfiles;
+    if (nlibs > 0 && !list_symbols) {
+        if (archive_select(orig_argv[0], fwd, nfwd, libs, nlibs, &inputs, &nfiles) != 0) return 1;
+    }
+    if (list_symbols) require_main = 0;
+    const char *input_filename = inputs[0];
     /* A .c file is C, not C++: see driver.h's g_c_mode. */
     g_c_mode = prescan_is_c_source(input_filename);
-    if (nfiles > 1) {
+    if (nfiles > 1 || list_symbols) {
         /* several files: one program, linked (link.c) */
         for (int i = 1; i < nfiles; i++) {
-            if (prescan_is_c_source(argv[optind + i]) != g_c_mode) {
+            if (prescan_is_c_source(inputs[i]) != g_c_mode) {
                 fprintf(stderr, "---- error: cannot link C and C++ sources together (%s and %s) ----\n",
-                        input_filename, argv[optind + i]);
+                        input_filename, inputs[i]);
                 return 1;
             }
         }
@@ -537,7 +609,7 @@ int  main (int  argc, char **argv)
         for (int i = 0; i < sdk_dir_count; i++)
             printf("SDK header search: %s\n", sdk_dirs[i]);
     prescan_set_sdk_dirs(sdk_dirs, sdk_dir_count);
-    FILE *f = prescan_expand_many((const char *const *)&argv[optind], nfiles, include_dirs, include_dir_count,
+    FILE *f = prescan_expand_many(inputs, nfiles, include_dirs, include_dir_count,
                                   system_dirs, system_dir_count);
     if (f == NULL) {
         return 1; /* message already printed, with file/line context */
@@ -560,6 +632,7 @@ int  main (int  argc, char **argv)
     }
 
     char *derived_output = NULL;
+    if (list_symbols) output_filename = "list-symbols.out";     /* nothing is written */
     if (output_filename == NULL) {
         /* Same default the real Vircon32 C compiler and v32lua both
          * use: the input's own extension, replaced with ".c". */
@@ -580,7 +653,7 @@ int  main (int  argc, char **argv)
         output_filename = derived_output;
     } else {
         for (int i = 0; i < nfiles; i++) {
-            if (same_file(output_filename, argv[optind + i])) {
+            if (same_file(output_filename, inputs[i])) {
                 fprintf(stderr, "---- error: the output file %s is the input file; "
                                 "choose another name with -o ----\n", output_filename);
                 return 1;
@@ -599,8 +672,13 @@ int  main (int  argc, char **argv)
 
     /* several files: link them (rename clashing statics, report multiple
      * and undefined definitions) before anything else sees the tree */
+    if (list_symbols) {
+        if (rc != 0 || g_program == NULL) return 1;
+        link_list_symbols(&g_program->list, nfiles, stdout);
+        return 0;
+    }
     if (rc == 0 && g_program != NULL && nfiles > 1 &&
-        link_merge(&g_program->list, (const char *const *)&argv[optind], nfiles, allow_undefined) != 0)
+        link_merge(&g_program->list, inputs, nfiles, allow_undefined) != 0)
         rc = 1;
 
     /* std::array<T, N> classes the program named: generated, parsed and
@@ -735,7 +813,7 @@ int  main (int  argc, char **argv)
                             if (a == input_filename) continue;
                             {   /* the other source files of a linked program: paths, repeated */
                                 int is_input = 0;
-                                for (int k = 1; k < nfiles; k++) if (a == argv[optind + k]) is_input = 1;
+                                for (int k = 1; k < nexplicit; k++) if (a == inputs[k]) is_input = 1;
                                 if (is_input) { sargs[n] = a; spath[n++] = 1; continue; }
                             }
                             /* A bundle of short flags such as "-bgo" (or "-vvx"): drop
@@ -774,6 +852,17 @@ int  main (int  argc, char **argv)
                             if (strncmp(a, "--include=", 10) == 0) {
                                 sargs[n] = "-I"; spath[n++] = 0;
                                 sargs[n] = a + 10; spath[n++] = 1;
+                                continue;
+                            }
+                            if (path_is_archive(a)) { sargs[n] = a; spath[n++] = 1; continue; }
+                            if (strcmp(a, "-L") == 0) {
+                                if (i + 1 < argc) { sargs[n] = "-L"; spath[n++] = 0;
+                                                    sargs[n] = orig_argv[++i]; spath[n++] = 1; }
+                                continue;
+                            }
+                            if (strncmp(a, "-L", 2) == 0 && a[2] != '\0') {
+                                sargs[n] = "-L"; spath[n++] = 0;
+                                sargs[n] = a + 2; spath[n++] = 1;
                                 continue;
                             }
                             sargs[n] = a; spath[n++] = 0;

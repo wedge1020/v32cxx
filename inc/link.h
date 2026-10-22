@@ -23,6 +23,14 @@
 
 #include "ast.h"
 
+/* --list-symbols: for each input file (a translation unit), print
+ *   tu N
+ *   d <name>     a function or variable it defines with external linkage
+ *   r <name>     a name its code uses that it does not define itself
+ * One name per line. archive.c reads this to build and to search a library. */
+#include <stdio.h>
+void link_list_symbols(AstList *decls, int nfiles, FILE *out);
+
 int link_merge(AstList *decls, const char *const *files, int nfiles, int allow_undefined);
 
 #endif

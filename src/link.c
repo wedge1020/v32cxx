@@ -259,3 +259,64 @@ int link_merge(AstList *decls, const char *const *files, int nfiles, int allow_u
     free(tu_of);
     return errors;
 }
+
+/* ---- --list-symbols ------------------------------------------------------- */
+
+/* names a function declares itself: its parameters and every local */
+static void collect_locals(const AstNode *n, NameSet *s) {
+    if (n == NULL) return;
+    if (n->kind == AST_VAR_DECL && n->str1 != NULL) set_add(s, n->str1);
+    collect_locals(n->a, s);
+    collect_locals(n->b, s);
+    collect_locals(n->c, s);
+    collect_locals(n->d, s);
+    for (int i = 0; i < n->list.count; i++) collect_locals(n->list.items[i], s);
+}
+
+/* the names a function's code uses that are not its own locals */
+static void collect_free_idents(const AstNode *fn, NameSet *out) {
+    NameSet own = { NULL, 0, 0 }, used = { NULL, 0, 0 };
+    for (int i = 0; i < fn->list.count; i++)
+        if (fn->list.items[i] != NULL && fn->list.items[i]->str1 != NULL) set_add(&own, fn->list.items[i]->str1);
+    collect_locals(fn->a, &own);
+    collect_idents(fn->a, &used);
+    for (int i = 0; i < used.count; i++)
+        if (!set_has(&own, used.names[i])) set_add(out, used.names[i]);
+}
+
+void link_list_symbols(AstList *decls, int nfiles, FILE *out) {
+    size_t mlen = strlen(LINK_TU_MARKER);
+    for (int t = 0; t < (nfiles > 0 ? nfiles : 1); t++) {
+        NameSet defs = { NULL, 0, 0 }, all_defs = { NULL, 0, 0 }, refs = { NULL, 0, 0 };
+        int tu = 0;
+        for (int i = 0; i < decls->count; i++) {
+            const AstNode *d = decls->items[i];
+            if (d != NULL && d->kind == AST_VAR_DECL && d->str1 != NULL &&
+                strncmp(d->str1, LINK_TU_MARKER, mlen) == 0) {
+                tu = atoi(d->str1 + mlen);
+                continue;
+            }
+            if (tu != t || !is_symbol_node(d)) continue;
+            int is_def = d->kind == AST_FUNC_DEF || (d->kind == AST_VAR_DECL && !d->is_extern);
+            if (!is_def) continue;
+            set_add(&all_defs, d->str1);
+            if (!d->is_file_static) set_add(&defs, d->str1);
+        }
+        tu = 0;
+        for (int i = 0; i < decls->count; i++) {
+            const AstNode *d = decls->items[i];
+            if (d != NULL && d->kind == AST_VAR_DECL && d->str1 != NULL &&
+                strncmp(d->str1, LINK_TU_MARKER, mlen) == 0) {
+                tu = atoi(d->str1 + mlen);
+                continue;
+            }
+            if (tu != t || d == NULL) continue;
+            if (d->kind == AST_FUNC_DEF) collect_free_idents(d, &refs);
+            else if (d->kind == AST_VAR_DECL) collect_idents(d->a, &refs);
+        }
+        fprintf(out, "tu %d\n", t);
+        for (int i = 0; i < defs.count; i++) fprintf(out, "d %s\n", defs.names[i]);
+        for (int i = 0; i < refs.count; i++)
+            if (!set_has(&all_defs, refs.names[i])) fprintf(out, "r %s\n", refs.names[i]);
+    }
+}

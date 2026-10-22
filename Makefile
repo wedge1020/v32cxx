@@ -150,7 +150,7 @@ $(BIN_DIR)/v32c++: $(OBJ_DIR)/parser.o   $(OBJ_DIR)/lexer.o   \
 				   $(OBJ_DIR)/pathutil.o $(OBJ_DIR)/compat.o $(OBJ_DIR)/generic.o $(OBJ_DIR)/stdstring.o $(OBJ_DIR)/cartxml.o $(OBJ_DIR)/buildscript.o \
 				   $(OBJ_DIR)/debugmap.o $(OBJ_DIR)/macro.o    \
 				   $(OBJ_DIR)/cmode.o    \
-				   $(OBJ_DIR)/link.o     \
+				   $(OBJ_DIR)/link.o     $(OBJ_DIR)/archive.o \
 				   $(OBJ_DIR)/main.o | $(BIN_DIR)
 	$(CC) $(CFLAGS) -o $@ $^
 # If linking fails looking for yywrap/yy_flex_* symbols on your system,
@@ -403,6 +403,8 @@ test: all | $(OUT_DIR)
 	test "`grep -c '__v32_ptr[0-9] = me();' out/157g7.c`" = 4
 	! grep -q '(me()->' out/157g7.c
 	$(TBIN)  -vvv    -o out/158program.c tests/158sample.c 1> out/158sample.txt 2>&1
+	! grep -q 'not checked' out/158sample.txt
+	grep -q 'char \[4\] first_buf' out/158program.c
 	! grep -q '__attribute__' out/158program.c
 	! grep -q 'static_assert' out/158program.c
 	grep -q 'N__e[0-9]' out/158program.c
@@ -422,6 +424,20 @@ test: all | $(OUT_DIR)
 	! grep -q "unused_proto" out/159bad_undef.txt
 	$(TBIN) --allow-undefined -o out/159bad.c tests/159bad_undef.c tests/159bad_undef2.c 1> out/159bad_undef_ok.txt 2>&1
 	grep -q "warning: undefined reference to 'missing'" out/159bad_undef_ok.txt
+	$(TBIN) --mklib out/lib160.v32a tests/160lib/add.c tests/160lib/mul.c tests/160lib/deep.c tests/160lib/unused.c
+	grep -q '^member .* \.\./tests/160lib/add\.c$$' out/lib160.v32a
+	$(TBIN)  -vvv    -o out/160program.c tests/160sample.c out/lib160.v32a 1> out/160sample.txt 2>&1
+	grep -q '^int mul3(int a)$$' out/160program.c
+	grep -q '^int deep(int a)$$' out/160program.c
+	! grep -q 'unused_fn\|unused_tail' out/160program.c
+	grep -q 'helper__add' out/160program.c
+	$(TBIN) -o out/160second.c tests/160sample.c -L out -l160 1> out/160second.txt 2>&1
+	cmp out/160program.c out/160second.c
+	cp tests/160lib/unused.c out/160stale.c
+	$(TBIN) --mklib out/160stale.v32a out/160stale.c
+	echo '/* edited after the index was made */' >> out/160stale.c
+	! $(TBIN) -o out/160bad.c tests/160sample.c out/160stale.v32a 1> out/160stale.txt 2>&1
+	grep -q 'is out of date' out/160stale.txt
 # `-vvv` (this project's own verbosity flag, a later round -- see
 # main.c) is passed to every sample specifically so `make test`'s own
 # output still captures the full AST/semantic-analysis/lowering dumps

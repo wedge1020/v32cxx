@@ -194,8 +194,30 @@ it ever sees them:
   redefinition is the last one for what follows). A struct, typedef or
   enum with the same name in two files must be the same type.
 
-Not done yet: libraries (archives of already-transpiled files, so that
-only the functions a program uses are linked in).
+### Libraries
+
+    v32c --mklib libm.v32a -I inc src/add.c src/mul.c src/deep.c
+    v32c main.c libm.v32a -o prog.c           # or:  -L dir -lm
+
+A library is an index, `libname.v32a`, over its member source files: for
+each member, the symbols it defines (external linkage) and the names its
+code uses. Linking `main.c` with it takes in only the members that define
+something the program needs, and then the members those need, and so on;
+the rest are left out, so their code and data cost nothing. A member is
+linked like any other input file, so its `static` names are renamed on a
+clash and its errors are reported as usual. Listing a member on the
+command line as well is fine (it is not taken twice).
+
+- The index holds relative paths and each member's size: keep the members
+  where they were, and rebuild the index after changing one (a changed
+  member is an error, `library ... is out of date`, not a silent mismatch).
+- `-I` and `-D` given to `--mklib` are used to read the members; give the
+  same to the link.
+- A reference is matched by name: a local variable of the same name as a
+  library function inside one function hides that reference there.
+- The members are source, not object code, so they are read again at
+  every link. `--list-symbols` (internal) is what `--mklib` and the link
+  run, as a second copy of the program, to read the symbols of the files.
 
 ## Limits
 
