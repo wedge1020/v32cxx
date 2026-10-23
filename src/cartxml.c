@@ -1,3 +1,4 @@
+#include "warn.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -81,7 +82,7 @@ char **cart_resource_names(const CartResourceList *list, const char *tag,
                     continue;   /* the very same file listed twice */
                 clash = 1;
                 if (depth >= total && g_warn_collisions)
-                    fprintf(stderr, "---- warning: %s '%s' and '%s' both become '%s' in the XML ----\n",
+                    v32_warnf("cart-name", "---- warning: %s '%s' and '%s' both become '%s' in the XML ----\n",
                             tag, list->items[j].name, list->items[i].name, names[i]);
                 break;
             }

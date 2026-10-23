@@ -1,3 +1,4 @@
+#include "warn.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -36,6 +37,11 @@ int g_uses_new_or_delete = 0;
 CodegenTarget g_target = TARGET_VIRCON32;
 int g_reject_bit_fields = 0;   /* --reject-bit-fields */
 int g_signed_shift = 1;        /* cleared by --no-signed-shift */
+extern const char *g_rename_from[32], *g_rename_to[32];
+extern int g_rename_count;
+extern int g_yield_quantum;
+extern const char *g_yield_func, *g_yield_counter;
+int g_unsigned_ops = 1;        /* cleared by --no-unsigned-ops */
 int g_silence_unused = 0;      /* set by --silence-unused-args */
 CartResourceList g_cart_textures = {NULL, 0, 0};
 CartResourceList g_cart_sounds = {NULL, 0, 0};
@@ -77,7 +83,7 @@ static char *invoked_name(const char *argv0) {
 }
 
 static void print_usage(const char *prog_name) {
-    fprintf(stderr, "usage: %s [-o output.c] [-c] [-v[v[v]]] [-I dir] [-D name[=value]] [-U name] [-x] [--xml-preserve-paths] [--no-build-scripts] [--title-opt=TEXT] [--no-diff-opt-title] [-b] [-g] [--target=vircon32|standard] [--reject-bit-fields] [--no-signed-shift] [--silence-unused-args] [--allow-undefined] [-L dir] [-lname] [--mklib lib.v32a] [--no-inline-containers] [--version] <input.cpp> [more inputs] [lib.v32a ...]\n", prog_name);
+    fprintf(stderr, "usage: %s [-o output.c] [-c] [-v[v[v]]] [-I dir] [-D name[=value]] [-U name] [-x] [--xml-preserve-paths] [--no-build-scripts] [--title-opt=TEXT] [--no-diff-opt-title] [-b] [-g] [--target=vircon32|standard] [--reject-bit-fields] [--no-signed-shift] [--no-unsigned-ops] [--yield-points[=N]] [--rename old=new] [--yield-func=NAME] [--yield-counter=NAME] [--silence-unused-args] [--allow-undefined] [--warn-error[=kind,...]] [--list-warnings] [-L dir] [-lname] [--mklib lib.v32a] [--no-inline-containers] [--version] <input.cpp> [more inputs] [lib.v32a ...]\n", prog_name);
     fprintf(stderr, "  -o output.c   write generated Vircon32 C to this file (default:\n"
                      "                <input> with its extension replaced by .c)\n");
     fprintf(stderr,  "  --no-signed-shift\n"
@@ -87,6 +93,15 @@ static void print_usage(const char *prog_name) {
                      "                C (-8 >> 1 is -4); `unsigned` values are left\n"
                      "                alone. Use this when every shifted value is known\n"
                      "                to be non-negative and the extra code costs too much\n");
+    fprintf(stderr,  "  --rename old=new     give a function/variable another name program-wide (SDK name clashes)\n"
+                     "  --yield-points[=N]   insert `if (COUNTER() > N) YIELD();` at function entry, loop bodies and labels\n"
+                     "                       (default N 100000; --yield-func=NAME, --yield-counter=NAME; skip with __attribute__((no_yield)))\n"
+                     "  --no-unsigned-ops\n"
+                     "                leave `<`, `>`, `<=`, `>=`, `/`, `%%` as written on\n"
+                     "                `unsigned` values. By default they are done as\n"
+                     "                unsigned operations (Vircon32's are signed, so a\n"
+                     "                value above 2^31 would read as negative); use this\n"
+                     "                when no such value occurs and the code costs too much\n");
     fprintf(stderr,  "  --silence-unused-args\n"
                      "                start every function that ignores one of its\n"
                      "                parameters (`this` of a method that touches no\n"
@@ -103,6 +118,11 @@ static void print_usage(const char *prog_name) {
                      "                with several inputs, report a used-but-undefined\n"
                      "                function or extern variable as a warning (the SDK\n"
                      "                declares its own functions)\n");
+    fprintf(stderr,  "  --warn-error[=kind,...]\n"
+                     "                make v32c++'s own warnings (all, or just the kinds\n"
+                     "                named) errors: exit 1 and no output is kept\n"
+                     "  --list-warnings\n"
+                     "                print the warning kinds and exit\n");
     fprintf(stderr,  "  --no-inline-containers\n"
                      "                keep std::array/std::vector accessors (v[i],\n"
                      "                v.size(), ...) as function calls instead of\n"
@@ -360,6 +380,13 @@ int  main (int  argc, char **argv)
         { "silence-unused-args", no_argument, 0, 'A' },
         { "allow-undefined", no_argument, 0, 0x100 },
         { "list-symbols", no_argument, 0, 0x101 },
+        { "warn-error", optional_argument, 0, 0x103 },
+        { "list-warnings", no_argument, 0, 0x104 },
+        { "no-unsigned-ops", no_argument, 0, 0x105 },
+        { "yield-points", optional_argument, 0, 0x106 },
+        { "yield-func", required_argument, 0, 0x107 },
+        { "rename", required_argument, 0, 0x109 },
+        { "yield-counter", required_argument, 0, 0x108 },
         { "mklib", required_argument, 0, 0x102 },
         { 0,         0,                 0, 0   }
     };
@@ -465,6 +492,35 @@ int  main (int  argc, char **argv)
                 break;
             case 0x100:
                 allow_undefined = 1;
+                break;
+            case 0x103:
+                if (warn_error_enable(optarg) != 0) return 2;
+                break;
+            case 0x104:
+                warn_list_kinds();
+                return 0;
+            case 0x105:
+                g_unsigned_ops = 0;
+                break;
+            case 0x106:
+                g_yield_quantum = optarg != NULL ? atoi(optarg) : 100000;
+                if (g_yield_quantum <= 0) { fprintf(stderr, "error: --yield-points needs a positive count\n"); return 2; }
+                break;
+            case 0x109: {
+                char *eq = strchr(optarg, '=');
+                if (eq == NULL || eq == optarg || eq[1] == '\0' || g_rename_count >= 32) {
+                    fprintf(stderr, "error: --rename needs old=new (at most 32)\n");
+                    return 2;
+                }
+                g_rename_from[g_rename_count] = strndup(optarg, (size_t)(eq - optarg));
+                g_rename_to[g_rename_count++] = strdup(eq + 1);
+                break;
+            }
+            case 0x107:
+                g_yield_func = optarg;
+                break;
+            case 0x108:
+                g_yield_counter = optarg;
                 break;
             case 0x101:
                 list_symbols = 1;       /* internal: what archive.c asks of a child run */
@@ -714,6 +770,7 @@ int  main (int  argc, char **argv)
         }
 
         if (verbosity >= 1) printf("stage 2: running semantic analyzer\n");
+        v32_explicit_renames(g_program);
         int sema_errors = sema_run(g_program);
         if (verbosity >= 3) sema_dump(g_program);
         int sema_warnings = sema_get_warning_count();
@@ -916,6 +973,12 @@ int  main (int  argc, char **argv)
         sema_cleanup();
     } else {
         fprintf(stderr, "---- parse failed for %s ----\n", g_current_filename);
+    }
+    if (rc == 0 && warn_error_count() > 0) {
+        /* --warn-error: the output is not left behind to be built */
+        fprintf(stderr, "---- %d warning(s) treated as errors (--warn-error) ----\n", warn_error_count());
+        if (!list_symbols && output_filename != NULL) remove(output_filename);
+        rc = 1;
     }
 
     debug_map_free();

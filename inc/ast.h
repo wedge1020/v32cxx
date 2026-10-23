@@ -861,6 +861,7 @@ struct AstNode {
      * only so that lower.c knows a `>>` on it must stay a logical shift
      * (see the signed right shift in lower.c, docs/VIRCON32_QUIRKS.md #14). */
     int is_unsigned;
+    int attr_flags;         /* ATTR_NO_YIELD / ATTR_ROM seen in a __attribute__ (lexer-captured) */
 
     /* AST_INT_LIT / AST_FLOAT_LIT / AST_CHAR_LIT only: the object-like
      * macro this literal came from (`#define MAX 5` ... `MAX`), or NULL.
@@ -947,6 +948,9 @@ void ast_list_append_flatten(AstList *list, AstNode *node); /* see its own
     doc comment in ast.c -- expands an AST_VAR_DECL_GROUP into its own
     entries instead of appending it as one */
 
+#define ATTR_NO_YIELD 1
+#define ATTR_ROM 2
+extern int g_attr_pending;
 AstNode *ast_new(AstKind kind, int line);
 AstNode *ast_ident(const char *name, int line);
 

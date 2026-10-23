@@ -55,6 +55,10 @@ Macro *macro_define_cmdline(const char *spec);
 /* #undef NAME / -U NAME. Unknown names are silently ignored, as in C. */
 void macro_undef(const char *name);
 
+/* Drops every macro but the predefined ones: the next translation unit of a
+ * linked program starts from a clean table, as it would in a real build. */
+void macro_forget_all(void);
+
 Macro *macro_lookup(const char *name);
 int macro_count(void);
 

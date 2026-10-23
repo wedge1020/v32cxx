@@ -49,6 +49,13 @@ AstNode *ast_new(AstKind kind, int line) {
     n->line = line;
     n->file = g_current_filename;
     n->list = ast_list_new();
+    if ((kind == AST_FUNC_DEF || kind == AST_FUNC_DECL) && (g_attr_pending & ATTR_NO_YIELD)) {
+        n->attr_flags |= ATTR_NO_YIELD;
+        g_attr_pending &= ~ATTR_NO_YIELD;
+    } else if (kind == AST_VAR_DECL && (g_attr_pending & ATTR_ROM)) {
+        n->attr_flags |= ATTR_ROM;
+        g_attr_pending &= ~ATTR_ROM;
+    }
     return n;
 }
 

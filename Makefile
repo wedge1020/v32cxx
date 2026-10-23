@@ -150,7 +150,7 @@ $(BIN_DIR)/v32c++: $(OBJ_DIR)/parser.o   $(OBJ_DIR)/lexer.o   \
 				   $(OBJ_DIR)/pathutil.o $(OBJ_DIR)/compat.o $(OBJ_DIR)/generic.o $(OBJ_DIR)/stdstring.o $(OBJ_DIR)/cartxml.o $(OBJ_DIR)/buildscript.o \
 				   $(OBJ_DIR)/debugmap.o $(OBJ_DIR)/macro.o    \
 				   $(OBJ_DIR)/cmode.o    \
-				   $(OBJ_DIR)/link.o     $(OBJ_DIR)/archive.o \
+				   $(OBJ_DIR)/link.o     $(OBJ_DIR)/archive.o $(OBJ_DIR)/warn.o \
 				   $(OBJ_DIR)/main.o | $(BIN_DIR)
 	$(CC) $(CFLAGS) -o $@ $^
 # If linking fails looking for yywrap/yy_flex_* symbols on your system,
@@ -438,6 +438,46 @@ test: all | $(OUT_DIR)
 	echo '/* edited after the index was made */' >> out/160stale.c
 	! $(TBIN) -o out/160bad.c tests/160sample.c out/160stale.v32a 1> out/160stale.txt 2>&1
 	grep -q 'is out of date' out/160stale.txt
+	$(TBIN)  -vvv    -o out/161program.c tests/161sample.c tests/161other.c 1> out/161sample.txt 2>&1
+	grep -q '^struct cpu;$$' out/161program.c
+	grep -q 'pipe_tag' out/161program.c
+	! grep -q '__atomic' out/161program.c
+	! grep -q ': error' out/161sample.txt
+	test "`grep -c 'typedef int uint;' out/161program.c`" = 1
+	! grep -q 'const ' out/161program.c
+	$(TBIN)  -vvv    -o out/162program.c tests/162sample.cpp tests/162shape.cpp 1> out/162sample.txt 2>&1
+	test "`grep -c '^struct Counter {' out/162program.c`" = 1
+	$(TBIN)  -vvv    -o out/163program.c tests/163sample.c tests/163other.c 1> out/163sample.txt 2>&1
+	grep -q 'ret_tmp0 = 10;' out/163program.c
+	grep -q 'ret_tmp0 = 20;' out/163program.c
+	$(TBIN)  -vvv    -o out/164program.c tests/164sample.c 1> out/164sample.txt 2>&1
+	grep -q '__v32_cl_g0' out/164program.c
+	! grep -q 'noreturn' out/164program.c
+	$(TBIN)  -vvv    -o out/165program.c tests/165sample.c 1> out/165sample.txt 2>&1
+	grep -q '\[-Wunsigned\]' out/165sample.txt
+	rm -f out/165bad.c
+	! $(TBIN) --warn-error -o out/165bad.c tests/165sample.c 1> out/165w1.txt 2>&1
+	grep -q 'treated as errors' out/165w1.txt
+	test ! -e out/165bad.c
+	! $(TBIN) --warn-error=unsigned,pragma -o out/165bad.c tests/165sample.c 1> out/165w2.txt 2>&1
+	$(TBIN) --warn-error=pragma -o out/165ok.c tests/165sample.c 1> out/165w3.txt 2>&1
+	! $(TBIN) --warn-error=nosuch -o out/165bad.c tests/165sample.c 1> out/165w4.txt 2>&1
+	grep -q 'not a warning kind' out/165w4.txt
+	$(TBIN) --list-warnings | grep -q '^undefined-reference '
+	$(TBIN)  -vvv    -o out/166program.c tests/166sample.c 1> out/166sample.txt 2>&1
+	grep -q '__v32_frame_address' out/166program.c
+	$(TBIN)  -vvv    -o out/167program.c tests/167sample.c 1> out/167sample.txt 2>&1
+	grep -q '__v32_udiv' out/167program.c
+	$(TBIN)  --no-unsigned-ops -o out/167off.c tests/167sample.c 1> out/167off.txt 2>&1
+	! grep -q '__v32_udiv' out/167off.c
+	$(TBIN)  -vvv    -o out/168program.c tests/168sample.c 1> out/168sample.txt 2>&1
+	grep -q "__v32_a_buf" out/168program.c
+	$(TBIN)  -vvv --yield-points=10 -o out/169program.c tests/169sample.c 1> out/169sample.txt 2>&1
+	grep -q "get_cycle_counter() > 10" out/169program.c
+	$(TBIN)  -vvv    -o out/170program.c tests/170sample.c 1> out/170sample.txt 2>&1
+	grep -q "__v32_romd_squares" out/170program.c
+	$(TBIN)  -vvv --rename abs2=my_abs -o out/171program.c tests/171sample.c 1> out/171sample.txt 2>&1
+	grep -q "my_abs" out/171program.c
 # `-vvv` (this project's own verbosity flag, a later round -- see
 # main.c) is passed to every sample specifically so `make test`'s own
 # output still captures the full AST/semantic-analysis/lowering dumps
@@ -682,7 +722,7 @@ archive: clean
 # ships empty demo folders.
 
 clean:
-	rm -f $(BIN_DIR)/* $(OBJ_DIR)/* $(SRC_DIR)/parser.output $(OUT_DIR)/* put/* counterexamples.txt *.zip
+	rm -f $(BIN_DIR)/* $(OBJ_DIR)/* $(SRC_DIR)/parser.output $(OUT_DIR)/* put/* counterexamples.txt *.zip *.patch ../v32cxx-project.zip
 	$(MAKE) -C demos clean
 	#rm -f $(SRC_DIR)/parser.c $(SRC_DIR)/lexer.c $(INC_DIR)/parser.h
 # Removing the bison/flex-generated files here (not just objects/binary) is

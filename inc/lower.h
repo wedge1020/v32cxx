@@ -351,6 +351,9 @@ typedef struct StructLayout {
  * reserved for a later phase that might have something to report. */
 int lower_run(AstNode *program);
 
+/* --rename old=new: applied to the parsed program, before sema. */
+void v32_explicit_renames(AstNode *program);
+
 /* Prints each class's flattened field layout (phase 1's output -- name,
  * kind, declared type rendered in ordinary C++-like syntax rather than
  * sema.c's mangling-safe form, and, for an inherited field, which

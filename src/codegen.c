@@ -6,6 +6,7 @@
 #include "sema.h"
 #include "lower.h"
 #include "codegen.h"
+#include "cmode.h"
 #include "driver.h" /* g_preprocessor_lines -- see its own doc comment there */
 #include "debugmap.h"
 #include "prescan.h" /* prescan_is_header_struct */
@@ -300,6 +301,7 @@ static void print_type(FILE *out, const AstNode *type) {
             break;
         }
         case AST_POINTER_TYPE:
+            /* (C input drops `const` everywhere -- see AST_CONST_TYPE.) */
             print_type(out, type->a);
             fprintf(out, " *");
             break;
@@ -314,7 +316,7 @@ static void print_type(FILE *out, const AstNode *type) {
              * THEN append their own marker after). Matches real C's
              * own conventional placement, and is what real Vircon32 C
              * itself expects too, being ordinary C in this respect. */
-            fprintf(out, "const ");
+            if (!(g_c_mode && g_target == TARGET_VIRCON32)) fprintf(out, "const ");
             print_type(out, type->a);
             break;
         case AST_ARRAY_TYPE: {
@@ -2645,6 +2647,9 @@ void codegen_run(const AstNode *program, FILE *out, int verbose_comments) {
     AstNode view = *program;
     view.list = visible;
     program = &view;
+    if (g_c_mode)
+        for (int i = 0; i < g_c_fwd_tags.count; i++)
+            fprintf(out, "struct %s;\n", g_c_fwd_tags.items[i]->str1);
     emit_forward_declarations(out, &program->list);
     fprintf(out, "\n");
     emit_typedefs(out, &program->list);

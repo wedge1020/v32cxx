@@ -408,7 +408,7 @@ const AstNode *resolve_typedef_chain(const AstNode *type);
  * later passes can ask the same question without re-deriving it. */
 int typedef_registry_is_native(const char *name);
 
-void sema_warning(int line, const char *fmt, ...); /* see its own doc
+void sema_warning(const char *kind, int line, const char *fmt, ...); /* see its own doc
     comment in sema.c -- non-fatal, exposed so lower.c can reuse the
     same counting/formatting machinery for its own diagnostics */
 

@@ -1,3 +1,4 @@
+#include "warn.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -98,13 +99,13 @@ static int g_warning_count = 0;
  * points in the pipeline (sema.c before lowering runs at all; the
  * word-size check only after compute_struct_layouts has computed the
  * field counts it needs). */
-void sema_warning(int line, const char *fmt, ...) {
-    fprintf(stderr, "warning at line %d: ", line);
+void sema_warning(const char *kind, int line, const char *fmt, ...) {
+    char msg[3000];
     va_list ap;
     va_start(ap, fmt);
-    vfprintf(stderr, fmt, ap);
+    vsnprintf(msg, sizeof msg, fmt, ap);
     va_end(ap);
-    fprintf(stderr, "\n");
+    v32_warnf(kind, "warning at line %d: %s\n", line, msg);
     g_warning_count++;
 }
 
@@ -1893,6 +1894,14 @@ AstNode *infer_expr_type(const AstNode *expr, AstNode *current_class, LocalVarTy
             if (t != NULL) return t;
             return infer_expr_type(expr->c, current_class, locals);
         }
+        /* `(p = f()) == 0` / `((char *)q) != 0`: an assignment has its
+         * left side's type, a cast its written type. Without these the
+         * zero->NULL rewrite had nothing to key on and Vircon32 C
+         * rejected the comparison. */
+        case AST_ASSIGN:
+            return infer_expr_type(expr->a, current_class, locals);
+        case AST_CAST:
+            return expr->type;
         default:
             return NULL;
     }
@@ -3294,12 +3303,12 @@ static void warn_no_effect(const AstNode *stmt, const AstNode *current_class, Lo
     if (e->b->kind != AST_IDENT && e->b->kind != AST_INT_LIT) return;
     if (resolve_expr_class(e->a, (AstNode *)current_class, locals) != NULL) return;   /* maybe an operator */
     if (strcmp(e->str1, "*") == 0 && e->b->kind == AST_IDENT && find_local(locals, e->a->str1) == NULL)
-        sema_warning(stmt->line,
+        sema_warning("no-effect", stmt->line,
             "`%s * %s;` has no effect: if '%s' was meant as a type, v32c++ does not know it "
             "(the SDK headers not found? see $V32CXX_SDK_INCLUDE, or declare it `native %s;`)",
             e->a->str1, e->b->str1, e->a->str1, e->a->str1);
     else
-        sema_warning(stmt->line, "statement `%s %s ...;` has no effect", e->a->str1, e->str1);
+        sema_warning("no-effect", stmt->line, "statement `%s %s ...;` has no effect", e->a->str1, e->str1);
 }
 
 static void check_node(AstNode *n, AstNode *current_class, LocalVarType **locals);
@@ -3619,7 +3628,7 @@ static void check_node(AstNode *n, AstNode *current_class, LocalVarType **locals
              * sema_error already reports every occurrence of a real
              * error, not just the first. */
             if (n->ival == 1) {
-                sema_warning(n->line,
+                sema_warning("dynamic-cast", n->line,
                              "'dynamic_cast' is accepted but not truly implemented -- "
                              "no runtime type check is performed (this project has no "
                              "RTTI); it transpiles as an ordinary cast, identical to "

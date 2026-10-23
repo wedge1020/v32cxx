@@ -14,6 +14,7 @@
  * is the classic approximation of the standard's per-token hide sets and
  * agrees with it on everything short of contrived cases.
  */
+#include "warn.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -293,6 +294,25 @@ void macro_undef(const char *name) {
     table_remove(name);
 }
 
+void macro_forget_all(void) {
+    ensure_builtins();
+    for (int b = 0; b < MACRO_BUCKETS; b++) {
+        MacroNode **link = &g_buckets[b];
+        while (*link) {
+            MacroNode *node = *link;
+            if (node->m->is_builtin) { link = &node->next; continue; }
+            /* the name may mean something else in the next file, and all
+             * #defines reach the top of the output in one block: never
+             * print it back by name */
+            mark_unstable(node->m->name);
+            *link = node->next;
+            macro_free(node->m);
+            free(node);
+            g_macro_count--;
+        }
+    }
+}
+
 int macro_name_is_stable(const char *name) {
     for (int i = 0; i < g_unstable_count; i++)
         if (strcmp(g_unstable[i], name) == 0) return 0;
@@ -452,7 +472,7 @@ Macro *macro_define(const char *rest, const char *file, int line) {
         g_builtin_count--;
     } else if (old != NULL && !same_definition(old, m)) {
         mark_unstable(m->name);
-        fprintf(stderr, "%s:%d: warning: '%s' redefined (previous definition at %s:%d)\n",
+        v32_warnf("macro-redefined", "%s:%d: warning: '%s' redefined (previous definition at %s:%d)\n",
                 file, line, m->name, old->file, old->line);
     }
     table_add(m);

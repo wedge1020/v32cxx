@@ -34,17 +34,22 @@ covers tags used without their keyword, which only Vircon32 C accepts.
 | a program-defined `char **v32_main_args(int *argc, char **argv)` | Called at the top of `main` (`argv = v32_main_args(&argc, argv);`): lets a title screen choose the program's command line. | `cmode.c` |
 | `int printf(char *fmt, ...)`, `va_start`, `va_arg`, `va_end` | See *Variadic functions* below. | `parser.y`, `sema.c`, `cmode.c` |
 | `char **argv`, `char **a, *b;` | Pointers to pointers (up to three levels). | `parser.y` |
-| `void (*func)()` as a parameter, `(void (*)())fn` | Function pointer parameters and casts. | `parser.y` |
+| `void (*func)()` as a parameter, `(void (*)())fn`; `void f(char *)` written as a parameter, named or not (`int run(void f(char *), char *s)`, `void apply(void (char *))`) | Function pointer parameters and casts; a parameter of function type is the pointer to that function, as in C. | `parser.y` |
 | `thing == ptr` with a `void *ptr` | Compared as addresses. | `lower.c` phase 12 |
+| `(p = f()) == 0`, `((char *)q) != 0`, `wait(0)`, `gettoken(ps, es, 0, 0)` | The `0` is a null pointer wherever a pointer is wanted: beside an assignment or a cast, or as an argument for a pointer parameter. | `lower.c`, `sema.c` |
+| `if (p < 0)` on a pointer; `(void *)p + n` (GNU) | A pointer compared with an integer is read as the integer it is; arithmetic on a `void *` steps one word, like a `char *`. | `lower.c` |
+| `const char *s`, `const struct S *p` | `const` is dropped from the output of C input: Vircon32 C enforces it where C does not (`*d++ = *s++` through a `const char *`, `&x` of a const `x` for a plain pointer parameter). | `codegen.c` |
+| `struct cpu *cpu;` where no `struct cpu { }` is ever seen; `struct pipe;` beside `int pipe(int *)` | A struct that is only pointed to gets a `struct cpu;` line of its own in the output; a tag that is also a function or variable name is renamed `pipe_tag`. | `cmode.c`, `codegen.c` |
+| `__atomic_load_n`, `__atomic_store_n`, `__atomic_exchange_n`, `__atomic_fetch_add/sub`, `__sync_synchronize`, `__sync_lock_test_and_set`, `__sync_lock_release`, `__ATOMIC_*` | One CPU, nothing to race with: the plain read, write or exchange (a few hidden helpers, `__v32_atomic_xchg` and friends, when a file uses them). | `prescan.c` |
 | `(*d_func)(arg)` through a pointer declared `void (*d_func)();` | The pointer is cast to the type the call implies: `((void(int)*)d_func)(arg)`. | `lower.c` phase 12 |
 | a function's name as a value: an argument, a table entry, `f == g` | `&name` | `lower.c` phase 12 |
 | `NULL`, `p = 0`, `if (p)`, `!p`, `p && p->x` | See *The null pointer* below. | `lower.c` phase 12, `codegen.c` |
 | `char buf[sizeof table / sizeof table[0]]`, `sizeof "text"` | `sizeof` is evaluated in array sizes (sizes are in words). | `parser.y` |
 | `"\033[2J"`, `"\b \b"` | A string with a control character becomes a file-scope char array. | `lower.c` phase 12 |
 | `struct stats s = { 16, "1x4", 12 };` with `char s_dmg[13]` | The string becomes the member's characters, zero-padded. | `lower.c` phase 12 |
-| `{ [SYS_fork] = sys_fork, ... }`, `{ .b = 2, .a = 1 }`, `.s.b = 9`, `[2].x = 1` | Designated initializers become positional lists. An index is a literal, `#define`, enumerator or arithmetic on those; `[]` takes its length from the highest index; a gap is zero (a null pointer for pointers); a local gets every slot written. A union can designate only its first member; the GNU range `[a ... b]` is not supported. | `parser.y`, `lower.c` phase 0 |
-| `__attribute__((noreturn))`, `__attribute`, `__declspec(...)` | Ignored wherever they stand. | `lexer.l` |
-| `(char *[]){"/init", 0}`, `(struct P){1, 2}`, `&(struct P){...}` | A hidden local `T __v32_cl_tmpN = {...};` ahead of the statement. Not supported at file scope, or in a for-step / do-while condition (the same limits as variadic calls). | `parser.y`, `cmode.c` |
+| `{ [SYS_fork] = sys_fork, ... }`, `{ .b = 2, .a = 1 }`, `.s.b = 9`, `[2].x = 1` | Designated initializers become positional lists. An index is a literal, `#define`, enumerator or arithmetic on those; `[]` takes its length from the highest index; a gap is zero (a null pointer for pointers); a local gets every slot written. `[lo ... hi] = v` (GNU) writes `v` at every index from `lo` to `hi`. A union can designate only its first member. | `parser.y`, `lower.c` phase 0 |
+| `__attribute__((noreturn))`, `__attribute`, `__declspec(...)`, `_Noreturn`, `noreturn` (`#include <stdnoreturn.h>`) | Ignored wherever they stand: Vircon32 C does not mind a function that ends in a call that never returns. | `lexer.l`, `prescan.c` |
+| `(char *[]){"/init", 0}`, `(struct P){1, 2}`, `&(struct P){...}` | A hidden local `T __v32_cl_tmpN = {...};` ahead of the statement; in a file-scope initializer (`struct P *p = &(struct P){1, 2};`) a hidden global `__v32_cl_gN`. Not supported in a for-step / do-while condition (the same limits as variadic calls). | `parser.y`, `cmode.c` |
 | `enum { N = 250 };` inside a function | Hoisted to file scope; if another enum already has an enumerator `N`, this one becomes `N__eK` and the rest of its block is rewritten. | `parser.y` |
 | `_Static_assert(cond, "msg")`, `static_assert(cond)` | Evaluated while transpiling (literals, `#define`, enumerators, `sizeof`, arithmetic); a zero is an error with the message; a condition it cannot evaluate is a warning. Nothing is emitted. | `parser.y` |
 | a call through a prototype-only function: `me()->x += n;` | Lowered with one call, as when the definition is visible. | `cmode.c`, `sema.c` |
@@ -172,8 +177,9 @@ undefined function or `extern` variable, so the files are merged before
 it ever sees them:
 
 - A prototype or `extern` declaration in one file binds to the definition
-  in another. A header's `#include` guards (or `#pragma once`) and macros
-  carry from one file to the next, so a shared header is read once.
+  in another. A header (`.h`, `.hpp`) one file has read is not read again by the
+  others, guarded or not, as if it said `#pragma once`: its declarations are
+  in the program once.
 - A file-scope `static` function or variable is private to its file. If
   another file has anything of the same name, it is renamed in the file
   that owns it (`helper` in `b.c` becomes `helper__b`), uses included; a
@@ -190,9 +196,15 @@ it ever sees them:
 - All inputs must be C, or all C++ (the undefined-reference check is for C
   only). The cart XML, `Make.sh` and `Make.bat` are named after the first
   file; the build scripts repeat the other files.
-- Macros defined in one file stay defined for the files after it (a
-  redefinition is the last one for what follows). A struct, typedef or
-  enum with the same name in two files must be the same type.
+- Each file has macros of its own: what one file `#define`s is not defined
+  in the next (`-D` and `-U` apply to every file), as in a real build. A
+  struct, typedef or enum with the same name in two files must be the same
+  type. A function declared inside another function's body (`extern int
+  userret();` there) is not seen by the undefined-reference check.
+- C++ files link the same way (classes in a shared `.hpp`, methods defined in
+  another file); only C gets the undefined-reference check. The library
+  step starts a second copy of the program through `popen` (`_popen` on
+  Windows, which has not been tried).
 
 ### Libraries
 
@@ -219,6 +231,18 @@ command line as well is fine (it is not taken twice).
   every link. `--list-symbols` (internal) is what `--mklib` and the link
   run, as a second copy of the program, to read the symbols of the files.
 
+## Low-level helpers
+
+| You write | v32c++ does |
+|---|---|
+| `__builtin_frame_address(0)`, `__builtin_return_address(0)` (levels 0 and up) | Reads the compiler's frame chain (`[BP]` = caller's BP, `[BP+1]` = return address); a hidden `__v32_get_bp` helper is added when a file uses them. |
+| `asm { "mov R1, {&buf}" }`, `{&func}`, `{*p}` | The SDK compiler only interpolates plain variables. `{&x}` becomes a hidden local `int *__v32_a_x = &x;` before the asm (also keeps a function that only asm names alive); `{*p}` a hidden `int __v32_d_p = *p;`. |
+| `const int t[] __attribute__((rom)) = {...};` (file scope; integer, char or float literals) | The words are emitted as assembler data in the program image behind a hidden `int *__v32_rom_t(void)`; every use of `t` becomes that call, `sizeof(t)` the element count. Read-only; anything else is reported (`-Wrom`) and kept as a normal global. |
+| `unsigned` `<`, `>`, `<=`, `>=`, `/`, `%` | Done as unsigned operations (`--no-unsigned-ops` prints them as written). |
+| `--rename old=new` | Renames a function, variable or parameter program-wide, for names that clash with the SDK (struct members are untouched). |
+| `--yield-points[=N]` | Inserts `if (get_cycle_counter() > N) yield();` at function entry, loop bodies and labels (`--yield-func=`, `--yield-counter=` rename the two functions); `__attribute__((no_yield))`, functions with asm and `__v32_*` helpers are skipped. |
+| `--warn-error[=kind,...]`, `--list-warnings` | Turns v32c++'s own warnings (or just the listed kinds) into a failed build with no output file. |
+
 ## Limits
 
 - Several files are linked (see above); a single file has one translation
@@ -228,6 +252,7 @@ command line as well is fine (it is not taken twice).
 - `double` and `long double` are `float`, the one 32-bit floating type
   on Vircon32 (the generated C says `float`).
 - A union cannot be brace-initialized (Vircon32 C).
+- Inline `asm` written for another CPU (RISC-V `asm volatile("wfi")`, CSR accessors) is passed on as it is and means nothing to the Vircon32 assembler: such a function has to be written again.
 - Code that assumes `sizeof(int) == 4` (see *Files on the memory card*).
 - A compound assignment whose target has a side effect, used as a value
   inside a larger expression, is miscompiled by Vircon32 C (quirk 25 in

@@ -1,3 +1,4 @@
+#include "warn.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -807,21 +808,110 @@ static int expand_file(const char *path, FILE *out,
  * markers, and as its #pragma once key. Not a real path. */
 #define BUILTIN_STRING_PATH "<string>"
 
+/* C input only: GCC's atomic builtins (xv6's spinlock, `__atomic_store_n`).
+ * Vircon32 has one CPU and no interrupts to race with, so each is the
+ * plain operation; the ones that return the old value are small functions.
+ * Read ahead of the program when a named input file uses one. */
+#define BUILTIN_ATOMIC_PATH "<atomic>"
+static const char *const g_atomic_lines[] = {
+    "#pragma once",
+    "#define __ATOMIC_RELAXED 0",
+    "#define __ATOMIC_CONSUME 1",
+    "#define __ATOMIC_ACQUIRE 2",
+    "#define __ATOMIC_RELEASE 3",
+    "#define __ATOMIC_ACQ_REL 4",
+    "#define __ATOMIC_SEQ_CST 5",
+    "int __v32_atomic_xchg(int *p, int v) { int o = *p; *p = v; return o; }",
+    "int __v32_atomic_fetch_add(int *p, int v) { int o = *p; *p = o + v; return o; }",
+    "int __v32_atomic_fetch_sub(int *p, int v) { int o = *p; *p = o - v; return o; }",
+    "#define __atomic_load_n(p, o) (*(p))",
+    "#define __atomic_store_n(p, v, o) ((void)(*(p) = (v)))",
+    "#define __atomic_exchange_n(p, v, o) __v32_atomic_xchg((p), (v))",
+    "#define __atomic_fetch_add(p, v, o) __v32_atomic_fetch_add((p), (v))",
+    "#define __atomic_fetch_sub(p, v, o) __v32_atomic_fetch_sub((p), (v))",
+    "#define __atomic_thread_fence(o) ((void)0)",
+    "#define __sync_synchronize() ((void)0)",
+    "#define __sync_lock_test_and_set(p, v) __v32_atomic_xchg((p), (v))",
+    "#define __sync_lock_release(p) ((void)(*(p) = 0))",
+    NULL
+};
+
+/* __builtin_frame_address(n) / __builtin_return_address(n), C and C++.
+ * The Vircon32 compiler gives every function the same frame: `push BP;
+ * mov BP, SP`, so [BP] is the caller's BP and [BP+1] the return address.
+ * Both are helper functions that read BP and walk the chain; the extra two
+ * links are the helper's own frame and the one of the function that
+ * reads BP. (Past the outermost frame the chain is whatever the stack
+ * holds: a program that walks it ends it itself.) */
+#define BUILTIN_FRAMES_PATH "<frames>"
+static const char *const g_frames_lines[] = {
+    "#pragma once",
+    "int __v32_get_bp(void) { asm { \"mov R0, BP\" } }",
+    "int __v32_frame_address(int n)",
+    "{ int bp = __v32_get_bp(); int i; for (i = 0; i < n + 2; i++) bp = *(int *)bp; return bp; }",
+    "int __v32_return_address(int n)",
+    "{ int bp = __v32_get_bp(); int i; for (i = 0; i < n + 2; i++) bp = *(int *)bp; return *(int *)(bp + 1); }",
+    "#define __builtin_frame_address(n) ((void *)__v32_frame_address(n))",
+    "#define __builtin_return_address(n) ((void *)__v32_return_address(n))",
+    NULL
+};
+
 /* The built-in header's text in a temporary file, ready to read. */
-static FILE *open_builtin_string(void) {
+static FILE *open_builtin_text(const char *const *lines) {
     FILE *f = compat_tmpfile();
     if (f == NULL) return NULL;
-    for (int i = 0; g_stdstring_lines[i] != NULL; i++) {
-        fputs(g_stdstring_lines[i], f);
+    for (int i = 0; lines[i] != NULL; i++) {
+        fputs(lines[i], f);
         fputc('\n', f);
     }
     rewind(f);
     return f;
 }
 
+static FILE *open_builtin_string(void) { return open_builtin_text((const char *const *)g_stdstring_lines); }
+
+/* True when the file mentions `a` or `b` (either may be NULL). */
+static int file_mentions(const char *path, const char *a, const char *b) {
+    FILE *f = fopen(path, "r");
+    if (f == NULL) return 0;
+    char line[1024];
+    int found = 0;
+    while (!found && fgets(line, sizeof line, f) != NULL)
+        found = (a != NULL && strstr(line, a) != NULL) || (b != NULL && strstr(line, b) != NULL);
+    fclose(f);
+    return found;
+}
+
+/* Linking several files (prescan_expand_many): a `.h` that one file has
+ * already read is not read again by another, guarded or not, as if it said
+ * `#pragma once` -- the declarations it holds are in the program once, as
+ * the linker sees them. (A second #include in the SAME file is left to the
+ * header's own guard, as in C.) */
+static int g_link_tu = -1;                  /* the file being expanded; -1 when not linking */
+typedef struct HeaderTu { char *path; int tu; } HeaderTu;
+static HeaderTu *g_header_tus = NULL;
+static int g_header_tu_count = 0;
+
+static int header_seen_by_other_tu(const char *canonical, const char *path) {
+    const char *dot = strrchr(path, '.');
+    if (g_link_tu < 0 || dot == NULL ||
+        (strcmp(dot, ".h") != 0 && strcmp(dot, ".hpp") != 0 &&
+         strcmp(dot, ".hh") != 0 && strcmp(dot, ".hxx") != 0)) return 0;
+    for (int i = 0; i < g_header_tu_count; i++)
+        if (strcmp(g_header_tus[i].path, canonical) == 0) return g_header_tus[i].tu != g_link_tu;
+    g_header_tus = realloc(g_header_tus, (size_t)(g_header_tu_count + 1) * sizeof *g_header_tus);
+    g_header_tus[g_header_tu_count].path = strdup(canonical);
+    g_header_tus[g_header_tu_count].tu = g_link_tu;
+    g_header_tu_count++;
+    return 0;
+}
+
 static int expand_file_mode(const char *path, FILE *out,
                             char *const *dirs, int ndirs, int is_top, int harvest) {
-    FILE *in = (strcmp(path, BUILTIN_STRING_PATH) == 0) ? open_builtin_string() : fopen(path, "r");
+    FILE *in = (strcmp(path, BUILTIN_STRING_PATH) == 0) ? open_builtin_string()
+             : (strcmp(path, BUILTIN_ATOMIC_PATH) == 0) ? open_builtin_text(g_atomic_lines)
+             : (strcmp(path, BUILTIN_FRAMES_PATH) == 0) ? open_builtin_text(g_frames_lines)
+             : fopen(path, "r");
     if (in == NULL) {
         if (is_top)
             fprintf(stderr, "---- error: cannot open input file '%s': %s ----\n",
@@ -834,6 +924,11 @@ static int expand_file_mode(const char *path, FILE *out,
         /* #pragma once already satisfied by an earlier inclusion of
          * this same file -- emit nothing, exactly like an #ifndef
          * guard that already fired. */
+        free(canonical);
+        fclose(in);
+        return 0;
+    }
+    if (!is_top && header_seen_by_other_tu(canonical, path)) {
         free(canonical);
         fclose(in);
         return 0;
@@ -914,7 +1009,7 @@ static int expand_file_mode(const char *path, FILE *out,
                      * nothing in it gets declared. Say so. */
                     if (harvest && first_directive && conds.count == 0 &&
                         word[2] == 'n' && !value)
-                        fprintf(stderr, "%s:%d: warning: include guard %s is already defined, so "
+                        v32_warnf("include-guard", "%s:%d: warning: include guard %s is already defined, so "
                                 "this header is skipped -- by the Vircon32 C compiler too, because "
                                 "a -D or #define of it reaches the generated C ahead of the "
                                 "#include. Remove that definition.\n", path, lineno, name);
@@ -1050,6 +1145,11 @@ static int expand_file_mode(const char *path, FILE *out,
                 }
                 free(target);
             }
+            else if (target != NULL && angle && g_c_mode && strcmp(target, "stdnoreturn.h") == 0) {
+                /* <stdnoreturn.h>: `noreturn` is dropped by the lexer, as
+                 * `_Noreturn` is; there is nothing for the header to say. */
+                free(target);
+            }
             else if (target != NULL && is_expanded_extension(target) && harvest) {
                 /* a .hpp included from a pass-through .h: not ours to read */
                 free(target);
@@ -1093,7 +1193,7 @@ static int expand_file_mode(const char *path, FILE *out,
             }
             else if (target != NULL) {
                 if (!harvest && g_brace_depth > 0)
-                    fprintf(stderr, "%s:%d: warning: #include %s%s%s inside a { } body is not expanded "
+                    v32_warnf("include-in-body", "%s:%d: warning: #include %s%s%s inside a { } body is not expanded "
                             "in place (%s): the line is moved to the top of the generated file\n",
                             path, lineno, angle ? "<" : "\"", target, angle ? ">" : "\"",
                             is_sdk_header_name(target) ? "an SDK header" : "file not found");
@@ -1111,7 +1211,7 @@ static int expand_file_mode(const char *path, FILE *out,
                 char *resolved = resolve_header(target, angle, path, dirs, ndirs);
                 int duplicate = 0;
                 if (resolved == NULL && !harvest && is_sdk_header_name(target))
-                    fprintf(stderr, "%s:%d: warning: SDK header \"%s\" not found: v32c++ cannot see its types "
+                    v32_warnf("sdk-header-missing", "%s:%d: warning: SDK header \"%s\" not found: v32c++ cannot see its types "
                             "and macros, so a declaration like `malloc_block *b;` may be read as an "
                             "expression. Put the SDK's include/ directory beside `compile` on $PATH or "
                             "set $V32CXX_SDK_INCLUDE\n", path, lineno, target);
@@ -1171,7 +1271,7 @@ static int expand_file_mode(const char *path, FILE *out,
                 /* The Vircon32 C preprocessor rejects every #pragma as an
                  * unsupported directive, so passing one through could only
                  * break the downstream compile. */
-                fprintf(stderr, "%s:%d: warning: ignoring '#pragma %s' (not supported by Vircon32 C)\n",
+                v32_warnf("pragma", "%s:%d: warning: ignoring '#pragma %s' (not supported by Vircon32 C)\n",
                         path, lineno, p);
             }
         }
@@ -1239,13 +1339,42 @@ FILE *prescan_expand_many(const char *const *input_filenames, int nfiles, char *
      * expanded once, as in a unity build). Each file after a marker
      * declaration `int __v32_tu_begin_N;` that link.c uses to tell which
      * file a declaration came from, and then removes. */
+    if (g_c_mode) {
+        for (int i = 0; i < nfiles; i++) {
+            if (!file_mentions(input_filenames[i], "__atomic_", "__sync_")) continue;
+            if (expand_file(BUILTIN_ATOMIC_PATH, out, include_dirs, include_dir_count, 0) != 0) {
+                fclose(out);
+                return NULL;
+            }
+            break;
+        }
+    }
+    for (int i = 0; i < nfiles; i++) {
+        if (!file_mentions(input_filenames[i], "__builtin_frame_address", "__builtin_return_address")) continue;
+        if (expand_file(BUILTIN_FRAMES_PATH, out, include_dirs, include_dir_count, 0) != 0) {
+            fclose(out);
+            return NULL;
+        }
+        break;
+    }
     for (int i = 0; i < nfiles; i++) {
         if (nfiles > 1) fprintf(out, "int %s%d;\n", LINK_TU_MARKER, i);
+        g_link_tu = nfiles > 1 ? i : -1;
+        if (i > 0) {
+            /* each file of a linked program has macros of its own: the
+             * command-line ones, and nothing another file defined */
+            macro_forget_all();
+            for (int k = 0; k < g_cmdline_macro_count; k++) {
+                if (g_cmdline_macros[k].is_undef) macro_undef(g_cmdline_macros[k].spec);
+                else if (macro_define_cmdline(g_cmdline_macros[k].spec) == NULL) { fclose(out); return NULL; }
+            }
+        }
         if (expand_file(input_filenames[i], out, include_dirs, include_dir_count, 1) != 0) {
             fclose(out);
             return NULL;
         }
     }
+    g_link_tu = -1;
     rewind(out);
     return out;
 }

@@ -1,3 +1,5 @@
+#include "warn.h"
+#include <ctype.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -1421,6 +1423,8 @@ static void flush_reference_temporaries(AstNode *func) {
     g_ref_temp_counter = 0;
 }
 
+static void rewrite_zero_to_null(AstNode **rhs_slot, const AstNode *target_type);
+
 static void finalize_call(AstNode *call, AstNode *class_decl, LocalVarType *locals) {
     CallResolution *cr = (CallResolution *)call->sema_info;
     if (cr == NULL || cr->resolved_target == NULL) {
@@ -1492,6 +1496,9 @@ static void finalize_call(AstNode *call, AstNode *class_decl, LocalVarType *loca
                 declared params -- shouldn't happen for a resolved call,
                 but fail closed (stop) rather than read out of bounds */
             AstNode *param = target->list.items[param_idx];
+            /* `wait(0)`, `gettoken(ps, es, 0, 0)`: a literal 0 for a
+             * pointer parameter is NULL (Vircon32 C rejects the int). */
+            rewrite_zero_to_null(&call->list.items[i], param->type);
             if (param->type != NULL && param->type->kind == AST_REFERENCE_TYPE &&
                 needs_reference_temporary(call->list.items[i], param->type)) {
                 call->list.items[i] = bind_reference_temporary(call->list.items[i], param->type);
@@ -2193,6 +2200,47 @@ static void finalize_calls_expr(AstNode **slot, AstNode *class_decl, LocalVarTyp
                     rewrite_zero_to_null(&n->b, a_type);
                 } else if (type_is_plain_pointer(b_type) || type_is_func_ptr(b_type)) {
                     rewrite_zero_to_null(&n->a, b_type);
+                }
+            }
+            /* `ptr < 0` (xv6: `if (p < 0)` on an sbrk() result) and
+             * `(void *)a + n` (GNU: void is one byte): Vircon32 C accepts
+             * neither ("invalid operands for arithmetic comparison",
+             * "pointer type is invalid for addition"). The comparison
+             * reads the pointer as the integer it is; the arithmetic
+             * steps in `char` units -- one word, like every Vircon32
+             * object -- so a `char *` cast says the same thing. */
+            if (n->str1 != NULL && g_c_mode &&
+                (strcmp(n->str1, "<") == 0 || strcmp(n->str1, ">") == 0 ||
+                 strcmp(n->str1, "<=") == 0 || strcmp(n->str1, ">=") == 0)) {
+                AstNode *a_type = infer_expr_type(n->a, class_decl, locals);
+                AstNode *b_type = infer_expr_type(n->b, class_decl, locals);
+                int ap = type_is_plain_pointer(a_type), bp = type_is_plain_pointer(b_type);
+                /* an array is a pointer here (`p < end`, `char end[]`) */
+                int a_arr = a_type != NULL && resolve_typedef_chain(a_type)->kind == AST_ARRAY_TYPE;
+                int b_arr = b_type != NULL && resolve_typedef_chain(b_type)->kind == AST_ARRAY_TYPE;
+                int a_int = n->a->kind == AST_INT_LIT || (a_type != NULL && !ap && !a_arr);
+                int b_int = n->b->kind == AST_INT_LIT || (b_type != NULL && !bp && !b_arr);
+                if ((ap && b_int) || (bp && a_int)) {
+                    AstNode **pslot = ap ? &n->a : &n->b;
+                    AstNode *cast = ast_new(AST_CAST, n->line);
+                    cast->type = ast_ident("int", n->line);
+                    cast->a = *pslot;
+                    *pslot = cast;
+                }
+            }
+            if (n->str1 != NULL && g_c_mode &&
+                (strcmp(n->str1, "+") == 0 || strcmp(n->str1, "-") == 0)) {
+                AstNode *a_type = infer_expr_type(n->a, class_decl, locals);
+                const AstNode *ra = a_type != NULL ? resolve_typedef_chain(a_type) : NULL;
+                if (ra != NULL && ra->kind == AST_POINTER_TYPE && ra->a != NULL) {
+                    const AstNode *pt = resolve_typedef_chain(ra->a);
+                    if (pt != NULL && pt->kind == AST_IDENT && pt->str1 != NULL &&
+                        strcmp(pt->str1, "void") == 0) {
+                        AstNode *cast = ast_new(AST_CAST, n->line);
+                        cast->type = ast_wrap_pointer(ast_ident("char", n->line), n->line);
+                        cast->a = n->a;
+                        n->a = cast;
+                    }
                 }
             }
             rewrite_operator_use(slot, n->a, n->b, class_decl, locals);
@@ -6088,7 +6136,7 @@ static int v32_hoist_called_pointer(AstNode **slot, AstNode *cls, LocalVarType *
     const AstNode *resolved = type ? resolve_typedef_chain(type) : NULL;
     while (resolved != NULL && resolved->kind == AST_CONST_TYPE) resolved = resolve_typedef_chain(resolved->a);
     if (resolved == NULL || resolved->kind != AST_POINTER_TYPE) {
-        fprintf(stderr, "%s:%d: warning: this statement writes through a pointer returned by a "
+        v32_warnf("ptr-return-write", "%s:%d: warning: this statement writes through a pointer returned by a "
                 "call, and Vircon32 C evaluates that call more than once; store the pointer "
                 "in a variable first\n",
                 stmt->file ? stmt->file : g_current_filename, stmt->line);
@@ -6375,6 +6423,210 @@ static void v32_signed_shift(AstNode **slot, AstNode *cls, LocalVarType *locals)
     n->b = rhs;
 }
 
+/* ---- unsigned compare, divide and remainder (P-C7) ------------------------
+ *
+ * Vircon32's integer is signed, so `<`, `>`, `/` and `%` read a value above
+ * INT_MAX as negative. When either operand of one of them is `unsigned`
+ * (C's usual conversions make the other one unsigned too):
+ *   a < b      ->  (a ^ MIN) < (b ^ MIN)       flipping the sign bit turns
+ *                                              unsigned order into signed
+ *                                              order; against a constant
+ *                                              the flip is folded
+ *   u < 0, u >= 0, u > 0, u <= 0              are decided or become ==/!=
+ *   u / 2^k    ->  u >> k    (that shift is logical)
+ *   u % 2^k    ->  u & (2^k - 1)
+ *   a / b, a % b  ->  __v32_udiv(a, b), __v32_umod(a, b)   (emitted once)
+ * and `/=`, `%=` the same way. Two non-negative constants are left alone,
+ * as is everything under --no-unsigned-ops. A float converted from an
+ * unsigned value above INT_MAX is still read as negative. */
+
+static int g_udiv_needed = 0;
+
+static AstNode *v32_int_min(int line) {
+    return v32_bin("-", tern_int(-2147483647, line), tern_int(1, line), line);
+}
+
+/* x with its sign bit flipped (a constant is folded) */
+static AstNode *v32_flip_sign(AstNode *e, int line) {
+    if (e->kind == AST_INT_LIT && !e->is_unsigned) {
+        return tern_int((int)((unsigned)e->ival ^ 0x80000000u), line);
+    }
+    if (e->kind == AST_INT_LIT) {
+        return tern_int((int)((unsigned)e->ival ^ 0x80000000u), line);
+    }
+    return v32_bin("^", e, v32_int_min(line), line);
+}
+
+static int v32_log2_exact(int v) {
+    if (v <= 0 || (v & (v - 1)) != 0) return -1;
+    int k = 0;
+    while ((1 << k) != v) k++;
+    return k;
+}
+
+static AstNode *v32_make_udivmod(const char *op, AstNode *a, AstNode *b, int line) {
+    int d;
+    if (v32_const_int(b, &d)) {
+        int k = v32_log2_exact(d);
+        if (k >= 0) {
+            if (strcmp(op, "/") == 0)
+                return k == 0 ? a : v32_bin(">>", a, tern_int(k, line), line);   /* native >> is logical */
+            return v32_bin("&", a, tern_int(d - 1, line), line);
+        }
+    }
+    g_udiv_needed = 1;
+    AstNode *call = ast_new(AST_CALL, line);
+    call->a = ast_ident(strcmp(op, "/") == 0 ? "__v32_udiv" : "__v32_umod", line);
+    ast_list_append(&call->list, a);
+    ast_list_append(&call->list, b);
+    return call;
+}
+
+static void v32_unsigned_ops(AstNode **slot, AstNode *cls, LocalVarType *locals) {
+    AstNode *n = *slot;
+    if (!g_unsigned_ops || n == NULL || n->str1 == NULL) return;
+    int line = n->line;
+    if (n->kind == AST_BINOP) {
+        const char *op = n->str1;
+        int is_cmp = !strcmp(op, "<") || !strcmp(op, ">") || !strcmp(op, "<=") || !strcmp(op, ">=");
+        int is_div = !strcmp(op, "/") || !strcmp(op, "%");
+        if (!is_cmp && !is_div) return;
+        if (!v32_expr_unsigned(n->a, cls, locals) && !v32_expr_unsigned(n->b, cls, locals)) return;
+        if (is_div) {
+            if (v32_expr_nonneg(n->a) && v32_expr_nonneg(n->b)) return;
+            lower_note(line, "unsigned `%s`: done as an unsigned operation (Vircon32's is signed)", op);
+            *slot = v32_make_udivmod(op, n->a, n->b, line);
+            return;
+        }
+        int zv;
+        if (v32_const_int(n->b, &zv) && zv == 0 && v32_shift_cheap(n->a, 0)) {
+            /* against zero: nothing is below it, and `> 0` / `<= 0` are `!= 0` / `== 0` */
+            if (!strcmp(op, "<"))  { *slot = tern_int(0, line); return; }
+            if (!strcmp(op, ">=")) { *slot = tern_int(1, line); return; }
+            const char *repl = !strcmp(op, ">") ? "!=" : "==";
+            free(n->str1);
+            n->str1 = strdup(repl);
+            return;
+        }
+        lower_note(line, "unsigned `%s`: compared with the sign bits flipped (Vircon32's compare is signed)", op);
+        n->a = v32_flip_sign(n->a, line);
+        n->b = v32_flip_sign(n->b, line);
+        return;
+    }
+    if (n->kind == AST_ASSIGN && (!strcmp(n->str1, "/=") || !strcmp(n->str1, "%="))) {
+        if (!v32_expr_unsigned(n->a, cls, locals) && !v32_expr_unsigned(n->b, cls, locals)) return;
+        char op[2] = { n->str1[0], 0 };
+        lower_note(line, "unsigned `%s=`: done as an unsigned operation (Vircon32's is signed)", op);
+        AstNode *rhs = v32_make_udivmod(op, ast_clone_expr(n->a), n->b, line);
+        free(n->str1);
+        n->str1 = strdup("=");
+        n->b = rhs;
+    }
+}
+
+/* __v32_udiv / __v32_umod, written at the top of the program (after the
+ * rewrite, so they are not rewritten themselves) when something used them.
+ *
+ *   int __v32_udiv(int a, int b) {
+ *       int q; int r;
+ *       if (b < 0) { if ((a ^ MIN) < (b ^ MIN)) return 0; return 1; }
+ *       if (a >= 0) return a / b;
+ *       q = ((a >> 1) / b) << 1;             a >> 1 is logical here
+ *       r = a - q * b;                       below 2 * b, so one step is enough
+ *       if ((r ^ MIN) >= (b ^ MIN)) q = q + 1;
+ *       return q;
+ *   }
+ *   int __v32_umod(int a, int b) { return a - __v32_udiv(a, b) * b; }       */
+static AstNode *v32_call_udiv(const char *a, const char *b, int line) {
+    AstNode *call = ast_new(AST_CALL, line);
+    call->a = ast_ident("__v32_udiv", line);
+    ast_list_append(&call->list, ast_ident(a, line));
+    ast_list_append(&call->list, ast_ident(b, line));
+    return call;
+}
+
+static AstNode *v32_ret(AstNode *e, int line) {
+    AstNode *r = ast_new(AST_RETURN, line);
+    r->a = e;
+    return r;
+}
+
+static AstNode *v32_local(const char *name, int line) {
+    AstNode *d = ast_new(AST_VAR_DECL, line);
+    d->str1 = strdup(name);
+    d->type = ast_ident("int", line);
+    return d;
+}
+
+static AstNode *v32_param(const char *name, int line) {
+    AstNode *p = ast_new(AST_PARAM, line);
+    p->str1 = strdup(name);
+    p->type = ast_ident("int", line);
+    return p;
+}
+
+static AstNode *v32_func2(const char *name, AstNode *body, int line) {
+    AstNode *fn = ast_new(AST_FUNC_DEF, line);
+    fn->str1 = strdup(name);
+    fn->type = ast_ident("int", line);
+    fn->access = ACC_PUBLIC;
+    ast_list_append(&fn->list, v32_param("a", line));
+    ast_list_append(&fn->list, v32_param("b", line));
+    fn->a = body;
+    return fn;
+}
+
+static void v32_add_udiv_helpers(AstNode *program) {
+    if (!g_udiv_needed) return;
+    int line = 0;
+    AstNode *body = ast_new(AST_BLOCK, line);
+    ast_list_append(&body->list, v32_local("q", line));
+    ast_list_append(&body->list, v32_local("r", line));
+    /* if (b < 0) { if ((a ^ MIN) < (b ^ MIN)) return 0; return 1; } */
+    AstNode *inner = tern_block(line);
+    ast_list_append(&inner->list,
+        tern_if(v32_bin("<", v32_bin("^", ast_ident("a", line), v32_int_min(line), line),
+                             v32_bin("^", ast_ident("b", line), v32_int_min(line), line), line),
+                tern_block_of(v32_ret(tern_int(0, line), line), line), NULL, line));
+    ast_list_append(&inner->list, v32_ret(tern_int(1, line), line));
+    ast_list_append(&body->list,
+        tern_if(v32_bin("<", ast_ident("b", line), tern_int(0, line), line), inner, NULL, line));
+    /* if (a >= 0) return a / b; */
+    ast_list_append(&body->list,
+        tern_if(v32_bin(">=", ast_ident("a", line), tern_int(0, line), line),
+                tern_block_of(v32_ret(v32_bin("/", ast_ident("a", line), ast_ident("b", line), line), line), line),
+                NULL, line));
+    /* q = ((a >> 1) / b) << 1; */
+    ast_list_append(&body->list,
+        tern_assign_stmt("q", v32_bin("<<", v32_bin("/", v32_bin(">>", ast_ident("a", line), tern_int(1, line), line),
+                                                   ast_ident("b", line), line), tern_int(1, line), line), line));
+    /* r = a - q * b; */
+    ast_list_append(&body->list,
+        tern_assign_stmt("r", v32_bin("-", ast_ident("a", line),
+                                      v32_bin("*", ast_ident("q", line), ast_ident("b", line), line), line), line));
+    /* if ((r ^ MIN) >= (b ^ MIN)) q = q + 1; */
+    ast_list_append(&body->list,
+        tern_if(v32_bin(">=", v32_bin("^", ast_ident("r", line), v32_int_min(line), line),
+                              v32_bin("^", ast_ident("b", line), v32_int_min(line), line), line),
+                tern_block_of(tern_assign_stmt("q", v32_bin("+", ast_ident("q", line), tern_int(1, line), line), line), line),
+                NULL, line));
+    ast_list_append(&body->list, v32_ret(ast_ident("q", line), line));
+    AstNode *udiv = v32_func2("__v32_udiv", body, line);
+
+    AstNode *mbody = ast_new(AST_BLOCK, line);
+    ast_list_append(&mbody->list,
+        v32_ret(v32_bin("-", ast_ident("a", line),
+                        v32_bin("*", v32_call_udiv("a", "b", line), ast_ident("b", line), line), line), line));
+    AstNode *umod = v32_func2("__v32_umod", mbody, line);
+
+    AstList out = ast_list_new();
+    ast_list_append(&out, udiv);
+    ast_list_append(&out, umod);
+    for (int i = 0; i < program->list.count; i++) ast_list_append(&out, program->list.items[i]);
+    program->list = out;
+    g_udiv_needed = 0;
+}
+
 /* The one function every non-trivial operand goes through. Added to the
  * top of the program after the rewrite, so it is not itself rewritten. */
 static void v32_add_sar_helper(AstNode *program) {
@@ -6418,7 +6670,7 @@ static void v32_compat_expr(AstNode **slot, AstNode *cls, LocalVarType *locals) 
     AstNode *n = *slot;
     if (n == NULL) return;
     if (v32_is_compound_assign(n) && v32_has_side_effect(n->a)) {
-        fprintf(stderr, "%s:%d: warning: the target of this `%s` has a side effect, and "
+        v32_warnf("compound-side-effect", "%s:%d: warning: the target of this `%s` has a side effect, and "
                 "Vircon32 C evaluates the target of a compound assignment twice -- "
                 "the side effect will happen twice; write it as separate statements\n",
                 n->file ? n->file : g_current_filename, n->line, n->str1);
@@ -6433,6 +6685,7 @@ static void v32_compat_expr(AstNode **slot, AstNode *cls, LocalVarType *locals) 
                 v32_decay_array(&n->b, cls, locals);
             }
             v32_signed_shift(slot, cls, locals);
+            v32_unsigned_ops(slot, cls, locals);
             break;
         case AST_ASSIGN:
             v32_compat_expr(&n->a, cls, locals);
@@ -6441,6 +6694,7 @@ static void v32_compat_expr(AstNode **slot, AstNode *cls, LocalVarType *locals) 
                 v32_unconst_read(&n->b, cls, locals);
             }
             v32_signed_shift(slot, cls, locals);
+            v32_unsigned_ops(slot, cls, locals);
             break;
         case AST_SUBSCRIPT:
             v32_compat_expr(&n->a, cls, locals);
@@ -7855,6 +8109,364 @@ static void cxx_hoist_strings(AstNode *program) {
     c_prepend_hoisted(&program->list);
 }
 
+/* ---- phase 11b: address / dereference operands in asm (P-C3) -------------
+ *
+ * The Vircon32 compiler interpolates `{name}` in asm text only for a plain
+ * variable or parameter. Hand-written asm often needs an address instead
+ * (`mov R1, {&buf}`, a function's entry `{&handler}`) or the pointee
+ * (`mov R0, {*p}`). `{&x}` becomes a hidden local `int *__v32_a_x = &x;`
+ * placed just before the asm statement and `{__v32_a_x}` in the text;
+ * `{*p}` becomes `int __v32_d_p = *p;` and `{__v32_d_p}`. Taking the
+ * address also keeps a function that only asm refers to alive. */
+static int asm_operand_at(const char *s, char *kind, char *name, size_t cap, size_t *len) {
+    if (s[0] != '{' || (s[1] != '&' && s[1] != '*')) return 0;
+    const char *p = s + 2;
+    while (*p == ' ') p++;
+    size_t n = 0;
+    if (!(isalpha((unsigned char)*p) || *p == '_')) return 0;
+    while ((isalnum((unsigned char)*p) || *p == '_') && n + 1 < cap) name[n++] = *p++;
+    name[n] = '\0';
+    while (*p == ' ') p++;
+    if (*p != '}') return 0;
+    *kind = s[1];
+    *len = (size_t)(p - s) + 1;
+    return 1;
+}
+
+static AstNode *g_asm_program;
+
+static int asm_is_function(const char *name) {
+    for (int i = 0; i < g_asm_program->list.count; i++) {
+        AstNode *f = g_asm_program->list.items[i];
+        if ((f->kind == AST_FUNC_DEF || f->kind == AST_FUNC_DECL) && f->str1 && !strcmp(f->str1, name)) return 1;
+    }
+    return 0;
+}
+
+static void asm_operands_in(AstNode *block, int idx) {
+    AstNode *as = block->list.items[idx];
+    char seen[32][70];
+    int nseen = 0, inserted = 0;
+    for (int i = 0; i < as->list.count; i++) {
+        AstNode *lit = as->list.items[i];
+        if (lit->kind != AST_STRING_LIT || lit->str1 == NULL) continue;
+        const char *src = lit->str1;
+        size_t cap = strlen(src) * 2 + 64, o = 0;
+        char *out = malloc(cap);
+        int changed = 0;
+        for (const char *p = src; *p; ) {
+            char kind, name[64];
+            size_t len;
+            if (asm_operand_at(p, &kind, name, sizeof name, &len)) {
+                char hid[80], key[70];
+                snprintf(hid, sizeof hid, "__v32_%c_%s", kind == '&' ? 'a' : 'd', name);
+                snprintf(key, sizeof key, "%c%s", kind, name);
+                int dup = 0;
+                for (int k = 0; k < nseen; k++) if (!strcmp(seen[k], key)) dup = 1;
+                if (!dup && nseen < 32) {
+                    strcpy(seen[nseen++], key);
+                    AstNode *d = ast_new(AST_VAR_DECL, as->line);
+                    d->str1 = strdup(hid);
+                    d->type = kind == '&' ? ast_wrap_pointer(ast_ident("int", as->line), as->line)
+                                          : ast_ident("int", as->line);
+                    AstNode *u = ast_new(AST_UNOP, as->line);
+                    u->str1 = strdup(kind == '&' ? "&" : "*");
+                    u->a = ast_ident(name, as->line);
+                    if (kind == '&' && asm_is_function(name)) {
+                        /* a function name already is its address */
+                        AstNode *c = ast_new(AST_CAST, as->line);
+                        c->type = ast_wrap_pointer(ast_ident("int", as->line), as->line);
+                        c->a = u->a;
+                        u = c;
+                    } else if (kind == '&') {
+                        /* a function's address is not an int* to the compiler */
+                        AstNode *c = ast_new(AST_CAST, as->line);
+                        c->type = ast_wrap_pointer(ast_ident("int", as->line), as->line);
+                        c->a = u;
+                        u = c;
+                    }
+                    d->a = u;
+                    ast_list_append(&block->list, d);  /* moved into place below */
+                    for (int k = block->list.count - 1; k > idx + inserted; k--)
+                        block->list.items[k] = block->list.items[k - 1];
+                    block->list.items[idx + inserted] = d;
+                    inserted++;
+                }
+                o += (size_t)sprintf(out + o, "{%s}", hid);
+                p += len;
+                changed = 1;
+                continue;
+            }
+            if (o + 2 > cap) { cap *= 2; out = realloc(out, cap); }
+            out[o++] = *p++;
+        }
+        out[o] = '\0';
+        if (changed) { free(lit->str1); lit->str1 = out; } else free(out);
+    }
+}
+
+static void asm_operands_walk(AstNode *n) {
+    if (n == NULL) return;
+    if (n->kind == AST_BLOCK) {
+        for (int i = 0; i < n->list.count; i++) {
+            AstNode *c = n->list.items[i];
+            if (c != NULL && c->kind == AST_ASM) {
+                int before = n->list.count;
+                asm_operands_in(n, i);
+                i += n->list.count - before;
+            }
+        }
+    }
+    asm_operands_walk(n->a);
+    asm_operands_walk(n->b);
+    asm_operands_walk(n->c);
+    asm_operands_walk(n->d);
+    for (int i = 0; i < n->list.count; i++) asm_operands_walk(n->list.items[i]);
+}
+
+static void v32_asm_operands(AstNode *program) {
+    g_asm_program = program;
+    for (int i = 0; i < program->list.count; i++) asm_operands_walk(program->list.items[i]);
+}
+
+/* ---- phase 11c: cooperative yield points (P-C1) ----------------------------
+ *
+ * --yield-points[=N] inserts `if (COUNTER() > N) YIELD();` at every function
+ * entry, at the top of every loop body (so each iteration, `continue`
+ * included, passes it) and after every label (a backward goto). A program
+ * can then be preempted cooperatively with no source changes. Skipped:
+ * functions marked __attribute__((no_yield)) (by name, so a prototype's
+ * attribute counts), functions holding asm statements of their own, the
+ * two runtime functions, and compiler helpers (__v32_*). */
+int g_yield_quantum = 0;                 /* 0 = off */
+const char *g_yield_func = "yield";
+const char *g_yield_counter = "get_cycle_counter";
+
+static AstNode *yield_check(int line) {
+    AstNode *cc = ast_new(AST_CALL, line);
+    cc->a = ast_ident(g_yield_counter, line);
+    AstNode *lim = ast_new(AST_INT_LIT, line);
+    lim->ival = g_yield_quantum;
+    AstNode *cmp = ast_new(AST_BINOP, line);
+    cmp->str1 = strdup(">");
+    cmp->a = cc;
+    cmp->b = lim;
+    AstNode *yc = ast_new(AST_CALL, line);
+    yc->a = ast_ident(g_yield_func, line);
+    AstNode *st = ast_new(AST_EXPR_STMT, line);
+    st->a = yc;
+    AstNode *iff = ast_new(AST_IF, line);
+    iff->a = cmp;
+    iff->b = st;
+    return iff;
+}
+
+static AstNode *yield_wrap(AstNode *stmt, int line) {
+    AstNode *b = ast_new(AST_BLOCK, line);
+    ast_list_append(&b->list, yield_check(line));
+    if (stmt != NULL) {
+        if (stmt->kind == AST_BLOCK) {
+            for (int i = 0; i < stmt->list.count; i++) ast_list_append(&b->list, stmt->list.items[i]);
+        } else {
+            ast_list_append(&b->list, stmt);
+        }
+    }
+    return b;
+}
+
+static void yield_walk(AstNode *n) {
+    if (n == NULL) return;
+    if (n->kind == AST_ASM || n->kind == AST_SIZEOF) return;
+    yield_walk(n->a);
+    yield_walk(n->b);
+    yield_walk(n->c);
+    yield_walk(n->d);
+    for (int i = 0; i < n->list.count; i++) yield_walk(n->list.items[i]);
+    if (n->kind == AST_WHILE) n->b = yield_wrap(n->b, n->line);
+    else if (n->kind == AST_FOR) n->d = yield_wrap(n->d, n->line);
+    else if (n->kind == AST_LABEL) n->a = yield_wrap(n->a, n->line);
+}
+
+static int yield_has_asm(AstNode *n) {
+    if (n == NULL) return 0;
+    if (n->kind == AST_ASM) return 1;
+    if (yield_has_asm(n->a) || yield_has_asm(n->b) || yield_has_asm(n->c) || yield_has_asm(n->d)) return 1;
+    for (int i = 0; i < n->list.count; i++) if (yield_has_asm(n->list.items[i])) return 1;
+    return 0;
+}
+
+static void v32_yield_points(AstNode *program) {
+    if (g_yield_quantum <= 0) return;
+    for (int i = 0; i < program->list.count; i++) {
+        AstNode *f = program->list.items[i];
+        if (f->kind != AST_FUNC_DEF || f->a == NULL || f->str1 == NULL) continue;
+        if (!strncmp(f->str1, "__v32_", 6) || !strcmp(f->str1, g_yield_func) ||
+            !strcmp(f->str1, g_yield_counter)) continue;
+        int skip = 0;
+        for (int k = 0; k < program->list.count && !skip; k++) {
+            AstNode *g = program->list.items[k];
+            if ((g->kind == AST_FUNC_DEF || g->kind == AST_FUNC_DECL) && (g->attr_flags & ATTR_NO_YIELD) &&
+                g->str1 != NULL && !strcmp(g->str1, f->str1)) skip = 1;
+        }
+        if (skip || yield_has_asm(f->a)) continue;
+        yield_walk(f->a);
+        f->a = yield_wrap(f->a, f->line);
+    }
+}
+
+/* ---- phase 11d: ROM data, `__attribute__((rom))` (P-C10) -------------------
+ *
+ * `const int tbl[] __attribute__((rom)) = { ... };` at file scope is emitted
+ * as assembler data inside the program image instead of a RAM global: a
+ * hidden function `int *__v32_rom_tbl(void)` whose asm block is
+ *     mov R0, <label> / jmp <end> / <label>: / integer ... / <end>:
+ * and every use of `tbl` becomes `__v32_rom_tbl()`, a pointer to the ROM
+ * words (`tbl[i]`, `&tbl[i]`, passing `tbl` all work; `sizeof(tbl)` folds to
+ * the element count). Elements must be integer, character or float
+ * literals (`-` allowed); anything else is reported and the array is left
+ * as an ordinary global. The data is read-only. */
+static int rom_element_text(const AstNode *e, char *buf, size_t cap) {
+    int neg = 0, v;
+    if (e->kind == AST_FLOAT_LIT) {
+        snprintf(buf, cap, "float %.9g", e->fval);
+        return 1;
+    }
+    if (e->kind == AST_UNOP && e->str1 && !strcmp(e->str1, "neg") && e->a && e->a->kind == AST_FLOAT_LIT) {
+        snprintf(buf, cap, "float -%.9g", e->a->fval);
+        return 1;
+    }
+    (void)neg;
+    if (ast_fold_int(e, NULL, &v)) {
+        snprintf(buf, cap, "integer %d", v);
+        return 1;
+    }
+    return 0;
+}
+
+static int rom_uses_name(AstNode *n, const char *name) {
+    if (n == NULL) return 0;
+    if ((n->kind == AST_VAR_DECL || n->kind == AST_PARAM) && n->str1 && !strcmp(n->str1, name)) return 1;
+    if (rom_uses_name(n->a, name) || rom_uses_name(n->b, name) ||
+        rom_uses_name(n->c, name) || rom_uses_name(n->d, name)) return 1;
+    for (int i = 0; i < n->list.count; i++) if (rom_uses_name(n->list.items[i], name)) return 1;
+    return 0;
+}
+
+static void rom_rewrite(AstNode **slot, const char *name, const char *fn, int count) {
+    AstNode *n = *slot;
+    if (n == NULL) return;
+    if (n->kind == AST_SIZEOF && n->a && n->a->kind == AST_IDENT && n->a->str1 && !strcmp(n->a->str1, name)) {
+        AstNode *lit = ast_new(AST_INT_LIT, n->line);
+        lit->ival = count;
+        *slot = lit;
+        return;
+    }
+    if (n->kind == AST_IDENT && n->str1 && !strcmp(n->str1, name)) {
+        AstNode *c = ast_new(AST_CALL, n->line);
+        c->a = ast_ident(fn, n->line);
+        *slot = c;
+        return;
+    }
+    rom_rewrite(&n->a, name, fn, count);
+    rom_rewrite(&n->b, name, fn, count);
+    rom_rewrite(&n->c, name, fn, count);
+    rom_rewrite(&n->d, name, fn, count);
+    for (int i = 0; i < n->list.count; i++) rom_rewrite(&n->list.items[i], name, fn, count);
+}
+
+static void v32_rom_data(AstNode *program) {
+    for (int i = 0; i < program->list.count; i++) {
+        AstNode *d = program->list.items[i];
+        if (d->kind != AST_VAR_DECL || !(d->attr_flags & ATTR_ROM) || d->str1 == NULL) continue;
+        const AstNode *t = c_resolved_type(d->type);
+        if (t == NULL || t->kind != AST_ARRAY_TYPE || d->a == NULL || d->a->kind != AST_INIT_LIST) {
+            v32_warnf("rom", "%s:%d: warning: '%s': __attribute__((rom)) needs a file-scope array with a braced initializer; kept as an ordinary global\n", d->file ? d->file : "?", d->line, d->str1);
+            continue;
+        }
+        int len = t->ival > 0 ? t->ival : d->a->list.count;
+        char **lines = calloc((size_t)len + 1, sizeof(char *));
+        int ok = 1;
+        for (int k = 0; k < len && ok; k++) {
+            char buf[64];
+            if (k < d->a->list.count) {
+                if (!rom_element_text(d->a->list.items[k], buf, sizeof buf)) ok = 0;
+            } else strcpy(buf, "integer 0");
+            lines[k] = strdup(buf);
+        }
+        if (!ok) {
+            v32_warnf("rom", "%s:%d: warning: '%s': __attribute__((rom)) elements must be integer, character or float literals; kept as an ordinary global\n", d->file ? d->file : "?", d->line, d->str1);
+            for (int k = 0; k < len; k++) free(lines[k]);
+            free(lines);
+            continue;
+        }
+        char fn[160], lab[160], endl[170], text[256];
+        snprintf(fn, sizeof fn, "__v32_rom_%s", d->str1);
+        snprintf(lab, sizeof lab, "__v32_romd_%s", d->str1);
+        snprintf(endl, sizeof endl, "%s_end", lab);
+        AstNode *as = ast_new(AST_ASM, d->line);
+        #define ROM_LINE(...) do { snprintf(text, sizeof text, __VA_ARGS__); \
+            AstNode *sl = ast_new(AST_STRING_LIT, d->line); sl->str1 = strdup(text); \
+            ast_list_append(&as->list, sl); } while (0)
+        ROM_LINE("mov R0, %s", lab);
+        ROM_LINE("jmp %s", endl);
+        ROM_LINE("%s:", lab);
+        for (int k = 0; k < len; k++) { ROM_LINE("%s", lines[k]); free(lines[k]); }
+        ROM_LINE("%s:", endl);
+        #undef ROM_LINE
+        free(lines);
+        AstNode *body = ast_new(AST_BLOCK, d->line);
+        ast_list_append(&body->list, as);
+        AstNode *f = ast_new(AST_FUNC_DEF, d->line);
+        f->str1 = strdup(fn);
+        f->type = ast_wrap_pointer(ast_clone_expr(t->a), d->line);
+        f->access = ACC_PUBLIC;
+        f->a = body;
+        for (int k = 0; k < program->list.count; k++) {
+            AstNode *g = program->list.items[k];
+            if (g == d) continue;
+            if (g->kind == AST_FUNC_DEF && rom_uses_name(g, d->str1)) continue;
+            rom_rewrite(&program->list.items[k], d->str1, fn, len);
+        }
+        program->list.items[i] = f;   /* the declaration becomes the function, in place */
+        /* hoist to the front so every use sees it first */
+        for (int k = i; k > 0; k--) program->list.items[k] = program->list.items[k - 1];
+        program->list.items[0] = f;
+    }
+}
+
+/* ---- explicit renames (--rename a=b), run by main before sema ------------------------------
+ *
+ * A name of the program that the Vircon32 SDK also defines (`abs`, `memcpy`,
+ * a file-local `strlen`...) clashes in the one-namespace output. `--rename
+ * a=b` gives every function, variable, parameter and use named `a` the name
+ * `b` instead, program-wide (struct members and types are not touched). */
+const char *g_rename_from[32];
+const char *g_rename_to[32];
+int g_rename_count = 0;
+
+static void rename_walk(AstNode *n) {
+    if (n == NULL) return;
+    if ((n->kind == AST_IDENT || n->kind == AST_FUNC_DEF || n->kind == AST_FUNC_DECL ||
+         n->kind == AST_VAR_DECL || n->kind == AST_PARAM) && n->str1 != NULL) {
+        for (int i = 0; i < g_rename_count; i++)
+            if (!strcmp(n->str1, g_rename_from[i])) {
+                free(n->str1);
+                n->str1 = strdup(g_rename_to[i]);
+                break;
+            }
+    }
+    rename_walk(n->a);
+    rename_walk(n->b);
+    rename_walk(n->c);
+    rename_walk(n->d);
+    for (int i = 0; i < n->list.count; i++) rename_walk(n->list.items[i]);
+}
+
+void v32_explicit_renames(AstNode *program) {
+    if (g_rename_count == 0) return;
+    for (int i = 0; i < program->list.count; i++) rename_walk(program->list.items[i]);
+}
+
 /* ---- phase 0: designated initializers (G2) -----------------------------
  *
  * `{ [SYS_fork] = sys_fork, [SYS_exit] = sys_exit }` and `{ .b = 2, .a = 1 }`
@@ -8107,6 +8719,7 @@ static int resolve_designated_inits(AstNode *program) {
 int lower_run(AstNode *program) {
     g_hoisted_names = NULL;                 /* phase 12/12b's literal table: per run */
     g_sar_needed = 0;
+    g_udiv_needed = 0;
     lower_notes_reset(); /* always start this run's log empty -- see
         lower_notes_print's own doc comment */
     {   /* phase 0: designated initializers become positional (G2) */
@@ -8171,6 +8784,10 @@ int lower_run(AstNode *program) {
         v32_compat_classes(&program->list);           /* phase 11 */
         v32_compat_free_functions(&program->list);
         v32_add_sar_helper(program);                  /* phase 11, signed >> */
+        v32_add_udiv_helpers(program);                /* phase 11, unsigned / % */
+        v32_asm_operands(program);                    /* phase 11b, asm {&x} {*p} */
+        v32_rom_data(program);                        /* phase 11d, __attribute__((rom)) */
+        v32_yield_points(program);                    /* phase 11c, --yield-points */
         if (g_c_mode) c_input_fixups(program);        /* phase 12 */
         else cxx_hoist_strings(program);              /* phase 12b */
     }

@@ -24,6 +24,10 @@ v32c++, v32c \- transpile a subset of C/C++ to Vircon32 C
 .RB [ \-\-target=vircon32 | standard ]
 .RB [ \-\-reject\-bit\-fields ]
 .RB [ \-\-no\-signed\-shift ]
+.RB [ \-\-no\-unsigned\-ops ]
+.RB [ \-\-warn\-error ]
+.RB [ \-\-yield\-points ]
+.RB [ \-\-rename ]
 .RB [ \-\-silence\-unused\-args ]
 .RB [ \-\-allow\-undefined ]
 .RB [ \-\-no\-inline\-containers ]
@@ -355,6 +359,21 @@ Use this flag when every shifted value is known to be non-negative and the
 extra code costs too much. No effect under
 .BR \-\-target=standard ,
 which never rewrites it.
+.TP
+.B \-\-no\-unsigned\-ops
+Do not lower \fB<\fR, \fB>\fR, \fB/\fR and \fB%\fR of an \fBunsigned\fR value to unsigned operations; print them as written (signed in Vircon32).
+.TP
+.BR \-\-warn\-error [ =\fIkind\fR,... ]
+Make v32c++'s own warnings (all of them, or only the listed kinds) errors: the output file is removed and the exit status is 1.
+.TP
+.B \-\-list\-warnings
+List the warning kinds and exit.
+.TP
+.BR \-\-yield\-points [ =\fIN\fR ]
+Insert \fBif (get_cycle_counter() > N) yield();\fR at every function entry, loop body and label (default N 100000), for cooperative preemption. \fB\-\-yield\-func\fR=\fINAME\fR and \fB\-\-yield\-counter\fR=\fINAME\fR rename the two functions. A function marked \fB__attribute__((no_yield))\fR, one holding \fBasm\fR, and \fB__v32_*\fR helpers are skipped.
+.TP
+.B \-\-rename \fIold\fR=\fInew\fR
+Give every function, variable and parameter called \fIold\fR the name \fInew\fR, program-wide (struct members are untouched). Repeatable. Meant for names that clash with the Vircon32 SDK.
 .TP
 .B \-\-reject\-bit\-fields
 Treat a bit-field member
@@ -742,7 +761,7 @@ names, the rest are dropped or merged);
 .BR unsigned ", " signed ", " short " and " long
 as the one 32-bit integer type
 .RB ( unsigned
-with a warning: its \fB>>\fR stays logical, but \fB/\fR, \fB%\fR and comparisons behave as signed above INT_MAX); bit-fields, as full words with a warning (see
+with a warning: its \fB>>\fR, \fB<\fR, \fB>\fR, \fB/\fR and \fB%\fR are done as unsigned operations; see \fB\-\-no\-unsigned\-ops\fR); bit-fields, as full words with a warning (see
 .BR \-\-reject\-bit\-fields ).
 .PP
 .B dynamic_cast
@@ -816,6 +835,29 @@ The directory
 .B libc/
 holds a small C library and curses for such programs; add it with
 .BR -I .
+.PP
+Several input files are linked by v32c++ itself into one program: a prototype
+or
+.B extern
+binds to the definition in another file, a file-scope
+.B static
+is private to its file (renamed on a clash), a header is read once,
+each file has macros of its own, and a function defined twice, or used and
+never defined (C only), is an error. A library
+.RB ( --mklib )
+is an index over source files, of which only the members the program needs are
+linked. GCC's
+.B __atomic_*
+and
+.B __sync_*
+builtins are the plain operations (one CPU);
+.BR _Noreturn ,
+.B noreturn
+and GNU
+.B [lo ... hi]
+designators are accepted, and a compound literal may stand at file scope.
+.B const
+is dropped from the output of C input.
 See
 .B docs/C_INPUT.md
 for the full list and the limits.

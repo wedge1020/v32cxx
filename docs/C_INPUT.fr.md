@@ -35,14 +35,25 @@ utilisées sans leur mot-clé, ce que seul le C de Vircon32 accepte.
 | un `char **v32_main_args(int *argc, char **argv)` défini par le programme | Appelé en tête de `main` (`argv = v32_main_args(&argc, argv);`) : permet à un écran-titre de choisir la ligne de commande du programme. | `cmode.c` |
 | `int printf(char *fmt, ...)`, `va_start`, `va_arg`, `va_end` | Voir *Fonctions variadiques* ci-dessous. | `parser.y`, `sema.c`, `cmode.c` |
 | `char **argv`, `char **a, *b;` | Pointeurs de pointeurs (jusqu'à trois niveaux). | `parser.y` |
-| `void (*func)()` comme paramètre, `(void (*)())fn` | Paramètres et conversions de pointeurs de fonction. | `parser.y` |
+| `void (*func)()` comme paramètre, `(void (*)())fn` ; `void f(char *)` écrit comme paramètre, nommé ou non (`int run(void f(char *), char *s)`, `void apply(void (char *))`) | Paramètres et conversions de pointeurs de fonction ; un paramètre de type fonction est le pointeur vers cette fonction, comme en C. | `parser.y` |
 | `thing == ptr` avec un `void *ptr` | Comparés comme des adresses. | `lower.c` phase 12 |
+| `(p = f()) == 0`, `((char *)q) != 0`, `wait(0)`, `gettoken(ps, es, 0, 0)` | Le `0` est un pointeur nul partout où un pointeur est attendu : à côté d'une affectation ou d'une conversion, ou comme argument d'un paramètre pointeur. | `lower.c`, `sema.c` |
+| `if (p < 0)` sur un pointeur ; `(void *)p + n` (GNU) | Un pointeur comparé à un entier est lu comme l'entier qu'il est ; l'arithmétique sur un `void *` avance d'un mot, comme avec un `char *`. | `lower.c` |
+| `const char *s`, `const struct S *p` | `const` est omis de la sortie de l'entrée C : le C de Vircon32 l'impose là où C ne le fait pas (`*d++ = *s++` à travers un `const char *`, `&x` d'un `x` constant pour un paramètre pointeur ordinaire). | `codegen.c` |
+| `struct cpu *cpu;` sans qu'aucun `struct cpu { }` ne soit jamais vu ; `struct pipe;` à côté de `int pipe(int *)` | Une structure seulement pointée reçoit dans la sortie sa propre ligne `struct cpu;` ; une étiquette qui est aussi un nom de fonction ou de variable est renommée `pipe_tag`. | `cmode.c`, `codegen.c` |
+| `__atomic_load_n`, `__atomic_store_n`, `__atomic_exchange_n`, `__atomic_fetch_add/sub`, `__sync_synchronize`, `__sync_lock_test_and_set`, `__sync_lock_release`, `__ATOMIC_*` | Un seul processeur, rien contre quoi courir : la lecture, l'écriture ou l'échange simples (quelques fonctions auxiliaires cachées, `__v32_atomic_xchg` et consorts, quand un fichier les utilise). | `prescan.c` |
 | `(*d_func)(arg)` via un pointeur déclaré `void (*d_func)();` | Le pointeur est converti vers le type qu'implique l'appel : `((void(int)*)d_func)(arg)`. | `lower.c` phase 12 |
 | le nom d'une fonction comme valeur : un argument, une entrée de table, `f == g` | `&name` | `lower.c` phase 12 |
 | `NULL`, `p = 0`, `if (p)`, `!p`, `p && p->x` | Voir *Le pointeur nul* ci-dessous. | `lower.c` phase 12, `codegen.c` |
 | `char buf[sizeof table / sizeof table[0]]`, `sizeof "text"` | `sizeof` est évalué dans les tailles de tableaux (les tailles sont en mots). | `parser.y` |
 | `"\033[2J"`, `"\b \b"` | Une chaîne contenant un caractère de contrôle devient un tableau de `char` à la portée du fichier. | `lower.c` phase 12 |
 | `struct stats s = { 16, "1x4", 12 };` avec `char s_dmg[13]` | La chaîne devient les caractères du membre, complétés par des zéros. | `lower.c` phase 12 |
+| `{ [SYS_fork] = sys_fork, ... }`, `{ .b = 2, .a = 1 }`, `.s.b = 9`, `[2].x = 1` | Les initialiseurs désignés deviennent des listes positionnelles. Un indice est un littéral, un `#define`, un énumérateur ou de l'arithmétique sur ceux-ci ; `[]` prend sa longueur de l'indice le plus haut ; un trou vaut zéro (un pointeur nul pour les pointeurs) ; pour une locale, chaque position est écrite. `[lo ... hi] = v` (GNU) écrit `v` à chaque indice de `lo` à `hi`. Une union ne peut désigner que son premier membre. | `parser.y`, `lower.c` phase 0 |
+| `__attribute__((noreturn))`, `__attribute`, `__declspec(...)`, `_Noreturn`, `noreturn` (`#include <stdnoreturn.h>`) | Ignorés où qu'ils se trouvent : le C de Vircon32 n'a rien contre une fonction qui se termine par un appel qui ne revient jamais. | `lexer.l`, `prescan.c` |
+| `(char *[]){"/init", 0}`, `(struct P){1, 2}`, `&(struct P){...}` | Une locale cachée `T __v32_cl_tmpN = {...};` avant l'instruction ; dans un initialiseur à la portée du fichier (`struct P *p = &(struct P){1, 2};`), une globale cachée `__v32_cl_gN`. Non géré dans le pas d'un `for` ni dans la condition d'un `do-while` (mêmes limites que les appels variadiques). | `parser.y`, `cmode.c` |
+| `enum { N = 250 };` dans une fonction | Remonté à la portée du fichier ; si une autre énumération a déjà un énumérateur `N`, celle-ci devient `N__eK` et le reste de son bloc est réécrit. | `parser.y` |
+| `_Static_assert(cond, "msg")`, `static_assert(cond)` | Évalué pendant la transpilation (littéraux, `#define`, énumérateurs, `sizeof`, arithmétique) ; un zéro est une erreur avec le message ; une condition qu'il ne sait pas évaluer est un avertissement. Rien n'est émis. | `parser.y` |
+| un appel à travers une fonction qui n'a qu'un prototype : `me()->x += n;` | Abaissé avec un seul appel, comme lorsque la définition est visible. | `cmode.c`, `sema.c` |
 | `class`, `new`, `this`, `delete`, `virtual`, ... comme noms | Identifiants ordinaires, écrits avec un tiret bas final (`this_`). | `lexer.l` |
 | `auto`, `register`, `(void) f();` | Acceptés et supprimés. | `lexer.l`, `lower.c` |
 
@@ -118,6 +129,75 @@ Les fonctions propres au SDK parlent toujours en -1 (`malloc` le renvoie en cas
 d'échec). `libc/` enveloppe celles qu'appelle un programme C ; ne passez pas
 directement un pointeur nul C à une fonction du SDK.
 
+## Lier plusieurs fichiers
+
+    v32c main.c kernel.c lib.c -o prog.c
+
+Donnez plusieurs fichiers à `v32c` (ou à `v32c++`, pour des sources C++) et il
+les lie lui-même, comme un seul programme. Le compilateur de Vircon32 n'a pas
+d'éditeur de liens et refuse une fonction ou une variable `extern` non définie ;
+les fichiers sont donc fusionnés avant qu'il ne les voie :
+
+- Un prototype ou une déclaration `extern` dans un fichier se lie à la
+  définition d'un autre. Un en-tête (`.h`, `.hpp`) qu'un fichier a déjà lu n'est
+  pas relu par les autres, protégé ou non, comme s'il disait `#pragma once` :
+  ses déclarations sont une seule fois dans le programme.
+- Une fonction ou variable `static` à la portée du fichier est privée à son
+  fichier. Si un autre fichier a quelque chose du même nom, elle est renommée
+  dans le fichier qui la possède (`helper` dans `b.c` devient `helper__b`),
+  usages compris ; une variable locale ou un paramètre de même nom la masque
+  toujours. Une `static inline` dans un en-tête existe une fois et est partagée.
+- Une fonction définie dans deux fichiers, ou une variable initialisée dans
+  deux, est une erreur : `multiple definition of 'f' (first defined at a.c:3)`.
+- Une fonction ou variable `extern` utilisée et jamais définie est une erreur :
+  `undefined reference to 'read'`. Un prototype que personne n'appelle ne gêne
+  pas. `--allow-undefined` en fait un avertissement : le SDK de Vircon32
+  déclare ses propres fonctions, si bien qu'un prototype de l'une d'elles serait
+  signalé (une fonction du SDK déclarée par l'en-tête du SDK lui-même n'a besoin
+  de rien).
+- Toutes les entrées doivent être en C, ou toutes en C++ (la vérification des
+  références non définies ne concerne que C). Le XML de la cartouche, `Make.sh`
+  et `Make.bat` portent le nom du premier fichier ; les scripts de construction
+  répètent les autres.
+- Chaque fichier a ses propres macros : ce qu'un fichier `#define` n'est pas
+  défini dans le suivant (`-D` et `-U` valent pour tous les fichiers), comme
+  dans une vraie compilation. Une structure, un `typedef` ou une énumération de
+  même nom dans deux fichiers doit être le même type. Une fonction déclarée dans
+  le corps d'une autre (`extern int userret();` là) n'est pas vue par la
+  vérification des références non définies.
+- Les fichiers C++ se lient de la même façon (classes dans un `.hpp` partagé,
+  méthodes définies dans un autre fichier) ; seul C a la vérification des
+  références non définies. L'étape des bibliothèques lance une seconde copie du
+  programme avec `popen` (`_popen` sous Windows, qui n'a pas été essayé).
+
+### Bibliothèques
+
+    v32c --mklib libm.v32a -I inc src/add.c src/mul.c src/deep.c
+    v32c main.c libm.v32a -o prog.c           # ou :  -L dir -lm
+
+Une bibliothèque est un index, `libname.v32a`, sur les fichiers source de ses
+membres : pour chaque membre, les symboles qu'il définit (liaison externe) et
+les noms que son code utilise. Lier `main.c` avec elle ne prend que les membres
+qui définissent quelque chose dont le programme a besoin, puis ceux dont
+ceux-là ont besoin, et ainsi de suite ; les autres sont laissés de côté, si bien
+que leur code et leurs données ne coûtent rien. Un membre est lié comme
+n'importe quel autre fichier d'entrée : ses noms `static` sont renommés en cas
+de conflit et ses erreurs sont signalées comme d'habitude. Citer aussi un
+membre sur la ligne de commande ne gêne pas (il n'est pas pris deux fois).
+
+- L'index contient des chemins relatifs et la taille de chaque membre : laissez
+  les membres où ils étaient et reconstruisez l'index après en avoir modifié un
+  (un membre modifié est une erreur, `library ... is out of date`, pas un
+  décalage silencieux).
+- Les `-I` et `-D` donnés à `--mklib` servent à lire les membres ; donnez les
+  mêmes à l'édition de liens.
+- Une référence se résout par le nom : une variable locale de même nom qu'une
+  fonction de la bibliothèque la masque dans cette fonction.
+- Les membres sont des sources, pas du code objet, donc relus à chaque
+  édition de liens. `--list-symbols` (interne) est ce que `--mklib` et l'édition
+  de liens exécutent, comme seconde copie du programme, pour lire les symboles
+  des fichiers.
+
 ## La bibliothèque C
 
 `libc/` contient la tranche de la bibliothèque standard dont Rogue avait besoin,
@@ -161,16 +241,28 @@ changement dont le code de sauvegarde de Rogue a eu besoin.
 de `main`. L'écran-titre de Rogue est cette fonction : ses entrées de menu
 représentent `rogue`, `rogue -r` et `rogue -s`.
 
+## Aides bas niveau
+
+| Vous écrivez | v32c++ fait |
+|---|---|
+| `__builtin_frame_address(0)`, `__builtin_return_address(0)` | Lit la chaîne de cadres du compilateur (`[BP]` = BP de l'appelant, `[BP+1]` = adresse de retour). |
+| `asm { "mov R1, {&buf}" }`, `{&func}`, `{*p}` | `{&x}` devient une variable locale cachée `int *__v32_a_x = &x;` avant l'asm (garde en vie une fonction que seul l'asm nomme) ; `{*p}`, un `int __v32_d_p = *p;` caché. |
+| `const int t[] __attribute__((rom)) = {...};` (portée fichier ; littéraux entiers, caractère ou flottants) | Les données sont émises comme données d'assembleur dans l'image du programme derrière une fonction cachée `int *__v32_rom_t(void)` ; chaque usage de `t` devient cet appel, `sizeof(t)` le nombre d'éléments. Lecture seule ; le reste est signalé (`-Wrom`) et reste global normal. |
+| `<`, `>`, `<=`, `>=`, `/`, `%` d'`unsigned` | Faits en non signé (`--no-unsigned-ops` les imprime tels quels). |
+| `--rename ancien=nouveau` | Renomme fonction, variable ou paramètre dans tout le programme, pour les noms qui heurtent le SDK. |
+| `--yield-points[=N]` | Insère `if (get_cycle_counter() > N) yield();` à l'entrée des fonctions, corps de boucle et étiquettes (`--yield-func=`, `--yield-counter=`) ; `__attribute__((no_yield))`, fonctions avec asm et aides `__v32_*` ignorées. |
+| `--warn-error[=type,...]`, `--list-warnings` | Transforme les avertissements de v32c++ (ou seulement les types listés) en échec sans fichier de sortie. |
+
 ## Limites
 
-- Une seule unité de traduction, comme toujours : `static` à la portée du fichier
-  ne signifie rien, et les fonctions `static` de même nom de deux fichiers
-  entrent en collision.
+- Plusieurs fichiers se lient (voir plus haut) ; un seul fichier est une unité
+  de traduction, et là `static` à la portée du fichier ne signifie rien.
 - `unsigned` est `int` (signalé une fois) ; `char`, `short` et `long` sont un
   mot de 32 bits, donc `sizeof(char) == sizeof(int) == 1`.
 - `double` et `long double` sont `float`, l'unique type à virgule flottante de 32
   bits de Vircon32 (le C généré dit `float`).
 - Une union ne peut pas être initialisée avec des accolades (C de Vircon32).
+- L'`asm` en ligne écrit pour un autre processeur (`asm volatile("wfi")` de RISC-V, accès aux CSR) passe tel quel et ne veut rien dire pour l'assembleur de Vircon32 : cette fonction est à réécrire.
 - Le code qui suppose que `sizeof(int) == 4` (voir *Fichiers sur la carte
   mémoire*).
 - Une affectation composée dont la cible a un effet de bord, utilisée comme

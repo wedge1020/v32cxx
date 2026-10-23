@@ -1,5 +1,6 @@
 %{
 static int g_attr_depth = 0;
+int g_attr_pending = 0;
 /*
  * lexer.l -- flex scanner.
  *
@@ -43,6 +44,7 @@ static int g_attr_depth = 0;
  * hints.
  */
 #include <stdio.h>
+#include "warn.h"
 #include <stdlib.h>
 #include <string.h>
 #include "driver.h"
@@ -161,7 +163,9 @@ ALNUM   [A-Za-z0-9_]
 <ATTR>")"                       { if (--g_attr_depth == 0) BEGIN(INITIAL); }
 <ATTR>\"([^"\\\n]|\\.)*\"     { }
 <ATTR>\n                        { g_lex_lineno++; }
-<ATTR>[^()"\n]+                { }
+<ATTR>[A-Za-z_][A-Za-z_0-9]*   { if (!strcmp(yytext,"no_yield")||!strcmp(yytext,"__no_yield__")) g_attr_pending |= 1;
+                                  else if (!strcmp(yytext,"rom")||!strcmp(yytext,"__rom__")) g_attr_pending |= 2; }
+<ATTR>[^()"\nA-Za-z_]+         { }
 <ATTR>.                         { }
 <ATTR><<EOF>>                   { fprintf(stderr, "%s:%d: error: unterminated __attribute__\n", g_current_filename, g_lex_lineno); BEGIN(INITIAL); return 0; }
 
@@ -353,6 +357,10 @@ ALNUM   [A-Za-z0-9_]
      * `static`/`extern` need more care (a static local keeps its value
      * between calls) -- see their own rules just below. */
 "inline"     { g_last_ident_sym = NULL; }
+    /* `_Noreturn` / `noreturn` (<stdnoreturn.h>): a hint -- Vircon32 C does
+     * not mind a function that ends in a call that never returns. */
+"_Noreturn"  { g_last_ident_sym = NULL; }
+"noreturn"   { if (g_c_mode) { g_last_ident_sym = NULL; } else { REJECT; } }
 "register"   { g_last_ident_sym = NULL; }
 
     /* `extern` is dropped too: with one translation unit, an `extern int
@@ -409,9 +417,10 @@ ALNUM   [A-Za-z0-9_]
     if (strstr(yytext, "unsigned") != NULL) {
         static int warned = 0;
         if (!warned) {
-            fprintf(stderr, "%s:%d: warning: `unsigned` is treated as plain int "
-                    "(Vircon32 has only a signed 32-bit integer): /, %% and "
-                    "comparisons behave as signed; >> on it stays a logical shift "
+            v32_warnf("unsigned", "%s:%d: warning: `unsigned` is treated as plain int "
+                    "(Vircon32 has only a signed 32-bit integer): <, >, /, %% and >> "
+                    "on it are done as unsigned operations (see --no-unsigned-ops); "
+                    "a conversion to float above 2^31 still reads it as negative "
                     "(reported once)\n",
                     g_current_filename, g_lex_lineno);
             warned = 1;

@@ -13,6 +13,8 @@
  * for C input; read by cmode_separate_tags. */
 extern AstList g_tag_refs;
 extern AstList g_tag_decls;
+extern AstList g_struct_refs;
+extern AstList g_c_fwd_tags;   /* tags used but never defined: need `struct X;` */
 
 void cmode_separate_tags(AstList *decls);
 void cmode_unify_prototypes(AstList *decls);

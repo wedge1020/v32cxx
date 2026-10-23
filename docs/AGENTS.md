@@ -24,6 +24,15 @@ header, like `malloc_block`, is read, so `b->size` works); `#include` inside a
 function or `asm { }` body (expanded where it stands).
 String literals holding control codes (BIOS glyphs 14-31, `"\025"`) are rewritten
 into hidden arrays for you.
+C input (`v32c`, see `docs/C_INPUT.md`) also takes: several files at once (`v32c a.c b.c lib.v32a`,
+linked by v32c++ itself: prototypes bind across files, file-scope `static` stays private, each file
+has its own macros, `--mklib` makes libraries); designated initializers including GNU `[a ... b]`;
+compound literals (file scope too); `_Static_assert`; function-typed parameters; `_Noreturn` /
+`noreturn`; GCC's `__atomic_*` / `__sync_*` builtins (one CPU: plain operations);
+`__builtin_frame_address` / `__builtin_return_address`; asm operands `{&var}`, `{&func}`, `{*p}`;
+`__attribute__((rom))` const arrays (data in the cartridge image); `--rename old=new` for SDK name clashes;
+`--yield-points[=N]` (cooperative yield checks; `__attribute__((no_yield))` opts a function out);
+`--warn-error[=kind,...]` / `--list-warnings`.
 
 **Do not use** (clear error or unsupported): templates, exceptions, RTTI
 (`dynamic_cast` warns only), multiple inheritance, lambdas, `enum class`,
@@ -34,9 +43,11 @@ members, `T *&`, 2-D array *parameters*, an object passed through `...`.
 - `unsigned`, `short`, `long`... are one signed 32-bit `int`; `double` is `float`.
 - `>>` of a signed value is rewritten to shift arithmetically (a few extra instructions);
   an `unsigned` value shifts logically and is left alone. `--no-signed-shift` turns the
-  rewrite off. `unsigned` `/`, `%` and comparisons above INT_MAX still act signed.
+  rewrite off. `unsigned` `<`, `>`, `/`, `%` act unsigned too (`--no-unsigned-ops` turns that off).
 - `new T[n]` / `delete[]` skip per-element constructors / destructors.
-- `goto` out of a scope skips destructors; `const` is not enforced.
+- `goto` out of a scope skips destructors; `const` is not enforced (C input drops it from the
+  output, since the SDK compiler enforces it where C does not).
+- Inline `asm` for another CPU (RISC-V) is passed on unchanged and cannot assemble.
 - A class in a namespace keeps its bare C name (don't name your own class
   `String`, `Keyboard`, `Mouse`, `Channel`...).
 - An SDK pointer's null is `-1`, and the SDK compiler drops a function nothing

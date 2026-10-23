@@ -71,7 +71,7 @@ cadena de herramientas y el emulador reales).
 | 19 | tamaños de arreglo constantes | macros, enumeraciones, aritmética constante | manejado |
 | 21 | sin operador coma | `a, b` en cualquier lugar, `for(i=0,j=n;..;i++,j--)` | **bajado** |
 | 22 | un arreglo decae solo en `=`, inicialización, argumento | `arr + n`, `*arr`, `p == arr` | **bajado** |
-| 23 | `const` acompaña a un valor que se lee | lee valores const libremente | **bajado** (no un descarte de `const T*` a `T*`) |
+| 23 | `const` acompaña a un valor que se lee | lee valores const libremente | **bajado** (no un descarte de `const T*` a `T*`); la entrada en C omite `const` de la salida |
 | 24 | sin `static`, `extern`, `volatile`, `unsigned`... | aceptados; `unsigned` es con signo (advertencia); los miembros `static` de clases y los campos de bits sin nombre son errores | manejado, con salvedades |
 | 25 | `a op= b` evalúa el destino dos veces | cualquiera | **bajado** como sentencia; como valor dentro de una expresión mayor: advertencia |
 | 26 | comparación de puntero con `void *` | entrada en C: manejado | manejado |
@@ -716,9 +716,10 @@ del C++ corriente.
   construye con `--no-signed-shift` para imprimir cada `>>` tal como está escrito
   (entonces un operando negativo desplaza lógicamente, como antes;
   `tests/137sample.cpp`).
-- **No hecho**: `unsigned` sigue siendo una palabra con signo para `/`, `%`, `<`,
-  `>`, `<=`, `>=` y las conversiones, de modo que estos se comportan mal por encima
-  de INT_MAX (el analizador léxico lo avisa una vez). Solo su `>>` es correcto.
+- `<`, `>`, `<=`, `>=`, `/` y `%` de `unsigned` también se reescriben (inversión del
+  bit de signo, ayudas `__v32_udiv`/`__v32_umod`); `--no-unsigned-ops` lo desactiva
+  (`tests/167sample.c`). **No hecho**: la conversión de `unsigned` a flotante por
+  encima de INT_MAX lo sigue leyendo como negativo (el analizador léxico avisa una vez).
 - Destino estándar: nada que hacer. `tests/136sample.cpp` (C++),
   `tests/138sample.c` (C) y `tests/137sample.cpp` (la opción) comprueban todo esto
   en el emulador, incluidos valores impares negativos, INT_MIN, un efecto

@@ -21,7 +21,7 @@ everything Vircon32's own C dialect does differently.
 > **Status: functional.** The whole  pipeline — preprocessing, parsing,
 > semantic analysis,  lowering and code  generation — works end  to end
 > and is  checked against the  **real** Vircon32 compiler,  assembler and
-> console (`make  realcheck`: 117  programs compiled  and assembled,  48 of
+> console (`make  realcheck`: 128  programs compiled  and assembled,  59 of
 > them self-checking  at run time  on a headless console).  Five sizeable
 > demos (three C++ games, a port of Rogue and a plain-C Spy vs Spy) build
 > with it. See [Known
@@ -340,10 +340,13 @@ Checked against  the current  transpiler and  the real  Vircon32 compiler
   (about five instructions instead of one), anything else goes through a
   small helper. `unsigned` values, constants, and shifts masked by a small
   positive constant (`(x >> 4) & 15`) stay a single instruction;
-  `--no-signed-shift` turns the rewrite off. `/`, `%` and comparisons of an
-  `unsigned` value above `INT_MAX` still behave as signed.
+  `--no-signed-shift` turns the rewrite off. `<`, `>`, `/` and `%` of an
+  `unsigned` value are done as unsigned operations too (`--no-unsigned-ops`
+  turns that off); only a conversion to float above `INT_MAX` still reads it as negative.
   See `docs/VIRCON32_QUIRKS.md` #14.
-- **`const` is not enforced** — violations are left to the C compiler.
+- **`const` is not enforced** — violations are left to the C compiler. C input
+  drops `const` from the output altogether (the Vircon32 compiler enforces it
+  where C does not).
 - **Control codes in string literals are rewritten**:  the Vircon32 toolchain
   can't assemble a string holding the BIOS font's codes 14–31 (`┌ ─ ┐ │ ░ ▒ ▓ █`
   ...)  or other control codes,  `"\025"`.  v32c++ moves such a literal into a
@@ -378,6 +381,15 @@ Checked against  the current  transpiler and  the real  Vircon32 compiler
 - **The Vircon32 compiler drops functions nothing calls.** Data placed in
   an `asm { }` block of a function that is never called vanishes with it;
   call the function (or take its address) from somewhere that stays.
+
+- **C input, linking several files** (`docs/C_INPUT.md`): the files are
+  merged into one program, so a library is source, re-read at every link.
+  C++ files link too, with only a light test so far; the undefined-reference
+  check is for C. The library step starts a second copy of the program
+  with `popen` (`_popen` on Windows, not yet tried there).
+- **Code for another CPU does not translate.** `asm` written for RISC-V (xv6's
+  `wfi`, CSR accessors) is passed on as it is; such a function must be
+  written again for Vircon32.
 
 ## Deliberately out of scope
 
@@ -511,6 +523,10 @@ v32c++ -I path/to/v32c++ -o obj/game.c game.cpp
 | `--target=standard`/`std` | portable standard C instead |
 | `--reject-bit-fields` | make a bit-field an error instead of a warning |
 | `--no-signed-shift` | print `>>` / `>>=` as written (Vircon32's shift is logical; by default a signed shift is rewritten to be arithmetic) |
+| `--no-unsigned-ops` | print `unsigned` `<`, `>`, `/`, `%` as written (signed in Vircon32) |
+| `--warn-error[=kind,...]` | make v32c++'s own warnings errors (no output file, exit 1); `--list-warnings` lists the kinds |
+| `--yield-points[=N]` | insert `if (get_cycle_counter() > N) yield();` at function entry, loops and labels (`--yield-func=`, `--yield-counter=`; `__attribute__((no_yield))` opts out) |
+| `--rename old=new` | rename a function/variable program-wide (SDK name clashes) |
 | `--mklib lib.v32a` | write a library index over the source files given (see `docs/C_INPUT.md`, *Libraries*) |
 | `-L dir`, `-lname`, `lib.v32a` | link with a library: only the members the program needs are taken in |
 | `--allow-undefined` | with several input files, make a used-but-never-defined function or `extern` variable a warning instead of a link error |

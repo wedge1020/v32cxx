@@ -41,6 +41,7 @@
  * If you add a new .c file that includes parser.tab.h directly, make sure
  * it includes driver.h (or ast.h+symtab.h) immediately before it.
  */
+#include "warn.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -212,6 +213,7 @@ static AstNode *apply_ptr(AstNode *base, int ptr, int line) {
  * file scope, ahead of the declaration that contained it. */
 AstList g_tag_refs;
 AstList g_tag_decls;
+AstList g_struct_refs;      /* `struct X` uses (C input): to find tags never defined */
 int c_tag_known(const char *name);
 static AstList g_hoisted_tags;
 
@@ -337,7 +339,7 @@ static AstNode *local_tag_stmt(AstNode *decl, int line) {
 static AstNode *static_assert_decl(AstNode *cond, const char *msg, int line) {
     int v = 0;
     if (!ast_fold_int(cond, parse_enum_value, &v)) {
-        fprintf(stderr, "%s:%d: warning: static_assert: the condition is not a constant "
+        v32_warnf("static-assert", "%s:%d: warning: static_assert: the condition is not a constant "
                 "v32c++ can evaluate (a literal, a #define, an enum constant, sizeof or "
                 "arithmetic on those); not checked\n", g_current_filename, line);
     } else if (v == 0) {
@@ -599,6 +601,36 @@ static AstNode *tag_typedef_group(AstNode *decl, int ptr, const char *name, int 
         ast_list_append(&g->list, td);
     }
     return g;
+}
+
+/* `[2 ... 5] = v` -> `[2] = v, [3] = v, [4] = v, [5] = v` (GNU). */
+static AstList expand_designator_ranges(AstList items) {
+    int any = 0;
+    for (int i = 0; i < items.count && !any; i++) {
+        const AstNode *it = items.items[i];
+        any = it->kind == AST_DESIG_INIT && it->list.count > 0 && it->list.items[0]->b != NULL;
+    }
+    if (!any) return items;
+    AstList out = ast_list_new();
+    for (int i = 0; i < items.count; i++) {
+        AstNode *it = items.items[i];
+        if (!(it->kind == AST_DESIG_INIT && it->list.count > 0 && it->list.items[0]->b != NULL)) {
+            ast_list_append(&out, it);
+            continue;
+        }
+        int lo = it->list.items[0]->ival, hi = it->list.items[0]->b->ival;
+        for (int k = lo; k <= hi; k++) {
+            AstNode *copy = ast_new(AST_DESIG_INIT, it->line);
+            copy->list = ast_list_new();
+            AstNode *idx = ast_new(AST_INT_LIT, it->line);
+            idx->ival = k;
+            ast_list_append(&copy->list, idx);
+            for (int d = 1; d < it->list.count; d++) ast_list_append(&copy->list, it->list.items[d]);
+            copy->a = (k == lo) ? it->a : ast_clone_expr(it->a);
+            ast_list_append(&out, copy);
+        }
+    }
+    return out;
 }
 
 /* `T name[] = { ... }`: take the first dimension from the initializer. */
@@ -1379,10 +1411,10 @@ member:
                 g_parse_errors++;
             } else {
                 if (have_width)
-                    fprintf(stderr, "%s:%d: warning: bit-field '%s : %d' is stored as a "
+                    v32_warnf("bit-field", "%s:%d: warning: bit-field '%s : %d' is stored as a "
                             "full 32-bit member\n", g_current_filename, @2.first_line, name, width);
                 else
-                    fprintf(stderr, "%s:%d: warning: bit-field '%s' is stored as a "
+                    v32_warnf("bit-field", "%s:%d: warning: bit-field '%s' is stored as a "
                             "full 32-bit member\n", g_current_filename, @2.first_line, name);
                 if (!explained) {
                     explained = 1;
@@ -2017,6 +2049,14 @@ param:
             $$->str1 = unnamed_param_name();
             $$->type = ast_wrap_func_ptr(apply_ptr($1, $2, @1.first_line), $7, @1.first_line);
         }
+    | type_spec pointer_opt '(' func_ptr_param_list ')'
+        {
+            /* an unnamed parameter of function type, `void apply(void (char *))`:
+             * the same adjustment to a function pointer as the named form */
+            $$ = ast_new(AST_PARAM, @1.first_line);
+            $$->str1 = unnamed_param_name();
+            $$->type = ast_wrap_func_ptr(apply_ptr($1, $2, @1.first_line), $4, @1.first_line);
+        }
     ;
 
 pointer_opt:
@@ -2060,7 +2100,8 @@ type_spec:
     | TYPE_NAME     { $$ = ast_ident($1, @1.first_line); }
     | TAG_NAME      { $$ = tag_ref($1, @1.first_line); /* C input: a tag
                          used bare, Vircon32 C style -- see c_tag_known */ }
-    | class_or_struct_kw name_tok  { $$ = tag_ref($2, @2.first_line); }
+    | class_or_struct_kw name_tok  { $$ = tag_ref($2, @2.first_line);
+                                     if (g_c_mode) ast_list_append(&g_struct_refs, $$); }
     | UNION name_tok               { $$ = tag_ref($2, @2.first_line); }
     | ENUM name_tok                { $$ = tag_ref($2, @2.first_line); }
 
@@ -2637,9 +2678,9 @@ braced_init:
       '{' '}'
         { $$ = ast_new(AST_INIT_LIST, @1.first_line); }
     | '{' init_items '}'
-        { $$ = ast_new(AST_INIT_LIST, @1.first_line); $$->list = $2; }
+        { $$ = ast_new(AST_INIT_LIST, @1.first_line); $$->list = expand_designator_ranges($2); }
     | '{' init_items ',' '}'
-        { $$ = ast_new(AST_INIT_LIST, @1.first_line); $$->list = $2; }
+        { $$ = ast_new(AST_INIT_LIST, @1.first_line); $$->list = expand_designator_ranges($2); }
     ;
 
 init_items:
@@ -2680,6 +2721,25 @@ designator:
             }
             $$ = ast_new(AST_INT_LIT, @1.first_line);
             $$->ival = v;
+        }
+    | '[' expr ELLIPSIS expr ']'
+        {
+            /* GNU `[lo ... hi] = v`: kept as one designator whose `b` is
+             * the upper bound; expand_designator_ranges turns it into one
+             * `[i] = v` per index once the braces close. */
+            int lo = 0, hi = 0;
+            if (!ast_fold_int($2, parse_enum_value, &lo) || !ast_fold_int($4, parse_enum_value, &hi) ||
+                lo < 0 || hi < lo) {
+                fprintf(stderr, "%s:%d: error: a designator's index range is not a "
+                        "constant range lo ... hi with 0 <= lo <= hi\n",
+                        g_current_filename, @1.first_line);
+                g_parse_errors++;
+                lo = hi = 0;
+            }
+            $$ = ast_new(AST_INT_LIT, @1.first_line);
+            $$->ival = lo;
+            $$->b = ast_new(AST_INT_LIT, @1.first_line);
+            $$->b->ival = hi;
         }
     | '.' IDENTIFIER
         { $$ = ast_new(AST_IDENT, @1.first_line); $$->str1 = $2; }

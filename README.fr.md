@@ -22,8 +22,8 @@ différemment.
 > **État : fonctionnel.** Toute la chaîne — prétraitement, analyse syntaxique,
 > analyse sémantique, abaissement (*lowering*) et génération de code —
 > fonctionne de bout en bout et est vérifiée avec le compilateur, l'assembleur
-> et la console **réels** de Vircon32 (`make realcheck` : 117 programmes
-> compilés et assemblés, dont 48 s'auto-vérifient à l'exécution sur une
+> et la console **réels** de Vircon32 (`make realcheck` : 128 programmes
+> compilés et assemblés, dont 59 s'auto-vérifient à l'exécution sur une
 > console sans écran). Cinq démos d'une certaine taille (trois jeux en C++, un
 > portage de Rogue et un Spy vs Spy en C pur) se construisent avec lui. Voir les [Limitations
 > connues](#limitations-connues) pour un tableau honnête de ce qui manque.
@@ -359,10 +359,11 @@ Vérifiées avec le transpileur actuel et le vrai compilateur Vircon32 (octobre
   tout le reste passe par une petite fonction auxiliaire. Les valeurs
   `unsigned`, les constantes et les décalages masqués par une petite constante
   positive (`(x >> 4) & 15`) restent une seule instruction ;
-  `--no-signed-shift` désactive la réécriture. `/`, `%` et les comparaisons
-  d'une valeur `unsigned` au-dessus de `INT_MAX` se comportent toujours comme
-  du signé. Voir `docs/VIRCON32_QUIRKS.fr.md` n° 14.
-- **`const` n'est pas appliqué** — les violations sont laissées au compilateur C.
+  `--no-signed-shift` désactive la réécriture. `<`, `>`, `/` et `%` d'une valeur
+  `unsigned` sont aussi faits en non signé (`--no-unsigned-ops` l'empêche) ;
+  seule la conversion en flottant au-delà d'`INT_MAX` la lit encore comme négative. Voir `docs/VIRCON32_QUIRKS.fr.md` n° 14.
+- **`const` n'est pas appliqué** — les violations sont laissées au compilateur C. L'entrée
+  C omet `const` de la sortie (le compilateur de Vircon32 l'impose là où C ne le fait pas).
 - **Les codes de contrôle dans les littéraux de chaîne sont réécrits** : la
   chaîne d'outils Vircon32 ne peut pas assembler une chaîne contenant les codes
   14–31 de la police du BIOS (`┌ ─ ┐ │ ░ ▒ ▓ █` ...) ou d'autres codes de
@@ -400,6 +401,16 @@ Vérifiées avec le transpileur actuel et le vrai compilateur Vircon32 (octobre
   données d'un bloc `asm { }` d'une fonction jamais appelée disparaissent avec
   elle ; appelez la fonction (ou prenez son adresse) depuis un endroit qui
   subsiste.
+
+- **Entrée C, liaison de plusieurs fichiers** (`docs/C_INPUT.fr.md`) : les
+  fichiers sont fusionnés en un seul programme, donc une bibliothèque est du
+  source relu à chaque édition de liens. Les fichiers C++ se lient aussi, avec
+  pour l'instant un simple test léger ; la vérification des références non
+  définies concerne C. L'étape des bibliothèques lance une seconde copie du
+  programme avec `popen` (`_popen` sous Windows, pas encore essayé là).
+- **Le code pour un autre processeur ne se traduit pas.** L'`asm` écrit pour
+  RISC-V (le `wfi` de xv6, les accès aux CSR) passe tel quel ; cette fonction
+  est à réécrire pour Vircon32.
 
 ## Délibérément hors du périmètre
 
@@ -536,7 +547,14 @@ v32c++ -I path/to/v32c++ -o obj/game.c game.cpp
 | `--target=standard`/`std` | C standard portable à la place |
 | `--reject-bit-fields` | fait d'un champ de bits une erreur au lieu d'un avertissement |
 | `--no-signed-shift` | imprime `>>` / `>>=` tels qu'écrits (le décalage de Vircon32 est logique ; par défaut un décalage signé est réécrit pour être arithmétique) |
+| `--no-unsigned-ops` | imprime `<`, `>`, `/`, `%` d'`unsigned` tels quels (signés sur Vircon32) |
+| `--warn-error[=type,...]` | transforme les avertissements de v32c++ en erreurs (pas de fichier de sortie, code 1) ; `--list-warnings` liste les types |
+| `--yield-points[=N]` | insère `if (get_cycle_counter() > N) yield();` dans fonctions, boucles et étiquettes (`--yield-func=`, `--yield-counter=` ; `__attribute__((no_yield))` l'évite) |
+| `--rename ancien=nouveau` | renomme une fonction/variable dans tout le programme (heurts avec le SDK) |
 | `--silence-unused-args` | commence toute fonction qui ignore un paramètre (le `this` d'une méthode qui ne touche aucun membre, l'argument d'un callback) par un `nom;` isolé, que le compilateur Vircon32 compte comme un usage : plus d'avertissement `argument "x" is not used` (il s'arrête après 10). Un peu de code par paramètre |
+| `--mklib lib.v32a` | écrit un index de bibliothèque sur les fichiers source donnés (voir `docs/C_INPUT.fr.md`, *Bibliothèques*) |
+| `-L dir`, `-lname`, `lib.v32a` | lie avec une bibliothèque : seuls les membres dont le programme a besoin sont pris |
+| `--allow-undefined` | avec plusieurs fichiers d'entrée, fait d'une fonction ou variable `extern` utilisée et jamais définie un avertissement plutôt qu'une erreur d'édition de liens |
 | `--no-inline-containers` | garde les accesseurs de `std::array`/`std::vector` sous forme d'appels |
 | `--version` | affiche la version et termine |
 

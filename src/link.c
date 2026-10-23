@@ -1,4 +1,5 @@
 /* link.c -- whole-program linking of several source files. See link.h. */
+#include "warn.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -246,9 +247,13 @@ int link_merge(AstList *decls, const char *const *files, int nfiles, int allow_u
             }
             if (defined || !set_has(&used, s->name)) continue;
             set_add(&reported, s->name);
-            fprintf(stderr, "%s:%d: %s: undefined reference to '%s'%s\n", node_file(s->node), s->node->line,
-                    allow_undefined ? "warning" : "error", s->name,
-                    s->is_var ? " (declared extern, never defined)" : " (declared, never defined)");
+            if (allow_undefined)
+                v32_warnf("undefined-reference", "%s:%d: warning: undefined reference to '%s'%s\n",
+                          node_file(s->node), s->node->line, s->name,
+                          s->is_var ? " (declared extern, never defined)" : " (declared, never defined)");
+            else
+                fprintf(stderr, "%s:%d: error: undefined reference to '%s'%s\n", node_file(s->node), s->node->line,
+                        s->name, s->is_var ? " (declared extern, never defined)" : " (declared, never defined)");
             if (!allow_undefined) errors++;
         }
     }

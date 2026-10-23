@@ -2,6 +2,7 @@
  * generic.c -- transpiler-level `std::array<T, N>`. See generic.h for
  * the overview.
  */
+#include "warn.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -444,7 +445,7 @@ static void warn_if_elements_have_destructor(const AstList *decls, const Instanc
             const AstNode *f = n->list.items[m];
             if (f == NULL || (f->kind != AST_FUNC_DECL && f->kind != AST_FUNC_DEF) ||
                 f->str1 == NULL || f->str1[0] != '~') continue;
-            fprintf(stderr,
+            v32_warnf("vector-destructor",
                 "%s:%d: warning: std::vector<%s>: %s has a destructor, but a std::vector does not\n"
                 "      run it for its elements (they are copied in and dropped as raw memory).\n"
                 "      Whatever the destructor releases is yours to release, or hold pointers:\n"

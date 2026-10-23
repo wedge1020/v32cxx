@@ -69,7 +69,7 @@ literals, `1e3`, `.5` and `5.` (`tests/133sample.cpp`, `134sample.c`,
 | 19 | constant array sizes | macros, enums, constant arithmetic | handled |
 | 21 | no comma operator | `a, b` anywhere, `for(i=0,j=n;..;i++,j--)` | **lowered** |
 | 22 | arrays decay only in `=`, init, argument | `arr + n`, `*arr`, `p == arr` | **lowered** |
-| 23 | `const` follows a value that is read | read const values freely | **lowered** (not a `const T*` to `T*` discard) |
+| 23 | `const` follows a value that is read | read const values freely | **lowered** (not a `const T*` to `T*` discard); C input drops `const` from the output |
 | 24 | no `static`, `extern`, `volatile`, `unsigned`... | accepted; `unsigned` is signed (warning); `static` class members and unnamed bit-fields are errors | handled, with caveats |
 | 25 | `a op= b` evaluates the target twice | any | **lowered** as a statement; as a value inside a bigger expression: warning |
 | 26 | pointer vs `void *` compare | C input: handled | handled |
@@ -720,9 +720,11 @@ important default to protect.
   declare the value `unsigned` if it is never negative, or build with
   `--no-signed-shift` to print every `>>` as written (then a negative
   operand shifts logically, as before; `tests/137sample.cpp`).
-- **Not done**: `unsigned` is still a signed word for `/`, `%`, `<`, `>`,
-  `<=`, `>=` and conversions, so those misbehave above INT_MAX (the
-  lexer says so once). Only its `>>` is right.
+- `unsigned` `<`, `>`, `<=`, `>=`, `/` and `%` are lowered too (sign-bit flip for
+  compares, an AST-built `__v32_udiv`/`__v32_umod` helper, a shift or mask for
+  a power-of-two constant); `--no-unsigned-ops` turns it off
+  (`tests/167sample.c`). **Not done**: a conversion of `unsigned` to float
+  above INT_MAX still reads it as negative (the lexer says so once).
 - Standard target: nothing to do. `tests/136sample.cpp` (C++),
   `tests/138sample.c` (C) and `tests/137sample.cpp` (the flag) check all of
   it on the emulator, including negative odd values, INT_MIN, a side effect

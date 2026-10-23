@@ -18,6 +18,7 @@
  *  See docs/C_INPUT.md for the whole picture, including what lower.c and
  *  codegen.c do for C input further down the pipeline.
  * ****************************************************************************/
+#include "warn.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -137,9 +138,40 @@ void cmode_separate_tags(AstList *decls) {
         }
         d->str1 = new_name;
     }
+    /* `struct cpu *cpu;` where no `struct cpu { }` is in the program: C
+     * allows an incomplete tag, Vircon32 C needs `struct cpu;` first
+     * ("identifier is not a type"). Defined tags already get theirs. */
+    g_c_fwd_tags = ast_list_new();
+    for (int r = 0; r < g_struct_refs.count; r++) {
+        const char *nm = g_struct_refs.items[r]->str1;
+        int dup = 0;
+        for (int j = 0; j < g_tag_decls.count && !dup; j++)
+            if (strcmp(g_tag_decls.items[j]->str1, nm) == 0) dup = 1;
+        for (int j = 0; j < g_c_fwd_tags.count && !dup; j++)
+            if (strcmp(g_c_fwd_tags.items[j]->str1, nm) == 0) dup = 1;
+        if (!dup) ast_list_append(&g_c_fwd_tags, g_struct_refs.items[r]);
+    }
+    /* ...and such a tag can clash with an ordinary name too (xv6's
+     * `struct pipe;` beside `int pipe(int *)`): the same rename. */
+    for (int f = 0; f < g_c_fwd_tags.count; f++) {
+        AstNode *d = g_c_fwd_tags.items[f];
+        if (!name_set_has(&ordinary, d->str1)) continue;
+        char *old_name = strdup(d->str1);
+        char *new_name = malloc(strlen(old_name) + 16);
+        sprintf(new_name, "%s_tag", old_name);
+        for (int n = 2; name_set_has(&ordinary, new_name) || name_set_has(&tags, new_name); n++)
+            sprintf(new_name, "%s_tag%d", old_name, n);
+        name_set_add(&tags, new_name, 0);
+        for (int r = 0; r < g_tag_refs.count; r++) {
+            AstNode *ref = g_tag_refs.items[r];
+            if (strcmp(ref->str1, old_name) == 0) ref->str1 = strdup(new_name);
+        }
+        free(old_name);
+    }
     name_set_free(&ordinary);
     name_set_free(&tags);
 }
+AstList g_c_fwd_tags;
 
 /* ---- prototypes ---------------------------------------------------------------
  *
@@ -274,7 +306,7 @@ static void drop_unused_args(AstNode *n, const NameSet *no_params) {
     for (int i = 0; i < n->list.count; i++) drop_unused_args(n->list.items[i], no_params);
     if (n->kind == AST_CALL && n->list.count > 0 && n->a != NULL && n->a->kind == AST_IDENT &&
         name_set_has(no_params, n->a->str1)) {
-        fprintf(stderr, "%s:%d: warning: '%s' takes no parameters; the %d argument(s) "
+        v32_warnf("dropped-args", "%s:%d: warning: '%s' takes no parameters; the %d argument(s) "
                 "of this call are dropped\n", n->file ? n->file : g_current_filename,
                 n->line, n->a->str1, n->list.count);
         n->list.count = 0;
@@ -700,7 +732,42 @@ static void va_function(AstNode *f, const NameSet *variadic, int *errors) {
 
 /* Every function body: at file scope, in namespaces, and the methods of
  * classes (nested ones too). */
+/* A compound literal in a file-scope initializer (`struct P *p =
+ * &(struct P){1, 2};`, `int *t = (int[]){1, 2};`) is an object with static
+ * storage: a hidden global of its own, ahead of the declaration. */
+static void hoist_global_literals(AstNode **slot, AstList *before) {
+    AstNode *n = *slot;
+    if (n == NULL || n->kind == AST_SIZEOF) return;
+    if (n->kind == AST_COMPOUND_LIT) {
+        static int global_counter = 0;
+        char name[40];
+        snprintf(name, sizeof name, "__v32_cl_g%d", global_counter++);
+        hoist_global_literals(&n->a, before);
+        AstNode *g = ast_new(AST_VAR_DECL, n->line);
+        g->str1 = strdup(name);
+        g->type = n->type;
+        g->a = n->a;
+        ast_list_append(before, g);
+        *slot = ast_ident(name, n->line);
+        return;
+    }
+    hoist_global_literals(&n->a, before);
+    hoist_global_literals(&n->b, before);
+    hoist_global_literals(&n->c, before);
+    hoist_global_literals(&n->d, before);
+    for (int i = 0; i < n->list.count; i++) hoist_global_literals(&n->list.items[i], before);
+}
+
 static void va_decls(AstList *decls, const NameSet *variadic, int *errors) {
+    {
+        AstList out = ast_list_new();
+        for (int i = 0; i < decls->count; i++) {
+            AstNode *d = decls->items[i];
+            if (d != NULL && d->kind == AST_VAR_DECL && d->a != NULL) hoist_global_literals(&d->a, &out);
+            ast_list_append(&out, d);
+        }
+        *decls = out;
+    }
     for (int i = 0; i < decls->count; i++) {
         AstNode *d = decls->items[i];
         if (d == NULL) continue;

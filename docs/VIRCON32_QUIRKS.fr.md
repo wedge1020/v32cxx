@@ -69,7 +69,7 @@ littéraux hexadécimaux/octaux/binaires, `1e3`, `.5` et `5.` (`tests/133sample.
 | 19 | tailles de tableau constantes | macros, énumérations, arithmétique constante | géré |
 | 21 | pas d'opérateur virgule | `a, b` partout, `for(i=0,j=n;..;i++,j--)` | **abaissé** |
 | 22 | un tableau ne dégénère qu'en `=`, initialisation, argument | `arr + n`, `*arr`, `p == arr` | **abaissé** |
-| 23 | `const` accompagne une valeur que l'on lit | lisez librement les valeurs const | **abaissé** (pas un rejet de `const T*` vers `T*`) |
+| 23 | `const` accompagne une valeur que l'on lit | lisez librement les valeurs const | **abaissé** (pas un rejet de `const T*` vers `T*`) ; l'entrée C omet `const` de la sortie |
 | 24 | pas de `static`, `extern`, `volatile`, `unsigned`... | acceptés ; `unsigned` est signé (avertissement) ; les membres `static` de classes et les champs de bits sans nom sont des erreurs | géré, avec réserves |
 | 25 | `a op= b` évalue la cible deux fois | n'importe lequel | **abaissé** en instruction ; comme valeur dans une expression plus grande : avertissement |
 | 26 | comparaison de pointeur avec `void *` | entrée C : géré | géré |
@@ -663,9 +663,10 @@ protéger comme valeur par défaut.
   `unsigned` si elle n'est jamais négative, ou construisez avec `--no-signed-shift` pour
   imprimer chaque `>>` tel qu'il est écrit (un opérande négatif décale alors
   logiquement, comme avant ; `tests/137sample.cpp`).
-- **Non fait** : `unsigned` reste un mot signé pour `/`, `%`, `<`, `>`, `<=`, `>=` et les
-  conversions, qui se comportent donc mal au-delà d'INT_MAX (l'analyseur lexical avertit
-  une fois). Seul son `>>` est correct.
+- `<`, `>`, `<=`, `>=`, `/` et `%` d'`unsigned` sont aussi réécrits (inversion du bit de
+  signe, aides `__v32_udiv`/`__v32_umod`) ; `--no-unsigned-ops` le désactive
+  (`tests/167sample.c`). **Non fait** : la conversion d'`unsigned` en flottant au-delà
+  d'INT_MAX le lit encore comme négatif (l'analyseur lexical avertit une fois).
 - Cible standard : rien à faire. `tests/136sample.cpp` (C++), `tests/138sample.c` (C) et
   `tests/137sample.cpp` (l'option) vérifient tout cela dans l'émulateur, y compris les
   valeurs impaires négatives, INT_MIN, un effet de bord dans la cible et les opérandes
@@ -845,8 +846,8 @@ rendrait cela beaucoup plus facile à repérer que l'erreur de l'analyseur synta
   - `static` dans le corps d'une classe reste une erreur (pas de membres statiques) ;
   - `signed`, `short`, `long`, `long long` et leurs combinaisons avec `int`/`char` valent
     `int`. `unsigned` aussi, avec un avertissement (une fois par exécution) : les valeurs
-    au-delà d'INT_MAX, et `/`, `%`, les comparaisons sur elles, se comportent comme des
-    valeurs signées (`>>` non : voir le n° 14). INT_MIN et `0x80000000` sont imprimés
+    au-delà d'INT_MAX, et `/`, `%`, les comparaisons sur elles, se font en non signé
+    (voir le n° 14 ; `--no-unsigned-ops` l'empêche). INT_MIN et `0x80000000` sont imprimés
     `(-2147483647 - 1)`, puisque le C de Vircon32 rejette le littéral 2147483648.
     `4000000000u` conserve son motif de 32 bits.
 - Également accepté maintenant, transmis tel quel (le C de Vircon32 l'a) : `%=`, les

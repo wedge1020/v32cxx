@@ -25,7 +25,12 @@ v32c++, v32c \- transpile un sous-ensemble de C++ (ou de C) en C Vircon32
 .RB [ \-\-target=vircon32 | standard ]
 .RB [ \-\-reject\-bit\-fields ]
 .RB [ \-\-no\-signed\-shift ]
+.RB [ \-\-no\-unsigned\-ops ]
+.RB [ \-\-warn\-error ]
+.RB [ \-\-yield\-points ]
+.RB [ \-\-rename ]
 .RB [ \-\-silence\-unused\-args ]
+.RB [ \-\-allow\-undefined ]
 .RB [ \-\-no\-inline\-containers ]
 .I entrée.cpp
 .br
@@ -300,6 +305,35 @@ généré, au lieu d'écrire chacun sur place comme un accès direct aux champs 
 conteneur. Plus lent sur la console ; utile pour lire le C généré à côté de la
 classe dont il provient.
 .TP
+.BI \-\-mklib " lib.v32a"
+Écrit un index de bibliothèque sur les fichiers source donnés (tous membres) :
+pour chacun, les symboles qu'il définit et les noms qu'il utilise. Rien n'est
+transpilé.
+.TP
+.BI \-L " dir"
+Cherche dans
+.I dir
+les bibliothèques nommées par
+.BR \-l .
+.TP
+.BI \-l nom
+Lie avec
+.IR libnom.v32a ,
+cherchée dans les répertoires de
+.B \-L
+ou dans le répertoire courant. Un
+.I lib.v32a
+nommé sur la ligne de commande fait la même chose. Seuls les membres qui
+définissent quelque chose dont le programme a besoin sont liés, ainsi que ceux
+dont ils ont besoin à leur tour.
+.TP
+.B \-\-allow\-undefined
+Avec plusieurs fichiers d'entrée, signale comme un avertissement, et non comme
+une erreur, une fonction ou une variable
+.B extern
+utilisée et jamais définie. Utile quand un prototype représente une fonction que
+le SDK de Vircon32 déclare lui-même.
+.TP
 .B \-\-silence\-unused\-args
 Commence toute fonction qui ignore l'un de ses paramètres par une instruction
 .IB nom ;
@@ -333,6 +367,21 @@ Utilisez cette option lorsque chaque valeur décalée est connue pour être non
 négative et que le code supplémentaire coûte trop cher. Sans effet avec
 .BR \-\-target=standard ,
 qui ne le réécrit jamais.
+.TP
+.B \-\-no\-unsigned\-ops
+Ne pas convertir \fB<\fR, \fB>\fR, \fB/\fR et \fB%\fR d'une valeur \fBunsigned\fR en opérations non signées ; elles sont imprimées telles quelles (signées sur Vircon32).
+.TP
+.BR \-\-warn\-error [ =\fItype\fR,... ]
+Transforme en erreurs les avertissements propres à v32c++ (tous ou seulement les types listés) : le fichier de sortie est supprimé et le code de sortie est 1.
+.TP
+.B \-\-list\-warnings
+Liste les types d'avertissement et termine.
+.TP
+.BR \-\-yield\-points [ =\fIN\fR ]
+Insère \fBif (get_cycle_counter() > N) yield();\fR à chaque entrée de fonction, corps de boucle et étiquette (N par défaut 100000), pour une préemption coopérative. \fB\-\-yield\-func\fR=\fINOM\fR et \fB\-\-yield\-counter\fR=\fINOM\fR renomment les deux fonctions. Sont ignorées les fonctions marquées \fB__attribute__((no_yield))\fR, celles qui contiennent \fBasm\fR et les aides \fB__v32_*\fR.
+.TP
+.B \-\-rename \fIancien\fR=\fInouveau\fR
+Donne le nom \fInouveau\fR à toute fonction, variable et paramètre nommé \fIancien\fR, dans tout le programme (les membres de struct ne changent pas). Répétable. Pour les noms qui heurtent le SDK Vircon32.
 .TP
 .B \-\-reject\-bit\-fields
 Traite un membre de champ de bits
@@ -719,7 +768,7 @@ fichier sous des noms uniques, les autres sont écartés ou fusionnés) ;
 .BR unsigned ", " signed ", " short " et " long
 comme l'unique type entier de 32 bits
 .RB ( unsigned
-avec un avertissement : son \fB>>\fR reste logique, mais \fB/\fR, \fB%\fR et les comparaisons se comportent comme du signé au-delà d'INT_MAX) ; champs de bits, comme mots entiers avec un avertissement (voir
+avec un avertissement : ses \fB>>\fR, \fB<\fR, \fB>\fR, \fB/\fR et \fB%\fR sont faits en non signé ; voir \fB\-\-no\-unsigned\-ops\fR) ; champs de bits, comme mots entiers avec un avertissement (voir
 .BR \-\-reject\-bit\-fields ).
 .PP
 .B dynamic_cast
@@ -797,6 +846,30 @@ Le répertoire
 contient une petite bibliothèque C et curses pour de tels programmes ; ajoutez-le
 avec
 .BR \-I .
+.PP
+Plusieurs fichiers d'entrée sont liés par v32c++ lui-même en un seul programme : un
+prototype ou
+.B extern
+se lie à la définition d'un autre fichier, un
+.B static
+à la portée du fichier est privé à son fichier (renommé en cas de conflit), un
+en-tête est lu une fois, chaque fichier a ses propres macros, et une fonction
+définie deux fois, ou utilisée et jamais définie (C seulement), est une erreur.
+Une bibliothèque
+.RB ( \-\-mklib )
+est un index sur des fichiers source, dont seuls les membres dont le programme a
+besoin sont liés. Les fonctions intégrées
+.B __atomic_*
+et
+.B __sync_*
+de GCC sont les opérations simples (un seul processeur) ; sont acceptés
+.BR _Noreturn ,
+.B noreturn
+et les désignateurs GNU
+.BR "[lo ... hi]" ,
+et un littéral composé peut se trouver à la portée du fichier.
+.B const
+est omis de la sortie de l'entrée C.
 Voir
 .B docs/C_INPUT.fr.md
 pour la liste complète et les limites.

@@ -1,4 +1,5 @@
 /* archive.c -- libraries for the linker. See archive.h. */
+#include "warn.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -126,7 +127,7 @@ int archive_make(const char *archive_path, const char *self, const char *const *
         for (int j = 0; j < i; j++)
             for (int k = 0; k < u[i].defs.n; k++)
                 if (names_has(&u[j].defs, u[i].defs.v[k]))
-                    fprintf(stderr, "warning: '%s' is defined in both %s and %s\n",
+                    v32_warnf("lib-duplicate", "warning: '%s' is defined in both %s and %s\n",
                             u[i].defs.v[k], members[j], members[i]);
         char *rel = path_relative_to(dir, members[i]);
         fprintf(out, "member %ld %s\n", file_size(members[i]), rel);
