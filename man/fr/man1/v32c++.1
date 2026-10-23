@@ -29,6 +29,7 @@ v32c++, v32c \- transpile un sous-ensemble de C++ (ou de C) en C Vircon32
 .RB [ \-\-warn\-error ]
 .RB [ \-\-yield\-points ]
 .RB [ \-\-rename ]
+.RB [ \-\-assembler ]
 .RB [ \-\-silence\-unused\-args ]
 .RB [ \-\-allow\-undefined ]
 .RB [ \-\-no\-inline\-containers ]
@@ -382,6 +383,9 @@ Insère \fBif (get_cycle_counter() > N) yield();\fR à chaque entrée de fonctio
 .TP
 .B \-\-rename \fIancien\fR=\fInouveau\fR
 Donne le nom \fInouveau\fR à toute fonction, variable et paramètre nommé \fIancien\fR, dans tout le programme (les membres de struct ne changent pas). Répétable. Pour les noms qui heurtent le SDK Vircon32.
+.TP
+.BR \-\-assembler =\fICMD\fR
+Assembleur nommé dans Make.sh et Make.bat. Défaut : la variable d'environnement \fBV32CXX_ASSEMBLER\fR, puis la valeur de config.h à la compilation, puis \fBassemble\fR. Un nom commençant par \fBv32as\fR est lancé comme \fBv32as \-B \-c\fR (\fB\-B \-b\fR pour un BIOS) ; \fB\-\-assembler\-style\fR=\fBstock\fR|\fBv32as\fR corrige cette supposition.
 .TP
 .B \-\-reject\-bit\-fields
 Traite un membre de champ de bits

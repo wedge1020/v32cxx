@@ -478,6 +478,8 @@ test: all | $(OUT_DIR)
 	grep -q "__v32_romd_squares" out/170program.c
 	$(TBIN)  -vvv --rename abs2=my_abs -o out/171program.c tests/171sample.c 1> out/171sample.txt 2>&1
 	grep -q "my_abs" out/171program.c
+	$(TBIN)  -vvv    -o out/172program.c tests/172sample.c 1> out/172sample.txt 2>&1
+	! grep -q "(0)" out/172program.c
 # `-vvv` (this project's own verbosity flag, a later round -- see
 # main.c) is passed to every sample specifically so `make test`'s own
 # output still captures the full AST/semantic-analysis/lowering dumps

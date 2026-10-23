@@ -551,6 +551,7 @@ v32c++ -I path/to/v32c++ -o obj/game.c game.cpp
 | `--warn-error[=type,...]` | transforme les avertissements de v32c++ en erreurs (pas de fichier de sortie, code 1) ; `--list-warnings` liste les types |
 | `--yield-points[=N]` | insère `if (get_cycle_counter() > N) yield();` dans fonctions, boucles et étiquettes (`--yield-func=`, `--yield-counter=` ; `__attribute__((no_yield))` l'évite) |
 | `--rename ancien=nouveau` | renomme une fonction/variable dans tout le programme (heurts avec le SDK) |
+| `--assembler=CMD`, `--assembler-style=stock\|v32as` | assembleur nommé dans Make.sh / Make.bat (défaut : `$V32CXX_ASSEMBLER`, puis `V32CXX_ASSEMBLER` de config.h, puis `assemble`) ; un nom commençant par `v32as` est lancé avec `-B -c` / `-B -b` |
 | `--silence-unused-args` | commence toute fonction qui ignore un paramètre (le `this` d'une méthode qui ne touche aucun membre, l'argument d'un callback) par un `nom;` isolé, que le compilateur Vircon32 compte comme un usage : plus d'avertissement `argument "x" is not used` (il s'arrête après 10). Un peu de code par paramètre |
 | `--mklib lib.v32a` | écrit un index de bibliothèque sur les fichiers source donnés (voir `docs/C_INPUT.fr.md`, *Bibliothèques*) |
 | `-L dir`, `-lname`, `lib.v32a` | lie avec une bibliothèque : seuls les membres dont le programme a besoin sont pris |

@@ -527,6 +527,7 @@ v32c++ -I path/to/v32c++ -o obj/game.c game.cpp
 | `--warn-error[=kind,...]` | make v32c++'s own warnings errors (no output file, exit 1); `--list-warnings` lists the kinds |
 | `--yield-points[=N]` | insert `if (get_cycle_counter() > N) yield();` at function entry, loops and labels (`--yield-func=`, `--yield-counter=`; `__attribute__((no_yield))` opts out) |
 | `--rename old=new` | rename a function/variable program-wide (SDK name clashes) |
+| `--assembler=CMD`, `--assembler-style=stock\|v32as` | assembler named in the generated Make.sh / Make.bat (default: `$V32CXX_ASSEMBLER`, else config.h `V32CXX_ASSEMBLER`, else `assemble`); a name starting with `v32as` is driven with `-B -c` / `-B -b` |
 | `--mklib lib.v32a` | write a library index over the source files given (see `docs/C_INPUT.md`, *Libraries*) |
 | `-L dir`, `-lname`, `lib.v32a` | link with a library: only the members the program needs are taken in |
 | `--allow-undefined` | with several input files, make a used-but-never-defined function or `extern` variable a warning instead of a link error |

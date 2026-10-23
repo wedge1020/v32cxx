@@ -1424,10 +1424,22 @@ static void flush_reference_temporaries(AstNode *func) {
 }
 
 static void rewrite_zero_to_null(AstNode **rhs_slot, const AstNode *target_type);
+static const AstNode *c_resolved_type(const AstNode *t);
 
 static void finalize_call(AstNode *call, AstNode *class_decl, LocalVarType *locals) {
     CallResolution *cr = (CallResolution *)call->sema_info;
     if (cr == NULL || cr->resolved_target == NULL) {
+        /* A call through a function pointer (a variable, member or array
+         * element): no resolved declaration, but the pointer's own type
+         * lists the parameter types, so a literal 0 for a pointer
+         * parameter is still NULL (Vircon32 C rejects the int). */
+        const AstNode *ft = (call->a != NULL) ? infer_expr_type(call->a, class_decl, locals) : NULL;
+        ft = c_resolved_type(ft);
+        if (ft != NULL && ft->kind == AST_POINTER_TYPE && ft->a != NULL) ft = c_resolved_type(ft->a);
+        if (ft != NULL && ft->kind == AST_FUNC_PTR_TYPE) {
+            for (int i = 0; i < call->list.count && i < ft->list.count; i++)
+                rewrite_zero_to_null(&call->list.items[i], ft->list.items[i]);
+        }
         return; /* not resolved by sema -- best-effort, leave unlowered */
     }
     AstNode *target = cr->resolved_target;

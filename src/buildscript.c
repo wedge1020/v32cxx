@@ -4,6 +4,7 @@
 #include <string.h>
 #include <sys/stat.h>
 #include "buildscript.h"
+#include "config.h"
 #include "cartxml.h"
 #include <ctype.h>
 #include <errno.h>
@@ -151,6 +152,36 @@ static void put_bat(FILE *f, const char *s) {
     fputc('"', f);
 }
 
+
+/* ---- the assembler ------------------------------------------------------
+ * `assemble` (the stock Vircon32 tool) by default; --assembler=CMD, then
+ * $V32CXX_ASSEMBLER, then config.h's V32CXX_ASSEMBLER choose another. A tool
+ * whose file name starts with "v32as" is driven in its own dialect (it needs
+ * an explicit --cart/--bios and -B for a VBIN); --assembler-style=stock|v32as
+ * overrides that guess. */
+const char *g_assembler = NULL;
+const char *g_assembler_style = NULL;
+
+static const char *assembler_cmd(void) {
+    if (g_assembler != NULL && *g_assembler) return g_assembler;
+    const char *e = getenv(V32CXX_ASSEMBLER_ENV_VAR);
+    if (e != NULL && *e) return e;
+    return V32CXX_ASSEMBLER;
+}
+
+static int assembler_is_v32as(void) {
+    if (g_assembler_style != NULL) return strcmp(g_assembler_style, "v32as") == 0;
+    const char *c = assembler_cmd();
+    const char *b = c;
+    for (const char *q = c; *q; q++) if (*q == '/' || *q == '\\') b = q + 1;
+    return strncmp(b, "v32as", 5) == 0;
+}
+
+static const char *assembler_flags(int bios) {
+    if (assembler_is_v32as()) return bios ? " -B -b " : " -B -c ";
+    return bios ? " -b " : " ";
+}
+
 /* ---- Make.sh ---------------------------------------------------------- */
 
 static void sh_section(FILE *f, const char *title) {
@@ -167,7 +198,9 @@ static void write_sh(FILE *f, const Plan *pl) {
           "need_tool()\n{\n"
           "    command -v \"$1\" >/dev/null 2>&1 || { echo \"ERROR: $1 is needed to build, but was not found in PATH\"; abort_build; }\n}\n\n", f);
     fprintf(f, "need_tool %s\n", pl->prog);
-    fputs("need_tool compile\nneed_tool assemble\nneed_tool packrom\n", f);
+    fputs("need_tool compile\n", f);
+    fputs("need_tool ", f); put_sh(f, assembler_cmd()); fputc('\n', f);
+    fputs("need_tool packrom\n", f);
     if (pl->ntex) fputs("need_tool png2vircon\n", f);
     if (pl->nsnd) fputs("need_tool wav2vircon\n", f);
     fputs("\n# the optimizer is optional: without it only the regular build is made\n"
@@ -193,9 +226,9 @@ static void write_sh(FILE *f, const Plan *pl) {
     fputs(" -o ", f); put_sh(f, pl->asm_opt); fputs(" || abort_build\nfi\n", f);
 
     sh_section(f, "Assemble the ASM code");
-    fputs(pl->bios ? "assemble -b " : "assemble ", f); put_sh(f, pl->asm_); fputs(" -o ", f); put_sh(f, pl->vbin);
+    put_sh(f, assembler_cmd()); fputs(assembler_flags(pl->bios), f); put_sh(f, pl->asm_); fputs(" -o ", f); put_sh(f, pl->vbin);
     fputs(" || abort_build\n", f);
-    fputs(pl->bios ? "if [ \"$HAVE_OPT\" = 1 ]; then\n    assemble -b " : "if [ \"$HAVE_OPT\" = 1 ]; then\n    assemble ", f); put_sh(f, pl->asm_opt);
+    fputs("if [ \"$HAVE_OPT\" = 1 ]; then\n    ", f); put_sh(f, assembler_cmd()); fputs(assembler_flags(pl->bios), f); put_sh(f, pl->asm_opt);
     fputs(" -o ", f); put_sh(f, pl->vbin_opt); fputs(" || abort_build\nfi\n", f);
 
     if (pl->ntex) {
@@ -242,7 +275,7 @@ static void write_bat(FILE *f, const Plan *pl) {
           "REM the source (or use --no-build-scripts and keep a hand-written script)\r\n"
           "REM rather than this file: it is rewritten on every v32c++ run.\r\n\r\n", f);
     fputs("REM the tools this build needs\r\n", f);
-    const char *needed[] = { pl->prog, "compile", "assemble", "packrom", "png2vircon", "wav2vircon" };
+    const char *needed[] = { pl->prog, "compile", assembler_cmd(), "packrom", "png2vircon", "wav2vircon" };
     for (int i = 0; i < 6; i++) {
         if (i == 4 && !pl->ntex) continue;
         if (i == 5 && !pl->nsnd) continue;
@@ -277,9 +310,9 @@ static void write_bat(FILE *f, const Plan *pl) {
     fputs(" -o ", f); put_bat_path(f, pl->asm_opt); fputs(" || goto :failed\r\n", f);
 
     bat_section(f, "Assemble the ASM code");
-    fputs(pl->bios ? "assemble -b " : "assemble ", f); put_bat_path(f, pl->asm_); fputs(" -o ", f); put_bat_path(f, pl->vbin);
+    put_bat(f, assembler_cmd()); fputs(assembler_flags(pl->bios), f); put_bat_path(f, pl->asm_); fputs(" -o ", f); put_bat_path(f, pl->vbin);
     fputs(" || goto :failed\r\n", f);
-    fputs(pl->bios ? "if \"%HAVE_OPT%\"==\"1\" assemble -b " : "if \"%HAVE_OPT%\"==\"1\" assemble ", f); put_bat_path(f, pl->asm_opt);
+    fputs("if \"%HAVE_OPT%\"==\"1\" ", f); put_bat(f, assembler_cmd()); fputs(assembler_flags(pl->bios), f); put_bat_path(f, pl->asm_opt);
     fputs(" -o ", f); put_bat_path(f, pl->vbin_opt); fputs(" || goto :failed\r\n", f);
 
     if (pl->ntex) {

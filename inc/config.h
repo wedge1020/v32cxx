@@ -111,6 +111,23 @@
 #endif
 
 // ----------------------------------------------------------------------------
+// Assembler used by the generated Make.sh / Make.bat
+// ----------------------------------------------------------------------------
+//
+// The stock Vircon32 `assemble` unless told otherwise. Choice order:
+// --assembler=CMD, then the environment variable named by
+// V32CXX_ASSEMBLER_ENV_VAR, then V32CXX_ASSEMBLER. A name starting with
+// "v32as" (the drop-in C assembler) gets the flags it needs (-B, and -c or
+// -b); --assembler-style=stock|v32as overrides that guess.
+#ifndef V32CXX_ASSEMBLER
+    #define V32CXX_ASSEMBLER "assemble"
+#endif
+
+#ifndef V32CXX_ASSEMBLER_ENV_VAR
+    #define V32CXX_ASSEMBLER_ENV_VAR "V32CXX_ASSEMBLER"
+#endif
+
+// ----------------------------------------------------------------------------
 // Tuning
 // ----------------------------------------------------------------------------
 //

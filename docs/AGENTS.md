@@ -32,7 +32,8 @@ compound literals (file scope too); `_Static_assert`; function-typed parameters;
 `__builtin_frame_address` / `__builtin_return_address`; asm operands `{&var}`, `{&func}`, `{*p}`;
 `__attribute__((rom))` const arrays (data in the cartridge image); `--rename old=new` for SDK name clashes;
 `--yield-points[=N]` (cooperative yield checks; `__attribute__((no_yield))` opts a function out);
-`--warn-error[=kind,...]` / `--list-warnings`.
+`--warn-error[=kind,...]` / `--list-warnings`;
+`--assembler=CMD` (or `$V32CXX_ASSEMBLER`) names the assembler in the generated Make.sh/Make.bat.
 
 **Do not use** (clear error or unsupported): templates, exceptions, RTTI
 (`dynamic_cast` warns only), multiple inheritance, lambdas, `enum class`,
