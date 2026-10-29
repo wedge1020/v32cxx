@@ -25,6 +25,19 @@ static void sema_error(int line, const char *fmt, ...) {
     g_error_count++;
 }
 
+/* A "note:" line that follows a semantic error and points at a second
+ * place in the source (e.g. where a name was first defined). Not counted
+ * as an error. FILE may be NULL (line only). */
+static void sema_note(const char *file, int line, const char *fmt, ...) {
+    if (file != NULL) fprintf(stderr, "  note: at %s:%d: ", file, line);
+    else fprintf(stderr, "  note: at line %d: ", line);
+    va_list ap;
+    va_start(ap, fmt);
+    vfprintf(stderr, fmt, ap);
+    va_end(ap);
+    fprintf(stderr, "\n");
+}
+
 /* Native types have no known layout (defined in a C header this
  * transpiler does not parse). By-value use would silently produce
  * wrong-size stack slots/fields, so reject it loudly; pointer/reference
@@ -949,9 +962,17 @@ static void attach_out_of_line(AstList *decls) {
         const char *class_name = qual_parts->items[qual_parts->count - 1]->str1;
 
         AstNode *class_decl = find_class(class_name);
+        /* Report errors against the file the definition is in, not whichever
+         * file the previous check_node left in g_sema_file: a definition in
+         * src/game.cpp pulled in by main.cpp was being reported as
+         * "line 3" with no file at all. */
+        const char *saved_file = g_sema_file;
+        if (n->file != NULL) g_sema_file = n->file;
+
         if (class_decl == NULL) {
             sema_error(n->line, "out-of-line definition of '%s' names unknown class '%s'",
                        n->str1, class_name);
+            g_sema_file = saved_file;
             continue;
         }
 
@@ -973,10 +994,39 @@ static void attach_out_of_line(AstList *decls) {
         }
 
         if (target == NULL) {
-            sema_error(n->line, "no matching declaration for out-of-line definition of '%s' in class '%s'",
-                       n->str1, class_name);
+            /* No declaration is left to attach to. Before blaming the
+             * signature, check whether a member with this exact name and
+             * signature is ALREADY defined (inline in the class, or by an
+             * earlier out-of-line definition that consumed the prototype):
+             * that is a redefinition, and "no matching declaration" would
+             * send the user hunting for a signature mismatch that is not
+             * there. A typical cause is the same method body living in two
+             * files that one translation unit pulls in (a .cpp pasted into
+             * its own header, say). */
+            AstNode *prev = NULL;
+            for (int j = 0; j < class_decl->list.count; j++) {
+                AstNode *member = class_decl->list.items[j];
+                if (member->kind == AST_FUNC_DEF &&
+                    member->str1 != NULL && strcmp(member->str1, n->str1) == 0 &&
+                    param_lists_match(&member->list, &n->list)) {
+                    prev = member;
+                    break;
+                }
+            }
+            if (prev != NULL) {
+                sema_error(n->line, "redefinition of '%s::%s'", class_name, n->str1);
+                if (prev->a != NULL) {
+                    sema_note(prev->a->file, prev->a->line, "'%s::%s' was previously defined here",
+                              class_name, n->str1);
+                }
+            } else {
+                sema_error(n->line, "no matching declaration for out-of-line definition of '%s' in class '%s'",
+                           n->str1, class_name);
+            }
+            g_sema_file = saved_file;
             continue;
         }
+        g_sema_file = saved_file;
 
         target->kind = AST_FUNC_DEF;
         target->a = n->a;

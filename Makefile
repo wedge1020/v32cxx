@@ -480,6 +480,12 @@ test: all | $(OUT_DIR)
 	grep -q "my_abs" out/171program.c
 	$(TBIN)  -vvv    -o out/172program.c tests/172sample.c 1> out/172sample.txt 2>&1
 	! grep -q "(0)" out/172program.c
+	! $(TBIN) -o out/173bad.c tests/173bad_redef.cpp 1> out/173bad.txt 2>&1
+	grep -q "redefinition of 'Game::init'" out/173bad.txt
+	grep -q "redefinition of 'Game::run'" out/173bad.txt
+	grep -q "was previously defined here" out/173bad.txt
+	grep -q "no matching declaration for out-of-line definition of 'run'" out/173bad.txt
+	! grep -q "no matching declaration for out-of-line definition of 'init'" out/173bad.txt
 # `-vvv` (this project's own verbosity flag, a later round -- see
 # main.c) is passed to every sample specifically so `make test`'s own
 # output still captures the full AST/semantic-analysis/lowering dumps
