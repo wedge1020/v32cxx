@@ -4,6 +4,12 @@
 #include <string.h>
 #include <getopt.h>
 #include <unistd.h> /* access() */
+#ifdef _WIN32
+#include <windows.h>
+#elif defined(__APPLE__)
+#include <mach-o/dyld.h>
+#include <stdint.h>
+#endif
 #include <sys/stat.h>
 #include "driver.h"
 #include "parser.h"
@@ -146,7 +152,8 @@ static void print_usage(const char *prog_name) {
                      "                (.h and system includes pass through to the\n"
                      "                generated C unchanged). May be repeated.\n"
                      "                Searched after -I: $" V32CXX_INCLUDE_ENV_VAR " (colon-\n"
-                     "                separated), then " V32CXX_INCLUDE_PATH "\n");
+                     "                separated), then " V32CXX_INCLUDE_PATH ", then the\n"
+                     "                include/v32c++ directories next to the program\n");
     fprintf(stderr,  "  -D name[=value]\n"
                      "                define a macro, as if `#define name value` (value\n"
                      "                defaults to 1) began the source. May be repeated.\n"
@@ -196,6 +203,74 @@ static void print_usage(const char *prog_name) {
     fprintf(stderr,  "  --version     print version information and exit\n");
 }
 
+/* The running executable's directory (malloc'd), computed once; NULL when
+ * unknown. Asks the OS where it can (Windows, macOS, Linux), else uses
+ * argv[0]: as a path when it has a separator, otherwise looked up on $PATH.
+ * Mirrors v32lua, so a release unpacked anywhere, or an install under a
+ * prefix other than the compiled-in one, finds its own headers. */
+static const char *g_program_argv0 = NULL;
+
+static const char *program_dir(void) {
+    static int looked = 0;
+    static char *dir = NULL;
+    if (looked) return dir;
+    looked = 1;
+    char *exe = NULL;
+#if defined(_WIN32)
+    char buf[4096];
+    unsigned long wn = GetModuleFileNameA(NULL, buf, (unsigned long)sizeof buf);
+    if (wn > 0 && wn < sizeof buf) exe = strdup(buf);
+#elif defined(__APPLE__)
+    char buf[4096];
+    uint32_t sz = (uint32_t)sizeof buf;
+    if (_NSGetExecutablePath(buf, &sz) == 0) exe = compat_realpath(buf);
+#elif defined(__linux__)
+    char buf[4096];
+    ssize_t k = readlink("/proc/self/exe", buf, sizeof buf - 1);
+    if (k > 0) { buf[k] = '\0'; exe = strdup(buf); }
+#endif
+    if (exe == NULL && g_program_argv0 != NULL && g_program_argv0[0]) {
+        if (compat_last_separator(g_program_argv0) != NULL) {
+            exe = compat_realpath(g_program_argv0);
+        } else {
+            const char *path = getenv("PATH");
+            for (const char *p = path; p != NULL && *p && exe == NULL; ) {
+                const char *colon = strchr(p, COMPAT_PATH_LIST_SEP);
+                size_t len = colon ? (size_t)(colon - p) : strlen(p);
+                if (len > 0) {
+                    char *cand = malloc(len + strlen(g_program_argv0) + 2);
+                    sprintf(cand, "%.*s/%s", (int)len, p, g_program_argv0);
+                    if (compat_is_executable(cand)) exe = compat_realpath(cand);
+                    free(cand);
+                }
+                if (colon == NULL) break;
+                p = colon + 1;
+            }
+        }
+    }
+    if (exe != NULL) {
+        const char *sep = compat_last_separator(exe);
+        if (sep != NULL) {
+            dir = malloc((size_t)(sep - exe) + 1);
+            memcpy(dir, exe, (size_t)(sep - exe));
+            dir[sep - exe] = '\0';
+        }
+        free(exe);
+    }
+    return dir;
+}
+
+/* Header directories searched last: next to the compiler. Layouts: a
+ * release folder (bin/v32c++ with include/v32c++ beside it) and the
+ * Vircon32 prefix layout (<prefix>/bin/v32c++ with
+ * <prefix>/Vircon32/v32tools/include/v32c++). Only directories that exist
+ * are added. */
+static const char *const program_relative_include_dirs[] = {
+    "include/v32c++",
+    "../include/v32c++",
+    "../Vircon32/v32tools/include/v32c++",
+};
+
 /* Builds the system include list searched after every -I dir (and, for
  * quote form, the current directory): each non-empty entry of the
  * colon-separated $V32CXX_INCLUDE in order, then V32CXX_INCLUDE_PATH.
@@ -233,6 +308,25 @@ static int build_system_include_dirs(char **dirs, int max) {
             char *libc_dir = malloc(len);
             snprintf(libc_dir, len, "%s/libc", V32CXX_INCLUDE_PATH);
             dirs[n++] = libc_dir;
+        }
+    }
+    /* Last resort: the header directories next to the compiler */
+    const char *exe_dir = program_dir();
+    if (exe_dir != NULL) {
+        for (size_t i = 0; i < sizeof program_relative_include_dirs / sizeof *program_relative_include_dirs; i++) {
+            size_t len = strlen(exe_dir) + strlen(program_relative_include_dirs[i]) + 8;
+            char *dir = malloc(len);
+            snprintf(dir, len, "%s/%s", exe_dir, program_relative_include_dirs[i]);
+            if (access(dir, R_OK) != 0) { free(dir); continue; }
+            if (n >= max) { free(dir); return -1; }
+            dirs[n++] = dir;
+            if (g_c_mode) {
+                char *libc_dir = malloc(len + 8);
+                snprintf(libc_dir, len + 8, "%s/libc", dir);
+                if (access(libc_dir, R_OK) != 0) { free(libc_dir); continue; }
+                if (n >= max) { free(libc_dir); return -1; }
+                dirs[n++] = libc_dir;
+            }
         }
     }
     return n;
@@ -357,6 +451,7 @@ static int validate_bios_constraints(const AstNode *program, const char *filenam
 
 int  main (int  argc, char **argv)
 {
+    g_program_argv0 = argv[0];
     char       *include_dirs[MAX_INCLUDE_DIRS];
     const char *output_filename    = NULL;
     int         require_main       = 1;

@@ -31,6 +31,9 @@
 //     3. the current directory          (skipped)
 //     4. each $V32CXX_INCLUDE dir       2. each $V32CXX_INCLUDE dir
 //     5. V32CXX_INCLUDE_PATH            3. V32CXX_INCLUDE_PATH
+//     6. next to the program (include/v32c++, ../include/v32c++,
+//        ../Vircon32/v32tools/include/v32c++; only if present)
+//                                       4. the same
 //
 // V32CXX_INCLUDE_PATH  is where  an  installed copy  of  the v32  veneer
 // headers (v32/math.hpp, v32/audio.hpp,  ...) is expected to  live, so a
@@ -49,7 +52,17 @@
 // v32tools/include/v32lua/ alongside.  The CMake  build sets  this from
 // its install prefix; `make sysinstall` installs to this path.
 #ifndef V32CXX_INCLUDE_PATH
-    #define V32CXX_INCLUDE_PATH "/usr/local/Vircon32/v32tools/include/v32c++"
+    #ifdef _WIN32
+        #define V32CXX_INCLUDE_PATH V32CXX_WIN32_INCLUDE_PATH
+    #else
+        #define V32CXX_INCLUDE_PATH "/usr/local/Vircon32/v32tools/include/v32c++"
+    #endif
+#endif
+
+// The Windows default: where `cmake --install` puts the headers with its
+// default prefix (<Program Files>/Vircon32).
+#ifndef V32CXX_WIN32_INCLUDE_PATH
+    #define V32CXX_WIN32_INCLUDE_PATH "C:/Program Files/Vircon32/v32tools/include/v32c++"
 #endif
 
 #ifndef V32CXX_INCLUDE_ENV_VAR
@@ -72,12 +85,23 @@
 //        very folder the Vircon32 C compiler itself searches -- when it
 //        holds video.h
 //     3. V32CXX_SDK_INCLUDE_PATH -- the Vircon32 DevTools' default install
-//        location on Linux and macOS
+//        location (Linux and macOS: /usr/local/Vircon32/DevTools/include;
+//        Windows: C:/Program Files/Vircon32/DevTools/include)
 //
 // A header found nowhere is skipped, exactly as before this existed.
 //
 #ifndef V32CXX_SDK_INCLUDE_PATH
-    #define V32CXX_SDK_INCLUDE_PATH "/usr/local/Vircon32/DevTools/include"
+    #ifdef _WIN32
+        #define V32CXX_SDK_INCLUDE_PATH V32CXX_WIN32_SDK_INCLUDE_PATH
+    #else
+        #define V32CXX_SDK_INCLUDE_PATH "/usr/local/Vircon32/DevTools/include"
+    #endif
+#endif
+
+// The Windows default: the DevTools' include/ under the default prefix
+// (<Program Files>/Vircon32), as CMakeLists.txt computes it.
+#ifndef V32CXX_WIN32_SDK_INCLUDE_PATH
+    #define V32CXX_WIN32_SDK_INCLUDE_PATH "C:/Program Files/Vircon32/DevTools/include"
 #endif
 
 #ifndef V32CXX_SDK_INCLUDE_ENV_VAR

@@ -570,6 +570,7 @@ test: all | $(OUT_DIR)
 # start failing, that's a real regression and `make test` should stop and
 # report it, not paper over it the same way.
 	sh tests/line_markers.sh $(BIN) $(V32CC)
+	sh tests/exe_relative.sh $(BIN)
 
 # realcheck: `make test`, then push every generated program through the
 # REAL Vircon32 compiler/assembler/packer and boot every self-checking
