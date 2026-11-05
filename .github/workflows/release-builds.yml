@@ -154,6 +154,8 @@ jobs:
   # generated programs through the real compiler, assembler and packer, and
   # boots each self-checking sample (tests/NNNsample with `int test_errors`)
   # on the emulator's own console core, which must end with test_errors == 0.
+  # (The toolchain and the self-check runner come from a v32sim checkout: tools/vircon32/build-tools.sh and
+  # check.sh need V32SIM_HOME to point at one, built with its `make`.)
   # That also covers the SDK's string.h (ftoa) fix, which build-tools.sh
   # installs into the toolchain from c_api/string.h.
   verify:
@@ -177,7 +179,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: tools/vircon32/bin
-          key: vircon32-toolchain-${{ hashFiles('tools/vircon32/build-tools.sh', 'tools/vircon32/*.cpp', 'tools/vircon32/shim/**', 'c_api/string.h') }}
+          key: vircon32-toolchain-${{ hashFiles('tools/vircon32/build-tools.sh', 'c_api/string.h') }}
 
       - name: Build the Vircon32 Toolchain
         if: steps.toolchain-cache.outputs.cache-hit != 'true'

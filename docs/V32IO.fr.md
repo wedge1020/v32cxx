@@ -537,10 +537,10 @@ Le comportement est le même, avec ces différences délibérées :
 
 ## Tester sans périphérique
 
-Les outils sans écran de `tools/vircon32/` (`v32peek`, `v32shot`, `v32prof`) jouent
+v32sim (`--input`, `tools/v32sim-selfcheck.sh`, les exécuteurs de `tools/oracle/`) joue
 un script d'entrée d'appuis et de relâchements de manette. Un périphérique v32io
 *est* une manette, de sorte que les entrées clavier et souris peuvent elles aussi
-être scriptées : `tools/vircon32/v32io-script.py` encode des actions avec les vrais
+être scriptées : `tools/v32io-script.py` de v32sim encode des actions avec les vrais
 protocoles.
 
 ```text
@@ -559,8 +559,8 @@ wait 10
 ```
 
 ```sh
-tools/vircon32/v32io-script.py actions.txt > script.txt
-tools/vircon32/bin/v32shot tools/vircon32/bin/StandardBios.v32 game.v32 script.txt shot 400
+$V32SIM_HOME/tools/v32io-script.py actions.txt > script.txt
+$V32SIM_HOME/tools/oracle/bin/v32shot tools/vircon32/bin/StandardBios.v32 game.v32 script.txt shot 400
 ```
 
 `tests/119sample.cpp` est un test auto-vérifiant de tout l'en-tête piloté de cette

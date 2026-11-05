@@ -175,6 +175,13 @@ static void print_usage(const char *prog_name) {
                      "                `void error_handler()` function in addition to `main`\n");
     fprintf(stderr,  "  -g            also write <output>.debug (game.c -> game.c.debug), a\n"
                      "                C-line <-> C++-line mapping alongside the generated C\n");
+    fprintf(stderr,  "  --line-markers\n"
+                     "                write `#line N \"file.cpp\"` before each function and\n"
+                     "                statement of the generated C, so v32cc (which honours\n"
+                     "                #line) reports and, with -g, debugs by the C++ file and\n"
+                     "                line: v32c++ --line-markers game.cpp -o game.c &&\n"
+                     "                v32cc -g --target-compat=v32cxx game.c. The stock Vircon32\n"
+                     "                compiler rejects #line, so this is off by default\n");
     fprintf(stderr,  "  --reject-bit-fields\n"
                      "                make a bit-field an error instead of a warning (by\n"
                      "                default it becomes a full-word member)\n");
@@ -365,6 +372,7 @@ int  main (int  argc, char **argv)
     const char *cli_title_opt      = NULL;
     int         is_bios            = 0;
     int         emit_debug         = 0;
+    int         line_markers       = 0;
     int         opt                = 0;
     int         include_dir_count  = 0;
 
@@ -380,6 +388,7 @@ int  main (int  argc, char **argv)
         { "reject-bit-fields", no_argument, 0, 'B' },
         { "no-inline-containers", no_argument, 0, 'N' },
         { "no-signed-shift", no_argument, 0, 'S' },
+        { "line-markers", no_argument, 0, 0x10c },
         { "silence-unused-args", no_argument, 0, 'A' },
         { "allow-undefined", no_argument, 0, 0x100 },
         { "list-symbols", no_argument, 0, 0x101 },
@@ -482,6 +491,9 @@ int  main (int  argc, char **argv)
                                      "(expected vircon32, v32, standard, or std) ----\n", optarg);
                     return 1;
                 }
+                break;
+            case 0x10c:
+                line_markers = 1;
                 break;
             case 'B':
                 /* --reject-bit-fields: a bit-field is a hard error
@@ -846,6 +858,7 @@ int  main (int  argc, char **argv)
                 perror(output_filename);
                 rc = 1;
             } else {
+                codegen_set_line_markers(line_markers, input_filename);
                 codegen_run(g_program, out, verbosity >= 2);
                 fclose(out);
                 if (verbosity >= 1) printf("wrote generated Vircon32 C to %s\n", output_filename);

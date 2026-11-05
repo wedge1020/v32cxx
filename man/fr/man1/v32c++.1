@@ -1,5 +1,5 @@
 '\" -*- coding: UTF-8 -*-
-.TH V32C++ 1 "22 octobre 2026" "v32c++ 20261022-dev" "Commandes utilisateur"
+.TH V32C++ 1 "5 novembre 2026" "v32c++ 20261105-dev" "Commandes utilisateur"
 .SH NOM
 v32c++, v32c \- transpile un sous-ensemble de C++ (ou de C) en C Vircon32
 .SH SYNOPSIS
@@ -22,6 +22,7 @@ v32c++, v32c \- transpile un sous-ensemble de C++ (ou de C) en C Vircon32
 .RB [ \-\-no\-diff\-opt\-title ]
 .RB [ \-b ]
 .RB [ \-g ]
+.RB [ \-\-line\-markers ]
 .RB [ \-\-target=vircon32 | standard ]
 .RB [ \-\-reject\-bit\-fields ]
 .RB [ \-\-no\-signed\-shift ]
@@ -242,6 +243,22 @@ une correspondance éparse entre lignes de C et lignes de C++ (voir
 .B CARTES DE DÉBOGAGE
 ci-dessous) à côté du C généré. Rien n'est écrit sans
 .BR \-g .
+.TP
+.B \-\-line\-markers
+Écrit une ligne
+.RI "#line " N " \(dqfile.cpp\(dq"
+avant chaque fonction et instruction du C généré dont la ligne n'est pas déjà celle que compterait le préprocesseur, de sorte que
+.BR v32cc (1)
+(qui respecte #line) signale, et avec
+.B \-g
+déboggue, par le fichier et la ligne C++ (
+.B ;@src game.cpp:42
+dans l'assembleur), puis
+.BR v32as (1)
+.B \-g
+et
+.BR v32sim (1).
+Le compilateur officiel de Vircon32 rejette #line, c'est donc désactivé par défaut. Le code généré ne change pas.
 .TP
 .BR \-x ", " \-\-no\-xml
 Ne génère pas le fichier XML de conditionnement de la cartouche Vircon32 (voir

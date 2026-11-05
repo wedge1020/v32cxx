@@ -8,14 +8,14 @@
 #      assembler and ROM packer -- a transpile that "worked" but produced
 #      C the real compiler rejects fails here;
 #   2. every sample whose source declares `int test_errors` is a
-#      self-checking program: its cartridge is booted headless with the
+#      self-checking program: its cartridge is booted headless in v32sim with the
 #      standard BIOS and a fresh memory card, run until the CPU halts, and
 #      the RAM word holding test_errors must read 0 (it starts at -1, so a
 #      program that crashes or never reaches the end also fails). A sample
 #      with a tests/NNsample.input next to it is played with that input
-#      script (v32peek) instead of no input (v32run) -- see 119sample.
+#      script -- see 119sample.
 #
-#  Needs tools/vircon32/bin, built by tools/vircon32/build-tools.sh.
+#  Needs tools/vircon32/bin (build-tools.sh) and a v32sim checkout (V32SIM_HOME, default ../v32sim).
 #  Exit status: 0 if everything passed, 1 otherwise.
 # *****************************************************************************
 
@@ -24,7 +24,7 @@ ROOT=$(cd "$HERE/../.." && pwd)
 BIN="$HERE/bin"
 OUT="$ROOT/out"
 
-if [ ! -x "$BIN/compile" ] || [ ! -x "$BIN/v32run" ]; then
+if [ ! -x "$BIN/compile" ] || [ ! -x "$BIN/assemble" ] || [ ! -x "$BIN/packrom" ]; then
     echo "check.sh: toolchain not built -- run tools/vircon32/build-tools.sh first" >&2
     exit 1
 fi
@@ -63,7 +63,13 @@ done
 echo "real toolchain: $built program(s) compiled and assembled" \
      "($unpacked not packed: their #texture/#sound assets aren't in tests/); $failed failed"
 
-ran=0
+# The self-checking programs run in v32sim (tools/v32sim-selfcheck.sh): halted within the frame limit and
+# test_errors reads 0. A tests/NNsample.input beside a sample is played by it. V32SIM_HOME is the v32sim checkout
+# (V32SIM overrides the binary); V32_ORACLE=1 runs them on the stock console logic instead.
+V32SIM_HOME=${V32SIM_HOME:-$(cd "$ROOT/.." 2>/dev/null && pwd)/v32sim}
+SELF="$V32SIM_HOME/tools/v32sim-selfcheck.sh"
+[ -f "$SELF" ] || { echo "check.sh: no v32sim at $V32SIM_HOME (set V32SIM_HOME)" >&2; exit 1; }
+carts=""
 for src in "$ROOT"/tests/*sample.cpp "$ROOT"/tests/*sample.c; do
     [ -e "$src" ] || continue
     grep -q "^int test_errors" "$src" || continue
@@ -74,29 +80,15 @@ for src in "$ROOT"/tests/*sample.cpp "$ROOT"/tests/*sample.c; do
         failed=$((failed + 1))
         continue
     fi
-    addr=$(grep -m1 "%define global_test_errors " "$OUT/$n.asm" | awk '{print $3}')
-    rm -f "$OUT/$n.memc"
-    input="$ROOT/tests/${num}sample.input"
-    if [ -e "$input" ]; then
-        # A sample with an input script (tests/NNsample.input: scripted
-        # gamepad presses, e.g. v32io keyboard/mouse traffic made by
-        # v32io-script.py) runs under v32peek, which plays the script.
-        result=$( cd "$OUT" && V32PEEK_CARD="$n.memc" "$BIN/v32peek" "$BIN/StandardBios.v32" "$n.v32" "$input" 6000 "$addr" 1 2> "$n.run.log" | tr '\n' ' ' )
-        value=$(echo "$result" | sed -n 's/.*ram\[[0-9]*\.\.[0-9]*\]: *[0-9]*: *\(-\{0,1\}[0-9]*\).*/\1/p')
-        halted=$(echo "$result" | grep -q " halted " && echo 1 || echo 0)
-    else
-        result=$( cd "$OUT" && "$BIN/v32run" "$BIN/StandardBios.v32" "$n.v32" "$n.memc" "$addr" 1200 2> "$n.run.log" )
-        value=$(echo "$result" | sed -n 's/.*ram\[[0-9]*\]=\(-\{0,1\}[0-9]*\).*/\1/p')
-        halted=$(echo "$result" | sed -n 's/.*halted=\([01]\).*/\1/p')
-    fi
-    ran=$((ran + 1))
-    if [ "$halted" = "1" ] && [ "$value" = "0" ]; then
-        echo "pass (emulator) $n"
-    else
-        echo "FAIL (emulator) $n -- $result (see out/$n.run.log)"
-        failed=$((failed + 1))
-    fi
+    # the sample's input script (v32io-script.py, now v32sim's tools/) sits beside the cartridge
+    [ -e "$ROOT/tests/${num}sample.input" ] && cp "$ROOT/tests/${num}sample.input" "$OUT/$n.input"
+    carts="$carts $OUT/$n.v32"
 done
+ran=$(echo $carts | wc -w)
+if [ -n "$carts" ]; then
+    # shellcheck disable=SC2086
+    V32BIOS="$BIN/StandardBios.v32" sh "$SELF" -M ${V32_ORACLE:+--oracle} $carts || failed=$((failed + 1))
+fi
 echo "emulator: $ran self-checking program(s) run"
 
 [ "$failed" -eq 0 ]

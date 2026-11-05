@@ -176,4 +176,11 @@
  * unchanged. */
 void codegen_run(const AstNode *program, FILE *out, int verbose_comments);
 
+/* --line-markers: write `#line N "file.cpp"` before every function and statement of the
+ * generated C whose source line is not already the one the C preprocessor would count, so a
+ * compiler that honours #line (v32cc) reports and debugs by the C++ file and line. The stock
+ * Vircon32 compiler rejects #line, which is why this is off by default. `main_file` names the
+ * main source (entries of an included .hpp/.cpp name their own file). Call before codegen_run. */
+void codegen_set_line_markers(int on, const char *main_file);
+
 #endif /* CODEGEN_H */

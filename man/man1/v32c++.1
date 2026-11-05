@@ -1,4 +1,4 @@
-.TH V32C++ 1 "October 22, 2026" "v32c++ 20261022-dev" "User Commands"
+.TH V32C++ 1 "November 5, 2026" "v32c++ 20261105-dev" "User Commands"
 .SH NAME
 v32c++, v32c \- transpile a subset of C/C++ to Vircon32 C
 .SH SYNOPSIS
@@ -21,6 +21,7 @@ v32c++, v32c \- transpile a subset of C/C++ to Vircon32 C
 .RB [ \-\-no\-diff\-opt\-title ]
 .RB [ \-b ]
 .RB [ \-g ]
+.RB [ \-\-line\-markers ]
 .RB [ \-\-target=vircon32 | standard ]
 .RB [ \-\-reject\-bit\-fields ]
 .RB [ \-\-no\-signed\-shift ]
@@ -237,6 +238,23 @@ a sparse C-line/C++-line mapping (see
 below) alongside the generated C. Not written unless
 .B \-g
 is given.
+.TP
+.B \-\-line\-markers
+Write
+.RI "#line " N " \(dqfile.cpp\(dq"
+before each function and statement of the generated C whose line is not already the one the C
+preprocessor would count, so that
+.BR v32cc (1)
+(which honours #line) reports, and with
+.B \-g
+debugs, by the C++ file and line:
+.B ;@src game.cpp:42
+in the assembly, then
+.BR v32as (1)
+.B \-g
+and
+.BR v32sim (1).
+The stock Vircon32 compiler rejects #line, so this is off by default. The generated code is unchanged.
 .TP
 .BR \-x ", " \-\-no\-xml
 Don't generate the Vircon32 cart-packing XML file (see

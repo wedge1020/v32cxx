@@ -502,22 +502,14 @@ nombre d'erreurs avant de s'arrêter ; la vérification exige 0 (voir
 joué avec cette entrée de manette scriptée (`tests/119sample.cpp`, le test de
 v32io, l'utilise pour le trafic clavier et souris).
 
-`build-tools.sh` construit aussi des outils sans écran utiles en eux-mêmes,
-tous pilotés par le même format de script d'entrée :
-
-| Outil | Ce qu'il fait |
-| ----- | ------------- |
-| `v32run`  | démarre une cartouche et rapporte un mot de RAM (ce qu'utilise `realcheck`) |
-| `v32prof` | charge CPU/GPU par image et cycles par fonction, à partir d'une compilation `-g` |
-| `v32shot` | l'écran aux images choisies, en images PPM |
-| `v32peek` | état du CPU et mots de RAM à une image choisie |
+Exécuter, profiler et capturer l'écran des cartouches relève de **v32sim**, le lieu unique pour cela : `build-tools.sh` et `check.sh` n'appellent que son `tools/oracle/build.sh` (les `compile`, `assemble` et `packrom` officiels) et son `tools/v32sim-selfcheck.sh`. `V32SIM_HOME` désigne une copie de v32sim (par défaut `../v32sim`). `V32_ORACLE=1 make realcheck` lance les exemples sur la logique de console officielle, comme second avis. Ce que donnaient `v32prof`, `v32shot` et `v32peek`, ce sont `--frame-stats`, `--profile-*`, `--dump` et les commandes par lots de v32sim.
 
 Le `string.h` de la chaîne d'outils est le `c_api/string.h` du projet :
 `build-tools.sh` l'installe par-dessus celui des DevTools figées, qui précède la
 correction de la retenue d'arrondi de `ftoa()` que vérifie
 `tests/130sample.cpp`.
 
-`tools/vircon32/v32io-script.py` écrit de tels scripts à partir d'actions de
+`tools/v32io-script.py` de v32sim écrit de tels scripts à partir d'actions de
 clavier et de souris (`docs/V32IO.fr.md`). `wav2vircon` est aussi construit
 lorsqu'un vrai SDL2 est installé (`sdl2-config`), pour profiler les démos qui
 empaquettent des sons.
@@ -543,6 +535,7 @@ v32c++ -I path/to/v32c++ -o obj/game.c game.cpp
 | `--xml-preserve-paths` | conserve dans le XML les chemins de `#texture`/`#sound` tels qu'écrits, et écrit le XML à côté du source |
 | `-b` | transpile un BIOS plutôt qu'une cartouche |
 | `-g` | écrit une carte de débogage ligne C / ligne C++, `<sortie>.c.debug` |
+| `--line-markers` | écrit `#line N "file.cpp"` avant chaque fonction et instruction du C, pour v32cc (voir [Debugging with v32sim](#debugging-with-v32sim)) |
 | `--target=vircon32`/`v32` | C Vircon32 (la valeur par défaut) |
 | `--target=standard`/`std` | C standard portable à la place |
 | `--reject-bit-fields` | fait d'un champ de bits une erreur au lieu d'un avertissement |
@@ -753,7 +746,7 @@ tools/
   embed-header.sh   regenerates src/stdstring.c from lib/string
   vircon32/         build-tools.sh (the real Vircon32 toolchain and the
                     headless tools), check.sh (`make realcheck`), the
-                    headless tools' sources, and v32io-script.py
+                    build/check scripts that call v32sim
 ```
 
 (L'arborescence est volontairement laissée en anglais : ce sont les noms et

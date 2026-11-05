@@ -9,6 +9,8 @@ BIN     = $(BIN_DIR)/v32c++
 BINC    = $(BIN_DIR)/v32c
 # `make test` runs v32c++ over tests/*, which must not grow Make.sh/Make.bat
 TBIN    = $(BIN) --no-build-scripts
+# V32CC=path/to/v32cc makes `make test` also push the --line-markers output through v32cc -g
+V32CC   ?=
 
 CC      = gcc
 CFLAGS  = -Wall -Wextra -g -I$(INC_DIR) -MMD -MP
@@ -567,6 +569,7 @@ test: all | $(OUT_DIR)
 # sample1/2/3 are deliberately NOT prefixed with '-': if any of those
 # start failing, that's a real regression and `make test` should stop and
 # report it, not paper over it the same way.
+	sh tests/line_markers.sh $(BIN) $(V32CC)
 
 # realcheck: `make test`, then push every generated program through the
 # REAL Vircon32 compiler/assembler/packer and boot every self-checking
@@ -583,7 +586,14 @@ realcheck: test
 # page whose .TH names something else are left alone. A page is rewritten
 # only when its line actually changes, so its mtime says when it was last
 # stamped. Run after changing VERSION, before a release.
+# With VERSION=... on the command line the #define in inc/v32cxx.h is rewritten first (the header stays the
+# single source; rebuild afterwards so the binary picks it up):  make version VERSION=20261105-dev
 version:
+ifeq ($(origin VERSION),command line)
+	@sed 's/^\(#define[[:space:]]*VERSION[[:space:]]*\)"[^"]*"/\1"$(VERSION)"/' $(INC_DIR)/v32cxx.h > $(INC_DIR)/v32cxx.h.tmp && \
+	    if cmp -s $(INC_DIR)/v32cxx.h $(INC_DIR)/v32cxx.h.tmp; then rm -f $(INC_DIR)/v32cxx.h.tmp; \
+	    else mv $(INC_DIR)/v32cxx.h.tmp $(INC_DIR)/v32cxx.h; echo "stamped $(INC_DIR)/v32cxx.h"; fi
+endif
 	@echo "v32c++ $(VERSION) ($(MANDATE))"
 	@for f in $(MAN1) $(MAN3) $(ES_MAN1) $(ES_MAN3) $(FR_MAN1) $(FR_MAN3); do \
 	    grep -q '^\.TH .* "v32c++ [^"]*"' "$$f" || continue; \

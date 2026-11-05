@@ -69,12 +69,12 @@ which v32c++ almost always works around.
 
 - Build: `make` (bin/v32c++, plus bin/v32c, a copy of it for C input). Tests: `make test`, then
   `tools/vircon32/check.sh` -- compiles, assembles and packs every output with the
-  REAL Vircon32 toolchain and runs the self-checking samples in the headless
-  emulator. Passing `make test` alone proves little.
+  REAL Vircon32 toolchain (built by v32sim's tools/oracle) and runs the self-checking
+  samples in v32sim (`V32SIM_HOME`). Passing `make test` alone proves little.
 - Add a test: `tests/NNNsample.cpp` (or `.c`), a line in the Makefile `test:`
   list, a global `int test_errors = -1;` set to 0 when all is well. A `.input`
-  file beside it (made by `tools/vircon32/v32io-script.py` from `.actions`) feeds a
-  v32io device. `v32shot` takes screenshots, `v32prof` measures CPU load.
+  file beside it (made by v32sim's `tools/v32io-script.py` from `.actions`) feeds a
+  v32io device. Screenshots and CPU load: v32sim (`--frame-stats`, `tools/oracle`).
 - Fix v32c++, don't work around it in demo or test source: the point is that
   input stays ordinary. Generated files `src/lexer.c` and `src/parser.c` are
   checked in: regenerate with flex 2.6.4 / bison after editing `lexer.l` / `parser.y`

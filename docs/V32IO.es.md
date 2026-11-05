@@ -539,10 +539,9 @@ El comportamiento es el mismo, con estas diferencias deliberadas:
 
 ## Probar sin un dispositivo
 
-Las herramientas sin pantalla de `tools/vircon32/` (`v32peek`, `v32shot`,
-`v32prof`) reproducen un guion de entrada de pulsaciones y liberaciones de
+v32sim (`--input`, `tools/v32sim-selfcheck.sh` y los ejecutores de `tools/oracle/`) reproduce un guion de entrada de pulsaciones y liberaciones de
 gamepad. Un dispositivo v32io *es* un gamepad, así que la entrada de teclado y de
-ratón también puede guionizarse: `tools/vircon32/v32io-script.py` codifica
+ratón también puede guionizarse: `tools/v32io-script.py` de v32sim codifica
 acciones con los protocolos reales.
 
 ```text
@@ -561,8 +560,8 @@ wait 10
 ```
 
 ```sh
-tools/vircon32/v32io-script.py actions.txt > script.txt
-tools/vircon32/bin/v32shot tools/vircon32/bin/StandardBios.v32 game.v32 script.txt shot 400
+$V32SIM_HOME/tools/v32io-script.py actions.txt > script.txt
+$V32SIM_HOME/tools/oracle/bin/v32shot tools/vircon32/bin/StandardBios.v32 game.v32 script.txt shot 400
 ```
 
 `tests/119sample.cpp` es una prueba con autocomprobación de toda la cabecera

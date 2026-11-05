@@ -64,7 +64,7 @@ of scope](#deliberately-out-of-scope).
 - [C++ headers for the Vircon32 API](#c-headers-for-the-vircon32-api)
 - [Keyboard and mouse: v32io](#keyboard-and-mouse-v32io)
 - [Known limitations](#known-limitations)
-- [Requirements](#requirements) · [Building](#building) · [Checking with the real toolchain](#checking-with-the-real-toolchain)
+- [Requirements](#requirements) · [Building](#building) · [Checking with the real toolchain](#checking-with-the-real-toolchain) · [Debugging with v32sim](#debugging-with-v32sim)
 - [Using it](#using-it) · [Cart packaging](#cart-packaging) · [Output dialects](#output-dialects)
 - [Demos](#demos) · [Documentation](#documentation) · [Project layout](#project-layout)
 - [Installing](#installing) · [Versioning](#versioning) · [Feedback](#feedback)
@@ -480,21 +480,21 @@ its  error  count  there  before  halting;  the  check  requires  0  (see
 is played  with that  scripted gamepad input  (`tests/119sample.cpp`, the
 v32io test, uses it for keyboard and mouse traffic).
 
-`build-tools.sh` also builds headless tools that are useful on their own,
-all driven by the same input script format:
-
-| Tool      | What it does                                                               |
-| --------- | -------------------------------------------------------------------------- |
-| `v32run`  | boots a cartridge and reports one RAM word (what `realcheck` uses)         |
-| `v32prof` | per-frame CPU/GPU load and cycles per function, from a `-g` build          |
-| `v32shot` | the screen at chosen frames, as PPM images                                 |
-| `v32peek` | CPU state and RAM words at a chosen frame                                  |
+Running, profiling and screenshots of carts belong to **v32sim**, which is
+the one place for them: `build-tools.sh` and `check.sh` only call its
+`tools/oracle/build.sh` (the stock `compile`, `assemble`, `packrom`) and its
+`tools/v32sim-selfcheck.sh`. Point `V32SIM_HOME` at a v32sim checkout (default:
+`../v32sim` beside this project). `V32_ORACLE=1 make realcheck` runs the
+self-checking samples on the stock console logic instead, as a second opinion.
+The per-frame load, cycles per function, screenshots and RAM peeks that
+`v32prof`, `v32shot` and `v32peek` gave are v32sim's `--frame-stats`,
+`--profile-*`, `--dump` and batch commands (`docs/V32IO.md` has an example).
 
 The toolchain's `string.h` is the project's own `c_api/string.h`:
 `build-tools.sh` installs it over the pinned DevTools one, which predates
 the `ftoa()` rounding-carry fix that `tests/130sample.cpp` checks.
 
-`tools/vircon32/v32io-script.py`  writes such  scripts from  keyboard and
+v32sim's `tools/v32io-script.py`  writes such  scripts from  keyboard and
 mouse actions  (`docs/V32IO.md`). `wav2vircon` is  built too when  a real
 SDL2 is installed (`sdl2-config`), for profiling demos that pack sounds.
 
@@ -519,6 +519,7 @@ v32c++ -I path/to/v32c++ -o obj/game.c game.cpp
 | `--no-diff-opt-title` | give the optimized cart the regular cart's title, without ` [optimized]` |
 | `-b` | transpile a BIOS rather than a cartridge |
 | `-g` | write a C-line/C++-line debug map, `<output>.c.debug` |
+| `--line-markers` | write `#line N "file.cpp"` before each function and statement of the C, for v32cc (see [Debugging with v32sim](#debugging-with-v32sim)) |
 | `--target=vircon32`/`v32` | Vircon32 C (the default) |
 | `--target=standard`/`std` | portable standard C instead |
 | `--reject-bit-fields` | make a bit-field an error instead of a warning |
@@ -557,6 +558,41 @@ lines back to the source, modeled on Vircon32's own debug maps.
 **`-b`** transpiles  a BIOS:  the XML's  `<rom>` gets  `type="bios"`, and
 v32c++ checks  for exactly  one `#texture`,  at most  one `#sound`  and a
 `void error_handler()`, reporting every violation at once.
+
+## Debugging with v32sim
+
+The stock Vircon32 compiler rejects `#line`, so for it `-g` only gives the C-line/C++-line map above (and its
+`<output>.c.debug` joins with the compiler's own asm/C map). `v32cc` honours `#line`, so with
+`--line-markers` the C++ file and line carry through to the assembly (`;@src game.cpp:42`), to
+`v32as -g`, and to **v32sim**, which then steps, breaks (`break game.cpp:42`), lists source and shows
+backtraces by the C++ lines, and shows locals, since `v32cc -g` writes `;@var` for every C local it sees:
+
+```sh
+v32c++ --line-markers game.cpp -o game.c
+v32cc -g --target-compat=v32cxx -S game.c -o game.asm      # ;@src game.cpp:N, ;@var, ;@scope
+v32as -g game.asm                                           # then assemble/pack as usual
+v32sim --source -L src game.v32
+```
+
+A `#line` is written only where the C compiler's own line count would otherwise differ, so most statements
+need none; the generated code is unchanged (without the option the output is byte-identical to before).
+Code the transpiler writes with no C++ counterpart (allocators `v32_new_*`, a destructor call at scope
+exit, the epilogue of a function) takes the line of the nearest statement; a function's closing `}` shows
+the line after its last statement.
+
+**Names a debugger shows.** Locals and parameters keep their C++ names. The transpiler also writes:
+
+| Name | What it is |
+| ---- | ---------- |
+| `this` | the explicit first parameter of every method |
+| `Class__method__sig`, `Class__Class__void`, `Class__dtor__void` | a method, constructor (`sig` is the parameter types, `void` for none) and destructor, as C functions |
+| `__v32_ret_tmpN`, `__v32_tern_tmpN`, `__v32_ref_tmpN`, `__v32_sret_tmpN` | temporaries for a return value (kept alive across destructors), a hoisted `?:`, a reference argument |
+| `__v32_ctor_arr_iN`, `__v32_mctor_iN` | loop counters that construct array elements / array members |
+| `__v32_byval_x` | a class-type parameter passed by pointer: the function copies it to a local `x` on entry |
+| `v32_new_Class`, `v32_delete_Class`, `v32_new_arr_T` | `new`, `delete` and `new[]` helpers |
+
+Names starting with `__v32_` are the transpiler's, not the program's. v32sim and v32as skip `__` names in
+`locals`.
 
 ## Cart packaging
 
@@ -731,7 +767,7 @@ tools/
   embed-header.sh   regenerates src/stdstring.c from lib/string
   vircon32/         build-tools.sh (the real Vircon32 toolchain and the
                     headless tools), check.sh (`make realcheck`), the
-                    headless tools' sources, and v32io-script.py
+                    build/check scripts that call v32sim
 ```
 
 ## Installing

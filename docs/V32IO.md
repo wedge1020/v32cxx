@@ -525,10 +525,10 @@ Behavior is the same, with these deliberate differences:
 
 ## Testing without a device
 
-The headless tools in `tools/vircon32/` (`v32peek`, `v32shot`, `v32prof`)
-play an input script of gamepad presses and releases. A v32io device *is* a
+v32sim (`--input`, `tools/v32sim-selfcheck.sh`, and the oracle runners in its
+`tools/oracle/`) plays an input script of gamepad presses and releases. A v32io device *is* a
 gamepad, so keyboard and mouse input can be scripted too:
-`tools/vircon32/v32io-script.py` encodes actions with the real protocols.
+v32sim's `tools/v32io-script.py` encodes actions with the real protocols.
 
 ```text
 connect 1 1                  # plug a "gamepad" into port id 1 (Gamepad 2)
@@ -546,8 +546,8 @@ wait 10
 ```
 
 ```sh
-tools/vircon32/v32io-script.py actions.txt > script.txt
-tools/vircon32/bin/v32shot tools/vircon32/bin/StandardBios.v32 game.v32 script.txt shot 400
+$V32SIM_HOME/tools/v32io-script.py actions.txt > script.txt
+$V32SIM_HOME/tools/oracle/bin/v32shot tools/vircon32/bin/StandardBios.v32 game.v32 script.txt shot 400   # built by v32sim's tools/oracle/build.sh
 ```
 
 `tests/119sample.cpp` is a self-checking test of the whole header driven

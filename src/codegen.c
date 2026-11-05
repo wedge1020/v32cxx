@@ -1575,6 +1575,41 @@ static void print_var_decl_inline(FILE *out, const AstNode *n) {
  * if/while/for/block structure and there's nothing about a RETURN
  * statement itself that says which function it belongs to. */
 static int g_debug_last_cpp_line = -1;
+
+/* --line-markers (see codegen_set_line_markers): where the preprocessor's own line count stands. */
+static int g_line_markers = 0;
+static const char *g_lm_main_file = NULL;
+static int g_lm_valid = 0, g_lm_out_line = 0, g_lm_line = 0;
+static const char *g_lm_file = NULL;
+
+void codegen_set_line_markers(int on, const char *main_file) {
+    g_line_markers = on;
+    g_lm_main_file = main_file;
+    g_lm_valid = 0;
+}
+
+/* Writes `#line LINE "FILE"` unless the preprocessor would already count LINE for the line about
+ * to be written (it counts one per output line since the last directive). Always at the start of
+ * an output line: print_stmt and the function definition are only ever reached there. */
+static void line_marker(FILE *out, int line, const char *file) {
+    if (!g_line_markers || line <= 0) return;
+    const char *f = file != NULL ? file : g_lm_main_file;
+    if (f == NULL) return;
+    if (g_lm_valid && strcmp(f, g_lm_file) == 0 &&
+        g_lm_line + (g_codegen_out_line - g_lm_out_line) == line) return;
+    char esc[1024];
+    size_t n = 0;
+    for (const char *c = f; *c != '\0' && n + 2 < sizeof esc; c++) {
+        if (*c == '\\' || *c == '"') esc[n++] = '\\';
+        esc[n++] = *c;
+    }
+    esc[n] = '\0';
+    fprintf(out, "#line %d \"%s\"\n", line, esc);
+    g_lm_valid = 1;
+    g_lm_file = f;                     /* callers pass interned or long-lived strings */
+    g_lm_line = line;
+    g_lm_out_line = g_codegen_out_line; /* the line after the directive is LINE */
+}
 static const char *g_debug_cur_file = NULL; /* source file of the function being emitted */
 
 static void print_stmt(FILE *out, const AstNode *s, int indent, int strip_return_value) {
@@ -1593,6 +1628,7 @@ static void print_stmt(FILE *out, const AstNode *s, int indent, int strip_return
      * for code this project's own lowering passes generated, not just
      * for what the person directly wrote; it is not perfectly precise
      * for every synthesized statement, and isn't claimed to be. */
+    if (s->kind != AST_BLOCK) line_marker(out, s->line, g_debug_cur_file);
     if (s->line != g_debug_last_cpp_line) {
         debug_map_record(g_codegen_out_line, s->line, g_debug_cur_file, NULL);
         g_debug_last_cpp_line = s->line;
@@ -1988,6 +2024,7 @@ static void emit_function_definition(FILE *out, const AstNode *func) {
         explain(out, 0, "C has no implicit object parameter -- this-injection gives every method an explicit 'this' as its first parameter, standing in for what C++'s own 'this' would otherwise mean");
     }
     if (g_silence_unused && g_target == TARGET_VIRCON32) silence_unused_params(func);
+    line_marker(out, func->line, g_debug_cur_file);
     emit_function_header(out, func, name);
     fprintf(out, "\n");
     print_stmt(out, func->a, 0, force_void_main); /* func->a is the body, an AST_BLOCK */
@@ -2558,6 +2595,7 @@ void codegen_run(const AstNode *program, FILE *out, int verbose_comments) {
      * nothing and avoids a latent bug if that ever changes. */
     g_codegen_out_line = 1;
     g_debug_last_cpp_line = -1;
+    g_lm_valid = 0;
     g_verbose_comments = verbose_comments;
     emit_preprocessor_passthrough(out);
     emit_cart_hint_defines(out);
