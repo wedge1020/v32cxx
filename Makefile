@@ -92,6 +92,22 @@ ALL_MAN := $(MAN1) $(MAN3) $(VMAN1) $(VMAN3) $(ES_MAN1) $(ES_MAN3) $(FR_MAN1) $(
 # idea): `make sysinstall` puts the v32/ veneer headers there.
 INCPATH := $(shell sed -n 's/^[[:space:]]*\#[[:space:]]*define[[:space:]]*V32CXX_INCLUDE_PATH[[:space:]]*"\(.*\)".*/\1/p' $(INC_DIR)/config.h)
 
+# PREFIX and DESTDIR for `make sysinstall` / `sysuninstall`, as in every other
+# Vircon32 tool Makefile: PREFIX (default /usr/local) is the root of
+# bin/, share/man/ and Vircon32/v32tools/ ; DESTDIR is a staging root for
+# packaging (nothing is ever written outside it). With the default prefix the
+# header directory is the one compiled into v32c++ (inc/config.h). With another
+# PREFIX the headers go to $(PREFIX)/Vircon32/v32tools/include/v32c++, which the
+# binary finds without a rebuild: it also searches ../Vircon32/v32tools/include/v32c++
+# relative to its own directory (see inc/config.h), i.e. PREFIX/bin/..
+# (To compile another fixed path in, use the CFLAGS override in inc/config.h.)
+PREFIX  ?= /usr/local
+DESTDIR ?=
+BINDIR   = $(PREFIX)/bin
+ifneq ($(PREFIX),/usr/local)
+INCPATH := $(PREFIX)/Vircon32/v32tools/include/v32c++
+endif
+
 .PHONY: all clean test realcheck install uninstall sysinstall sysuninstall version
 
 all: $(BIN_DIR)/v32c++ $(BINC)
@@ -615,8 +631,9 @@ install: all
 uninstall:
 	rm -f $(HOME)/bin/v32c++ $(HOME)/bin/v32c
 
-# System-wide install: the binary to /usr/local/bin, the manual pages to
-# /usr/local/share/man/man1 (v32c++.1, plus the Vircon32 commands' pages from
+# System-wide install (under PREFIX, default /usr/local; DESTDIR stages it): the
+# binary to PREFIX/bin, the manual pages to
+# PREFIX/share/man/man1 (v32c++.1, plus the Vircon32 commands' pages from
 # man/vircon32/) and man3 (the 3v32 header pages and their aliases, plus the
 # Vircon32 C library's from man/vircon32/), and, under V32CXX_INCLUDE_PATH (inc/config.h;
 # /usr/local/Vircon32/v32tools/include/v32c++ by default), the v32/ C++
@@ -642,16 +659,16 @@ uninstall:
 # with. Earlier installs' uncompressed pages, and the v32-<name>.hpp page
 # names used before the rename to <name>.hpp, are removed on the way.
 LIBCDIR := $(INCPATH)/libc
-MANROOT := /usr/local/share/man
+MANROOT := $(PREFIX)/share/man
 # The documents (README, docs/, LICENSE): next to the headers, in the
 # directory the CMake build also uses (v32tools/docs/v32c++)
 DOCDIR  := $(abspath $(INCPATH)/../../docs/v32c++)
 # Vircon32/, v32tools/ and include/ above the header directory: each gets
 # go+rx (added, never taken away) so that ordinary users can reach the
 # headers whatever umask created them.
-INCPARENTS := $(patsubst %/,%,$(dir $(INCPATH))) \
+INCPARENTS := $(addprefix $(DESTDIR),$(patsubst %/,%,$(dir $(INCPATH))) \
               $(patsubst %/,%,$(dir $(patsubst %/,%,$(dir $(INCPATH))))) \
-              $(patsubst %/,%,$(dir $(patsubst %/,%,$(dir $(patsubst %/,%,$(dir $(INCPATH)))))))
+              $(patsubst %/,%,$(dir $(patsubst %/,%,$(dir $(patsubst %/,%,$(dir $(INCPATH))))))))
 
 # a newline, to end each expansion of INSTALL_MAN inside a $(foreach)
 define NL
@@ -679,51 +696,51 @@ define INSTALL_MAN
 endef
 
 sysinstall: all
-	umask 022; install -d /usr/local/bin $(MANROOT)/man1 $(MANROOT)/man3 $(INCPATH)/v32 $(LIBCDIR)/sys
-	install -m 755 $(BIN) /usr/local/bin/v32c++
-	install -m 755 $(BINC) /usr/local/bin/v32c
-	install -m 644 v32/*.hpp $(INCPATH)/v32/
-	install -m 644 libc/*.h libc/*.c $(LIBCDIR)/
-	install -m 644 libc/sys/*.h $(LIBCDIR)/sys/
-	chmod -R go+rX $(INCPATH)
-	chmod go+rx $(INCPARENTS) $(MANROOT) $(MANROOT)/man1 $(MANROOT)/man3
-	rm -f $(MANROOT)/man3/v32-*.hpp.3v32 $(MANROOT)/man3/v32-*.hpp.3v32.gz
-	$(call INSTALL_MAN,$(PLAIN_MAN),$(MANROOT))
-	$(foreach l,$(LANG_MANS),$(call INSTALL_MAN,$(wildcard man/$(l)/man1/*.1) $(wildcard man/$(l)/man3/*.3v32),$(MANROOT)/$(l))$(NL))
-	sh scripts/install_docs.sh $(DEST_LANG) $(DOCDIR)
-	chmod -R go+rX $(DOCDIR)
-	-@command -v mandb >/dev/null 2>&1 && mandb -q 2>/dev/null; true
-	@echo "Installed v32c++ and v32c to /usr/local/bin, their manual pages (gzipped; $(DEST_LANG)) to"
-	@echo "$(MANROOT)/man1 and man3, the C++ headers to $(INCPATH)/v32,"
-	@echo "the C library to $(LIBCDIR) and the documents ($(DEST_LANG)) to $(DOCDIR)"
+	umask 022; install -d $(DESTDIR)$(BINDIR) $(DESTDIR)$(MANROOT)/man1 $(DESTDIR)$(MANROOT)/man3 $(DESTDIR)$(INCPATH)/v32 $(DESTDIR)$(LIBCDIR)/sys
+	install -m 755 $(BIN) $(DESTDIR)$(BINDIR)/v32c++
+	install -m 755 $(BINC) $(DESTDIR)$(BINDIR)/v32c
+	install -m 644 v32/*.hpp $(DESTDIR)$(INCPATH)/v32/
+	install -m 644 libc/*.h libc/*.c $(DESTDIR)$(LIBCDIR)/
+	install -m 644 libc/sys/*.h $(DESTDIR)$(LIBCDIR)/sys/
+	chmod -R go+rX $(DESTDIR)$(INCPATH)
+	chmod go+rx $(INCPARENTS) $(DESTDIR)$(MANROOT) $(DESTDIR)$(MANROOT)/man1 $(DESTDIR)$(MANROOT)/man3
+	rm -f $(DESTDIR)$(MANROOT)/man3/v32-*.hpp.3v32 $(DESTDIR)$(MANROOT)/man3/v32-*.hpp.3v32.gz
+	$(call INSTALL_MAN,$(PLAIN_MAN),$(DESTDIR)$(MANROOT))
+	$(foreach l,$(LANG_MANS),$(call INSTALL_MAN,$(wildcard man/$(l)/man1/*.1) $(wildcard man/$(l)/man3/*.3v32),$(DESTDIR)$(MANROOT)/$(l))$(NL))
+	sh scripts/install_docs.sh $(DEST_LANG) $(DESTDIR)$(DOCDIR)
+	chmod -R go+rX $(DESTDIR)$(DOCDIR)
+	-@[ -n "$(DESTDIR)" ] || { command -v mandb >/dev/null 2>&1 && mandb -q 2>/dev/null; }; true
+	@echo "Installed v32c++ and v32c to $(DESTDIR)$(BINDIR), their manual pages (gzipped; $(DEST_LANG)) to"
+	@echo "$(DESTDIR)$(MANROOT)/man1 and man3, the C++ headers to $(DESTDIR)$(INCPATH)/v32,"
+	@echo "the C library to $(DESTDIR)$(LIBCDIR) and the documents ($(DEST_LANG)) to $(DESTDIR)$(DOCDIR)"
 
 # Removes exactly what sysinstall put down -- the manual pages as .gz (and
 # any uncompressed copy or old v32-<name>.hpp name an earlier install left)
 # -- then each directory that leaves empty: v32tools/include, v32tools and
 # Vircon32 only if nothing else (v32opt, v32lua, the DevTools) is in them.
 sysuninstall:
-	rm -f /usr/local/bin/v32c++ /usr/local/bin/v32c
+	rm -f $(DESTDIR)$(BINDIR)/v32c++ $(DESTDIR)$(BINDIR)/v32c
 	@for f in $(ALL_MAN); do \
 	    case "$$f" in *.1) sec=man1 ;; *) sec=man3 ;; esac; \
-	    case "$$f" in man/es/*) root="$(MANROOT)/es"; rootplain="$(MANROOT)" ;; \
-	                  man/fr/*) root="$(MANROOT)/fr"; rootplain="$(MANROOT)" ;; \
-	                  *) root="$(MANROOT)"; rootplain="" ;; esac; \
+	    case "$$f" in man/es/*) root="$(DESTDIR)$(MANROOT)/es"; rootplain="$(DESTDIR)$(MANROOT)" ;; \
+	                  man/fr/*) root="$(DESTDIR)$(MANROOT)/fr"; rootplain="$(DESTDIR)$(MANROOT)" ;; \
+	                  *) root="$(DESTDIR)$(MANROOT)"; rootplain="" ;; esac; \
 	    n=$${f##*/}; m=$$n; case "$$n" in v32__*) m="v32::$${n#v32__}" ;; esac; \
 	    for r in $$root $$rootplain; do \
 	        rm -f "$$r/$$sec/$$n" "$$r/$$sec/$$n.gz" "$$r/$$sec/$$m" "$$r/$$sec/$$m.gz"; \
 	    done; \
 	done
-	-@for d in $(MANROOT)/es/man1 $(MANROOT)/es/man3 $(MANROOT)/es $(MANROOT)/fr/man1 $(MANROOT)/fr/man3 $(MANROOT)/fr; do \
+	-@for d in $(DESTDIR)$(MANROOT)/es/man1 $(DESTDIR)$(MANROOT)/es/man3 $(DESTDIR)$(MANROOT)/es $(DESTDIR)$(MANROOT)/fr/man1 $(DESTDIR)$(MANROOT)/fr/man3 $(DESTDIR)$(MANROOT)/fr; do \
 	    rmdir "$$d" 2>/dev/null && echo "removed empty $$d"; \
 	done; true
-	sh scripts/install_docs.sh --remove $(DOCDIR)
-	rm -f $(addprefix $(INCPATH)/v32/,$(notdir $(wildcard v32/*.hpp)))
-	rm -f $(addprefix $(LIBCDIR)/,$(notdir $(wildcard libc/*.h libc/*.c)))
-	rm -f $(addprefix $(LIBCDIR)/sys/,$(notdir $(wildcard libc/sys/*.h)))
-	-@for d in $(INCPATH)/v32 $(LIBCDIR)/sys $(LIBCDIR) $(INCPATH) $(DOCDIR) $(patsubst %/,%,$(dir $(DOCDIR))) $(INCPARENTS); do \
+	sh scripts/install_docs.sh --remove $(DESTDIR)$(DOCDIR)
+	rm -f $(addprefix $(DESTDIR)$(INCPATH)/v32/,$(notdir $(wildcard v32/*.hpp)))
+	rm -f $(addprefix $(DESTDIR)$(LIBCDIR)/,$(notdir $(wildcard libc/*.h libc/*.c)))
+	rm -f $(addprefix $(DESTDIR)$(LIBCDIR)/sys/,$(notdir $(wildcard libc/sys/*.h)))
+	-@for d in $(DESTDIR)$(INCPATH)/v32 $(DESTDIR)$(LIBCDIR)/sys $(DESTDIR)$(LIBCDIR) $(DESTDIR)$(INCPATH) $(DESTDIR)$(DOCDIR) $(patsubst %/,%,$(dir $(DESTDIR)$(DOCDIR))) $(INCPARENTS); do \
 	    rmdir "$$d" 2>/dev/null && echo "removed empty $$d"; \
 	done; true
-	-@command -v mandb >/dev/null 2>&1 && mandb -q 2>/dev/null; true
+	-@[ -n "$(DESTDIR)" ] || { command -v mandb >/dev/null 2>&1 && mandb -q 2>/dev/null; }; true
 
 put: clean
 	@mkdir -p put

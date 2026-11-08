@@ -1,4 +1,4 @@
-.TH MATH.HPP 3v32 "November 5, 2026" "v32c++ 20261105-dev" "v32c++ Library"
+.TH MATH.HPP 3v32 "November 8, 2026" "v32c++ 20261108-dev" "v32c++ Library"
 .SH NAME
 v32/math.hpp \- C++ overloads and helpers for Vircon32 math
 .SH SYNOPSIS
