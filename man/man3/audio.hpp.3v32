@@ -1,4 +1,4 @@
-.TH AUDIO.HPP 3v32 "November 8, 2026" "v32c++ 20261108-dev" "v32c++ Library"
+.TH AUDIO.HPP 3v32 "November 9, 2026" "v32c++ 20261109-dev" "v32c++ Library"
 .SH NAME
 v32/audio.hpp \- C++ helpers for the Vircon32 SPU: channels and sounds
 .SH SYNOPSIS

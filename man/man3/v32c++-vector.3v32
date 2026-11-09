@@ -1,4 +1,4 @@
-.TH V32C++\-VECTOR 3v32 "November 8, 2026" "v32c++ 20261108-dev" "v32c++ Library"
+.TH V32C++\-VECTOR 3v32 "November 9, 2026" "v32c++ 20261109-dev" "v32c++ Library"
 .SH NAME
 v32c++\-vector \- std::vector in v32c++, a growable container
 .SH SYNOPSIS

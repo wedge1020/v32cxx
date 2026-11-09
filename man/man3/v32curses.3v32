@@ -1,4 +1,4 @@
-.TH V32CURSES 3v32 "November 8, 2026" "v32c++ 20261108-dev" "v32c++ Library"
+.TH V32CURSES 3v32 "November 9, 2026" "v32c++ 20261109-dev" "v32c++ Library"
 .SH NAME
 v32curses \- classic curses on the Vircon32 text screen
 .SH SYNOPSIS
