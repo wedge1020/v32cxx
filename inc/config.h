@@ -147,6 +147,21 @@
     #define V32CXX_ASSEMBLER "assemble"
 #endif
 
+// The C compiler used by the generated Make.sh / Make.bat: the stock `compile`
+// unless told otherwise (--compiler=CMD, then $V32CXX_COMPILER, then
+// V32CXX_COMPILER). A name starting with "v32cc" is driven in its own dialect
+// (`-S --target-compat=v32cxx`, `-b` for a BIOS) and, with -g, writes the
+// ;@src / ;@var / ;@scope debug lines that v32sim reads (v32c++ -g then also
+// writes the #line markers that carry the C++ lines through).
+// --compiler-style=stock|v32cc overrides that guess.
+#ifndef V32CXX_COMPILER
+    #define V32CXX_COMPILER "compile"
+#endif
+
+#ifndef V32CXX_COMPILER_ENV_VAR
+    #define V32CXX_COMPILER_ENV_VAR "V32CXX_COMPILER"
+#endif
+
 #ifndef V32CXX_ASSEMBLER_ENV_VAR
     #define V32CXX_ASSEMBLER_ENV_VAR "V32CXX_ASSEMBLER"
 #endif

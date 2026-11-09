@@ -45,7 +45,8 @@ int g_reject_bit_fields = 0;   /* --reject-bit-fields */
 int g_signed_shift = 1;        /* cleared by --no-signed-shift */
 extern const char *g_rename_from[32], *g_rename_to[32];
 extern int g_rename_count;
-extern const char *g_assembler, *g_assembler_style;
+extern const char *g_assembler, *g_assembler_style, *g_compiler, *g_compiler_style;
+extern int g_build_debug;
 extern int g_yield_quantum;
 extern const char *g_yield_func, *g_yield_counter;
 int g_unsigned_ops = 1;        /* cleared by --no-unsigned-ops */
@@ -90,7 +91,7 @@ static char *invoked_name(const char *argv0) {
 }
 
 static void print_usage(const char *prog_name) {
-    fprintf(stderr, "usage: %s [-o output.c] [-c] [-v[v[v]]] [-I dir] [-D name[=value]] [-U name] [-x] [--xml-preserve-paths] [--no-build-scripts] [--title-opt=TEXT] [--no-diff-opt-title] [-b] [-g] [--target=vircon32|standard] [--reject-bit-fields] [--no-signed-shift] [--no-unsigned-ops] [--yield-points[=N]] [--rename old=new] [--assembler=CMD] [--assembler-style=stock|v32as] [--yield-func=NAME] [--yield-counter=NAME] [--silence-unused-args] [--allow-undefined] [--warn-error[=kind,...]] [--list-warnings] [-L dir] [-lname] [--mklib lib.v32a] [--no-inline-containers] [--version] <input.cpp> [more inputs] [lib.v32a ...]\n", prog_name);
+    fprintf(stderr, "usage: %s [-o output.c] [-c] [-v[v[v]]] [-I dir] [-D name[=value]] [-U name] [-x] [--xml-preserve-paths] [--no-build-scripts] [--title-opt=TEXT] [--no-diff-opt-title] [-b] [-g] [--target=vircon32|standard] [--reject-bit-fields] [--no-signed-shift] [--no-unsigned-ops] [--yield-points[=N]] [--rename old=new] [--assembler=CMD] [--assembler-style=stock|v32as] [--compiler=CMD] [--compiler-style=stock|v32cc] [--yield-func=NAME] [--yield-counter=NAME] [--silence-unused-args] [--allow-undefined] [--warn-error[=kind,...]] [--list-warnings] [-L dir] [-lname] [--mklib lib.v32a] [--no-inline-containers] [--version] <input.cpp> [more inputs] [lib.v32a ...]\n", prog_name);
     fprintf(stderr, "  -o output.c   write generated Vircon32 C to this file (default:\n"
                      "                <input> with its extension replaced by .c)\n");
     fprintf(stderr,  "  --no-signed-shift\n"
@@ -102,6 +103,9 @@ static void print_usage(const char *prog_name) {
                      "                to be non-negative and the extra code costs too much\n");
     fprintf(stderr,  "  --assembler=CMD      assembler named in the generated Make.sh/Make.bat (default $V32CXX_ASSEMBLER, else assemble)\n"
                      "  --assembler-style=stock|v32as   flag dialect (guessed from a name starting with v32as)\n"
+                     "  --compiler=CMD       C compiler named in the generated Make.sh/Make.bat (default $V32CXX_COMPILER, else compile);\n"
+                     "                       v32cc gets -S --target-compat=v32cxx, and with -g also -g (and v32as -g): v32sim then debugs by the C++ lines\n"
+                     "  --compiler-style=stock|v32cc    flag dialect (guessed from a name starting with v32cc)\n"
                      "  --rename old=new     give a function/variable another name program-wide (SDK name clashes)\n"
                      "  --yield-points[=N]   insert `if (COUNTER() > N) YIELD();` at function entry, loop bodies and labels\n"
                      "                       (default N 100000; --yield-func=NAME, --yield-counter=NAME; skip with __attribute__((no_yield)))\n"
@@ -495,6 +499,8 @@ int  main (int  argc, char **argv)
         { "rename", required_argument, 0, 0x109 },
         { "assembler", required_argument, 0, 0x10a },
         { "assembler-style", required_argument, 0, 0x10b },
+        { "compiler", required_argument, 0, 0x10d },
+        { "compiler-style", required_argument, 0, 0x10e },
         { "yield-counter", required_argument, 0, 0x108 },
         { "mklib", required_argument, 0, 0x102 },
         { 0,         0,                 0, 0   }
@@ -628,6 +634,16 @@ int  main (int  argc, char **argv)
                 g_rename_to[g_rename_count++] = strdup(eq + 1);
                 break;
             }
+            case 0x10d:
+                g_compiler = optarg;
+                break;
+            case 0x10e:
+                if (strcmp(optarg, "stock") != 0 && strcmp(optarg, "v32cc") != 0) {
+                    fprintf(stderr, "error: --compiler-style is stock or v32cc\n");
+                    return 2;
+                }
+                g_compiler_style = optarg;
+                break;
             case 0x10a:
                 g_assembler = optarg;
                 break;
@@ -953,7 +969,9 @@ int  main (int  argc, char **argv)
                 perror(output_filename);
                 rc = 1;
             } else {
-                codegen_set_line_markers(line_markers, input_filename);
+                /* -g with v32cc as the compiler: the C++ lines have to reach it, so the markers go in without --line-markers */
+                g_build_debug = emit_debug;
+                codegen_set_line_markers(line_markers || (emit_debug && compiler_is_v32cc()), input_filename);
                 codegen_run(g_program, out, verbosity >= 2);
                 fclose(out);
                 if (verbosity >= 1) printf("wrote generated Vircon32 C to %s\n", output_filename);
@@ -1014,6 +1032,7 @@ int  main (int  argc, char **argv)
                                 if (k > 1) { sargs[n] = kept; spath[n++] = 0; } else free(kept);
                                 continue;
                             }
+                            /* --compiler stays: the script's own v32c++ run needs it to know that -g means #line markers */
                             if (strcmp(a, "--assembler") == 0 || strcmp(a, "--assembler-style") == 0) { i++; continue; }
                             if (strncmp(a, "--assembler=", 12) == 0 || strncmp(a, "--assembler-style=", 18) == 0) continue;
                             if (strcmp(a, "-o") == 0) { i++; continue; }

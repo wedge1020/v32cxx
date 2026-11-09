@@ -34,6 +34,10 @@ void emit_build_scripts(const char *prog, const char *output_filename, const cha
                         const char *const *args, const int *arg_is_path,
                         int arg_count);
 
+/* Is the compiler the scripts call v32cc (by name, or --compiler-style=v32cc)?  With -g, v32c++ then writes
+ * the #line markers by itself. */
+int compiler_is_v32cc(void);
+
 /* Where the scripts go (malloc'd directory; caller frees). */
 char *build_script_dir(const char *output_filename, const char *source_filename);
 

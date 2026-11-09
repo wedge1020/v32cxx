@@ -159,6 +159,7 @@ static void put_bat(FILE *f, const char *s) {
  * whose file name starts with "v32as" is driven in its own dialect (it needs
  * an explicit --cart/--bios and -B for a VBIN); --assembler-style=stock|v32as
  * overrides that guess. */
+int         g_build_debug = 0;      /* v32c++ -g: the generated scripts pass -g on to the compiler and the assembler */
 const char *g_assembler = NULL;
 const char *g_assembler_style = NULL;
 
@@ -178,7 +179,44 @@ static int assembler_is_v32as(void) {
 }
 
 static const char *assembler_flags(int bios) {
-    if (assembler_is_v32as()) return bios ? " -B -b " : " -B -c ";
+    if (assembler_is_v32as()) {
+        if (g_build_debug) return bios ? " -g -B -b " : " -g -B -c ";
+        return bios ? " -B -b " : " -B -c ";
+    }
+    return bios ? " -b " : " ";
+}
+
+/* ---- the C compiler -----------------------------------------------------
+ * `compile` (the stock Vircon32 tool) by default; --compiler=CMD, then
+ * $V32CXX_COMPILER, then config.h's V32CXX_COMPILER choose another. A tool whose
+ * file name starts with "v32cc" is driven in its own dialect (-S, and
+ * --target-compat=v32cxx); with -g it is given -g too, and so is a v32as
+ * assembler, so the debug lines reach v32sim. --compiler-style=stock|v32cc
+ * overrides the guess. */
+const char *g_compiler = NULL;
+const char *g_compiler_style = NULL;
+
+static const char *compiler_cmd(void) {
+    if (g_compiler != NULL && *g_compiler) return g_compiler;
+    const char *e = getenv(V32CXX_COMPILER_ENV_VAR);
+    if (e != NULL && *e) return e;
+    return V32CXX_COMPILER;
+}
+
+int compiler_is_v32cc(void) {
+    if (g_compiler_style != NULL) return strcmp(g_compiler_style, "v32cc") == 0;
+    const char *c = compiler_cmd();
+    const char *b = c;
+    for (const char *q = c; *q; q++) if (*q == '/' || *q == '\\') b = q + 1;
+    return strncmp(b, "v32cc", 5) == 0;
+}
+
+static const char *compiler_flags(int bios) {
+    static char buf[80];
+    if (compiler_is_v32cc()) {
+        snprintf(buf, sizeof buf, " -S --target-compat=v32cxx%s%s ", bios ? " -b" : "", g_build_debug ? " -g" : "");
+        return buf;
+    }
     return bios ? " -b " : " ";
 }
 
@@ -198,7 +236,7 @@ static void write_sh(FILE *f, const Plan *pl) {
           "need_tool()\n{\n"
           "    command -v \"$1\" >/dev/null 2>&1 || { echo \"ERROR: $1 is needed to build, but was not found in PATH\"; abort_build; }\n}\n\n", f);
     fprintf(f, "need_tool %s\n", pl->prog);
-    fputs("need_tool compile\n", f);
+    fputs("need_tool ", f); put_sh(f, compiler_cmd()); fputc('\n', f);
     fputs("need_tool ", f); put_sh(f, assembler_cmd()); fputc('\n', f);
     fputs("need_tool packrom\n", f);
     if (pl->ntex) fputs("need_tool png2vircon\n", f);
@@ -220,7 +258,7 @@ static void write_sh(FILE *f, const Plan *pl) {
     fputc(' ', f); put_sh(f, pl->src); fputs(" || abort_build\n", f);
 
     sh_section(f, "Compile the C code");
-    fputs(pl->bios ? "compile -b " : "compile ", f); put_sh(f, pl->c); fputs(" -o ", f); put_sh(f, pl->asm_);
+    put_sh(f, compiler_cmd()); fputs(compiler_flags(pl->bios), f); put_sh(f, pl->c); fputs(" -o ", f); put_sh(f, pl->asm_);
     fputs(" || abort_build\n", f);
     fputs("if [ \"$HAVE_OPT\" = 1 ]; then\n    v32opt -O3 ", f); put_sh(f, pl->asm_);
     fputs(" -o ", f); put_sh(f, pl->asm_opt); fputs(" || abort_build\nfi\n", f);
@@ -275,7 +313,7 @@ static void write_bat(FILE *f, const Plan *pl) {
           "REM the source (or use --no-build-scripts and keep a hand-written script)\r\n"
           "REM rather than this file: it is rewritten on every v32c++ run.\r\n\r\n", f);
     fputs("REM the tools this build needs\r\n", f);
-    const char *needed[] = { pl->prog, "compile", assembler_cmd(), "packrom", "png2vircon", "wav2vircon" };
+    const char *needed[] = { pl->prog, compiler_cmd(), assembler_cmd(), "packrom", "png2vircon", "wav2vircon" };
     for (int i = 0; i < 6; i++) {
         if (i == 4 && !pl->ntex) continue;
         if (i == 5 && !pl->nsnd) continue;
@@ -304,7 +342,7 @@ static void write_bat(FILE *f, const Plan *pl) {
     fputc(' ', f); put_bat_path(f, pl->src); fputs(" || goto :failed\r\n", f);
 
     bat_section(f, "Compile the C code");
-    fputs(pl->bios ? "compile -b " : "compile ", f); put_bat_path(f, pl->c); fputs(" -o ", f); put_bat_path(f, pl->asm_);
+    put_bat(f, compiler_cmd()); fputs(compiler_flags(pl->bios), f); put_bat_path(f, pl->c); fputs(" -o ", f); put_bat_path(f, pl->asm_);
     fputs(" || goto :failed\r\n", f);
     fputs("if \"%HAVE_OPT%\"==\"1\" v32opt -O3 ", f); put_bat_path(f, pl->asm_);
     fputs(" -o ", f); put_bat_path(f, pl->asm_opt); fputs(" || goto :failed\r\n", f);

@@ -519,6 +519,8 @@ v32c++ -I path/to/v32c++ -o obj/game.c game.cpp
 | `--no-diff-opt-title` | give the optimized cart the regular cart's title, without ` [optimized]` |
 | `-b` | transpile a BIOS rather than a cartridge |
 | `-g` | write a C-line/C++-line debug map, `<output>.c.debug` |
+| `--compiler=CMD` | the C compiler the build scripts call (default `compile`, or `$V32CXX_COMPILER`); `v32cc` gets `-S --target-compat=v32cxx` and, with `-g`, `-g` |
+| `--compiler-style=stock\|v32cc` | force how `--compiler` is called when its name does not say |
 | `--line-markers` | write `#line N "file.cpp"` before each function and statement of the C, for v32cc (see [Debugging with v32sim](#debugging-with-v32sim)) |
 | `--target=vircon32`/`v32` | Vircon32 C (the default) |
 | `--target=standard`/`std` | portable standard C instead |
@@ -563,9 +565,12 @@ v32c++ checks  for exactly  one `#texture`,  at most  one `#sound`  and a
 
 The stock Vircon32 compiler rejects `#line`, so for it `-g` only gives the C-line/C++-line map above (and its
 `<output>.c.debug` joins with the compiler's own asm/C map). `v32cc` honours `#line`, so with
-`--line-markers` the C++ file and line carry through to the assembly (`;@src game.cpp:42`), to
+`--line-markers` (implied by `-g --compiler=v32cc`) the C++ file and line carry through to the assembly (`;@src game.cpp:42`), to
 `v32as -g`, and to **v32sim**, which then steps, breaks (`break game.cpp:42`), lists source and shows
 backtraces by the C++ lines, and shows locals, since `v32cc -g` writes `;@var` for every C local it sees:
+
+One command does all of it: `v32c++ -g --compiler=v32cc --assembler=v32as game.cpp` writes a Make.sh that builds with
+debug files. By hand:
 
 ```sh
 v32c++ --line-markers game.cpp -o game.c
