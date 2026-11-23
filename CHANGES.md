@@ -15,12 +15,18 @@
   `keep_array_elements` (no temporary is declared), `lower.c` `construct_array_from_list` and `build_dtor_call_stmt`
   (nested loops). `Counter c = Counter(5);` already built no temporary. An array **member** with a brace initializer of
   a class with a constructor (`Counter m[2] = { {1}, {2} };`) used to lose the list silently; it is now an error.
-  Not supported: `Counter c{...}` (brace-initialized objects do not parse).
+- **`T x{...};` and `T x = {...};` now do C++11 list-initialization.** Both were emitted as a C brace list, so for
+  `Counter c{1};` the constructor never ran while the destructor did (a live count ended at `-2`), and `int k{3};`
+  became `int k = {3};`. `T x{...}` (and `T x = {...}`, also in a `for` initializer, a `Counter a{1}, b{2};` tail and
+  at file scope) of a class that declares a constructor is now the same as `T x(...)`; `{}` is `T x;`. A scalar
+  (primitive or pointer) becomes `int k = 3;` (`{}` is `0`; two or more values is an error). An aggregate (no
+  constructor) and an array keep their C brace list. A nested brace item in a non-aggregate (`Pair x{{1},{2}}`) is a
+  clear error. `ast.c` `rewrite_list_init` (the grammar change is the `braced_init` alternative of `opt_initializer`).
 - A brace list (`int a[2] = { count, get(count) };`) is now walked by the this-injection, call-finalization, reference
   and `new`/`delete` passes like any other expression (the list's values were left as written: a member name stayed
   bare in a method).
 - Tests: `tests/174sample.cpp` (self-checking, logs every constructor and destructor; part of `make realcheck`) and
-  `tests/174bad.cpp`.
+  `tests/174bad.cpp`; `tests/175sample.cpp` (self-checking) and `tests/175bad.cpp`.
 - `make archive` writes `../v32cxx-project-YYYYMMDD.zip` (the date of `VERSION`); `make clean` removes
   `../v32cxx-project-*.zip`.
 ## 20261109-dev

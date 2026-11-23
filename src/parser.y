@@ -2774,6 +2774,7 @@ opt_initializer:
     | '=' expr        { $$ = $2; }
     | '=' braced_init { $$ = $2; /* `Point2 p = { 1, 2 };` -- a struct
                                     (or any aggregate) initialized positionally */ }
+    | braced_init { $$ = $1; }
     ;
 
 /* `typedef` wrapped around a struct/union/enum DEFINITION -- see the

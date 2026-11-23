@@ -513,6 +513,18 @@ test: all | $(OUT_DIR)
 	test "`grep -c 'Counter__Counter__int((&g_arr\[' out/174program.c`" = 2
 	! $(TBIN) -o out/174bad.c tests/174bad.cpp 1> out/174bad.txt 2>&1
 	grep -q 'an initializer for an array member of class type is not supported' out/174bad.txt
+	$(TBIN)  -vvv    -o out/175program.c tests/175sample.cpp 1> out/175sample.txt 2>&1
+	grep -q 'Counter__Counter__int((&g_brace), 5);' out/175program.c
+	grep -q 'Counter__Counter__int((&c), 1);' out/175program.c
+	grep -q 'Counter__Counter__int((&d), 2);' out/175program.c
+	grep -q 'int s1 = 3;' out/175program.c
+	grep -q 'int s3 = 0;' out/175program.c
+	grep -q 'P p = {1, 2};' out/175program.c
+	grep -q 'Shade s7 = SHADE_DARK;' out/175program.c
+	grep -q 'score_t s8 = 9;' out/175program.c
+	! grep -q 'Counter [a-z_]* = {' out/175program.c
+	! $(TBIN) -o out/175bad.c tests/175bad.cpp 1> out/175bad.txt 2>&1
+	grep -q 'at most one value in braces' out/175bad.txt
 # `-vvv` (this project's own verbosity flag, a later round -- see
 # main.c) is passed to every sample specifically so `make test`'s own
 # output still captures the full AST/semantic-analysis/lowering dumps

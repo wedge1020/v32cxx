@@ -836,11 +836,91 @@ static void elide_copy_from_object(AstNode *decl, const ClassList *all, AstList 
     decl->a = object_initializer(obj);
 }
 
+/* C++11 list-initialization of a variable: `T x{a, b};` and `T x = {a, b};`
+ * (the parser gives both an AST_INIT_LIST).
+ *   - a class that declares a constructor: the same as `T x(a, b);` (an
+ *     AST_DIRECT_INIT; `{}` is `T x;`)
+ *   - a scalar (a primitive type or a pointer): `int k = 3;` (`{}` is 0)
+ *   - anything else (an aggregate, an array): left as a C brace list. */
+/* Enum names and typedefs, for `Color c{RED}` / `score_t s{4}`: both are
+ * scalars too. Filled by desugar_unnamed_objects before the rewrite runs. */
+static AstList g_scalar_names_enums;
+static AstList g_scalar_typedefs;
+
+static void collect_scalar_names(const AstList *decls) {
+    for (int i = 0; i < decls->count; i++) {
+        AstNode *n = decls->items[i];
+        if (n == NULL) continue;
+        if (n->kind == AST_ENUM_DECL && n->str1 != NULL) ast_list_append(&g_scalar_names_enums, n);
+        else if (n->kind == AST_TYPEDEF_DECL && n->str1 != NULL) ast_list_append(&g_scalar_typedefs, n);
+        else if (n->kind == AST_NAMESPACE_DECL || n->kind == AST_CLASS_DECL) collect_scalar_names(&n->list);
+    }
+}
+
+static int is_scalar_decl_type_depth(const AstNode *t, int depth) {
+    while (t != NULL && t->kind == AST_CONST_TYPE) t = t->a;
+    if (t == NULL || depth > 16) return 0;
+    if (t->kind == AST_POINTER_TYPE) return 1;
+    if (t->kind != AST_IDENT || t->str1 == NULL) return 0;
+    static const char *const names[] = { "int", "float", "bool", "char", "short", "long", "double", NULL };
+    for (int i = 0; names[i] != NULL; i++)
+        if (strcmp(t->str1, names[i]) == 0) return 1;
+    for (int i = 0; i < g_scalar_names_enums.count; i++)
+        if (strcmp(g_scalar_names_enums.items[i]->str1, t->str1) == 0) return 1;
+    for (int i = 0; i < g_scalar_typedefs.count; i++) {
+        const AstNode *td = g_scalar_typedefs.items[i];
+        if (strcmp(td->str1, t->str1) == 0) return is_scalar_decl_type_depth(td->type, depth + 1);
+    }
+    return 0;
+}
+
+static int is_scalar_decl_type(const AstNode *t) { return is_scalar_decl_type_depth(t, 0); }
+
+static void rewrite_list_init(AstNode *decl, const ClassList *all) {
+    if (decl->kind != AST_VAR_DECL || decl->a == NULL || decl->a->kind != AST_INIT_LIST) return;
+    AstNode *list = decl->a;
+    const AstNode *t = decl->type;
+    while (t != NULL && t->kind == AST_CONST_TYPE) t = t->a;
+    AstNode *cls = (t != NULL && t->kind == AST_IDENT) ? class_named(all, t->str1) : NULL;
+    int scalar = cls == NULL && is_scalar_decl_type(decl->type);
+    if (cls != NULL && !class_declares_ctor(cls)) return; /* an aggregate */
+    if (cls == NULL && !scalar) return;
+    for (int i = 0; i < list->list.count; i++) {
+        const AstNode *item = list->list.items[i];
+        if (item != NULL && (item->kind == AST_INIT_LIST || item->kind == AST_DESIG_INIT)) {
+            obj_error(decl, "a nested braced or designated initializer inside `{...}` for a "
+                            "variable that is not an aggregate is not supported: pass plain values");
+            return;
+        }
+    }
+    if (scalar) {
+        if (list->list.count > 1) {
+            obj_error(decl, "a scalar variable can be initialized from at most one value in braces");
+            return;
+        }
+        if (list->list.count == 1) {
+            decl->a = list->list.items[0];
+        } else {
+            AstNode *zero = ast_new(AST_INT_LIT, decl->line);
+            zero->file = decl->file;
+            zero->ival = 0;
+            decl->a = zero;
+        }
+        return;
+    }
+    if (list->list.count == 0) { decl->a = NULL; return; } /* `T x{};` is `T x;` */
+    AstNode *init = ast_new(AST_DIRECT_INIT, list->line);
+    init->file = list->file;
+    init->list = list->list;
+    decl->a = init;
+}
+
 static void lift_objects_decl(AstNode *n, const ClassList *all, AstList *prefix) {
     if (n->kind == AST_VAR_DECL_GROUP) {
         for (int i = 0; i < n->list.count; i++) lift_objects_decl(n->list.items[i], all, prefix);
         return;
     }
+    rewrite_list_init(n, all);
     elide_copy_from_object(n, all, prefix);
     int ndims = 0;
     AstNode *cls = (n->kind == AST_VAR_DECL && n->a != NULL && n->a->kind == AST_INIT_LIST)
@@ -961,6 +1041,11 @@ static void desugar_objects_decls(AstList *decls, const ClassList *all) {
         } else if (n->kind == AST_VAR_DECL || n->kind == AST_VAR_DECL_GROUP) {
             /* file scope: only the `T g = T(args);` form has anywhere to go */
             AstList none = ast_list_new();
+            if (!g_obj_in_class) {
+                if (n->kind == AST_VAR_DECL_GROUP)
+                    for (int k = 0; k < n->list.count; k++) rewrite_list_init(n->list.items[k], all);
+                else rewrite_list_init(n, all);
+            }
             if (n->kind == AST_VAR_DECL) {
                 elide_copy_from_object(n, all, &none);
                 int ndims = 0;
@@ -987,6 +1072,9 @@ static void desugar_objects_decls(AstList *decls, const ClassList *all) {
 }
 
 int desugar_unnamed_objects(AstList *decls) {
+    g_scalar_names_enums = ast_list_new();
+    g_scalar_typedefs = ast_list_new();
+    collect_scalar_names(decls);
     ClassList all = { NULL, 0, 0 };
     collect_classes(decls, &all);
     g_obj_errors = 0;
