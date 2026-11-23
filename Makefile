@@ -30,6 +30,9 @@ FLEX    = flex
 # tools: no `sed -i` (BSD sed takes the script as the backup suffix), no
 # \t in brackets, no `date +%-d` (the day's leading zero is cut by sed).
 VERSION := $(shell sed -n 's/^\#define[[:space:]]*VERSION[[:space:]]*"\(.*\)".*/\1/p' $(INC_DIR)/v32cxx.h)
+# The date part (YYYYMMDD) of VERSION names the project archive: `make archive` writes
+# ../v32cxx-project-YYYYMMDD.zip ("20261123-dev" -> ../v32cxx-project-20261123.zip)
+ARCHDATE := $(shell echo '$(VERSION)' | sed 's/^\([0-9]\{8\}\).*/\1/')
 MANDATE := $(shell LC_ALL=C date +"%B %d, %Y" | sed 's/ 0\([1-9]\),/ \1,/')
 # The same date in the translated pages' .TH line (man/es, man/fr): month
 # names from a table, so the build does not depend on the locales installed.
@@ -108,7 +111,7 @@ ifneq ($(PREFIX),/usr/local)
 INCPATH := $(PREFIX)/Vircon32/v32tools/include/v32c++
 endif
 
-.PHONY: all clean test realcheck install uninstall sysinstall sysuninstall version
+.PHONY: all clean test realcheck install uninstall sysinstall sysuninstall version archive
 
 all: $(BIN_DIR)/v32c++ $(BINC)
 
@@ -504,6 +507,12 @@ test: all | $(OUT_DIR)
 	grep -q "was previously defined here" out/173bad.txt
 	grep -q "no matching declaration for out-of-line definition of 'run'" out/173bad.txt
 	! grep -q "no matching declaration for out-of-line definition of 'init'" out/173bad.txt
+	$(TBIN)  -vvv    -o out/174program.c tests/174sample.cpp 1> out/174sample.txt 2>&1
+	! grep -q '__v32_obj' out/174program.c
+	grep -q 'Counter__Counter__int((&a\[1\]\[1\]), 4);' out/174program.c
+	test "`grep -c 'Counter__Counter__int((&g_arr\[' out/174program.c`" = 2
+	! $(TBIN) -o out/174bad.c tests/174bad.cpp 1> out/174bad.txt 2>&1
+	grep -q 'an initializer for an array member of class type is not supported' out/174bad.txt
 # `-vvv` (this project's own verbosity flag, a later round -- see
 # main.c) is passed to every sample specifically so `make test`'s own
 # output still captures the full AST/semantic-analysis/lowering dumps
@@ -752,14 +761,16 @@ put: clean
 	@cp src/parser.y  put/parser.y.txt
 
 archive: clean
-	zip -r ../v32cxx-project.zip * .github \
-	    -x 'tools/vircon32/bin/*' 'tools/vircon32/ComputerSoftware/*' 'build/*'
+	zip -r ../v32cxx-project-$(ARCHDATE).zip * .github \
+	    -x 'tools/vircon32/bin/*' 'tools/vircon32/ComputerSoftware/*' 'build/*' 'out/*'
+# out/* too: `clean` only removes the files directly in out/, not the directories a
+# `make test` leaves there (out/146, out/147...), and none of it belongs in the archive
 # -r matters: without it, `demos/*` stores only the demos/c and demos/cxx
 # directory ENTRIES, not the files inside them, so the archive silently
 # ships empty demo folders.
 
 clean:
-	rm -f $(BIN_DIR)/* $(OBJ_DIR)/* $(SRC_DIR)/parser.output $(OUT_DIR)/* put/* counterexamples.txt *.zip *.patch ../v32cxx-project.zip
+	rm -rf $(BIN_DIR)/* $(OBJ_DIR)/* $(SRC_DIR)/parser.output $(OUT_DIR)/* put/* counterexamples.txt *.zip *.patch ../v32cxx-project.zip ../v32cxx-project-*.zip
 	$(MAKE) -C demos clean
 	#rm -f $(SRC_DIR)/parser.c $(SRC_DIR)/lexer.c $(INC_DIR)/parser.h
 # Removing the bison/flex-generated files here (not just objects/binary) is

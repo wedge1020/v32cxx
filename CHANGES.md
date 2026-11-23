@@ -1,5 +1,28 @@
 # v32c++ changes
 
+## 20261123-dev
+
+- **`Counter arr[3] = { Counter(1), Counter(2), Counter(3) };` builds the elements in place** (C++17 guaranteed copy
+  elision). It was lowered to three named temporaries `__v32_obj0..2`, constructed, copied into `arr` (no element
+  constructor ever ran) and then the destructors of both `arr[2..0]` and `__v32_obj2..0` ran at scope exit: three
+  constructor calls, six destructor calls (found with v32sim: a `+1`/`-1` counter ended at `-3`). Now the declaration is
+  `Counter arr[3];` followed by one constructor call per element, `Counter__Counter__int(&arr[0], 1)`, ...; elements left
+  out (`Counter a[2] = { Counter(1) };`) are default-constructed, `{2}` elements call the constructor with those
+  arguments, an element that is an object is copy-constructed in place (member-wise where the class has no copy
+  constructor), `Counter a[] = {...}` takes its length from the list, and the same holds for several dimensions
+  (`Counter g[2][2]`, which also had no constructor or destructor loops at all) and for a global array (built at the top
+  of `main`; globals are still never destroyed). Destruction is the whole array, in reverse. Lowering: `ast.c`
+  `keep_array_elements` (no temporary is declared), `lower.c` `construct_array_from_list` and `build_dtor_call_stmt`
+  (nested loops). `Counter c = Counter(5);` already built no temporary. An array **member** with a brace initializer of
+  a class with a constructor (`Counter m[2] = { {1}, {2} };`) used to lose the list silently; it is now an error.
+  Not supported: `Counter c{...}` (brace-initialized objects do not parse).
+- A brace list (`int a[2] = { count, get(count) };`) is now walked by the this-injection, call-finalization, reference
+  and `new`/`delete` passes like any other expression (the list's values were left as written: a member name stayed
+  bare in a method).
+- Tests: `tests/174sample.cpp` (self-checking, logs every constructor and destructor; part of `make realcheck`) and
+  `tests/174bad.cpp`.
+- `make archive` writes `../v32cxx-project-YYYYMMDD.zip` (the date of `VERSION`); `make clean` removes
+  `../v32cxx-project-*.zip`.
 ## 20261109-dev
 
 - **`-g` works with v32cc.** `-g` now implies `--line-markers` when the compiler is v32cc, and the generated Make.sh /

@@ -95,7 +95,9 @@ du périmètre](#délibérément-hors-du-périmètre).
 
 - Objets sur la pile (`Shape s;`, `Shape s(7);`), comme temporaires anonymes
   (`return Vec(x, y);`, `v.push_back(Enemy(1, 2, 3));`), dans des tableaux
-  (construits et détruits élément par élément, y compris les tableaux membres),
+  (construits et détruits élément par élément, y compris les tableaux membres ;
+  `Enemy a[2] = { Enemy(1), {2} };` construit chaque élément sur place, comme
+  C++17, aussi à plusieurs dimensions et à la portée du fichier),
   à la portée du fichier (construits en début de `main`, avec les arguments du
   constructeur s'il y en a) et sur le tas avec `new`/`delete`. Les destructeurs
   s'exécutent à chaque sortie de portée : l'accolade fermante, `return`,

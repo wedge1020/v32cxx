@@ -673,7 +673,16 @@ void synthesize_implicit_members(AstList *decls) {
  *     unnamed object declared before it (wrapping it in a block of its
  *     own would end the declared variable's life too);
  *   - a loop's condition or step is evaluated many times, and a
- *     declaration ahead of the loop would run once: reported as an error.
+ *     declaration ahead of the loop would run once: reported as an error;
+ *   - an element of an array of objects, `Enemy a[2] = { Enemy(1), {2} };`,
+ *     is not a temporary either: C++17 builds it in place, so no object is
+ *     declared. The element stays where it is as an AST_DIRECT_INIT with
+ *     its class as the type (a `{2}` becomes one too), and the constructor
+ *     injection in lower.c calls the right constructor on `a[0]`, `a[1]`
+ *     ... (the elements left out are default-constructed). Without this
+ *     the temporaries were built, copied into the array and destroyed
+ *     with it at scope exit: the array's own elements never had a
+ *     constructor run, and every destructor ran twice.
  *
  * One known difference from C++: in `a && f(Enemy(1))` the object is
  * built even when `a` is false.
@@ -683,6 +692,7 @@ void synthesize_implicit_members(AstList *decls) {
  */
 static int g_obj_counter = 0;
 static int g_obj_errors = 0;
+static int g_obj_in_class = 0; /* desugar_objects_decls is inside a class body */
 
 static int is_unnamed_object(const AstNode *n) {
     return n != NULL && n->kind == AST_DIRECT_INIT && n->str1 != NULL;
@@ -751,6 +761,69 @@ static void lift_objects_expr(AstNode **slot, const ClassList *all, AstList *pre
     *slot = use;
 }
 
+/* The class whose objects make up the array type `t` (any number of
+ * dimensions, `Enemy grid[2][3]`), or NULL; *ndims gets the dimension count. */
+static AstNode *array_object_class(const AstNode *t, const ClassList *all, int *ndims) {
+    int dims = 0;
+    while (t != NULL && t->kind == AST_CONST_TYPE) t = t->a;
+    while (t != NULL && t->kind == AST_ARRAY_TYPE) {
+        dims++;
+        t = t->a;
+        while (t != NULL && t->kind == AST_CONST_TYPE) t = t->a;
+    }
+    if (dims == 0 || t == NULL || t->kind != AST_IDENT) return NULL;
+    *ndims = dims;
+    return class_named(all, t->str1);
+}
+
+/* The elements of the brace list `list` (one nesting level per array
+ * dimension) that are objects of `cls`: each `Enemy(args)` and, for a
+ * class with a constructor, each `{args}`, becomes an in-place
+ * AST_DIRECT_INIT of type `cls` (see the doc comment above); the
+ * arguments themselves, and any other element, are searched for unnamed
+ * objects as usual. */
+static void keep_array_elements(AstNode *list, int depth, int ndims, AstNode *cls,
+                                const ClassList *all, AstList *prefix) {
+    for (int i = 0; i < list->list.count; i++) {
+        AstNode **slot = &list->list.items[i];
+        AstNode *item = *slot;
+        if (item == NULL) continue;
+        if (depth + 1 < ndims) {
+            if (item->kind == AST_INIT_LIST) keep_array_elements(item, depth + 1, ndims, cls, all, prefix);
+            else lift_objects_expr(slot, all, prefix);
+            continue;
+        }
+        int own = is_unnamed_object(item) && strcmp(item->str1, cls->str1) == 0;
+        int braced = item->kind == AST_INIT_LIST && class_declares_ctor(cls);
+        if (!own && !braced) {
+            lift_objects_expr(slot, all, prefix);
+            /* any other value (`a[0] = other`, or `5` for a converting constructor) copy-
+             * initializes the element: `Counter(value)`, again in place */
+            if (item->kind != AST_INIT_LIST && item->kind != AST_DESIG_INIT && class_declares_ctor(cls)) {
+                AstNode *init = ast_new(AST_DIRECT_INIT, item->line);
+                init->file = item->file;
+                init->type = ast_ident(cls->str1, item->line);
+                init->ival = 1; /* a copy: lower.c assigns it where the class has no copy constructor */
+                ast_list_append(&init->list, *slot);
+                *slot = init;
+            }
+            continue;
+        }
+        for (int k = 0; k < item->list.count; k++) lift_objects_expr(&item->list.items[k], all, prefix);
+        AstNode *init = item;
+        if (braced) {
+            init = ast_new(AST_DIRECT_INIT, item->line);
+            init->file = item->file;
+            init->list = item->list;
+        } else {
+            free(item->str1);
+            item->str1 = NULL;
+        }
+        init->type = ast_ident(cls->str1, item->line);
+        *slot = init;
+    }
+}
+
 /* `T x = T(args);` -> `T x(args);` */
 static void elide_copy_from_object(AstNode *decl, const ClassList *all, AstList *prefix) {
     if (decl->kind != AST_VAR_DECL || !is_unnamed_object(decl->a)) return;
@@ -769,7 +842,11 @@ static void lift_objects_decl(AstNode *n, const ClassList *all, AstList *prefix)
         return;
     }
     elide_copy_from_object(n, all, prefix);
-    lift_objects_expr(&n->a, all, prefix);
+    int ndims = 0;
+    AstNode *cls = (n->kind == AST_VAR_DECL && n->a != NULL && n->a->kind == AST_INIT_LIST)
+                       ? array_object_class(n->type, all, &ndims) : NULL;
+    if (cls != NULL) keep_array_elements(n->a, 0, ndims, cls, all, prefix);
+    else lift_objects_expr(&n->a, all, prefix);
 }
 
 static void desugar_objects_slot(AstNode **slot, const ClassList *all);
@@ -874,14 +951,36 @@ static void desugar_objects_decls(AstList *decls, const ClassList *all) {
         if (n == NULL) continue;
         int errors_before = g_obj_errors;
         if (n->kind == AST_NAMESPACE_DECL || n->kind == AST_CLASS_DECL) {
+            int was_in_class = g_obj_in_class;
+            if (n->kind == AST_CLASS_DECL) g_obj_in_class = 1;
             desugar_objects_decls(&n->list, all);
+            g_obj_in_class = was_in_class;
         } else if (n->kind == AST_FUNC_DEF) {
             g_obj_counter = 0;
             desugar_objects_slot(&n->a, all);
         } else if (n->kind == AST_VAR_DECL || n->kind == AST_VAR_DECL_GROUP) {
             /* file scope: only the `T g = T(args);` form has anywhere to go */
             AstList none = ast_list_new();
-            if (n->kind == AST_VAR_DECL) elide_copy_from_object(n, all, &none);
+            if (n->kind == AST_VAR_DECL) {
+                elide_copy_from_object(n, all, &none);
+                int ndims = 0;
+                /* a global array of objects: built in place, at the top of main() (a
+                 * class member's `= {...}` is not this: it stays as it was) */
+                AstNode *cls = (n->a != NULL && n->a->kind == AST_INIT_LIST)
+                                   ? array_object_class(n->type, all, &ndims) : NULL;
+                if (cls != NULL && g_obj_in_class) {
+                    /* the brace list used to be dropped without a word, the elements
+                     * left to the default constructor */
+                    if (class_declares_ctor(cls))
+                        obj_error(n, "an initializer for an array member of class type is not "
+                                     "supported: construct the elements in the constructor");
+                } else if (cls != NULL) {
+                    keep_array_elements(n->a, 0, ndims, cls, all, &none);
+                }
+                if (none.count > 0)
+                    obj_error(n, "an unnamed object nested in a file-scope initializer is not supported: "
+                                 "declare it as a variable");
+            }
         }
         if (g_obj_errors == errors_before) report_leftover_objects(n);
     }

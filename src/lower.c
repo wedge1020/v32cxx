@@ -266,6 +266,13 @@ static void rewrite_expr(AstNode **slot, AstNode *class_decl, LocalVarType *loca
             rewrite_expr(&n->b, class_decl, locals);
             rewrite_expr(&n->c, class_decl, locals);
             break;
+        case AST_INIT_LIST:
+            /* `int a[2] = { count, get(count) };` / `Counter a[2] = { Counter(x), ... }`:
+             * the values of a brace list are expressions like any other */
+            for (int i = 0; i < n->list.count; i++) {
+                rewrite_expr(&n->list.items[i], class_decl, locals);
+            }
+            break;
         case AST_DIRECT_INIT:
             /* Same reasoning as AST_NEW just below -- `Shape shape(x,
              * this->y);`'s own constructor arguments can just as easily
@@ -2419,6 +2426,11 @@ static void finalize_calls_expr(AstNode **slot, AstNode *class_decl, LocalVarTyp
                 }
             }
             break;
+        case AST_INIT_LIST:
+            for (int i = 0; i < n->list.count; i++) {
+                finalize_calls_expr(&n->list.items[i], class_decl, locals);
+            }
+            break;
         case AST_DIRECT_INIT:
             /* Same reasoning as AST_NEW just above: only the constructor
              * arguments (`Shape shape(getSize());`) can contain a nested
@@ -2964,6 +2976,11 @@ static void fix_reference_access_expr(AstNode **slot, LocalVarType *locals) {
             fix_reference_access_expr(&n->a, locals); /* array-new's own
                 size expression, if any */
             break;
+        case AST_INIT_LIST:
+            for (int i = 0; i < n->list.count; i++) {
+                fix_reference_access_expr(&n->list.items[i], locals);
+            }
+            break;
         case AST_DIRECT_INIT:
             for (int i = 0; i < n->list.count; i++) {
                 fix_reference_access_expr(&n->list.items[i], locals);
@@ -3317,6 +3334,11 @@ static void new_delete_rewrite_expr(AstNode **slot, AstNode *class_decl, LocalVa
             break;
         case AST_SIZEOF:
             new_delete_rewrite_expr(&n->a, class_decl, locals); /* NULL-safe for the type-taking form, same as AST_CAST's own case just above */
+            break;
+        case AST_INIT_LIST:
+            for (int i = 0; i < n->list.count; i++) {
+                new_delete_rewrite_expr(&n->list.items[i], class_decl, locals);
+            }
             break;
         case AST_DIRECT_INIT:
             /* `Shape shape(new Widget);` -- a stack local's own direct-
@@ -3682,6 +3704,211 @@ static AstNode *build_array_ctor_loop(AstNode *stmt, AstNode *var_class, int *ar
     return loop;
 }
 
+/* ---- arrays of objects: construction in place ----------------------------
+ *
+ * `Counter a[3] = { Counter(1), {2} };` -- each element is initialized
+ * directly from its own initializer (C++17: no temporary, no copy), the
+ * elements left out are default-constructed, and a multi-dimensional
+ * array (`Counter g[2][2]`) is that applied row by row. The AST gets the
+ * declaration without its initializer, then, in element order, one
+ * constructor call per initialized element and a loop for each run of
+ * elements that was left out:
+ *
+ *     Counter a[3];
+ *     Counter__Counter__int(&a[0], 1);
+ *     Counter__Counter__int(&a[1], 2);
+ *     for (int __v32_ctor_arr_iN = 2; __v32_ctor_arr_iN < 3; ...)
+ *         Counter__Counter__void(&a[__v32_ctor_arr_iN]);
+ *
+ * The elements are AST_DIRECT_INIT nodes (ast.c's desugar_unnamed_objects
+ * makes them out of `Counter(1)` and `{2}`), resolved against the class's
+ * constructors by sema like any `Counter c(1);`. An element that is
+ * anything else (`a[0]` copied from another object) is assigned. The
+ * destructors are run by destruct_scope_block, the whole array in
+ * reverse order. */
+#define MAX_ARRAY_DIMS 8
+
+typedef struct {
+    int is_var;      /* the index is a loop variable, else the constant `value` */
+    int value;
+    char name[64];
+} ArrayIndex;
+
+/* The class of the elements of an array of objects, of any number of
+ * dimensions (their lengths in dims[]), or NULL. */
+static AstNode *array_object_dims(AstNode *type, int *dims, int *ndims) {
+    int n = 0;
+    while (type != NULL && type->kind == AST_CONST_TYPE) type = type->a;
+    while (type != NULL && type->kind == AST_ARRAY_TYPE) {
+        if (n == MAX_ARRAY_DIMS || type->ival <= 0) return NULL;
+        dims[n++] = type->ival;
+        type = type->a;
+        while (type != NULL && type->kind == AST_CONST_TYPE) type = type->a;
+    }
+    if (n == 0 || type == NULL || (type->kind != AST_IDENT && type->kind != AST_QUALIFIED_ID)) return NULL;
+    *ndims = n;
+    return type_to_class(type);
+}
+
+static int has_in_place_element(const AstNode *n) {
+    if (n == NULL) return 0;
+    if (n->kind == AST_DIRECT_INIT) return 1;
+    if (n->kind != AST_INIT_LIST) return 0;
+    for (int i = 0; i < n->list.count; i++)
+        if (has_in_place_element(n->list.items[i])) return 1;
+    return 0;
+}
+
+/* `name[i0][i1]...` for the first `n` entries of `path` */
+static AstNode *array_element_ref(const char *name, const ArrayIndex *path, int n, int line) {
+    AstNode *e = ast_ident(name, line);
+    for (int i = 0; i < n; i++) {
+        AstNode *sub = ast_new(AST_SUBSCRIPT, line);
+        sub->a = e;
+        if (path[i].is_var) {
+            sub->b = ast_ident(path[i].name, line);
+        } else {
+            sub->b = ast_new(AST_INT_LIT, line);
+            sub->b->ival = path[i].value;
+        }
+        e = sub;
+    }
+    return e;
+}
+
+static AstNode *call_stmt_on(AstNode *callee_ctor, AstNode *object, const AstList *args, int line) {
+    FuncSemaInfo *info = (FuncSemaInfo *)callee_ctor->sema_info;
+    AstNode *addr = ast_new(AST_UNOP, line);
+    addr->str1 = strdup("addr");
+    addr->a = object;
+    AstNode *call = ast_new(AST_CALL, line);
+    call->a = ast_ident(info != NULL ? info->mangled_name : callee_ctor->str1, line);
+    ast_list_append(&call->list, addr);
+    for (int k = 0; args != NULL && k < args->count; k++) ast_list_append(&call->list, args->items[k]);
+    AstNode *st = ast_new(AST_EXPR_STMT, line);
+    st->a = call;
+    return st;
+}
+
+/* what `Counter x;` runs on the lvalue `object`: the zero-argument
+ * constructor (defaults filled in), or the vtable setup of a class with
+ * none; NULL when the class needs nothing */
+static AstNode *default_construct_stmt(AstNode *object, AstNode *cls, int line) {
+    AstNode *ctor = find_zero_arg_constructor(cls);
+    if (ctor == NULL) return build_vtable_init_stmt(object, cls, line);
+    AstList real_args = ast_list_new();
+    fill_default_args(&real_args, ctor, 1);
+    return call_stmt_on(ctor, object, &real_args, line);
+}
+
+/* Default-constructs the elements `start`..end of dimension `depth` (every
+ * element of the dimensions below) of the array `name`, in a loop. */
+static void default_construct_elements(AstList *out, const char *name, ArrayIndex *path, int depth,
+                                       const int *dims, int ndims, int start, AstNode *cls,
+                                       int *counter, int line) {
+    ArrayIndex *ix = &path[depth];
+    ix->is_var = 1;
+    snprintf(ix->name, sizeof ix->name, "__v32_ctor_arr_i%d", (*counter)++);
+    AstNode *body = ast_new(AST_BLOCK, line);
+    if (depth + 1 == ndims) {
+        AstNode *st = default_construct_stmt(array_element_ref(name, path, ndims, line), cls, line);
+        if (st != NULL) ast_list_append(&body->list, st);
+    } else {
+        default_construct_elements(&body->list, name, path, depth + 1, dims, ndims, 0, cls, counter, line);
+    }
+    if (body->list.count == 0) return;
+
+    AstNode *idx_decl = ast_new(AST_VAR_DECL, line);
+    idx_decl->str1 = strdup(ix->name);
+    idx_decl->type = ast_ident("int", line);
+    idx_decl->a = ast_new(AST_INT_LIT, line);
+    idx_decl->a->ival = start;
+    AstNode *cond = ast_new(AST_BINOP, line);
+    cond->str1 = strdup("<");
+    cond->a = ast_ident(ix->name, line);
+    cond->b = ast_new(AST_INT_LIT, line);
+    cond->b->ival = dims[depth];
+    AstNode *step = ast_new(AST_UNOP, line);
+    step->str1 = strdup("post++");
+    step->a = ast_ident(ix->name, line);
+    AstNode *loop = ast_new(AST_FOR, line);
+    loop->a = idx_decl;
+    loop->b = cond;
+    loop->c = step;
+    loop->d = body;
+    ast_list_append(out, loop);
+}
+
+/* `Counter a[2] = { other, ... }` where `other` is itself a Counter: is the
+ * constructor sema picked a copy constructor (a pointer parameter once the
+ * references are lowered)? If not -- the class never declared one, so the
+ * copy is the implicit member-wise one -- the element is simply assigned. */
+static int copy_is_plain_assignment(AstNode *item, AstNode *cls, AstNode *class_decl, LocalVarType *locals) {
+    const AstNode *vt = infer_expr_type(item->list.items[0], class_decl, locals);
+    vt = vt != NULL ? resolve_typedef_chain(vt) : NULL;
+    if (vt == NULL || vt->kind == AST_POINTER_TYPE || vt->kind == AST_REFERENCE_TYPE ||
+        type_to_class((AstNode *)vt) != cls)
+        return 0;                       /* not an object of this class: a converting constructor */
+    CallResolution *cr = (CallResolution *)item->sema_info;
+    if (cr == NULL || cr->resolved_target == NULL) return 1;
+    AstNode *param = cr->resolved_target->list.count > 1 ? cr->resolved_target->list.items[1] : NULL;
+    const AstNode *pt = (param != NULL && param->type != NULL) ? resolve_typedef_chain(param->type) : NULL;
+    while (pt != NULL && pt->kind == AST_CONST_TYPE) pt = pt->a;
+    return pt == NULL || (pt->kind != AST_POINTER_TYPE && pt->kind != AST_REFERENCE_TYPE);
+}
+
+/* The statements that build dimension `depth` of the array `name` from the
+ * brace list `list` (NULL: nothing written for it). */
+static void construct_array_from_list(AstList *out, const char *name, ArrayIndex *path, int depth,
+                                      AstNode *list, const int *dims, int ndims, AstNode *cls,
+                                      int *counter, int line, AstNode *class_decl, LocalVarType *locals) {
+    int given = (list != NULL) ? list->list.count : 0;
+    if (given > dims[depth]) given = dims[depth];
+    for (int k = 0; k < given; k++) {
+        AstNode *item = list->list.items[k];
+        path[depth].is_var = 0;
+        path[depth].value = k;
+        if (depth + 1 < ndims) {
+            if (item != NULL && item->kind == AST_INIT_LIST) {
+                construct_array_from_list(out, name, path, depth + 1, item, dims, ndims, cls, counter, line,
+                                          class_decl, locals);
+            } else {
+                default_construct_elements(out, name, path, depth + 1, dims, ndims, 0, cls, counter, line);
+            }
+            continue;
+        }
+        AstNode *object = array_element_ref(name, path, ndims, line);
+        AstNode *st = NULL;
+        if (item->kind == AST_DIRECT_INIT && item->ival == 1 && item->list.count == 1 &&
+            copy_is_plain_assignment(item, cls, class_decl, locals)) {
+            /* a copy of an object of the class, which has no copy constructor of its own */
+            AstNode *assign = ast_new(AST_ASSIGN, line);
+            assign->str1 = strdup("=");
+            assign->a = object;
+            assign->b = item->list.items[0];
+            st = ast_new(AST_EXPR_STMT, line);
+            st->a = assign;
+        } else if (item->kind == AST_DIRECT_INIT) {
+            CallResolution *cr = (CallResolution *)item->sema_info;
+            if (cr != NULL && cr->resolved_target != NULL)
+                st = call_stmt_on(cr->resolved_target, object, &item->list, line);
+            else if (item->list.count == 0)
+                st = default_construct_stmt(object, cls, line);
+            /* else: sema already reported that no constructor matches */
+        } else {
+            AstNode *assign = ast_new(AST_ASSIGN, line);
+            assign->str1 = strdup("=");
+            assign->a = object;
+            assign->b = item;
+            st = ast_new(AST_EXPR_STMT, line);
+            st->a = assign;
+        }
+        if (st != NULL) ast_list_append(out, st);
+    }
+    if (given < dims[depth])
+        default_construct_elements(out, name, path, depth, dims, ndims, given, cls, counter, line);
+}
+
 /* Rebuilds `block`'s own statement list, inserting a constructor call
  * immediately after any VarDecl that needs one. Recurses into each
  * statement FIRST (so a nested block's own VarDecls get handled too)
@@ -3708,7 +3935,25 @@ static void inject_ctor_calls_block(AstNode *block, AstNode *class_decl, LocalVa
         inject_ctor_calls_stmt(&stmt, class_decl, locals, arr_ctor_counter);
         ast_list_append(&new_list, stmt);
 
-        if (stmt->kind == AST_VAR_DECL && stmt->a == NULL && stmt->type != NULL
+        int adims[MAX_ARRAY_DIMS], andims = 0;
+        AstNode *aclass = NULL;
+        if (stmt->kind == AST_VAR_DECL && stmt->type != NULL &&
+            ((stmt->a != NULL && stmt->a->kind == AST_INIT_LIST && has_in_place_element(stmt->a)) ||
+             (stmt->a == NULL && resolve_typedef_chain(stmt->type)->kind == AST_ARRAY_TYPE &&
+              resolve_typedef_chain(stmt->type)->a != NULL &&
+              resolve_typedef_chain(stmt->type)->a->kind == AST_ARRAY_TYPE)))
+            aclass = array_object_dims(stmt->type, adims, &andims);
+        if (aclass != NULL) {
+            /* `Counter a[3] = { Counter(1), {2} };` (elements built in place), or a
+             * multi-dimensional `Counter g[2][2];` -- see construct_array_from_list */
+            AstNode *list = stmt->a;
+            stmt->a = NULL;
+            ArrayIndex path[MAX_ARRAY_DIMS];
+            AstList made = ast_list_new();
+            construct_array_from_list(&made, stmt->str1, path, 0, list, adims, andims, aclass,
+                                      arr_ctor_counter, stmt->line, class_decl, *locals);
+            for (int k = 0; k < made.count; k++) ast_list_append(&new_list, made.items[k]);
+        } else if (stmt->kind == AST_VAR_DECL && stmt->a == NULL && stmt->type != NULL
             && stmt->type->kind == AST_ARRAY_TYPE
             && stmt->type->a != NULL && stmt->type->a->kind != AST_POINTER_TYPE
             && stmt->type->a->kind != AST_REFERENCE_TYPE) {
@@ -4717,8 +4962,9 @@ typedef struct DestructibleLocal {
     const char *var_name;
     AstNode *dtor; /* the class's own destructor -- always AST_FUNC_DEF
                        (has a body) by construction; see below */
-    int array_len; /* > 0: the local is a one-dimensional array of that
-                       many objects, each destroyed, last element first */
+    int array_dims;           /* > 0: the local is an array of that many dimensions... */
+    int array_len[MAX_ARRAY_DIMS]; /* ...of these lengths, every object destroyed,
+                                       last element first */
     struct DestructibleLocal *next;
 } DestructibleLocal;
 
@@ -4748,14 +4994,17 @@ static AstNode *build_dtor_call_stmt(DestructibleLocal *dl) {
 
     int line = dl->dtor->line;
     static int arr_dtor_counter = 0;
-    char idx_name[64];
-    snprintf(idx_name, sizeof(idx_name), "__v32_dtor_arr_i%d", arr_dtor_counter);
+    char idx_names[MAX_ARRAY_DIMS][64];
+    for (int d = 0; d < dl->array_dims; d++) {
+        snprintf(idx_names[d], sizeof idx_names[d], "__v32_dtor_arr_i%d", arr_dtor_counter);
+        arr_dtor_counter++;
+    }
 
     AstNode *object = ast_ident(dl->var_name, line);
-    if (dl->array_len > 0) {
+    for (int d = 0; d < dl->array_dims; d++) {
         AstNode *subscript = ast_new(AST_SUBSCRIPT, line);
         subscript->a = object;
-        subscript->b = ast_ident(idx_name, line);
+        subscript->b = ast_ident(idx_names[d], line);
         object = subscript;
     }
     AstNode *addr = ast_new(AST_UNOP, line);
@@ -4768,38 +5017,42 @@ static AstNode *build_dtor_call_stmt(DestructibleLocal *dl) {
 
     AstNode *expr_stmt = ast_new(AST_EXPR_STMT, line);
     expr_stmt->a = call;
-    if (dl->array_len <= 0) return expr_stmt;
+    if (dl->array_dims <= 0) return expr_stmt;
 
     /* `Derived arr[3];` leaving scope: the mirror of build_array_ctor_loop,
-     * counting down --
+     * counting down, one loop per dimension (the last index runs fastest,
+     * so the objects go in exactly the reverse of the order they were built) --
      *   for (int i = N - 1; i >= 0; i--) Derived__dtor(&arr[i]);
      * Arrays were constructed element by element but never destroyed. */
-    arr_dtor_counter++;
-    AstNode *idx_decl = ast_new(AST_VAR_DECL, line);
-    idx_decl->str1 = strdup(idx_name);
-    idx_decl->type = ast_ident("int", line);
-    idx_decl->a = ast_new(AST_INT_LIT, line);
-    idx_decl->a->ival = dl->array_len - 1;
+    AstNode *inner = expr_stmt;
+    for (int d = dl->array_dims - 1; d >= 0; d--) {
+        AstNode *idx_decl = ast_new(AST_VAR_DECL, line);
+        idx_decl->str1 = strdup(idx_names[d]);
+        idx_decl->type = ast_ident("int", line);
+        idx_decl->a = ast_new(AST_INT_LIT, line);
+        idx_decl->a->ival = dl->array_len[d] - 1;
 
-    AstNode *cond = ast_new(AST_BINOP, line);
-    cond->str1 = strdup(">=");
-    cond->a = ast_ident(idx_name, line);
-    cond->b = ast_new(AST_INT_LIT, line);
-    cond->b->ival = 0;
+        AstNode *cond = ast_new(AST_BINOP, line);
+        cond->str1 = strdup(">=");
+        cond->a = ast_ident(idx_names[d], line);
+        cond->b = ast_new(AST_INT_LIT, line);
+        cond->b->ival = 0;
 
-    AstNode *step = ast_new(AST_UNOP, line);
-    step->str1 = strdup("post--");
-    step->a = ast_ident(idx_name, line);
+        AstNode *step = ast_new(AST_UNOP, line);
+        step->str1 = strdup("post--");
+        step->a = ast_ident(idx_names[d], line);
 
-    AstNode *body = ast_new(AST_BLOCK, line);
-    ast_list_append(&body->list, expr_stmt);
+        AstNode *body = ast_new(AST_BLOCK, line);
+        ast_list_append(&body->list, inner);
 
-    AstNode *loop = ast_new(AST_FOR, line);
-    loop->a = idx_decl;
-    loop->b = cond;
-    loop->c = step;
-    loop->d = body;
-    return loop;
+        AstNode *loop = ast_new(AST_FOR, line);
+        loop->a = idx_decl;
+        loop->b = cond;
+        loop->c = step;
+        loop->d = body;
+        inner = loop;
+    }
+    return inner;
 }
 
 /* True when control provably cannot fall past this statement.
@@ -5045,13 +5298,14 @@ static void destruct_scope_block(AstNode *block, DestructScope *parent_scope,
         destruct_scope_stmt(&stmt, &this_scope, loop_boundary, break_boundary, func_return_type, ret_tmp_counter);
         ast_list_append(&new_list, stmt);
 
-        int array_len = 0;
+        int array_dims = 0, array_len[MAX_ARRAY_DIMS];
         AstNode *obj_type = (stmt->kind == AST_VAR_DECL) ? stmt->type : NULL;
-        if (obj_type != NULL && obj_type->kind == AST_ARRAY_TYPE && obj_type->ival > 0 &&
-            obj_type->a != NULL) {
-            array_len = obj_type->ival;      /* one dimension only */
+        while (obj_type != NULL && obj_type->kind == AST_ARRAY_TYPE && obj_type->ival > 0 &&
+               obj_type->a != NULL && array_dims < MAX_ARRAY_DIMS) {
+            array_len[array_dims++] = obj_type->ival;      /* every dimension */
             obj_type = obj_type->a;
         }
+        if (obj_type != NULL && obj_type->kind == AST_ARRAY_TYPE) obj_type = NULL; /* a length not known */
         if (obj_type != NULL &&
             (obj_type->kind == AST_IDENT || obj_type->kind == AST_QUALIFIED_ID)) {
             AstNode *var_class = type_to_class(obj_type);
@@ -5061,7 +5315,8 @@ static void destruct_scope_block(AstNode *block, DestructScope *parent_scope,
                     DestructibleLocal *dl = malloc(sizeof(DestructibleLocal));
                     dl->var_name = stmt->str1;
                     dl->dtor = dtor;
-                    dl->array_len = array_len;
+                    dl->array_dims = array_dims;
+                    for (int d = 0; d < array_dims; d++) dl->array_len[d] = array_len[d];
                     dl->next = this_scope.locals;
                     this_scope.locals = dl;
                 }

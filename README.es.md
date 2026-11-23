@@ -93,7 +93,8 @@ alcance](#deliberadamente-fuera-del-alcance).
 - Objetos en la pila (`Shape s;`, `Shape s(7);`), como temporales sin nombre
   (`return Vec(x, y);`, `v.push_back(Enemy(1, 2, 3));`), en arreglos
   (construidos y destruidos elemento por elemento, incluidos los arreglos
-  miembro), en el ámbito de archivo (construidos al comienzo de `main`, con los
+  miembro; `Enemy a[2] = { Enemy(1), {2} };` construye cada elemento en su
+  sitio, como C++17, también con varias dimensiones y en el ámbito de archivo), en el ámbito de archivo (construidos al comienzo de `main`, con los
   argumentos del constructor si se indican) y en el montón con `new`/`delete`.
   Los destructores se ejecutan en cada salida de ámbito: la llave de cierre,
   `return`, `break`, `continue`.

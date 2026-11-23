@@ -92,7 +92,8 @@ of scope](#deliberately-out-of-scope).
 - Objects  on  the   stack  (`Shape  s;`,  `Shape   s(7);`),  as  unnamed
   temporaries (`return  Vec(x, y);`, `v.push_back(Enemy(1, 2,  3));`), in
   arrays  (constructed and  destroyed element  by element,  member arrays
-  included),  at file  scope  (constructed  at the  top  of `main`,  with
+  included; `Enemy a[2] =  { Enemy(1), {2} };` builds each element in place,
+  as C++17 does, also for several dimensions and at file scope),  at file  scope  (constructed  at the  top  of `main`,  with
   constructor arguments if  given), and on the  heap with `new`/`delete`.
   Destructors  run at  every  scope exit:  the  closing brace,  `return`,
   `break`, `continue`.
