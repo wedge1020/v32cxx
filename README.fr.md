@@ -22,8 +22,8 @@ différemment.
 > **État : fonctionnel.** Toute la chaîne — prétraitement, analyse syntaxique,
 > analyse sémantique, abaissement (*lowering*) et génération de code —
 > fonctionne de bout en bout et est vérifiée avec le compilateur, l'assembleur
-> et la console **réels** de Vircon32 (`make realcheck` : 233 programmes
-> compilés et assemblés, dont 164 s'auto-vérifient à l'exécution sur une
+> et la console **réels** de Vircon32 (`make realcheck` : 240 programmes
+> compilés et assemblés, dont 171 s'auto-vérifient à l'exécution sur une
 > console sans écran). Cinq démos d'une certaine taille (trois jeux en C++, un
 > portage de Rogue et un Spy vs Spy en C pur) se construisent avec lui. Voir les [Limitations
 > connues](#limitations-connues) pour un tableau honnête de ce qui manque.
@@ -466,9 +466,17 @@ Vérifiées avec le transpileur actuel et le vrai compilateur Vircon32 (novembre
 - **Définitions et écriture des types.** Une définition qualifiée a besoin d'une déclaration dans cet espace de
   noms (`int a::zz() {}` sans `zz` dans `a`, ou `int a::f(float)` quand `a` n'a que `f(int)`, est une erreur,
   comme en C++). Toute écriture d'un type de paramètre (`D` dans l'espace ou par `using`, `a::D`, un typedef) est
-  un seul type pour l'appariement et pour le nom C ; un `::` initial (`::a::D`) n'est pas accepté. Les membres de
+  un seul type pour l'appariement et pour le nom C. Les membres de
   type classe, union ou enum qualifiés par un espace de noms sont mis à zéro comme les autres (`new H`, `H h{}`,
-  `new H[n]{}`). Reste : `new U` d'une union elle-même, `new E[n]` d'un enum.
+  `new H[n]{}`).
+- **`new` d'une union ou d'un enum, agrégats dans `new T[n]{...}`.** `new U`, `new U()`, `new U{}` (toute l'union mise à zéro, mot par mot),
+  `new U{5}` (le premier membre), `new U[n]`, `new U[n]{ {1}, {2} }`, `new n::U`, `new E`, `new E(v)`, `new E[n]`, `new E[n]{a, b}`,
+  `new E[n]()` (enum simple ou `enum class`, dans un espace de noms ou non) et `delete` / `delete[]` passent par le crochet d'allocation. Dans
+  `new T[n]{ T(), T(1, 2) }` / `{ {1, 2}, {} }` d'une classe sans constructeur, les éléments listés sont construits depuis la liste (zéro, pointeurs NULL, pour ce qu'elle omet).
+- **Un `::` initial** (`::x`, `::f()`, `::a::D`, `::a::f()`, `: public ::B`) atteint le nom du portée fichier là où un espace de noms ou une variable locale en déclare un
+  du même nom. Non accepté : `::new`, `::delete`, `::operator` (une erreur le dit), et `a::D()` / `::a::D()` comme expression.
+- **Opérateurs hors classe d'une classe d'un espace de noms** : le premier paramètre peut être un type nu de cet espace (`a::C a::C::operator-(D d)`, `operator()`,
+  `operator[]`, `operator==`, `operator a::D()`) ; les opérateurs autres que `+ - * / = ! == != < > <= >= += -= *= /= [] () ++ --` ne sont acceptés sous aucune forme.
 - **Un programme C ne peut pas définir ce que définissent les en-têtes du SDK.** `misc.h` (ajouté pour `new` et
   `--alloc`) et `video.h` (ajouté pour `--alloc`) contiennent des corps de fonctions : une fonction C du même nom
   (`malloc`, `clear_screen`) est une erreur nommant l'en-tête ; renomme-la ou utilise `--rename`. Le runtime de
@@ -654,8 +662,8 @@ un répertoire temporaire et s'arrête avec son message s'il ne trouve pas les e
 `make realcheck` après `make test`) affiche le compilateur utilisé, **refuse un `bin/` sans
 `BUILD-INFO`** (construit par un ancien `build-tools.sh`) en demandant
 de le reconstruire, et avertit si la copie de ComputerSoftware a avancé depuis la construction.
-Il compile et assemble aujourd'hui 233 programmes (4 ne sont pas empaquetés : leurs ressources
-`#texture`/`#sound` ne sont pas dans `tests/`) et lance 164 cartouches auto-vérifiantes, dont les
+Il compile et assemble aujourd'hui 240 programmes (4 ne sont pas empaquetés : leurs ressources
+`#texture`/`#sound` ne sont pas dans `tests/`) et lance 171 cartouches auto-vérifiantes, dont les
 constructions `--alloc=arena` et `--alloc=gc` de `tests/real_variants.txt` (`nom source options` :
 ajoutez-y les variantes d'un échantillon qui alloue). `tools/prune-release.sh [--apply]` est le
 nettoyeur de publication : par défaut une simulation, il liste (et avec `--apply` supprime, par

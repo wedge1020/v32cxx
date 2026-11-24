@@ -2,8 +2,8 @@
 
 ## 20261123-dev
 
-Every feature below has a self-checking sample that passes on the machine (`make realcheck`: 233 programs compiled and
-assembled, 0 failed, 164 cartridges all passing in v32sim, the `--alloc=arena` / `--alloc=gc` variants included).
+Every feature below has a self-checking sample that passes on the machine (`make realcheck`: 240 programs compiled and
+assembled, 0 failed, 171 cartridges all passing in v32sim, the `--alloc=arena` / `--alloc=gc` variants included).
 
 ### New features
 
@@ -186,7 +186,7 @@ assembled, 0 failed, 164 cartridges all passing in v32sim, the `--alloc=arena` /
   constructors and operators. Before, the registry merged the pair but the output declared `b__q__D` and defined `b__q__a_D`. Visible in the
   output: parameters of a namespace-qualified class type mangle without the qualifier (`length_of__std_string_ref` is `length_of__string_ref`,
   `is__v32_String_ref_int_ptr` is `is__String_ref_int_ptr`). `tests/208sample.cpp` (greps for one prototype and one definition per name, and
-  calls through every spelling). Left: a leading `::` (`::a::D`) is not in the grammar.
+  calls through every spelling).
 - **A qualified definition needs a matching declaration**: `int a::zz() {}` with no `zz` in `a`, and `int a::f(float) {}` when `a` only has
   `f(int)`, were accepted as new functions. Now `no declaration of 'zz' in namespace 'a' matches this definition` (`a::in` for a nested
   one); the class form (`void a::C::nope() {}`) was already `no matching declaration for out-of-line definition of 'nope' in class 'C'`.
@@ -196,8 +196,25 @@ assembled, 0 failed, 164 cartridges all passing in v32sim, the `--alloc=arena` /
   one, one in a nested namespace, or one seen through `using namespace n` (the zero helpers only recognized a plain identifier, and
   `lower_find_union` only the file scope). `c_resolved_type` now reduces a qualified name to its last component, `lower_find_union` looks into
   namespaces. Tested on the machine with the stack and the heap dirtied first, in the default, arena and gc builds. `tests/206sample.cpp`.
-  Left for later: `new U` of a union itself (`v32_new_U` is never defined), `new E[n]` of an enum, `new T[n]{ T() }` for an aggregate (the
-  listed element is not built).
+- **`new` of a union and of an enum** (`tests/210sample.cpp`, on the machine in the default, arena and gc builds). `new U`, `new U()`, `new U{}`,
+  `new U{5}`, `new U[n]`, `new U[n]{}`, `new U[n]{ {1}, {2} }`, `new n::U` called a `v32_new_U` / `v32_new_unknown` that was never defined. Phase 6 now names the
+  union (`new_union_of`) and codegen defines only what the program uses (`lower_union_new_bits`: `v32_new_U`, `v32_new_arr_U`, `_init` / `_rest`), through
+  the hook; `()`, `{}` and `new U` zero every word as the union lowering does (QUIRKS #33, `lower_zero_stmts` takes a union), `{v}` initializes the first member.
+  `new E`, `new E(v)`, `new E[n]`, `new E[n]{a, b}`, `new E[n]()` of an enum (plain, `enum class`, in a namespace) are `int` arrays and a cast, the listed values cast to `(E)` (#34).
+  `delete[]` of a pointer to a namespace-qualified union or enum no longer asks for a cast when a class has a destructor.
+- **`new T[n]{ T(), T(1, 2) }` and `{ {1, 2}, {} }` of an aggregate** (no constructor; a union too) build the listed elements: they are zeroed with the `_rest`
+  helper (pointer members NULL, `(E)0`, unions word by word), then the members the list names are assigned, or a value of the type is copied. A class that is not an
+  aggregate (a base, a virtual function, a destructor, default member initializers) is the error `'T' is not an aggregate`. Mixed with classes with constructors and `new T*[n]{ new T(), nullptr }`.
+- **Out-of-line operators of a namespaced class** whose parameter is a bare type of the namespace (`a::C a::C::operator-(D d)`, `operator+`, `*`, `==`, `!=`, `<`, `()`,
+  `[]`, `+=`, `-=`, `=`, unary `-` / `!`, `++`, `operator a::D()`, `operator Mode()`) were a syntax error. The lexer's qualifier armed by `C::` was still pending when
+  `D` was read, so `D` was looked up in the class; `ool_enter` now clears it, and a conversion operator enters its namespace before its type is read. (Not a bison
+  mid-rule problem: the action ran in time, the stale lexer state was the cause.) `operator a::D` and `operator D` are one name. `tests/211sample.cpp`. Also fixed on the way: an
+  out-of-line method with a by-value struct parameter wrote its copy (`P p = *__v32_byval_p;`) twice. Operators `%`, `&`, `|`, `<<`... were never supported, in or out of a class.
+- **A leading `::`**: `::x`, `::f()`, `::a::D`, `::a::f()`, `new ::a::D`, `: public ::B`, in expressions and types. It never reaches the grammar (whose conflict counts are
+  pinned: a production adds a conflict to each of the five declaration-start states): `parse_lex` in parser.y drops it, arms the lexer's qualifier with the file scope and marks the
+  name that follows. A rooted name is an `AST_QUALIFIED_ID` with `ival` 1 (`::x` has one component); sema looks it up in the file scope only (`sema_qualifier_of` writes it `::a`,
+  `resolve_global_var`, `collect_qualified_free_function_candidates`), phase 0c leaves a file-scope variable under its bare name and gives a local or parameter that the
+  function's `::x` would hide another name (`x__hid`). `::print_at(...)` of an SDK function resolves as an unqualified one. `::new`, `::delete`, `::operator` are a clear error. `tests/212sample.cpp`, `212bad.cpp`, `212bad2.cpp`.
 - **`Counter arr[3]` and friends** no longer run constructors or destructors twice (see List-initialization).
 - **Class members**: a class member named like an enumerator of an `enum class`, a local, a parameter or a function is not mistaken for it.
 
@@ -246,18 +263,20 @@ assembled, 0 failed, 164 cartridges all passing in v32sim, the `--alloc=arena` /
   default, `--apply` to act; same shape as v32sim's) removes the clone, the private copies of v32sim's tools, those build scripts, bison
   reports, tracked build outputs and editor/merge leftovers, with `git rm` for tracked paths (staged) and `rm` otherwise.
 - **`make realcheck` is the gate.** It runs `make test`, then compiles, assembles and packs every output with the real Vircon32 toolchain and
-  runs the self-checking samples in v32sim (`-F 6000` frames; `V32_FRAMES` overrides): 233 programs compiled, 0 failed, 164 cartridges passing.
+  runs the self-checking samples in v32sim (`-F 6000` frames; `V32_FRAMES` overrides): 240 programs compiled, 0 failed, 171 cartridges passing.
   `tests/real_variants.txt` (`name source flags`) lists the arena and gc builds of the samples that allocate (179, 184, 186gc, 187-199, 102,
-  105, 108, 110-112, 114-117, 125, 169 (with `--yield-points=10`), 176, 183, 202, 206, plus 182/185 with `-DGC_NO_THRESHOLD`); check.sh transpiles them itself. Every sample in
+  105, 108, 110-112, 114-117, 125, 169 (with `--yield-points=10`), 176, 183, 202, 206, 210, 212, plus 182/185 with `-DGC_NO_THRESHOLD`); check.sh transpiles them itself. Every sample in
   `tests/` was also transpiled in both modes and compiled and assembled by the stock compiler: the one that failed in the allocator
   builds, 169sample (it defines the SDK's `get_cycle_counter`), passes since the runtime stopped including `time.h`. **A C program that
   defines a function the SDK headers also define** (`clear_screen`, `malloc`...) cannot take a header v32c++ itself adds (`misc.h` for `new`
   and the allocators, `video.h` for the out-of-memory message): that is now one error naming the function, the header and `--rename`
   (`codegen_check_sdk_clash`, `prescan_sdk_header_defines`; `tests/209bad.c`). New self-checking
-  samples: `tests/174sample.cpp` ... `208sample.cpp` (with `*bad.cpp` error checks); a `.input` file beside a sample feeds a v32io device.
+  samples: `tests/174sample.cpp` ... `212sample.cpp` (with `*bad.cpp` error checks); a `.input` file beside a sample feeds a v32io device.
 - `tests/std_run.sh NAME [flags]` builds a sample as standard C with `tests/stddriver.c` and runs it (default, `--alloc=arena`, `--alloc=gc`);
   `tests/arena_full.sh` and `tests/gc_full.sh` cover the out-of-space paths. `make test` also runs sample 90 and 154 against a stub SDK
   (`tests/sdkstub`) so the SDK-present paths are covered without the SDK.
+- **The build is warning-free on macOS (clang).** The flex-generated `src/lexer.c` tripped `-Wmisleading-indentation` twice, so the Makefile builds `lexer.o` with
+  `-Wno-misleading-indentation` (`$(OBJ_DIR)/lexer.o: CFLAGS += ...`); nothing else changes.
 - `make archive` writes `../v32cxx-project-YYYYMMDD.zip` (the date of `VERSION`); `make clean` removes `../v32cxx-project-*.zip`.
 
 ### Docs

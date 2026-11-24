@@ -53,6 +53,15 @@
 
 void sema_note_using(const char *ns, const char *name);   /* sema.c */
 
+/* A leading `::` (the global scope qualifier, `::x`, `::f()`, `::a::D`) never reaches the grammar: parse_lex
+ * (the epilogue) takes it out of the token stream, arms the lexer's qualifier with the file scope so the name
+ * after it is looked up there, and remembers which name token followed. The few rules that build a name ask
+ * parse_take_rooted() whether theirs was that token. (A production for it adds one shift/reduce conflict to
+ * each of the five states where a declaration may start, and the counts are pinned.) */
+static int parse_lex(void);
+static int parse_take_rooted(const char *str, int line);
+#define yylex parse_lex
+
 /* Expand a string literal's stored inner text (quotes already stripped
  * by lexer.l's STRING_LITERAL rule; escape sequences still raw
  * backslash pairs -- the lexer's own comment on that rule flags
@@ -263,6 +272,12 @@ static AstNode *parse_type_name_node(const char *name, int line) {
  * chain ends in the constructor's own name. */
 static Scope *g_ool_saved_scope = NULL;
 static void ool_enter(const AstList *chain, int skip_last) {
+    /* The lexer arms `pending_qualifier` at every `::` and only an identifier consumes it. In
+     * `a::C::operator-(D d)` (and `operator a::D()`) the token after `operator` is not the name
+     * that was qualified, so the class scope `C::` was still armed when `D` was looked up, in C
+     * instead of the namespace: `D` came out as a plain IDENTIFIER and the parameter list was a
+     * syntax error. Nothing the qualifier named can still be pending here. */
+    if (g_symtab != NULL) g_symtab->pending_qualifier = NULL;
     g_ool_saved_scope = NULL;
     if (g_c_mode || chain == NULL) return;
     Scope *sc = g_symtab->global;
@@ -282,13 +297,15 @@ static void ool_leave(void) {
 }
 
 /* `a::b::E` as written in a type */
-static AstNode *parse_qualified_type_node(const AstList *prefix, const char *name, int line) {
+static AstNode *parse_qualified_type_node(const AstList *prefix, const char *name, int line, int rooted) {
     if (!g_c_mode && g_ns_enum_count > 0) {
         Scope *sc = NULL;
         Symbol *s = NULL;
         for (int i = 0; i < prefix->count; i++) {
             const char *nm = prefix->items[i]->str1;
-            s = (sc == NULL) ? symtab_lookup(g_symtab, nm) : symtab_lookup_in(sc, nm);
+            /* `::a::E`: the first name is looked up from the file scope, not from where it stands */
+            s = (sc == NULL) ? (rooted ? symtab_lookup_in(g_symtab->global, nm) : symtab_lookup(g_symtab, nm))
+                             : symtab_lookup_in(sc, nm);
             if (s == NULL || s->inner_scope == NULL) return NULL;
             sc = s->inner_scope;
         }
@@ -685,10 +702,10 @@ static void conversion_type_text(const AstNode *t, char *buf, size_t size) {
             strncat(buf, "&", size - strlen(buf) - 1);
             break;
         case AST_QUALIFIED_ID:
-            for (int i = 0; i < t->list.count; i++) {
-                if (i > 0) strncat(buf, "::", size - strlen(buf) - 1);
-                strncat(buf, t->list.items[i]->str1, size - strlen(buf) - 1);
-            }
+            /* the last component only: classes and unions keep their bare names in the output, so
+             * `operator a::D` (out of line) and `operator D` (in the class, in namespace a) are one */
+            if (t->list.count > 0 && t->list.items[t->list.count - 1]->str1 != NULL)
+                strncat(buf, t->list.items[t->list.count - 1]->str1, size - strlen(buf) - 1);
             break;
         default:
             if (t->str1 != NULL) strncat(buf, t->str1, size - used - 1);
@@ -2020,20 +2037,22 @@ out_of_line_def:
             symtab_pop_scope(g_symtab);
             ool_leave();
         }
-    | qname_prefix OPERATOR type_spec pointer_opt '(' { ool_enter(&$1, 0); symtab_push_scope(g_symtab, NULL, 0); } ')' opt_const block
+    | qname_prefix OPERATOR { ool_enter(&$1, 0); } type_spec pointer_opt '(' { symtab_push_scope(g_symtab, NULL, 0); } ')' opt_const block
         {
-            /* An out-of-line conversion operator: `Counter::operator int() const { ... }` */
+            /* An out-of-line conversion operator: `Counter::operator int() const { ... }`.
+             * The namespace is entered right after `operator`: the type that follows (`operator D()`,
+             * `operator a::D()`) is looked up there, as the body of the definition is. */
             $$ = ast_new(AST_FUNC_DEF, @1.first_line);
-            $$->type = apply_ptr($3, $4, @3.first_line);
+            $$->type = apply_ptr($4, $5, @4.first_line);
             $$->str1 = conversion_operator_name($$->type);
             $$->list = ast_list_new();
-            if ($8 & (VIRT_SPEC_OVERRIDE | VIRT_SPEC_FINAL)) {
+            if ($9 & (VIRT_SPEC_OVERRIDE | VIRT_SPEC_FINAL)) {
                 yyerror("'override' and 'final' belong on the declaration "
                         "inside the class, not on an out-of-line definition");
                 g_parse_errors++;
             }
-            $$->str2 = ($8 & 1) ? strdup("const") : NULL;
-            $$->a = $9;
+            $$->str2 = ($9 & 1) ? strdup("const") : NULL;
+            $$->a = $10;
             $$->b = ast_new(AST_QUALIFIED_ID, @1.first_line);
             $$->b->list = $1;
             symtab_pop_scope(g_symtab);
@@ -2394,6 +2413,7 @@ qname_prefix:
         {
             $$ = ast_list_new();
             ast_list_append(&$$, ast_ident($1, @1.first_line));
+            if (parse_take_rooted($1, @1.first_line)) $$.items[0]->ival = 1;   /* `::a::...` */
         }
     | qname_prefix name_tok COLONCOLON
         {
@@ -2405,7 +2425,7 @@ qname_prefix:
 qualified_type:
     qname_prefix TYPE_NAME
         {
-            AstNode *en = parse_qualified_type_node(&$1, $2, @1.first_line);
+            AstNode *en = parse_qualified_type_node(&$1, $2, @1.first_line, $1.items[0]->ival == 1);
             if (en != NULL) $$ = en;      /* an enum of a namespace: the one mangled name */
             else {
                 $$ = ast_new(AST_QUALIFIED_ID, @1.first_line);
@@ -2419,6 +2439,7 @@ qualified_id_expr:
     qname_prefix IDENTIFIER
         {
             $$ = ast_new(AST_QUALIFIED_ID, @1.first_line);
+            $$->ival = ($1.items[0]->ival == 1);        /* `::a::x`: looked up from the file scope */
             $$->list = $1;
             ast_list_append(&$$->list, ast_ident($2, @2.first_line));
         }
@@ -3591,7 +3612,19 @@ switch_body:
  */
 
 primary_expr:
-      IDENTIFIER        { $$ = ast_ident($1, @1.first_line); }
+      IDENTIFIER
+        {
+            if (parse_take_rooted($1, @1.first_line)) {
+                /* `::x`, `::f`: the file-scope name, whatever a namespace or a local declares of that name. A
+                 * ROOTED (`ival` 1) one-component qualified name: sema looks it up in the file scope only,
+                 * phase 0c leaves a file-scope variable alone (its C name is the bare name), codegen prints it. */
+                $$ = ast_new(AST_QUALIFIED_ID, @1.first_line);
+                $$->ival = 1;
+                ast_list_append(&$$->list, ast_ident($1, @1.first_line));
+            } else {
+                $$ = ast_ident($1, @1.first_line);
+            }
+        }
     | '(' type_spec pointer_opt ')' braced_init
         {
             /* `(struct P){1, 2}`, `(int){3}`: a C99 compound literal */
@@ -4170,4 +4203,45 @@ member_init:
 
 void yyerror(const char *msg) {
     fprintf(stderr, "%s:%d: error: %s\n", g_current_filename, g_lex_lineno, msg);
+}
+
+/* ---- the global scope qualifier --------------------------------------------
+ * `::x`, `::f()`, `::a::D`, `: public ::B`. yylex (the lexer) returns COLONCOLON for it as for any `::`; a
+ * `::` that does not follow a name is leading, and is dropped here, so the grammar (whose conflict counts
+ * are pinned) never sees it. What it means is carried by the name that follows:
+ *   - the lexer looks the next name up from the scope the previous `::` armed (a class or namespace the name
+ *     before it named); there is none, so the file scope is armed by hand, and `::a::D` finds the namespace
+ *     `a` even where a local or an inner name `a` hides it;
+ *   - the name token's text is remembered (pointer and line) for parse_take_rooted(): `primary_expr: IDENTIFIER`
+ *     builds a ROOTED qualified name (AST_QUALIFIED_ID, ival 1, one component for `::x`), `qname_prefix` marks
+ *     its first component, and qualified_id_expr / qualified_type carry the mark on. */
+#undef yylex
+static const char *g_rooted_str = NULL;
+static int g_rooted_line = 0;
+static int g_lex_prev_tok = 0;
+
+static int parse_take_rooted(const char *str, int line) {
+    if (g_rooted_str == NULL || str != g_rooted_str || line != g_rooted_line) return 0;
+    g_rooted_str = NULL;
+    return 1;
+}
+
+static int parse_lex(void) {
+    int tok = yylex();
+    while (tok == COLONCOLON && !g_c_mode && g_lex_prev_tok != IDENTIFIER && g_lex_prev_tok != TYPE_NAME &&
+           g_lex_prev_tok != TAG_NAME) {
+        g_lex_prev_tok = COLONCOLON;
+        if (g_symtab != NULL) g_symtab->pending_qualifier = g_symtab->global;
+        tok = yylex();
+        if (tok == IDENTIFIER || tok == TYPE_NAME) {
+            g_rooted_str = yylval.str;
+            g_rooted_line = yylloc.first_line;
+        } else if (tok != COLONCOLON) {
+            yyerror("a leading '::' is only supported before a name (`::x`, `::f()`, `::ns::T`); "
+                    "`::new`, `::delete` and `::operator` are not supported");
+            g_parse_errors++;
+        }
+    }
+    g_lex_prev_tok = tok;
+    return tok;
 }

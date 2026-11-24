@@ -491,9 +491,11 @@ static int is_known_primitive_type_name(const char *name) {
         || strcmp(name, "void") == 0;
 }
 
+static int g_print_union_tag = 0;     /* 1 while the allocators of a union are written: `union U`, not `struct U` */
+
 static void print_class_type_name(FILE *out, const char *name) {
     if (g_target == TARGET_STANDARD && !is_known_primitive_type_name(name)) {
-        fprintf(out, "struct %s", name);
+        fprintf(out, g_print_union_tag ? "union %s" : "struct %s", name);
     } else {
         fprintf(out, "%s", name);
     }
@@ -3208,8 +3210,9 @@ static void emit_array_new_runtime(FILE *out, const char *type_name) {
  * Vircon32), which a byte-wise zero cannot give, so such a class is filled from its complete zero initializer. */
 static void emit_rest_zero_body(FILE *out, const AstNode *cd)
 {
-    AstNode *zero = (g_target == TARGET_VIRCON32 && lower_class_holds_pointer(cd)) ? lower_zero_initializer(cd) : NULL;
-    if (g_target == TARGET_VIRCON32 && lower_class_has_union(cd)) {
+    int is_union = cd->kind == AST_UNION_DECL;
+    AstNode *zero = (!is_union && g_target == TARGET_VIRCON32 && lower_class_holds_pointer(cd)) ? lower_zero_initializer(cd) : NULL;
+    if (g_target == TARGET_VIRCON32 && (is_union || lower_class_has_union(cd))) {
         AstList st = ast_list_new();
         AstNode *lv = ast_ident("zero", cd->line);
         if (lower_zero_stmts(cd, lv, &st)) {
@@ -3263,6 +3266,54 @@ static void emit_array_new_runtime_init(FILE *out, const char *type_name, const 
     fprintf(out, "); i < n * sizeof(");
     print_class_type_name(out, type_name);
     fprintf(out, "); i++) z[i] = 0;\n}\n\n\n");
+}
+
+/* The allocators of a union the program `new`s (lower.c phase 6 records which: `lower_union_new_bits`):
+ *     v32_new_U()                  one zeroed union, through the allocation hook
+ *     v32_new_arr_U(n)             n unions, as `new U[n]` leaves them (the hook zeroes in gc mode)
+ *     v32_new_arr_U_init/_rest     `new U[n]{...}`: the allocation, then the zero of elements k..n-1
+ * A zero is every word of the union (Vircon32 unions take no brace list: QUIRKS #33, the assignments of
+ * lower_zero_stmts), the first member's zero written last, so a pointer there reads NULL. */
+static void emit_union_new_runtime(FILE *out, const AstNode *u) {
+    int bits = lower_union_new_bits(u->str1);
+    const char *hook = V32_ALLOC_HOOK ? "__v32_alloc" : "malloc";
+    if (bits == 0) return;
+    g_print_union_tag = 1;
+    if (bits & 1) {
+        AstList st = ast_list_new();
+        AstNode *lv = ast_ident("zero", u->line);
+        print_class_type_name(out, u->str1);
+        fprintf(out, " *v32_new_%s(void)\n{\n    ", u->str1);
+        print_class_type_name(out, u->str1);
+        fprintf(out, " *self = (");
+        print_class_type_name(out, u->str1);
+        fprintf(out, " *)%s(sizeof(", hook);
+        print_class_type_name(out, u->str1);
+        fprintf(out, "));\n");
+        if (g_target == TARGET_VIRCON32 && lower_zero_stmts(u, lv, &st)) {
+            fprintf(out, "    ");
+            print_class_type_name(out, u->str1);
+            fprintf(out, " zero;\n    if (self == NULL) return self;\n");
+            for (int k = 0; k < st.count; k++) print_stmt(out, st.items[k], 1, 0);
+            fprintf(out, "    *self = zero;\n");
+        } else {
+            fprintf(out, "    if (self == NULL) return self;\n    {\n        char *z = (char *)self;\n        int i;\n        for (i = 0; i < sizeof(");
+            print_class_type_name(out, u->str1);
+            fprintf(out, "); i++) z[i] = 0;\n    }\n");
+        }
+        fprintf(out, "    return self;\n}\n\n\n");
+    }
+    if (bits & 2) emit_array_new_runtime(out, u->str1);
+    if (bits & 4) emit_array_new_runtime_init(out, u->str1, u);
+    g_print_union_tag = 0;
+}
+
+static void emit_union_new_runtime_decls(FILE *out, const AstList *decls) {
+    for (int i = 0; i < decls->count; i++) {
+        const AstNode *n = decls->items[i];
+        if (n->kind == AST_UNION_DECL) emit_union_new_runtime(out, n);
+        else if (n->kind == AST_NAMESPACE_DECL) emit_union_new_runtime_decls(out, &n->list);
+    }
 }
 
 /* `new T[n]` of a class: every element is default-constructed, in order.
@@ -3825,6 +3876,7 @@ void codegen_run(const AstNode *program, FILE *out, int verbose_comments) {
         }
         emit_new_delete_runtime_classes(out, &program->list);
         emit_array_new_runtime_classes(out, &program->list);
+        emit_union_new_runtime_decls(out, &program->list);
         emit_primitive_array_new_runtime(out);
         emit_v32_delete(out);
         emit_delete_runtime_classes(out, &program->list);

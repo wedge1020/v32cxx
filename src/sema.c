@@ -1729,9 +1729,10 @@ static char *sema_qualifier_of(const AstNode *qid);
 
 static AstNode *lookup_ident_expr_type(const char *name, AstNode *current_class, LocalVarType *locals,
                                        const AstNode *qid) {
-    LocalVarType *lv = find_local(locals, name);
+    int rooted = qid != NULL && qid->kind == AST_QUALIFIED_ID && qid->ival == 1;   /* `::x`: neither a local nor a member */
+    LocalVarType *lv = rooted ? NULL : find_local(locals, name);
     if (lv != NULL) return lv->type;
-    if (current_class != NULL) {
+    if (current_class != NULL && !rooted) {
         AstNode *owner = NULL;
         AstNode *member = find_member_in_hierarchy(current_class, name, &owner);
         if (member != NULL && member->kind == AST_VAR_DECL) return member->type;
@@ -1743,6 +1744,7 @@ static AstNode *lookup_ident_expr_type(const char *name, AstNode *current_class,
     GlobalVarRegEntry *g = resolve_global_var(name, qual);
     free(qual);
     if (g != NULL) return g->type;
+    if (rooted) return NULL;       /* not in the registry: an SDK or C name, no type to give */
     return find_global_var_type(name);
 }
 
@@ -2323,7 +2325,7 @@ void collect_qualified_free_function_candidates(const AstNode *qid, AstNode ***o
         qual = next;
     }
 
-    char *scope = strdup(g_lookup_ns);
+    char *scope = strdup(qid->ival == 1 ? "" : g_lookup_ns);     /* rooted (`::f`, `::a::f`): from the file scope only */
     for (;;) {
         char *full = sema_ns_join(scope, qual);
         int added = collect_free_in_ns(name, full, out, out_count, out_cap);
@@ -2362,6 +2364,14 @@ static char *sema_qualifier_of(const AstNode *qid) {
         free(qual);
         qual = next;
     }
+    if (qid->kind == AST_QUALIFIED_ID && qid->ival == 1) {
+        /* ROOTED (`::x`, `::a::x`: a leading `::`, parser.y): written "::" + the namespaces, "::" for the file
+         * scope itself; looked up from the file scope only, never relative to the namespace around the use */
+        char *rooted = malloc(strlen(qual) + 3);
+        sprintf(rooted, "::%s", qual);
+        free(qual);
+        qual = rooted;
+    }
     return qual;
 }
 
@@ -2383,6 +2393,8 @@ static GlobalVarRegEntry *find_var_in_ns(const char *name, const char *ns) {
 }
 
 static GlobalVarRegEntry *resolve_global_var(const char *name, const char *qual) {
+    if (qual != NULL && qual[0] == ':' && qual[1] == ':')       /* rooted: `::x` is the file scope's, `::a::x` a's */
+        return find_var_in_ns(name, qual + 2);
     char *scope = strdup(g_lookup_ns);
     GlobalVarRegEntry *found = NULL;
     for (;;) {
@@ -2432,6 +2444,13 @@ const char *sema_namespace_var_cname(const AstNode *expr) {
                     free(outer);
                     outer = next;
                 }
+                if (expr->ival == 1) {                    /* `::E::RED`, `::a::E::RED` */
+                    char *rooted = malloc(strlen(outer) + 3);
+                    sprintf(rooted, "::%s", outer);
+                    free(outer);
+                    outer = rooted;
+                    e = resolve_global_var(last, outer);
+                } else
                 e = resolve_global_var(last, outer[0] != '\0' ? outer : NULL);
                 if (e != NULL && e->decl != NULL && e->decl->kind != AST_ENUM_VALUE) e = NULL;
                 free(outer);
@@ -3275,11 +3294,13 @@ static void resolve_call(AstNode *call, AstNode *current_class, LocalVarType *lo
              * functions don't live in namespaces. Emitting it anyway would
              * print just the final name, silently binding to whatever
              * file-scope function (or C API function) shares it. */
-            char *qual = strdup("");
-            for (int i = 0; i < callee->list.count - 1; i++) {
-                char *next = sema_ns_join(qual, callee->list.items[i]->str1);
+            char *qual = sema_qualifier_of(callee);
+            /* `::print_at(...)`: a rooted, one-component name no program function matches is a C or SDK
+             * function (or an unqualified call written with its scope), which resolves downstream as such */
+            if (callee->ival == 1 && callee->list.count == 1) {
                 free(qual);
-                qual = next;
+                free(candidates);
+                return;
             }
             /* ... unless it names a function POINTER variable of that
              * namespace (`n::handler(3)`): a call through it, which the
@@ -3291,7 +3312,7 @@ static void resolve_call(AstNode *call, AstNode *current_class, LocalVarType *lo
                 return;
             }
             sema_error(call->line, "no function '%s' is declared in namespace '%s'",
-                       name, qual);
+                       name, qual[0] == ':' ? qual + 2 : qual);
             free(qual);
             free(candidates);
             return;
@@ -3327,6 +3348,11 @@ static void check_list_new(AstNode *n) {
     const AstNode *elem_t = resolve_typedef_chain(n->type);
     AstNode *cls = (elem_t != NULL && elem_t->kind == AST_POINTER_TYPE) ? NULL : type_to_class(n->type);
     if (cls == NULL) {
+        /* a union takes a list too (`new U[2]{ {1}, {2.5f} }`: its first member) */
+        const AstNode *ct = canonical_type(n->type);
+        if (ct != NULL && ct->kind == AST_IDENT && ct->str1 != NULL)
+            for (EnumRegEntry *u = g_union_registry; u != NULL; u = u->next)
+                if (u->name != NULL && strcmp(u->name, ct->str1) == 0) return;
         for (int i = 0; i < n->list.count; i++)
             if (n->list.items[i]->kind == AST_INIT_LIST)
                 sema_error(n->line, "`new %s[n]{...}`: an element of a scalar type takes a value, not a list in braces",
@@ -3337,10 +3363,22 @@ static void check_list_new(AstNode *n) {
     int nctors = 0, cctors = 0;
     collect_method_candidates(cls, cls->str1, &ctors, &nctors, &cctors);
     if (nctors == 0) {
-        for (int i = 0; i < n->list.count; i++)
-            if (n->list.items[i]->kind == AST_INIT_LIST)
-                sema_error(n->line, "`new %s[n]{...}`: class '%s' has no constructor, so an element cannot be built "
-                                    "from a list in braces", cls->str1, cls->str1);
+        /* no constructor: an aggregate takes `{1, 2}` / `T(1, 2)` for its members; a class with a base, a
+         * virtual function, a destructor or default member initializers is not one (aggregate_members, lower.c) */
+        int aggregate = cls->str2 == NULL;
+        for (int i = 0; aggregate && i < cls->list.count; i++) {
+            const AstNode *m = cls->list.items[i];
+            if (m == NULL) continue;
+            if (m->kind == AST_VAR_DECL && m->a != NULL) aggregate = 0;
+            else if ((m->kind == AST_FUNC_DECL || m->kind == AST_FUNC_DEF) &&
+                     (m->ival || (m->str1 != NULL && m->str1[0] == '~'))) aggregate = 0;
+        }
+        if (!aggregate)
+            for (int i = 0; i < n->list.count; i++)
+                if (n->list.items[i]->kind == AST_INIT_LIST)
+                    sema_error(n->line, "`new %s[n]{...}`: class '%s' is not an aggregate (it has a base, a virtual "
+                                        "function, a destructor or default member initializers), so an element "
+                                        "cannot be built from a list in braces", cls->str1, cls->str1);
         free(ctors);
         return;
     }

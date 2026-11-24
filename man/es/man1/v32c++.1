@@ -961,6 +961,12 @@ si no se puede (un
 y el programa tiene tal clase, es un error que pide una conversión.
 .PP
 .B new
+de una unión (\fInew U\fR, \fInew U()\fR, \fInew U{}\fR la ponen a cero, \fInew U{5}\fR da valor al primer miembro, \fInew U[n]\fR, \fInew n::U\fR) y de un enum
+(\fInew E\fR, \fInew E(v)\fR, \fInew E[n]\fR, \fInew E[n]{a, b}\fR; simple o \fIenum class\fR) pasan por el gancho de asignación. En
+\fInew T[n]{ T(), T(1, 2) }\fR y \fI{ {1, 2}, {} }\fR de una clase sin constructor, los elementos listados se construyen desde la lista.
+Un \fI::\fR inicial (\fI::x\fR, \fI::f()\fR, \fI::a::D\fR) alcanza el nombre del ámbito de archivo; \fI::new\fR, \fI::delete\fR y \fI::operator\fR no se aceptan.
+.PP
+.B new
 .RI ( "new T[n]{a, b}" )
 construye los primeros elementos desde la lista (
 .I {x, y}

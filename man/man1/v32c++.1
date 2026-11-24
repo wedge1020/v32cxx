@@ -958,6 +958,12 @@ where it can't be (a
 and the program has such a class, it is an error asking for a cast.
 .PP
 .B new
+of a union (\fInew U\fR, \fInew U()\fR, \fInew U{}\fR zero it, \fInew U{5}\fR sets the first member, \fInew U[n]\fR, \fInew n::U\fR) and of an enum
+(\fInew E\fR, \fInew E(v)\fR, \fInew E[n]\fR, \fInew E[n]{a, b}\fR; plain or \fIenum class\fR) go through the allocation hook. In
+\fInew T[n]{ T(), T(1, 2) }\fR and \fI{ {1, 2}, {} }\fR of a class with no constructor, the listed elements are built from the list.
+A leading \fI::\fR (\fI::x\fR, \fI::f()\fR, \fI::a::D\fR) reaches the file-scope name; \fI::new\fR, \fI::delete\fR and \fI::operator\fR are not supported.
+.PP
+.B new
 .RI ( "new T[n]{a, b}" )
 builds the first elements from the list (
 .I {x, y}

@@ -966,6 +966,12 @@ s'il ne peut pas l'être (un
 et que le programme a une telle classe, c'est une erreur qui demande une conversion.
 .PP
 .B new
+d'une union (\fInew U\fR, \fInew U()\fR, \fInew U{}\fR la mettent à zéro, \fInew U{5}\fR initialise le premier membre, \fInew U[n]\fR, \fInew n::U\fR) et d'un enum
+(\fInew E\fR, \fInew E(v)\fR, \fInew E[n]\fR, \fInew E[n]{a, b}\fR ; simple ou \fIenum class\fR) passent par le crochet d'allocation. Dans
+\fInew T[n]{ T(), T(1, 2) }\fR et \fI{ {1, 2}, {} }\fR d'une classe sans constructeur, les éléments listés sont construits depuis la liste.
+Un \fI::\fR initial (\fI::x\fR, \fI::f()\fR, \fI::a::D\fR) atteint le nom de la portée fichier ; \fI::new\fR, \fI::delete\fR et \fI::operator\fR ne sont pas acceptés.
+.PP
+.B new
 .RI ( "new T[n]{a, b}" )
 construit les premiers éléments depuis la liste (
 .I {x, y}

@@ -21,8 +21,8 @@ dialecto de C de Vircon32 hace de forma distinta.
 > **Estado: funcional.** Toda la canalización — preprocesamiento, análisis
 > sintáctico, análisis semántico, bajada (*lowering*) y generación de código —
 > funciona de principio a fin y se comprueba con el compilador, el ensamblador y
-> la consola **reales** de Vircon32 (`make realcheck`: 233 programas compilados
-> y ensamblados, 164 de ellos con autocomprobación en tiempo de ejecución en una
+> la consola **reales** de Vircon32 (`make realcheck`: 240 programas compilados
+> y ensamblados, 171 de ellos con autocomprobación en tiempo de ejecución en una
 > consola sin pantalla). Con él se construyen cinco demos de buen tamaño (tres
 > juegos en C++, un port de Rogue y un Spy vs Spy en C puro). Consulta las [Limitaciones
 > conocidas](#limitaciones-conocidas) para ver con honestidad lo que falta.
@@ -461,9 +461,17 @@ Comprobadas con el transpilador actual y el compilador real de Vircon32
 - **Definiciones y escritura de los tipos.** Una definición calificada necesita una declaración en ese espacio
   de nombres (`int a::zz() {}` sin `zz` en `a`, o `int a::f(float)` cuando `a` solo tiene `f(int)`, es un error,
   como en C++). Toda escritura de un tipo de parámetro (`D` dentro del espacio o por `using`, `a::D`, un typedef)
-  es un solo tipo para emparejar y para el nombre en C; un `::` inicial (`::a::D`) no se acepta. Los miembros de
+  es un solo tipo para emparejar y para el nombre en C. Los miembros de
   tipo clase, unión o enum calificados con un espacio de nombres se ponen a cero como los demás (`new H`,
-  `H h{}`, `new H[n]{}`). Pendiente: `new U` de una unión misma, `new E[n]` de un enum.
+  `H h{}`, `new H[n]{}`).
+- **`new` de una unión o de un enum, agregados en `new T[n]{...}`.** `new U`, `new U()`, `new U{}` (toda la unión a cero, palabra por palabra),
+  `new U{5}` (el primer miembro), `new U[n]`, `new U[n]{ {1}, {2} }`, `new n::U`, `new E`, `new E(v)`, `new E[n]`, `new E[n]{a, b}`,
+  `new E[n]()` (enum simple o `enum class`, en un espacio de nombres o no) y `delete` / `delete[]` pasan por el gancho de asignación. En
+  `new T[n]{ T(), T(1, 2) }` / `{ {1, 2}, {} }` de una clase sin constructor, los elementos listados se construyen desde la lista (cero, punteros NULL, lo que omite).
+- **Un `::` inicial** (`::x`, `::f()`, `::a::D`, `::a::f()`, `: public ::B`) alcanza el nombre del ámbito de archivo donde un espacio de nombres o un local declara
+  uno propio. No se acepta: `::new`, `::delete`, `::operator` (un error lo dice), ni `a::D()` / `::a::D()` como expresión.
+- **Operadores fuera de la clase de una clase de un espacio de nombres**: el primer parámetro puede ser un tipo desnudo de ese espacio (`a::C a::C::operator-(D d)`, `operator()`,
+  `operator[]`, `operator==`, `operator a::D()`); los operadores distintos de `+ - * / = ! == != < > <= >= += -= *= /= [] () ++ --` no se aceptan en ninguna forma.
 - **Un programa C no puede definir lo que definen las cabeceras del SDK.** `misc.h` (añadida por `new` y
   `--alloc`) y `video.h` (añadida por `--alloc`) tienen cuerpos de funciones: una función C del mismo nombre
   (`malloc`, `clear_screen`) es un error que nombra la cabecera; renómbrala o usa `--rename`. El runtime del
@@ -649,8 +657,8 @@ macOS toda la comprobación necesita un v32sim con las correcciones de macOS: `S
 `make realcheck` tras `make test`) muestra el compilador que usa, **rechaza un `bin/` sin
 `BUILD-INFO`** (construido por un `build-tools.sh` antiguo) y pide
 reconstruirlo, y avisa si la copia de ComputerSoftware ha avanzado desde la construcción. Hoy
-compila y ensambla 233 programas (4 no se empaquetan: sus recursos `#texture`/`#sound` no están
-en `tests/`) y ejecuta 164 cartuchos con autocomprobación, entre ellos las construcciones
+compila y ensambla 240 programas (4 no se empaquetan: sus recursos `#texture`/`#sound` no están
+en `tests/`) y ejecuta 171 cartuchos con autocomprobación, entre ellos las construcciones
 `--alloc=arena` y `--alloc=gc` de `tests/real_variants.txt` (`nombre fuente opciones`: añade allí
 las variantes de una muestra que reserve memoria). `tools/prune-release.sh [--apply]` es el
 limpiador de versiones: por omisión solo simula; lista (y con `--apply` elimina, con `git rm`

@@ -356,6 +356,7 @@ AstNode *lower_zero_initializer(const AstNode *cls);
 int lower_class_holds_pointer(const AstNode *cls);
 int lower_zero_stmts(const AstNode *cls, const AstNode *lv, AstList *out);
 int lower_class_has_union(const AstNode *cls);
+int lower_union_new_bits(const char *name);   /* 1: v32_new_U, 2: v32_new_arr_U, 4: _init/_rest (phase 6 records them) */
 
 /* 1 when a file- or namespace-scope initializer names a function (`int (*h)(int)
  * = square;`, a table of handlers): codegen then prints the function
