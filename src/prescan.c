@@ -465,41 +465,159 @@ static int brace_delta(const char *line, int in_comment) {
     return delta;
 }
 
-/* ---- `extern` lines ---------------------------------------------------------
+/* ---- `extern` declarations ---------------------------------------------------
  * lexer.l drops `extern` in C++ input (a single translation unit has no use
- * for it), but one thing still needs to know that a declaration was written
+ * for it), but two things still need to know that a variable was declared
  * `extern`: a namespace-scope variable gets its namespace in its C name
- * (`a::x` -> `a__x`), except one declared `extern`, which names something
- * defined elsewhere (the SDK, a C file) and keeps its own name. So the
- * (file, line) of every code line holding the word `extern` is
- * noted here, and sema asks prescan_line_has_extern. */
-typedef struct ExternLine { const char *file; int line; struct ExternLine *next; } ExternLine;
-static ExternLine *g_extern_lines = NULL;
+ * (`a::x` -> `a__x`) except one declared `extern`, which names something
+ * defined elsewhere (the SDK, a C file) and keeps its own name; and an
+ * `extern` declaration yields to the definition of the same variable
+ * (ast.c merge_extern_names). The lexer cannot be changed to keep the
+ * token, so the declaration is read here, from the text, before it is
+ * lexed: after the word `extern`, up to the `;` that ends the statement,
+ * every DECLARATOR NAME is noted with the line it stands on (and the line
+ * `extern` stood on, for a declaration split over lines):
+ *
+ *     extern int a, *b[3], (*fp)(int);  int c;     -> a, b, fp, not c
+ *
+ * `extern int a; int b;` on one line is therefore two different things.
+ * The text read is the line after macro expansion as well as before it, so
+ * `#define EXT extern` / `EXT int a;` counts. `extern "C"` is not a
+ * declaration of anything and is skipped. A name is "declarator" when, at
+ * parenthesis depth 0, it is followed by `,` `;` `=` `[` `(`, or when it is
+ * the `*name` / `&name` of a parenthesized declarator (a function pointer).
+ * Comments and string/char literals are skipped. Sema (via ast.c's
+ * mark_extern_decls) asks prescan_decl_is_extern(file, line, name). */
+typedef struct ExternName {
+    const char *file;
+    int line;
+    char *name;
+    struct ExternName *next;
+} ExternName;
+static ExternName *g_extern_names = NULL;
 
-static void note_extern_line(const char *path, int line, const char *text) {
-    if (strstr(text, "extern") == NULL) return;
-    for (const char *p = text; *p; p++) {
-        if (p[0] == '/' && (p[1] == '/' || p[1] == '*')) return;   /* a comment: stop looking */
-        if (*p == '"' || *p == '\'') return;                       /* a literal: not a declaration */
-        if (strncmp(p, "extern", 6) != 0) continue;
-        if (p > text && (isalnum((unsigned char)p[-1]) || p[-1] == '_')) continue;
-        if (!(p[6] == ' ' || p[6] == '\t')) continue;
-        const char *q = p + 6;
-        while (*q == ' ' || *q == '\t') q++;
-        if (*q == '"') continue;                                   /* extern "C" ... */
-        ExternLine *e = malloc(sizeof(ExternLine));
-        e->file = prescan_intern_filename(path);
-        e->line = line;
-        e->next = g_extern_lines;
-        g_extern_lines = e;
-        return;
+static void extern_name_add(const char *file, int line, const char *name) {
+    for (const ExternName *e = g_extern_names; e != NULL; e = e->next)
+        if (e->line == line && strcmp(e->name, name) == 0 && strcmp(e->file, file) == 0) return;
+    ExternName *e = malloc(sizeof(ExternName));
+    e->file = file;
+    e->line = line;
+    e->name = strdup(name);
+    e->next = g_extern_names;
+    g_extern_names = e;
+}
+
+/* what is read so far of the `extern` statement being scanned (it can
+ * continue on the next line) */
+static struct {
+    int active;
+    const char *file;
+    int start_line;
+    int depth;              /* ( [ { nesting inside the statement */
+    int seen_eq;            /* an `=` at depth 0: a `{` is an initializer */
+    int have_pending;       /* an identifier waits for the token after it */
+    char pending[96];
+    int pending_line;
+    int pending_depth;
+    int pending_after_ptr;  /* the token before it was `*` or `&` */
+    int prev_ptr;           /* the previous token was `*` or `&` */
+} g_ex;
+
+static void extern_flush_pending(int next_ch) {
+    if (!g_ex.have_pending) return;
+    g_ex.have_pending = 0;
+    int is_name = 0;
+    if (g_ex.pending_depth == 0 && next_ch != 0 && strchr(",;=[(", next_ch) != NULL) is_name = 1;
+    else if (g_ex.pending_depth == 1 && g_ex.pending_after_ptr && next_ch != 0 && strchr(")[", next_ch) != NULL) is_name = 1;
+    if (!is_name) return;
+    extern_name_add(g_ex.file, g_ex.pending_line, g_ex.pending);
+    if (g_ex.start_line != g_ex.pending_line) extern_name_add(g_ex.file, g_ex.start_line, g_ex.pending);
+}
+
+static void scan_extern_text(const char *path, int first, const char *text, int in_comment) {
+    const char *file = prescan_intern_filename(path);
+    if (g_ex.active && strcmp(g_ex.file, file) != 0) memset(&g_ex, 0, sizeof g_ex);
+    int line = first;
+    for (const char *p = text; *p; ) {
+        if (in_comment) {
+            if (p[0] == '*' && p[1] == '/') { in_comment = 0; p += 2; }
+            else { if (*p == '\n') line++; p++; }
+            continue;
+        }
+        if (*p == '\n') { line++; p++; continue; }
+        if (p[0] == '/' && p[1] == '/') {
+            while (*p && *p != '\n') p++;
+            continue;
+        }
+        if (p[0] == '/' && p[1] == '*') { in_comment = 1; p += 2; continue; }
+        if (*p == '"' || *p == '\'') {
+            char q = *p++;
+            while (*p && *p != q && *p != '\n') { if (*p == '\\' && p[1]) p++; p++; }
+            if (*p == q) p++;
+            if (g_ex.active) { extern_flush_pending('"'); g_ex.prev_ptr = 0; }
+            continue;
+        }
+        if (isspace((unsigned char)*p)) { p++; continue; }
+        if (isalpha((unsigned char)*p) || *p == '_') {
+            const char *w = p;
+            while (isalnum((unsigned char)*p) || *p == '_') p++;
+            size_t n = (size_t)(p - w);
+            if (n == 6 && strncmp(w, "extern", 6) == 0 && !g_ex.active) {
+                const char *q = p;
+                while (*q == ' ' || *q == '\t') q++;
+                if (*q == '"') continue;                       /* extern "C" */
+                memset(&g_ex, 0, sizeof g_ex);
+                g_ex.active = 1;
+                g_ex.file = file;
+                g_ex.start_line = line;
+                continue;
+            }
+            if (!g_ex.active) continue;
+            extern_flush_pending('a');
+            if (n < sizeof g_ex.pending) {
+                memcpy(g_ex.pending, w, n);
+                g_ex.pending[n] = '\0';
+                g_ex.have_pending = 1;
+                g_ex.pending_line = line;
+                g_ex.pending_depth = g_ex.depth;
+                g_ex.pending_after_ptr = g_ex.prev_ptr;
+            }
+            g_ex.prev_ptr = 0;
+            continue;
+        }
+        if (isdigit((unsigned char)*p)) {                       /* a number: skip it whole */
+            while (isalnum((unsigned char)*p) || *p == '.' || *p == '_') p++;
+            if (g_ex.active) { extern_flush_pending('0'); g_ex.prev_ptr = 0; }
+            continue;
+        }
+        char c = *p++;
+        if (!g_ex.active) continue;
+        extern_flush_pending(c);
+        g_ex.prev_ptr = (c == '*' || c == '&');
+        if (c == '(' || c == '[') g_ex.depth++;
+        else if (c == ')' || c == ']') { if (g_ex.depth > 0) g_ex.depth--; }
+        else if (c == '{') g_ex.depth++;
+        else if (c == '}') {
+            if (g_ex.depth > 0) g_ex.depth--;
+            /* `extern int f() { ... }`, or the `}` of the namespace the
+             * declaration was the last thing in */
+            if (g_ex.depth == 0 && !g_ex.seen_eq) g_ex.active = 0;
+            else if (g_ex.depth < 0) g_ex.active = 0;
+        }
+        else if (c == '=' && g_ex.depth == 0) g_ex.seen_eq = 1;
+        else if (c == ';' && g_ex.depth == 0) g_ex.active = 0;
     }
 }
 
-int prescan_line_has_extern(const char *file, int line) {
-    if (file == NULL) return 0;
-    for (const ExternLine *e = g_extern_lines; e != NULL; e = e->next)
-        if (e->line == line && strcmp(e->file, file) == 0) return 1;
+static void note_extern_line(const char *path, int line, const char *text, int in_comment) {
+    if (!g_ex.active && strstr(text, "extern") == NULL) return;
+    scan_extern_text(path, line, text, in_comment);
+}
+
+int prescan_decl_is_extern(const char *file, int line, const char *name) {
+    if (file == NULL || name == NULL) return 0;
+    for (const ExternName *e = g_extern_names; e != NULL; e = e->next)
+        if (e->line == line && strcmp(e->name, name) == 0 && strcmp(e->file, file) == 0) return 1;
     return 0;
 }
 
@@ -507,8 +625,8 @@ int prescan_line_has_extern(const char *file, int line) {
  * function-like invocation needs) and writes it out. Returns 0 or -1. */
 static int emit_code_line(FILE *out, LineReader *r, char *line, int first, int nphys,
                           int state_before, int *in_block_comment, const char *path) {
-    note_extern_line(path, first, line);
     if (macro_count() == 0 && strstr(line, "__") == NULL) {
+        note_extern_line(path, first, line, state_before);
         fprintf(out, "%s\n", line);
         free(line);
         return 0;
@@ -542,6 +660,7 @@ static int emit_code_line(FILE *out, LineReader *r, char *line, int first, int n
         free(next);
         total_phys += nn;
     }
+    note_extern_line(path, first, expanded, state_before);     /* after expansion: `EXT int a;` */
     fprintf(out, "%s\n", expanded);
     free(expanded);
     free(buf);
@@ -585,6 +704,80 @@ static PathSet g_layout_structs;
 
 int prescan_is_header_struct(const char *name) {
     return name != NULL && path_set_contains(&g_layout_structs, name);
+}
+
+/* ---- variables defined by a header -----------------------------------------
+ * `malloc_block* malloc_first_block = NULL;` in misc.h defines a variable in the generated C
+ * (the header is included there). A program that declares it `extern` to reach it would
+ * define it a second time; v32c++ keeps the declaration for its own use (the type) and leaves
+ * it out of the output (codegen, prescan_is_header_var). Only the NAMES of definitions at
+ * brace depth 0 are noted: `type [*] name [array] [= value] [, ...];`. */
+static PathSet g_header_vars;
+static int g_hv_depth = 0;          /* brace depth inside the header being harvested */
+
+int prescan_is_header_var(const char *name) {
+    return name != NULL && path_set_contains(&g_header_vars, name);
+}
+
+static void harvest_var_names(const char *line, int state_before) {
+    int depth_before = g_hv_depth;
+    g_hv_depth += brace_delta(line, state_before);
+    if (g_hv_depth < 0) g_hv_depth = 0;
+    if (depth_before != 0) return;
+    /* the declaration up to its `=` or `;`, comments dropped */
+    char buf[512];
+    size_t n = 0;
+    for (const char *r = line; *r != '\0' && n < sizeof buf - 1; r++) {
+        if (r[0] == '/' && (r[1] == '/' || r[1] == '*')) break;
+        if (*r == '=' || *r == ';') { buf[n] = '\0'; goto have; }
+        if (*r == '(' || *r == '{' || *r == '}' || *r == '"' || *r == '\'') return;   /* function, body, string */
+        buf[n++] = *r;
+    }
+    return;                                   /* no `;` / `=` on this line: not read */
+have:
+    {
+        int nw = 0;
+        char *save = NULL;
+        for (char *d = strtok_r(buf, ",", &save); d != NULL; d = strtok_r(NULL, ",", &save)) {
+            /* the declarator's name: the last identifier before an optional [..] */
+            char *e = d + strlen(d);
+            char *br = strchr(d, '[');
+            if (br != NULL) e = br;
+            while (e > d && (e[-1] == ' ' || e[-1] == '\t' || e[-1] == '\r')) e--;
+            char *st = e;
+            while (st > d && macro_is_ident_char((unsigned char)st[-1])) st--;
+            if (st == e || !macro_is_ident_start((unsigned char)*st)) return;
+            if (nw == 0) {
+                /* the first declarator carries the type: `int`, `malloc_block *`... needs a word before */
+                char *t = st;
+                while (t > d && (t[-1] == ' ' || t[-1] == '\t' || t[-1] == '*')) t--;
+                if (t == d) return;
+                char first[64];
+                const char *f = d;
+                while (*f == ' ' || *f == '\t') f++;
+                size_t k = 0;
+                while (macro_is_ident_char((unsigned char)f[k]) && k < sizeof first - 1) { first[k] = f[k]; k++; }
+                first[k] = '\0';
+                if (strcmp(first, "typedef") == 0 || strcmp(first, "extern") == 0 || strcmp(first, "return") == 0 ||
+                    strcmp(first, "struct") == 0 || strcmp(first, "union") == 0 || strcmp(first, "enum") == 0 ||
+                    first[0] == '\0') {
+                    /* `struct Foo foo;` is a variable, `struct Foo;` is not: needs two names after the keyword */
+                    if (strcmp(first, "struct") != 0 && strcmp(first, "union") != 0 && strcmp(first, "enum") != 0) return;
+                    const char *after = f + strlen(first);
+                    while (*after == ' ' || *after == '\t') after++;
+                    while (macro_is_ident_char((unsigned char)*after)) after++;
+                    while (*after == ' ' || *after == '\t' || *after == '*') after++;
+                    if (*after == '\0') return;
+                }
+            }
+            nw++;
+            char name[128];
+            size_t len = (size_t)(e - st) < sizeof name - 1 ? (size_t)(e - st) : sizeof name - 1;
+            memcpy(name, st, len);
+            name[len] = '\0';
+            path_set_add(&g_header_vars, name);
+        }
+    }
 }
 
 static void harvest_add(const char *name) {
@@ -997,8 +1190,20 @@ static int check_cart_hint_name(const char *line, const char *path, int lineno) 
     return 0;
 }
 
+static int expand_file_mode_impl(const char *path, FILE *out,
+                                 char *const *dirs, int ndirs, int is_top, int harvest);
+
 static int expand_file_mode(const char *path, FILE *out,
                             char *const *dirs, int ndirs, int is_top, int harvest) {
+    int saved_depth = g_hv_depth;
+    g_hv_depth = 0;                   /* brace depth is per header (harvest_var_names) */
+    int rc = expand_file_mode_impl(path, out, dirs, ndirs, is_top, harvest);
+    g_hv_depth = saved_depth;
+    return rc;
+}
+
+static int expand_file_mode_impl(const char *path, FILE *out,
+                                 char *const *dirs, int ndirs, int is_top, int harvest) {
     FILE *in = (strcmp(path, BUILTIN_STRING_PATH) == 0) ? open_builtin_string()
              : (strcmp(path, BUILTIN_ATOMIC_PATH) == 0) ? open_builtin_text(g_atomic_lines)
              : (strcmp(path, BUILTIN_FRAMES_PATH) == 0) ? open_builtin_text(g_frames_lines)
@@ -1055,7 +1260,7 @@ static int expand_file_mode(const char *path, FILE *out,
 
         if (hash == NULL) {
             if (harvest) {
-                if (active && !state_before) harvest_type_names(line);
+                if (active && !state_before) { harvest_type_names(line); harvest_var_names(line, state_before); }
                 free(line);
                 continue;
             }

@@ -3,6 +3,7 @@
 #include <string.h>
 #include <ctype.h>
 #include "ast.h"
+#include "prescan.h"
 
 AstList ast_list_new(void) {
     AstList l;
@@ -131,6 +132,18 @@ int ast_fold_int(const AstNode *e, int (*lookup)(const char *name, int *value), 
             return 1;
         case AST_IDENT:
             return lookup != NULL && e->str1 != NULL && lookup(e->str1, out);
+        case AST_QUALIFIED_ID: {
+            /* `a::RED`, `a::E::RED`: the lookup gets the joined name */
+            if (lookup == NULL) return 0;
+            char buf[512];
+            size_t used = 0;
+            for (int i = 0; i < e->list.count; i++) {
+                const char *part = e->list.items[i]->str1;
+                if (part == NULL || used + strlen(part) + 3 >= sizeof buf) return 0;
+                used += (size_t)snprintf(buf + used, sizeof buf - used, "%s%s", used ? "::" : "", part);
+            }
+            return lookup(buf, out);
+        }
         case AST_UNOP:
             if (!ast_fold_int(e->a, lookup, &a)) return 0;
             if (strcmp(e->str1, "neg") == 0) { *out = -a; return 1; }
@@ -407,7 +420,11 @@ static void hoist_statics_in(AstNode *n, const char *func_name, AstList *hoisted
         AstList kept = ast_list_new();
         for (int i = 0; i < n->list.count; i++) {
             AstNode *st = n->list.items[i];
-            if (st != NULL && st->kind == AST_VAR_DECL && st->is_static_local) {
+            if (st != NULL && st->kind == AST_VAR_DECL && st->is_static_local == 2) {
+                /* local `extern T x;`: file scope, same name (parser.y) */
+                st->is_static_local = 0;
+                ast_list_append(hoisted, st);
+            } else if (st != NULL && st->kind == AST_VAR_DECL && st->is_static_local) {
                 char buf[256];
                 snprintf(buf, sizeof buf, "__static%d_%s_%s",
                          g_static_local_counter++, func_name, st->str1);
@@ -499,6 +516,106 @@ void merge_tentative_globals(AstList *decls) {
         ast_list_append(&out, n);
     }
     *decls = out;
+}
+
+/* ---- `extern` variables across namespaces -----------------------------------
+ *
+ * Vircon32 C has no `extern` and no linker: a variable that is declared
+ * `extern` and defined nowhere in the program IS the variable (it is printed
+ * as an ordinary declaration, once), and one that is also defined is just
+ * that definition. mark_extern_decls records which file/namespace-scope
+ * variables were written `extern` (the C++ lexer drops the keyword: the
+ * prescan reports it per declarator); merge_extern_names then makes sure an
+ * `extern` declaration and the definition of the same C name are one object
+ * even when they are in different namespace blocks:
+ *
+ *     namespace hw { extern int c_side; }    // C name `c_side`
+ *     int c_side = 3;                        // the same variable
+ *     namespace n { extern int v; }  namespace n { int v = 5; }   // n__v
+ *
+ * and that `a::x` / `b::x` both `extern` (both `x`) are one. merge_tentative_globals
+ * already folds declarations that share one list. */
+void mark_extern_decls(AstList *decls) {
+    for (int i = 0; i < decls->count; i++) {
+        AstNode *n = decls->items[i];
+        if (n == NULL) continue;
+        if (n->kind == AST_NAMESPACE_DECL) mark_extern_decls(&n->list);
+        else if (n->kind == AST_VAR_DECL && n->str1 != NULL)
+            n->extern_decl = n->is_extern || prescan_decl_is_extern(n->file, n->line, n->str1);
+    }
+}
+
+typedef struct { AstNode *node; char *key; char *qkey; } ExternKeyed;
+
+static void collect_extern_keys(AstList *decls, const char *prefix, ExternKeyed **v, int *n, int *cap) {
+    for (int i = 0; i < decls->count; i++) {
+        AstNode *d = decls->items[i];
+        if (d == NULL) continue;
+        if (d->kind == AST_NAMESPACE_DECL) {
+            if (d->str1 == NULL) { collect_extern_keys(&d->list, prefix, v, n, cap); continue; }
+            size_t len = strlen(prefix) + strlen(d->str1) + 3;
+            char *np = malloc(len);
+            snprintf(np, len, "%s%s__", prefix, d->str1);
+            collect_extern_keys(&d->list, np, v, n, cap);
+            free(np);
+        } else if (d->kind == AST_VAR_DECL && d->str1 != NULL) {
+            const char *pre = d->extern_decl ? "" : prefix;   /* an extern keeps its bare name */
+            size_t len = strlen(pre) + strlen(d->str1) + 1;
+            char *key = malloc(len);
+            snprintf(key, len, "%s%s", pre, d->str1);
+            if (*n == *cap) { *cap = *cap ? *cap * 2 : 64; *v = realloc(*v, sizeof(ExternKeyed) * (size_t)*cap); }
+            size_t qlen = strlen(prefix) + strlen(d->str1) + 1;
+            char *qkey = malloc(qlen);
+            snprintf(qkey, qlen, "%s%s", prefix, d->str1);
+            (*v)[*n].node = d;
+            (*v)[*n].key = key;
+            (*v)[*n].qkey = qkey;
+            (*n)++;
+        }
+    }
+}
+
+static void drop_nodes(AstList *decls, AstNode **drop, int ndrop) {
+    AstList out = ast_list_new();
+    for (int i = 0; i < decls->count; i++) {
+        AstNode *d = decls->items[i];
+        int dropped = 0;
+        for (int k = 0; k < ndrop && !dropped; k++) dropped = (drop[k] == d);
+        if (dropped) continue;
+        if (d != NULL && d->kind == AST_NAMESPACE_DECL) drop_nodes(&d->list, drop, ndrop);
+        ast_list_append(&out, d);
+    }
+    *decls = out;
+}
+
+void merge_extern_names(AstList *decls) {
+    ExternKeyed *v = NULL;
+    int n = 0, cap = 0;
+    collect_extern_keys(decls, "", &v, &n, &cap);
+    AstNode **drop = NULL;
+    int ndrop = 0;
+    for (int i = 0; i < n; i++) {
+        if (!v[i].node->extern_decl) continue;
+        int drop_it = 0;
+        for (int j = 0; j < n && !drop_it; j++) {
+            if (j == i) continue;
+            if (!v[j].node->extern_decl) {
+                /* a definition: of the C name (`int c_side = 3;` at file
+                 * scope), or of the very same namespace variable */
+                if (strcmp(v[i].key, v[j].key) == 0 || strcmp(v[i].qkey, v[j].qkey) == 0) drop_it = 1;
+            } else if (j < i && strcmp(v[i].key, v[j].key) == 0) {
+                drop_it = 1;                    /* an earlier extern of it */
+            }
+        }
+        if (drop_it) {
+            drop = realloc(drop, sizeof(AstNode *) * (size_t)(ndrop + 1));
+            drop[ndrop++] = v[i].node;
+        }
+    }
+    if (ndrop > 0) drop_nodes(decls, drop, ndrop);
+    for (int i = 0; i < n; i++) { free(v[i].key); free(v[i].qkey); }
+    free(v);
+    free(drop);
 }
 
 /* ---- implicit constructors and destructors ------------------------------
@@ -1254,6 +1371,8 @@ AstNode *ast_clone_expr(const AstNode *n) {
  * elements are built in place, see add_array_member_init); any other brace
  * list (a plain C array member's `= {1, 2, 3}`) is left alone.
  */
+static int plain_scalar_array_list(const AstNode *m);
+
 static int ctor_initializes(const AstNode *ctor, const char *member) {
     if (ctor->c == NULL) return 0;
     for (int i = 0; i < ctor->c->list.count; i++)
@@ -1283,6 +1402,44 @@ static void prepend_member_defaults(AstNode *ctor, const AstList *fields) {
     for (int i = 0; i < fields->count; i++) {
         AstNode *f = fields->items[i];
         if (ctor_initializes(ctor, f->str1)) continue;
+        if (f->a->kind == AST_INIT_LIST && plain_scalar_array_list(f)) {
+            const AstNode *t = f->type;
+            while (t != NULL && t->kind == AST_CONST_TYPE) t = t->a;
+            const AstNode *et = t->a;
+            while (et != NULL && et->kind == AST_CONST_TYPE) et = et->a;
+            for (int k = 0; k < t->ival; k++) {
+                AstNode *field = ast_new(AST_MEMBER, f->line);
+                field->file = f->file;
+                field->str1 = strdup("->");
+                field->str2 = strdup(f->str1);
+                field->a = ast_new(AST_THIS, f->line);
+                AstNode *sub = ast_new(AST_SUBSCRIPT, f->line);
+                sub->file = f->file;
+                sub->a = field;
+                sub->b = ast_new(AST_INT_LIT, f->line);
+                sub->b->ival = k;
+                AstNode *value;
+                if (k < f->a->list.count) value = ast_clone_expr(f->a->list.items[k]);
+                else if (et->kind == AST_POINTER_TYPE) value = ast_new(AST_NULL_LIT, f->line);
+                else if (et->str1 != NULL && (strcmp(et->str1, "float") == 0 || strcmp(et->str1, "double") == 0)) {
+                    value = ast_new(AST_FLOAT_LIT, f->line);
+                    value->fval = 0.0;
+                } else {
+                    value = ast_new(AST_INT_LIT, f->line);
+                    value->ival = 0;
+                }
+                AstNode *assign = ast_new(AST_ASSIGN, f->line);
+                assign->file = f->file;
+                assign->str1 = strdup("=");
+                assign->a = sub;
+                assign->b = value;
+                AstNode *st = ast_new(AST_EXPR_STMT, f->line);
+                st->file = f->file;
+                st->a = assign;
+                ast_list_append(&body, st);
+            }
+            continue;
+        }
         if (f->a->kind == AST_INIT_LIST) { add_array_member_init(ctor, f); continue; }
         AstNode *assign = ast_new(AST_ASSIGN, f->line);
         assign->file = f->file;
@@ -1321,6 +1478,28 @@ static void default_inits_out_of_line(AstList *decls, const AstNode *cls, const 
     }
 }
 
+/* `int a[3] = {1, 2, 3};` / `int a[3]{1, 2};` as a member default: a one-dimensional array of a
+ * scalar type whose list holds plain values. Assigned element by element in each constructor (the
+ * rest of the elements zero, as in aggregate initialization). */
+static int plain_scalar_array_list(const AstNode *m) {
+    const AstNode *t = m->type;
+    while (t != NULL && t->kind == AST_CONST_TYPE) t = t->a;
+    if (t == NULL || t->kind != AST_ARRAY_TYPE || t->a == NULL || m->a == NULL || m->a->kind != AST_INIT_LIST) return 0;
+    const AstNode *et = t->a;
+    while (et != NULL && et->kind == AST_CONST_TYPE) et = et->a;
+    if (et == NULL || (et->kind != AST_IDENT && et->kind != AST_POINTER_TYPE)) return 0;
+    if (et->kind == AST_IDENT) {
+        static const char *const ok[] = { "int", "float", "char", "bool", "double", "short", "long", "unsigned", NULL };
+        int found = 0;
+        for (int i = 0; ok[i] != NULL; i++) if (et->str1 != NULL && strcmp(et->str1, ok[i]) == 0) found = 1;
+        if (!found) return 0;
+    }
+    for (int i = 0; i < m->a->list.count; i++)
+        if (m->a->list.items[i] == NULL || m->a->list.items[i]->kind == AST_INIT_LIST ||
+            m->a->list.items[i]->kind == AST_DESIG_INIT) return 0;
+    return t->ival >= m->a->list.count;
+}
+
 void apply_default_member_initializers(AstList *decls) {
     ClassList all = { NULL, 0, 0 };
     collect_classes(decls, &all);
@@ -1335,7 +1514,16 @@ void apply_default_member_initializers(AstList *decls) {
                  * brace lists are C aggregates, left alone */
                 int nd = 0;
                 AstNode *ec = array_object_class(m->type, &all, &nd);
-                if (ec == NULL || !class_declares_ctor(ec)) continue;
+                if (ec != NULL) {
+                    if (!class_declares_ctor(ec)) continue;
+                } else {
+                    /* `int w{5}`, `P n{1, 2}`, `Counter c{3}`: one member, the list is its `: m{...}` entry;
+                     * a plain C array member keeps its list */
+                    const AstNode *mt = m->type;
+                    while (mt != NULL && mt->kind == AST_CONST_TYPE) mt = mt->a;
+                    if (mt == NULL) continue;
+                    if (mt->kind == AST_ARRAY_TYPE && !plain_scalar_array_list(m)) continue;
+                }
             } else if (m->a->kind == AST_DIRECT_INIT) {
                 continue;
             }

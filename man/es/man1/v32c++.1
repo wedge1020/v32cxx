@@ -858,7 +858,6 @@ estado de salida de esta herramienta.
 No soportado (cada uno es un error claro salvo indicación contraria): miembros
 .B static
 de clases;
-.BR "enum class" ,
 .BR constexpr ,
 lambdas,
 .BR mutable ,
@@ -875,9 +874,45 @@ es
 .B "new T*[n]"
 (un arreglo de punteros) reserva n palabras del tamaño de un puntero: sin constructores ni cabecera de cuenta;
 .B delete[]
-lo libera y deja los objetos apuntados al llamador. Los punteros a función declarados en el ámbito de archivo o de un espacio de nombres pueden inicializarse con el nombre de una función
+lo libera y deja los objetos apuntados al llamador;
+.B "new T*[n]{p, q}"
+asigna los punteros de la lista y deja nulos los demás. Los punteros a función declarados en el ámbito de archivo o de un espacio de nombres pueden inicializarse con el nombre de una función
 .RI ( "int (*h)(int) = square;" ,
 también en listas entre llaves); un nombre sobrecargado se elige por el tipo del propio puntero, y es un error si ninguna sobrecarga, o más de una, encaja.
+.PP
+.B new
+de un escalar
+.RI ( "new int" ,
+.IR "new int(5)" ,
+.IR "new float{2.5f}" ,
+.IR "new Node*" )
+reserva una palabra a través del gancho de reserva (así que
+.B --alloc
+funciona) y
+.B delete
+la libera;
+.I ()
+y
+.I {}
+dan 0 (un puntero: NULL), un valor se guarda.
+La inicialización con llaves funciona donde funciona una llamada a constructor:
+.IR "new P{1, 2}" ,
+.IR "new Counter{3}" ,
+.I "P m{1, 2};"
+e
+.I "int w{5};"
+como inicializadores por defecto de miembros de la clase, y
+.I ": w{5}"
+o
+.I ": p{}"
+en una lista de inicializadores. Una clase con constructor se construye con él; una clase sin él toma sus miembros en orden y cero (NULL para un puntero) para el resto.
+El compilador de Vircon32 no admite lista entre llaves en una unión:
+.I "U u = {1};"
+se baja a la declaración más una asignación del primer miembro (el resto de la unión a cero; una de ámbito de archivo al comienzo de
+.BR main ),
+y
+.I "U u{};"
+pone a cero cada palabra.
 .PP
 El
 .B new
@@ -1122,6 +1157,30 @@ de ámbito de archivo son tres variables, como en C++. Todas las formas de nombr
 y con una variable local del mismo nombre que la oculta. Una variable de ámbito de archivo conserva su nombre, y también una declaración
 .B extern
 dentro de un espacio de nombres (nombra algo definido en otra parte, como el SDK o un archivo C).
+.B extern
+se lee por declaración, y como el C de Vircon32 no tiene
+.B extern
+la salida lleva una declaración normal de la variable (se descarta si el programa la define). Los enumeradores de un
+.B enum
+de un espacio de nombres se nombran igual
+.RI ( a::RED
+es
+.IR a__RED ),
+se escriban como se escriban; el nombre del tipo del enum se califica igual
+.RI ( a::E
+es
+.IR a__E ,
+también en el nombre decorado de una función que lo recibe), así que dos enum del mismo nombre en espacios de nombres distintos son dos tipos.
+Un enum con ámbito
+.RB ( "enum class Color : int { Red }" ;
+el tipo subyacente se acepta y se ignora) tiene sus enumeradores solo como
+.I Color::Red
+(nombres de C
+.IR Color__Red ,
+.IR ns__Color__Red );
+se convierte a
+.B int
+sin conversión explícita, lo que C++ rechazaría.
 .PP
 Una función libre declarada dentro de un espacio de nombres se emite con un nombre
 de C que incluye el espacio de nombres

@@ -81,6 +81,7 @@ extern int g_uses_list_new;
 /* Set by lower.c when `new T*[n]` (an array of pointers) is lowered: codegen.c then
  * also defines v32_new_arr_ptr(n), n pointer-sized words. */
 extern int g_uses_ptr_array_new;
+extern int g_uses_scalar_new;   /* bit k: v32_new_int(1) float(2) char(3) bool(4) ptr(5) is used */
 
 /*
  * The output C dialect: TARGET_VIRCON32 (the default -- every quirk

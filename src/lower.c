@@ -1973,7 +1973,10 @@ static int is_int_zero_literal(const AstNode *e) {
  * else (or is already handled by type_is_func_ptr's &-insertion). */
 static int type_is_plain_pointer(const AstNode *type) {
     if (type == NULL) return 0;
-    return resolve_typedef_chain(type)->kind == AST_POINTER_TYPE;
+    type = resolve_typedef_chain(type);
+    /* `T*&` (still a reference at this point): `p = 0` / `p != 0` is a pointer context too */
+    if (type->kind == AST_REFERENCE_TYPE && type->a != NULL) type = resolve_typedef_chain(type->a);
+    return type->kind == AST_POINTER_TYPE;
 }
 
 /* Rewrites a literal `0` into an AST_NULL_LIT when the TARGET position
@@ -2012,6 +2015,7 @@ static void wrap_addr_of(AstNode **slot) {
     *slot = addr;
 }
 
+static void global_null_init(AstNode **slot, const AstNode *type);
 static void fnptr_init(AstNode **slot, const AstNode *type, AstNode *class_decl, LocalVarType *locals);
 static void prepare_fn_ref(AstNode **slot, const AstNode *target_type, LocalVarType *locals);
 static int type_holds_func_ptr(const AstNode *type);
@@ -2466,6 +2470,12 @@ static void finalize_calls_expr(AstNode **slot, AstNode *class_decl, LocalVarTyp
              * as much as any other expression can, e.g.
              * "(int)shape->area()". */
             finalize_calls_expr(&n->a, class_decl, locals);
+            /* Vircon32 C has no cast to void ("cannot convert expression to
+             * type void"): `(void)x;` keeps just the expression, which is
+             * the bare `x;` statement the compiler accepts for an unused value. */
+            if (g_target == TARGET_VIRCON32 && n->type != NULL && n->type->kind == AST_IDENT &&
+                n->type->str1 != NULL && strcmp(n->type->str1, "void") == 0 && n->a != NULL)
+                *slot = n->a;
             break;
         case AST_SIZEOF:
             finalize_calls_expr(&n->a, class_decl, locals); /* NULL-safe for the type-taking form, same as AST_CAST's own case just above */
@@ -2700,7 +2710,8 @@ static void finalize_calls_stmt(AstNode **slot, AstNode *class_decl, LocalVarTyp
              * declared type; a reference-typed local is skipped for free
              * (AST_REFERENCE_TYPE is not AST_POINTER_TYPE at this point
              * in the pipeline, and phase 5 relabels those later). */
-            rewrite_zero_to_null(&n->a, n->type);
+            if (g_target == TARGET_VIRCON32) global_null_init(&n->a, n->type);   /* also `T *a[2] = {0, 0};`, `S s = {1, 0};` */
+            else rewrite_zero_to_null(&n->a, n->type);
             /* A reference-typed local binds to its initializer's ADDRESS
              * (`int &r = n;` -> `int *r = &n;`). An initializer that is
              * already a dereference -- a reference-returning call, or a
@@ -2881,9 +2892,33 @@ static void finalize_calls_classes(AstList *decls) {
     }
 }
 
+/* A literal 0 initializing a pointer at file or namespace scope (`Node *g = 0;`, `Node *a[2] = {0, 0};`,
+ * `S s = {0, 1};` with a pointer member) prints NULL, like a local one does. */
+static void global_null_init(AstNode **slot, const AstNode *type) {
+    if (slot == NULL || *slot == NULL || type == NULL) return;
+    const AstNode *t = resolve_typedef_chain(type);
+    if ((*slot)->kind == AST_INIT_LIST) {
+        if (t->kind == AST_ARRAY_TYPE) {
+            for (int i = 0; i < (*slot)->list.count; i++) global_null_init(&(*slot)->list.items[i], t->a);
+        } else if (t->kind == AST_IDENT) {
+            AstNode *cls = type_to_class(t);
+            if (cls == NULL) return;
+            int item = 0;
+            for (int i = 0; i < cls->list.count && item < (*slot)->list.count; i++) {
+                const AstNode *m = cls->list.items[i];
+                if (m == NULL || m->kind != AST_VAR_DECL) continue;
+                global_null_init(&(*slot)->list.items[item++], m->type);
+            }
+        }
+        return;
+    }
+    rewrite_zero_to_null(slot, type);
+}
+
 static void finalize_calls_free_functions(AstList *decls) {
     for (int i = 0; i < decls->count; i++) {
         AstNode *n = decls->items[i];
+        if (n->kind == AST_VAR_DECL && n->a != NULL && g_target == TARGET_VIRCON32) global_null_init(&n->a, n->type);
         if (n->kind == AST_NAMESPACE_DECL) {
             /* Free-function name lookup inside this body is relative to
              * the namespace it's in -- see sema.c's "namespace-aware
@@ -3264,6 +3299,10 @@ static void fix_references_free_functions(AstList *decls) {
  * (AST_IDENT's str1) for a bare, non-class type -- `new int`/
  * `new int[N]` are both genuinely legal C++, not just something this
  * project's own classes happen to need. */
+static const AstNode *lower_find_union(const char *name);
+static int lower_is_enum_name(const char *name);
+static int lower_listed_assigns(const AstNode *cls, const char *ptr_name, AstNode *list, int line, AstList *out);
+
 static const char *type_name_for_new(AstNode *type) {
     AstNode *cls = type_to_class(type);
     if (cls != NULL) return cls->str1;
@@ -3358,6 +3397,7 @@ static AstNode *call_stmt_on(AstNode *callee_ctor, AstNode *object, const AstLis
 static AstNode *default_construct_stmt(AstNode *object, AstNode *cls, int line);
 static int copy_is_plain_assignment(AstNode *item, AstNode *cls, AstNode *class_decl, LocalVarType *locals);
 static AstList g_nl_temps;          /* declarations owed to the current function */
+static const AstList *aggregate_members(const AstNode *cls, int *is_union);
 static int g_nl_counter = 0;
 static int g_nl_in_func = 0;
 
@@ -3416,10 +3456,17 @@ static void new_delete_rewrite_expr(AstNode **slot, AstNode *class_decl, LocalVa
                 g_uses_list_new = 1;
                 new_delete_rewrite_expr(&n->a, class_decl, locals);
                 for (int i = 0; i < n->list.count; i++) new_delete_rewrite_expr(&n->list.items[i], class_decl, locals);
-                AstNode *cls = type_to_class(n->type);
+                /* `new T*[n]{p, q}`: an array of pointers; helpers v32_new_arr_ptr_init/_rest
+                 * (declared over int **, so the calls go through casts) */
+                int is_ptr = type_is_plain_pointer(n->type);
+                AstNode *cls = is_ptr ? NULL : type_to_class(n->type);
                 int k = n->list.count;
-                const char *tname = type_name_for_new(n->type);
-                if (k == 0) {                       /* `new T[n]{}` is `new T[n]` */
+                const char *tname = is_ptr ? "ptr" : type_name_for_new(n->type);
+                if (is_ptr) g_uses_ptr_array_new = 1;
+                int plain_aggregate = 0;                 /* `new P[n]{}` zero-fills a scalar / aggregate: not the plain form */
+                {   int au;
+                    plain_aggregate = cls == NULL || aggregate_members(cls, &au) != NULL; }
+                if (k == 0 && !is_ptr && !plain_aggregate) {   /* `new T[n]{}` is `new T[n]` (a pointer array is nulled below) */
                     size_t len0 = strlen("v32_new_arr_") + strlen(tname) + 1;
                     char *name0 = malloc(len0);
                     snprintf(name0, len0, "v32_new_arr_%s", tname);
@@ -3467,6 +3514,12 @@ static void new_delete_rewrite_expr(AstNode **slot, AstNode *class_decl, LocalVa
                 set->str1 = strdup("=");
                 set->a = ast_ident(tmp, n->line);
                 set->b = alloc;
+                if (is_ptr) {                       /* int ** -> T ** */
+                    AstNode *acast = ast_new(AST_CAST, n->line);
+                    acast->type = ast_wrap_pointer(n->type, n->line);
+                    acast->a = alloc;
+                    set->b = acast;
+                }
                 AstNode *chain = comma_of(setn, set, n->line);
                 for (int i = 0; i < k; i++) {
                     AstNode *el = list_new_element(n->list.items[i], tmp, i, cls, class_decl, locals, n->line);
@@ -3476,14 +3529,21 @@ static void new_delete_rewrite_expr(AstNode **slot, AstNode *class_decl, LocalVa
                 AstNode *rest = ast_new(AST_CALL, n->line);
                 rest->a = ast_ident(fname, n->line);
                 free(fname);
-                ast_list_append(&rest->list, ast_ident(tmp, n->line));
+                if (is_ptr) {                       /* T ** -> int ** */
+                    AstNode *rcast = ast_new(AST_CAST, n->line);
+                    rcast->type = ast_wrap_pointer(ast_wrap_pointer(ast_ident("int", n->line), n->line), n->line);
+                    rcast->a = ast_ident(tmp, n->line);
+                    ast_list_append(&rest->list, rcast);
+                } else {
+                    ast_list_append(&rest->list, ast_ident(tmp, n->line));
+                }
                 ast_list_append(&rest->list, ast_ident(ntmp, n->line));
                 AstNode *kn2 = ast_new(AST_INT_LIT, n->line);
                 kn2->ival = k;
                 ast_list_append(&rest->list, kn2);
                 chain = comma_of(chain, rest, n->line);
                 *slot = comma_of(chain, ast_ident(tmp, n->line), n->line);
-                lower_note(n->line, "new %s[n]{...}: %d element(s) built from the list, the rest by the allocator", type_name_for_new(n->type), k);
+                lower_note(n->line, "new %s[n]{...}: %d element(s) built from the list, the rest by the allocator", tname, k);
                 break;
             } /* see driver.h's own doc comment on
                 this flag for exactly why codegen.c needs it -- a real
@@ -3542,6 +3602,109 @@ static void new_delete_rewrite_expr(AstNode **slot, AstNode *class_decl, LocalVa
              * before building the replacement call. */
             for (int i = 0; i < n->list.count; i++) {
                 new_delete_rewrite_expr(&n->list.items[i], class_decl, locals);
+            }
+            {
+                /* `new int`, `new int(5)`, `new float{2.5}`, `new Node*`: one scalar word through the
+                 * allocation hook. v32_new_int/float/char/bool(v) store v (0 when none is given),
+                 * v32_new_ptr(p) stores the pointer (NULL when none); a different pointee type is cast. */
+                const AstNode *rt = c_resolved_type(n->type);
+                int kind = 0;           /* 1 int, 2 float, 3 char, 4 bool, 5 pointer */
+                if (rt != NULL && rt->kind == AST_POINTER_TYPE) kind = 5;
+                else if (rt != NULL && rt->kind == AST_IDENT && rt->str1 != NULL && type_to_class(rt) == NULL) {
+                    static const char *const names[] = { "int", "float", "char", "bool", NULL };
+                    static const int kinds[] = { 1, 2, 3, 4 };
+                    for (int k = 0; names[k] != NULL; k++) if (strcmp(rt->str1, names[k]) == 0) kind = kinds[k];
+                    if (kind == 0 && (strcmp(rt->str1, "double") == 0)) kind = 2;
+                    if (kind == 0 && (strcmp(rt->str1, "short") == 0 || strcmp(rt->str1, "long") == 0 ||
+                                      strcmp(rt->str1, "unsigned") == 0 || strcmp(rt->str1, "signed") == 0 ||
+                                      strcmp(rt->str1, "size_t") == 0)) kind = 1;
+                    if (kind == 0 && lower_is_enum_name(rt->str1)) kind = 1;
+                }
+                if (kind != 0) {
+                    static const char *const fnames[] = { "", "v32_new_int", "v32_new_float", "v32_new_char", "v32_new_bool", "v32_new_ptr" };
+                    AstNode *call = ast_new(AST_CALL, n->line);
+                    AstNode *val = n->list.count > 0 ? n->list.items[0] : NULL;
+                    if (n->list.count > 1) {
+                        fprintf(stderr, "%s:%d: error: `new` of a scalar takes one value\n",
+                                n->file != NULL ? n->file : g_current_filename, n->line);
+                        g_delete_errors++;
+                        break;
+                    }
+                    if (val != NULL && val->kind == AST_INIT_LIST) val = val->list.count > 0 ? val->list.items[0] : NULL;
+                    call->a = ast_ident(fnames[kind], n->line);
+                    g_uses_scalar_new |= 1 << kind;
+                    if (kind == 5) {
+                        AstNode *arg = val;
+                        if (arg == NULL || (arg->kind == AST_INT_LIT && arg->ival == 0)) arg = ast_new(AST_NULL_LIT, n->line);
+                        else {
+                            AstNode *c = ast_new(AST_CAST, n->line);       /* any pointer is an int * to the helper */
+                            c->type = ast_wrap_pointer(ast_ident("int", n->line), n->line);
+                            c->a = arg;
+                            arg = c;
+                        }
+                        ast_list_append(&call->list, arg);
+                        AstNode *cast = ast_new(AST_CAST, n->line);
+                        cast->type = ast_wrap_pointer(n->type, n->line);
+                        cast->a = call;
+                        *slot = cast;
+                    } else {
+                        if (val == NULL) {
+                            val = ast_new(kind == 2 ? AST_FLOAT_LIT : AST_INT_LIT, n->line);
+                            val->ival = 0; val->fval = 0.0;
+                        }
+                        ast_list_append(&call->list, val);
+                        if (kind == 1 && !(rt->kind == AST_IDENT && rt->str1 != NULL && strcmp(rt->str1, "int") == 0)) {
+                            AstNode *cast = ast_new(AST_CAST, n->line);    /* an enum, short... : int * to T * */
+                            cast->type = ast_wrap_pointer(n->type, n->line);
+                            cast->a = call;
+                            *slot = cast;
+                        } else {
+                            *slot = call;
+                        }
+                    }
+                    break;
+                }
+                /* `new P{1, {2}}` / `new P(1, 2)` of a class with no constructor: the zeroed object, then the
+                 * members the list names (a comma sequence on a function-level temporary) */
+                AstNode *cls = type_to_class(n->type);
+                int au;
+                if (cls != NULL && n->list.count > 0 && n->sema_info == NULL && aggregate_members(cls, &au) != NULL) {
+                    if (!g_nl_in_func) {
+                        fprintf(stderr, "%s:%d: error: a list-initialized `new` needs a function body to build the "
+                                "object in\n", n->file != NULL ? n->file : g_current_filename, n->line);
+                        g_delete_errors++;
+                        break;
+                    }
+                    char tmp[64];
+                    snprintf(tmp, sizeof tmp, "__v32_nl_tmp%d", g_nl_counter++);
+                    AstNode *decl = ast_new(AST_VAR_DECL, n->line);
+                    decl->str1 = strdup(tmp);
+                    decl->type = ast_new(AST_POINTER_TYPE, n->line);
+                    decl->type->a = n->type;
+                    ast_list_append(&g_nl_temps, decl);
+                    AstNode *lst = ast_new(AST_INIT_LIST, n->line);
+                    lst->list = n->list;
+                    AstList stmts = ast_list_new();
+                    if (lower_listed_assigns(cls, tmp, lst, n->line, &stmts) < 0) {
+                        fprintf(stderr, "%s:%d: error: cannot initialize '%s' from this list\n",
+                                n->file != NULL ? n->file : g_current_filename, n->line, cls->str1);
+                        g_delete_errors++;
+                        break;
+                    }
+                    char *fname = malloc(strlen("v32_new_") + strlen(cls->str1) + 1);
+                    sprintf(fname, "v32_new_%s", cls->str1);
+                    AstNode *alloc = ast_new(AST_CALL, n->line);
+                    alloc->a = ast_ident(fname, n->line);
+                    free(fname);
+                    AstNode *set = ast_new(AST_ASSIGN, n->line);
+                    set->str1 = strdup("=");
+                    set->a = ast_ident(tmp, n->line);
+                    set->b = alloc;
+                    AstNode *chain = set;
+                    for (int k = 0; k < stmts.count; k++) chain = comma_of(chain, stmts.items[k]->a, n->line);
+                    *slot = comma_of(chain, ast_ident(tmp, n->line), n->line);
+                    break;
+                }
             }
             const char *type_name = type_name_for_new(n->type);
 
@@ -3624,6 +3787,13 @@ static void new_delete_rewrite_expr(AstNode **slot, AstNode *class_decl, LocalVa
              * philosophy elsewhere rather than guessing. */
             AstNode *obj_class = resolve_expr_class(n->a, class_decl, locals);
             if (n->ival) obj_class = delete_array_element_class(n, class_decl, locals);
+            else if (obj_class != NULL) {   /* `delete pp` of a T **: one pointer word, not an object */
+                const AstNode *dt = c_resolved_type(infer_expr_type(n->a, class_decl, locals));
+                if (dt != NULL && dt->kind == AST_POINTER_TYPE) {
+                    const AstNode *pt = c_resolved_type(dt->a);
+                    if (pt != NULL && pt->kind == AST_POINTER_TYPE) obj_class = NULL;
+                }
+            }
             const char *fn_name = "v32_delete";
             char *built_name = NULL;
             if (obj_class != NULL) {
@@ -4900,6 +5070,9 @@ static int member_is_explicitly_initialized(AstNode *m, const char *name) {
     return 0;
 }
 
+static void fill_init(const AstNode *type, AstNode *init, int full);
+static AstNode *desig_zero(const AstNode *type, int line);
+
 static void inject_member_ctor_calls_classes(AstList *decls) {
     for (int i = 0; i < decls->count; i++) {
         AstNode *n = decls->items[i];
@@ -4953,6 +5126,51 @@ static void inject_member_ctor_calls_classes(AstList *decls) {
                                 st->str1 = strdup(field->str1);
                                 st->ival = MEMBER_ARRAY_MARK;
                                 ast_list_append(&injected, st);
+                                continue;
+                            }
+                            if (ecr == NULL && entry != NULL && entry->ival == 2 && entry->list.count == 0 &&
+                                field->type->kind != AST_ARRAY_TYPE) {
+                                /* `: m{}` / `: m()` on a member of a plain aggregate class: value-initialize it.
+                                 * `{ P z = {0, 0}; this->m = z; }` -- a short list would zero nothing. */
+                                AstNode *zero = lower_zero_initializer(var_class);
+                                if (zero != NULL) {
+                                    AstNode *blk = ast_new(AST_BLOCK, m->line);
+                                    AstNode *zd = ast_new(AST_VAR_DECL, m->line);
+                                    zd->str1 = strdup("__v32_zero");
+                                    zd->type = field->type;
+                                    zd->a = zero;
+                                    AstNode *as = ast_new(AST_ASSIGN, m->line);
+                                    as->str1 = strdup("=");
+                                    as->a = member_object_ref(field, NULL, 0, m->line);
+                                    as->b = ast_ident("__v32_zero", m->line);
+                                    AstNode *st = ast_new(AST_EXPR_STMT, m->line);
+                                    st->a = as;
+                                    ast_list_append(&blk->list, zd);
+                                    ast_list_append(&blk->list, st);
+                                    ast_list_append(&injected, blk);
+                                }
+                            }
+                            if (entry != NULL && entry->ival == 4 && field->type->kind != AST_ARRAY_TYPE) {
+                                /* `: p{1, 2}` on a plain aggregate member: `{ P z = {1, 2, 0...}; this->p = z; }`
+                                 * (every slot written, a short list zeroes nothing in a local) */
+                                AstNode *blk = ast_new(AST_BLOCK, m->line);
+                                AstNode *zd = ast_new(AST_VAR_DECL, m->line);
+                                AstNode *lst = ast_new(AST_INIT_LIST, m->line);
+                                lst->list = entry->list;
+                                entry->list = ast_list_new();
+                                zd->str1 = strdup("__v32_zero");
+                                zd->type = field->type;
+                                zd->a = lst;
+                                if (g_target == TARGET_VIRCON32) fill_init(field->type, lst, 1);
+                                AstNode *as = ast_new(AST_ASSIGN, m->line);
+                                as->str1 = strdup("=");
+                                as->a = member_object_ref(field, NULL, 0, m->line);
+                                as->b = ast_ident("__v32_zero", m->line);
+                                AstNode *st = ast_new(AST_EXPR_STMT, m->line);
+                                st->a = as;
+                                ast_list_append(&blk->list, zd);
+                                ast_list_append(&blk->list, st);
+                                ast_list_append(&injected, blk);
                                 continue;
                             }
                             if (ecr != NULL && ecr->resolved_target != NULL &&
@@ -5149,6 +5367,8 @@ static void inject_member_init_assigns_classes(AstList *decls) {
                             addr->str1 = strdup("addr");
                             addr->a = entry->list.items[0];
                             assign->b = addr;
+                        } else if (entry->list.count == 0) {
+                            assign->b = desig_zero(member_decl->type, m->line);   /* `: w{}`: 0, 0.0, NULL */
                         } else
                         assign->b = entry->list.items[0]; /* resolve_member_init_list
                             already confirmed exactly one argument for any
@@ -5551,7 +5771,7 @@ static DestructibleLocal *make_destructible(const AstNode *stmt) {
     if (obj_type != NULL && obj_type->kind == AST_ARRAY_TYPE) obj_type = NULL; /* a length not known */
     if (obj_type == NULL ||
         (obj_type->kind != AST_IDENT && obj_type->kind != AST_QUALIFIED_ID)) return NULL;
-    AstNode *var_class = type_to_class(obj_type);
+    AstNode *var_class = type_to_value_class(obj_type);   /* not through a typedef of a pointer: `DP q;` */
     if (var_class == NULL) return NULL;
     AstNode *dtor = find_destructor_with_body(var_class);
     if (dtor == NULL) return NULL;
@@ -8653,6 +8873,21 @@ static void abi_walk(AstList *decls, int pass) {
 /* The file-scope declarations, for looking a union up by name (phase 12). */
 static const AstList *g_lower_unions = NULL;
 
+static int enum_name_in(const AstList *decls, const char *name) {
+    for (int i = 0; i < decls->count; i++) {
+        const AstNode *d = decls->items[i];
+        if (d == NULL) continue;
+        if (d->kind == AST_ENUM_DECL && d->str1 != NULL && strcmp(d->str1, name) == 0) return 1;
+        if (d->kind == AST_NAMESPACE_DECL && enum_name_in(&d->list, name)) return 1;
+    }
+    return 0;
+}
+
+static int lower_is_enum_name(const char *name) {
+    if (g_lower_unions == NULL || name == NULL) return 0;
+    return enum_name_in(g_lower_unions, name);
+}
+
 static const AstNode *lower_find_union(const char *name) {
     if (g_lower_unions == NULL || name == NULL) return NULL;
     for (int i = 0; i < g_lower_unions->count; i++) {
@@ -9586,6 +9821,14 @@ static AstNode *desig_zero(const AstNode *type, int line) {
             z->fval = 0.0;
             return z;
         }
+        if (g_target == TARGET_VIRCON32 && t->str1 != NULL && lower_is_enum_name(t->str1)) {
+            /* the stock compiler will not assign an int to an enumeration: `(E)0` */
+            z = ast_new(AST_CAST, line);
+            z->type = ast_ident(t->str1, line);
+            z->a = ast_new(AST_INT_LIT, line);
+            z->a->ival = 0;
+            return z;
+        }
     }
     z = ast_new(AST_INT_LIT, line);
     z->ival = 0;
@@ -9744,6 +9987,534 @@ static void desig_fix(const AstNode *type, AstNode **slot) {
     free(mnames);
 }
 
+/* ---- short braced lists are written out in full ----------------------------
+ *
+ * The real compiler does NOT zero what a short list leaves out: `P z = {};`,
+ * `int a[4] = {0};`, `P p = {1};` zero nothing in a local (a file-scope one is
+ * zero-filled, but zero is not a null pointer: NULL is -1). So every
+ * positional list of an array or aggregate struct is completed with the zero
+ * of each missing slot (`0`, `0.0`, NULL, a nested complete list); at file
+ * scope only up to the last slot that holds a pointer, since the rest is
+ * zeroed by the loader. A class with a constructor, a base, a virtual function
+ * or default member initializers is not an aggregate: its list is arguments
+ * and is left alone. */
+static const AstList *aggregate_members(const AstNode *cls, int *is_union) {
+    *is_union = 0;
+    if (cls == NULL) return NULL;
+    if (cls->kind == AST_UNION_DECL) { *is_union = 1; return &cls->list; }
+    if (cls->kind != AST_CLASS_DECL || cls->str2 != NULL) return NULL;
+    for (int i = 0; i < cls->list.count; i++) {
+        const AstNode *m = cls->list.items[i];
+        if (m == NULL) continue;
+        if (m->kind == AST_VAR_DECL) {
+            if (m->a != NULL) return NULL;
+        } else if (m->kind == AST_FUNC_DECL || m->kind == AST_FUNC_DEF) {
+            if (m->ival || (m->str1 != NULL && (strcmp(m->str1, cls->str1) == 0 || m->str1[0] == '~'))) return NULL;
+        }
+    }
+    return &cls->list;
+}
+
+static const AstNode *aggregate_of(const AstNode *t, const AstList **members, int *is_union) {
+    const AstNode *cls;
+    if (t == NULL || t->kind != AST_IDENT) return NULL;
+    cls = type_to_class(t);
+    if (cls == NULL) cls = lower_find_union(t->str1);
+    if (cls == NULL) return NULL;
+    *members = aggregate_members(cls, is_union);
+    return *members != NULL ? cls : NULL;
+}
+
+/* can the zero of this type be written out (no constructor to run)? */
+static int zero_writable(const AstNode *type) {
+    const AstNode *t = c_resolved_type(type);
+    const AstList *members; int u;
+    if (t == NULL) return 0;
+    if (t->kind == AST_ARRAY_TYPE) return t->ival > 0 && zero_writable(t->a);
+    if (t->kind == AST_REFERENCE_TYPE) return 0;
+    if (t->kind == AST_IDENT && (type_to_class(t) != NULL || lower_find_union(t->str1) != NULL)) {
+        if (aggregate_of(t, &members, &u) == NULL) return 0;
+        for (int i = 0; i < members->count; i++) {
+            const AstNode *m = members->items[i];
+            if (m != NULL && m->kind == AST_VAR_DECL && !zero_writable(m->type)) return 0;
+            if (u) break;
+        }
+        return 1;
+    }
+    if (t->kind == AST_IDENT) {                 /* a scalar or an enum; any other struct (generated, SDK...) is unknown */
+        static const char *const plain[] = { "int", "float", "char", "bool", "double", "short", "long", "unsigned",
+            "signed", "size_t", NULL };
+        for (int i = 0; plain[i] != NULL; i++)
+            if (t->str1 != NULL && strcmp(t->str1, plain[i]) == 0) return 1;
+        if (t->str1 != NULL && lower_is_enum_name(t->str1)) return 1;
+        return 0;
+    }
+    return t->kind == AST_POINTER_TYPE || t->kind == AST_FUNC_PTR_TYPE;
+}
+
+static int type_holds_pointer(const AstNode *type) {
+    const AstNode *t = c_resolved_type(type);
+    const AstList *members; int u;
+    if (t == NULL) return 0;
+    if (t->kind == AST_POINTER_TYPE || t->kind == AST_FUNC_PTR_TYPE) return 1;
+    if (t->kind == AST_ARRAY_TYPE) return type_holds_pointer(t->a);
+    if (aggregate_of(t, &members, &u) != NULL) {
+        for (int i = 0; i < members->count; i++) {
+            const AstNode *m = members->items[i];
+            if (m != NULL && m->kind == AST_VAR_DECL && type_holds_pointer(m->type)) return 1;
+            if (u) break;
+        }
+    }
+    return 0;
+}
+
+static void fill_init(const AstNode *type, AstNode *init, int full) {
+    const AstNode *t = c_resolved_type(type);
+    const AstList *members = NULL;
+    int u = 0, want = 0;
+    if (t == NULL || init == NULL || init->kind != AST_INIT_LIST) return;
+    if (t->kind == AST_ARRAY_TYPE) {
+        const AstNode *et = c_resolved_type(t->a);
+        int nested = et != NULL && (et->kind == AST_ARRAY_TYPE || aggregate_of(et, &members, &u) != NULL);
+        for (int i = 0; i < init->list.count; i++) {
+            AstNode *it = init->list.items[i];
+            if (it == NULL) return;
+            if (nested && it->kind != AST_INIT_LIST) return;        /* brace elision: as written */
+            fill_init(t->a, it, full);
+        }
+        if (t->ival <= 0 || !zero_writable(t->a)) return;
+        want = t->ival;
+        if (!full) {
+            want = init->list.count;
+            if (!g_c_mode && type_holds_pointer(t->a)) want = t->ival;   /* C input: null is 0, the loader's zero */
+        }
+        while (init->list.count < want) ast_list_append(&init->list, NULL);
+        for (int i = 0; i < init->list.count; i++)
+            if (init->list.items[i] == NULL) {
+                int saved = g_desig_full;
+                g_desig_full = 1;
+                init->list.items[i] = desig_zero(t->a, init->line);
+                g_desig_full = saved;
+            }
+        return;
+    }
+    if (aggregate_of(t, &members, &u) == NULL || u) return;   /* a union: the compiler takes no braces for it */
+    {
+        const AstNode *mt[256];
+        int n = 0;
+        for (int i = 0; i < members->count && n < 256; i++) {
+            const AstNode *m = members->items[i];
+            if (m != NULL && m->kind == AST_VAR_DECL) mt[n++] = m->type;
+        }
+        for (int i = 0; i < init->list.count; i++) {
+            AstNode *it = init->list.items[i];
+            const AstNode *ct;
+            if (it == NULL || i >= n) return;
+            ct = c_resolved_type(mt[i]);
+            if (ct != NULL && it->kind != AST_INIT_LIST &&
+                (ct->kind == AST_ARRAY_TYPE || aggregate_of(ct, &members, &u) != NULL))
+                return;                                              /* brace elision / string */
+            fill_init(mt[i], it, full);
+        }
+        want = full ? n : init->list.count;
+        for (int i = init->list.count; !full && i < n; i++)
+            if (!g_c_mode && type_holds_pointer(mt[i])) want = i + 1;
+        for (int i = init->list.count; i < want; i++)
+            if (!zero_writable(mt[i])) return;
+        while (init->list.count < want) {
+            int saved = g_desig_full;
+            g_desig_full = 1;
+            ast_list_append(&init->list, desig_zero(mt[init->list.count], init->line));
+            g_desig_full = saved;
+        }
+    }
+}
+
+/* The complete zero initializer `{0, 0, NULL, ...}` of a plain aggregate class (the value `new P()` makes), or NULL
+ * when the class is not one or its zero cannot be written out. */
+AstNode *lower_zero_initializer(const AstNode *cls) {
+    int u, saved = g_desig_full;
+    AstNode *z;
+    AstNode ident;
+    if (cls == NULL || cls->kind != AST_CLASS_DECL || aggregate_members(cls, &u) == NULL) return NULL;
+    memset(&ident, 0, sizeof ident);
+    ident.kind = AST_IDENT;
+    ident.str1 = cls->str1;
+    if (!zero_writable(&ident)) return NULL;
+    g_desig_full = 1;
+    z = desig_zero(&ident, cls->line);
+    g_desig_full = saved;
+    return z;
+}
+
+/* Does a value of this plain-aggregate class hold a pointer (which a zero fill must make NULL)? */
+int lower_class_holds_pointer(const AstNode *cls) {
+    int u;
+    AstNode ident;
+    if (cls == NULL || cls->kind != AST_CLASS_DECL || aggregate_members(cls, &u) == NULL) return 0;
+    memset(&ident, 0, sizeof ident);
+    ident.kind = AST_IDENT;
+    ident.str1 = cls->str1;
+    return type_holds_pointer(&ident);
+}
+
+/* ---- phase 10b: brace-initialized unions (Vircon32 only) ------------------------------
+ *
+ * The stock compiler takes no brace list for a union (QUIRKS #33): `U u = {1};` and `U u = {};` are
+ * "cannot assign int to union U", also when the union is a member of a struct or an element of an
+ * array that has a list. A declaration whose type holds a union and has a brace list is therefore
+ * lowered to the plain declaration plus assignments, leaf by leaf, the C rule applied: a brace list
+ * of a union initializes its FIRST member (the other words of the union are zeroed), a missing item
+ * is the zero of its type (a pointer NULL, a float 0.0). A local gets the assignments right after
+ * its declaration; a file-scope or namespace-scope variable gets them at the start of main(), where
+ * the global objects are built too. Long zero runs become a loop on a hidden index.
+ * The words of a union are zeroed through `((int *)&lv)[w]`, which the compiler takes. */
+typedef struct UnionEmit { AstList *out; int line; int errors; int listed; } UnionEmit;
+static const char *g_ui_arrow_root = NULL;   /* a pointer variable whose members are reached with `->` */
+static int g_ui_counter = 0;
+static int g_ui_errors = 0;
+
+static int ui_words(const AstNode *type) {
+    const AstNode *t = c_resolved_type(type);
+    const AstList *members; int u, w = 0;
+    if (t == NULL) return 1;
+    if (t->kind == AST_ARRAY_TYPE) return (t->ival > 0 ? t->ival : 0) * ui_words(t->a);
+    if (t->kind == AST_IDENT && aggregate_of(t, &members, &u) != NULL) {
+        for (int i = 0; i < members->count; i++) {
+            const AstNode *m = members->items[i];
+            int mw;
+            if (m == NULL || m->kind != AST_VAR_DECL) continue;
+            mw = ui_words(m->type);
+            if (u) { if (mw > w) w = mw; } else w += mw;
+        }
+        return w;
+    }
+    return 1;
+}
+
+static int ui_contains_union(const AstNode *type, int depth) {
+    const AstNode *t = c_resolved_type(type);
+    const AstList *members; int u;
+    if (t == NULL || depth > 8) return 0;
+    if (t->kind == AST_ARRAY_TYPE) return ui_contains_union(t->a, depth + 1);
+    if (t->kind == AST_IDENT && aggregate_of(t, &members, &u) != NULL) {
+        if (u) return 1;
+        for (int i = 0; i < members->count; i++) {
+            const AstNode *m = members->items[i];
+            if (m != NULL && m->kind == AST_VAR_DECL && ui_contains_union(m->type, depth + 1)) return 1;
+        }
+    }
+    return 0;
+}
+
+static AstNode *ui_stmt_assign(AstNode *lv, AstNode *value, int line) {
+    AstNode *as = ast_new(AST_ASSIGN, line);
+    AstNode *st = ast_new(AST_EXPR_STMT, line);
+    as->str1 = strdup("=");
+    as->a = lv;
+    as->b = value;
+    st->a = as;
+    return st;
+}
+
+static AstNode *ui_member(const AstNode *lv, const char *name, int line) {
+    AstNode *m = ast_new(AST_MEMBER, line);
+    int arrow = g_ui_arrow_root != NULL && lv->kind == AST_IDENT && lv->str1 != NULL && strcmp(lv->str1, g_ui_arrow_root) == 0;
+    m->str1 = strdup(arrow ? "->" : ".");
+    m->str2 = strdup(name);
+    m->a = ast_clone_expr(lv);
+    return m;
+}
+
+static AstNode *ui_index(const AstNode *lv, AstNode *idx, int line) {
+    AstNode *s = ast_new(AST_SUBSCRIPT, line);
+    s->a = ast_clone_expr(lv);
+    s->b = idx;
+    return s;
+}
+
+static AstNode *ui_int(int v, int line) {
+    AstNode *l = ast_new(AST_INT_LIT, line);
+    l->ival = v;
+    return l;
+}
+
+static int ui_is_literal(const AstNode *e) {
+    return e != NULL && (e->kind == AST_INT_LIT || e->kind == AST_FLOAT_LIT || e->kind == AST_CHAR_LIT ||
+                         e->kind == AST_STRING_LIT || e->kind == AST_NULL_LIT || e->kind == AST_BOOL_LIT);
+}
+
+static void ui_init(UnionEmit *ue, const AstNode *lv, const AstNode *type, AstNode *init);
+
+/* elements [from, n) of an array to their zero: written out when few, else a loop */
+static void ui_zero_range(UnionEmit *ue, const AstNode *lv, const AstNode *elem, int from, int n) {
+    int line = ue->line;
+    if (from >= n || ue->listed) return;
+    if (n - from <= 4 || ui_words(elem) * (n - from) <= 4) {
+        for (int i = from; i < n; i++) ui_init(ue, ui_index(lv, ui_int(i, line), line), elem, NULL);
+        return;
+    }
+    {
+        char name[64];
+        AstNode *blk = ast_new(AST_BLOCK, line), *idx = ast_new(AST_VAR_DECL, line);
+        AstNode *cond = ast_new(AST_BINOP, line), *step = ast_new(AST_UNOP, line), *body = ast_new(AST_BLOCK, line);
+        AstNode *loop = ast_new(AST_FOR, line);
+        AstList *saved = ue->out;
+        snprintf(name, sizeof name, "__v32_ui%d", g_ui_counter++);
+        idx->str1 = strdup(name);
+        idx->type = ast_ident("int", line);
+        idx->a = ui_int(from, line);
+        cond->str1 = strdup("<");
+        cond->a = ast_ident(name, line);
+        cond->b = ui_int(n, line);
+        step->str1 = strdup("post++");
+        step->a = ast_ident(name, line);
+        ue->out = &body->list;
+        ui_init(ue, ui_index(lv, ast_ident(name, line), line), elem, NULL);
+        ue->out = saved;
+        loop->a = idx; loop->b = cond; loop->c = step; loop->d = body;
+        ast_list_append(&blk->list, loop);
+        ast_list_append(ue->out, blk);
+    }
+}
+
+static void ui_zero_words(UnionEmit *ue, const AstNode *lv, int from, int to) {
+    int line = ue->line;
+    if (from >= to || ue->listed) return;
+    {
+        AstNode *ptr_ty = ast_new(AST_POINTER_TYPE, line), *cast = ast_new(AST_CAST, line), *addr = ast_new(AST_UNOP, line);
+        char name[64];
+        ptr_ty->a = ast_ident("int", line);
+        addr->str1 = strdup("addr");
+        addr->a = ast_clone_expr(lv);
+        cast->type = ptr_ty;
+        cast->a = addr;
+        if (to - from <= 4) {
+            for (int w = from; w < to; w++) {
+                AstNode *c2 = ast_clone_expr(cast);
+                ast_list_append(ue->out, ui_stmt_assign(ui_index(c2, ui_int(w, line), line), ui_int(0, line), line));
+            }
+        } else {
+            AstNode *blk = ast_new(AST_BLOCK, line), *idx = ast_new(AST_VAR_DECL, line);
+            AstNode *cond = ast_new(AST_BINOP, line), *step = ast_new(AST_UNOP, line), *body = ast_new(AST_BLOCK, line);
+            AstNode *loop = ast_new(AST_FOR, line);
+            snprintf(name, sizeof name, "__v32_ui%d", g_ui_counter++);
+            idx->str1 = strdup(name);
+            idx->type = ast_ident("int", line);
+            idx->a = ui_int(from, line);
+            cond->str1 = strdup("<");
+            cond->a = ast_ident(name, line);
+            cond->b = ui_int(to, line);
+            step->str1 = strdup("post++");
+            step->a = ast_ident(name, line);
+            ast_list_append(&body->list, ui_stmt_assign(ui_index(cast, ast_ident(name, line), line), ui_int(0, line), line));
+            loop->a = idx; loop->b = cond; loop->c = step; loop->d = body;
+            ast_list_append(&blk->list, loop);
+            ast_list_append(ue->out, blk);
+        }
+    }
+}
+
+static void ui_init(UnionEmit *ue, const AstNode *lv, const AstNode *type, AstNode *init)
+{
+    const AstNode *t = c_resolved_type(type);
+    const AstList *members = NULL;
+    int u = 0, line = ue->line;
+    AstNode *lvc = (AstNode *)lv;
+    if (ue->listed && init == NULL) return;      /* only what the list names */
+    if (t == NULL) { ast_list_append(ue->out, ui_stmt_assign(ast_clone_expr(lv), init != NULL ? init : ui_int(0, line), line)); return; }
+    if (t->kind == AST_ARRAY_TYPE) {
+        const AstList *items = (init != NULL && init->kind == AST_INIT_LIST) ? &init->list : NULL;
+        int count = items != NULL ? items->count : 0, n = t->ival > count ? t->ival : count;
+        if (init != NULL && init->kind != AST_INIT_LIST) {
+            fprintf(stderr, "%s:%d: error: an array that holds a union cannot be initialized from this expression\n",
+                    init->file != NULL ? init->file : g_current_filename, init->line);
+            ue->errors++;
+            return;
+        }
+        for (int i = 0; i < count; i++)
+            ui_init(ue, ui_index(lv, ui_int(i, line), line), t->a, items->items[i]);
+        ui_zero_range(ue, lv, t->a, count, n);
+        return;
+    }
+    if (aggregate_of(t, &members, &u) != NULL) {
+        const AstNode *first = NULL;
+        for (int i = 0; i < members->count; i++) {
+            const AstNode *m = members->items[i];
+            if (m != NULL && m->kind == AST_VAR_DECL) { first = m; break; }
+        }
+        if (u) {
+            AstNode *fi = NULL;
+            int w1 = first != NULL ? ui_words(first->type) : 0, W = ui_words(t);
+            if (first == NULL || first->str1 == NULL) return;
+            if (init != NULL && init->kind == AST_INIT_LIST) fi = init->list.count > 0 ? init->list.items[0] : NULL;
+            else if (init != NULL && ui_is_literal(init)) fi = init;
+            else if (init != NULL) {                          /* a value of the union type */
+                ast_list_append(ue->out, ui_stmt_assign(ast_clone_expr(lv), init, line));
+                return;
+            }
+            ui_zero_words(ue, lv, w1, W);
+            ui_init(ue, ui_member(lv, first->str1, line), first->type, fi);
+            return;
+        }
+        if (init != NULL && init->kind != AST_INIT_LIST) {      /* a whole struct value */
+            ast_list_append(ue->out, ui_stmt_assign(ast_clone_expr(lv), init, line));
+            return;
+        }
+        {
+            int j = 0;
+            for (int i = 0; i < members->count; i++) {
+                const AstNode *m = members->items[i];
+                AstNode *mi = NULL;
+                if (m == NULL || m->kind != AST_VAR_DECL) continue;
+                if (m->str1 == NULL) {
+                    fprintf(stderr, "%s:%d: error: an unnamed member cannot be initialized when a union is in the list\n",
+                            m->file != NULL ? m->file : g_current_filename, m->line);
+                    ue->errors++;
+                    return;
+                }
+                if (init != NULL && j < init->list.count) mi = init->list.items[j];
+                j++;
+                ui_init(ue, ui_member(lv, m->str1, line), m->type, mi);
+            }
+        }
+        return;
+    }
+    (void)lvc;
+    {   /* a scalar */
+        AstNode *v = init;
+        if (v != NULL && v->kind == AST_INIT_LIST) v = v->list.count > 0 ? v->list.items[0] : NULL;
+        if (v == NULL) v = desig_zero(type, line);
+        rewrite_zero_to_null(&v, type);               /* a literal 0 for a pointer is NULL */
+        ast_list_append(ue->out, ui_stmt_assign(ast_clone_expr(lv), v, line));
+    }
+}
+
+/* the declaration's assignments go to `out`; the declaration loses its list */
+static int ui_lower_decl(AstNode *vd, AstList *out) {
+    UnionEmit ue;
+    AstNode *root;
+    const AstNode *t;
+    if (vd == NULL || vd->kind != AST_VAR_DECL || vd->a == NULL || vd->a->kind != AST_INIT_LIST ||
+        vd->type == NULL || vd->str1 == NULL || !ui_contains_union(vd->type, 0)) return 0;
+    ue.out = out; ue.line = vd->line; ue.errors = 0; ue.listed = 0;
+    root = ast_ident(vd->str1, vd->line);
+    t = c_resolved_type(vd->type);
+    if (t != NULL && t->kind == AST_ARRAY_TYPE && t->ival <= 0 && vd->a->list.count > 0) {
+        AstNode *sized = ast_new(AST_ARRAY_TYPE, vd->line);   /* `U a[] = {{1}, {2}}` */
+        *sized = *t;
+        sized->ival = vd->a->list.count;
+        vd->type = sized;
+    }
+    ui_init(&ue, root, vd->type, vd->a);
+    vd->a = NULL;
+    g_ui_errors += ue.errors;
+    return 1;
+}
+
+static void ui_walk(AstNode *n) {
+    if (n == NULL) return;
+    for (int i = 0; i < n->list.count; i++) {
+        AstNode *it = n->list.items[i];
+        AstList tmp = ast_list_new();
+        if (it != NULL && it->kind == AST_VAR_DECL && ui_lower_decl(it, &tmp)) {
+            AstList nl = ast_list_new();
+            for (int k = 0; k <= i; k++) ast_list_append(&nl, n->list.items[k]);
+            for (int k = 0; k < tmp.count; k++) ast_list_append(&nl, tmp.items[k]);
+            for (int k = i + 1; k < n->list.count; k++) ast_list_append(&nl, n->list.items[k]);
+            n->list = nl;
+            i += tmp.count;
+        } else {
+            ui_walk(it);
+        }
+    }
+    ui_walk(n->a);
+    ui_walk(n->b);
+    ui_walk(n->c);
+    ui_walk(n->d);
+}
+
+static void ui_scope(AstList *decls, AstList *globals, int have_main) {
+    for (int i = 0; i < decls->count; i++) {
+        AstNode *n = decls->items[i];
+        if (n == NULL) continue;
+        if (n->kind == AST_VAR_DECL) {
+            if (have_main && n->a != NULL) ui_lower_decl(n, globals);
+        } else if (n->kind == AST_NAMESPACE_DECL) {
+            ui_scope(&n->list, globals, have_main);
+        } else if (n->kind == AST_FUNC_DEF) {
+            ui_walk(n->a);
+        } else if (n->kind == AST_CLASS_DECL) {
+            for (int k = 0; k < n->list.count; k++) {
+                AstNode *m = n->list.items[k];
+                if (m != NULL && m->kind == AST_FUNC_DEF) ui_walk(m->a);
+            }
+        }
+    }
+}
+
+static int lower_union_inits(AstNode *program) {
+    AstNode *main_func = NULL;
+    AstList globals = ast_list_new();
+    for (int i = 0; i < program->list.count; i++) {
+        AstNode *n = program->list.items[i];
+        if (n != NULL && n->kind == AST_FUNC_DEF && n->b == NULL && n->str1 != NULL && strcmp(n->str1, "main") == 0 &&
+            n->a != NULL && n->a->kind == AST_BLOCK) main_func = n;
+    }
+    ui_scope(&program->list, &globals, main_func != NULL);
+    if (globals.count > 0 && main_func != NULL) {
+        AstList body = ast_list_new();
+        for (int i = 0; i < globals.count; i++) ast_list_append(&body, globals.items[i]);
+        for (int i = 0; i < main_func->a->list.count; i++) ast_list_append(&body, main_func->a->list.items[i]);
+        main_func->a->list = body;
+        lower_note(main_func->line, "main() now begins by initializing the file-scope unions (%d statement(s))", globals.count);
+    }
+    return g_ui_errors;
+}
+
+/* The statements that zero the plain aggregate `lv` of class `cls` into `out` (NULL pointers, 0.0), also when it
+ * holds a union: the lowering of `new P()` for a class that cannot be zeroed by one brace list. 0 if not a plain aggregate. */
+int lower_zero_stmts(const AstNode *cls, const AstNode *lv, AstList *out) {
+    UnionEmit ue;
+    AstNode ident;
+    int u;
+    if (cls == NULL || cls->kind != AST_CLASS_DECL || aggregate_members(cls, &u) == NULL) return 0;
+    memset(&ident, 0, sizeof ident);
+    ident.kind = AST_IDENT;
+    ident.str1 = cls->str1;
+    ue.out = out; ue.line = cls->line; ue.errors = 0; ue.listed = 0;
+    ui_init(&ue, lv, &ident, NULL);
+    return ue.errors == 0;
+}
+
+/* `new P{1, {2}}` after the allocation: the assignments for what the list names, on `ptr->member...`
+ * (the allocator already zeroed the rest). Returns the expression statements' count, or -1 on an error. */
+static int lower_listed_assigns(const AstNode *cls, const char *ptr_name, AstNode *list, int line, AstList *out) {
+    UnionEmit ue;
+    AstNode ident, *root;
+    int u;
+    if (cls == NULL || aggregate_members(cls, &u) == NULL) return -1;
+    memset(&ident, 0, sizeof ident);
+    ident.kind = AST_IDENT;
+    ident.str1 = cls->str1;
+    ue.out = out; ue.line = line; ue.errors = 0; ue.listed = 1;
+    root = ast_ident(ptr_name, line);
+    g_ui_arrow_root = ptr_name;
+    ui_init(&ue, root, &ident, list);
+    g_ui_arrow_root = NULL;
+    return ue.errors == 0 ? out->count : -1;
+}
+
+int lower_class_has_union(const AstNode *cls) {
+    AstNode ident;
+    int u;
+    if (cls == NULL || cls->kind != AST_CLASS_DECL || aggregate_members(cls, &u) == NULL) return 0;
+    memset(&ident, 0, sizeof ident);
+    ident.kind = AST_IDENT;
+    ident.str1 = cls->str1;
+    return ui_contains_union(&ident, 0);
+}
+
 static int g_desig_depth = 0;   /* 0 = a file-scope declaration */
 
 static void desig_walk(AstNode **slot) {
@@ -9752,6 +10523,7 @@ static void desig_walk(AstNode **slot) {
     if (n->kind == AST_VAR_DECL && n->a != NULL && n->a->kind == AST_INIT_LIST) {
         g_desig_full = g_desig_depth > 0;
         desig_fix(n->type, &n->a);
+        if (g_target == TARGET_VIRCON32) fill_init(n->type, n->a, g_desig_depth > 0);   /* standard C zero-fills a short list */
     }
     g_desig_depth++;
     desig_walk(&n->a);
@@ -9983,6 +10755,15 @@ static void nv_decls(AstList *decls, const char *ns) {
                 sema_set_lookup_namespace(saved);
                 break;
             }
+            case AST_ENUM_DECL: {
+                /* `enum F { B = RED + 1 }`: the values may name enumerators */
+                const char *saved = sema_get_lookup_namespace();
+                sema_set_lookup_namespace(ns);
+                for (int j = 0; j < n->list.count; j++)
+                    if (n->list.items[j]->kind == AST_ENUM_VALUE) nv_walk(n->list.items[j]->a);
+                sema_set_lookup_namespace(saved);
+                break;
+            }
             default:
                 break;
         }
@@ -10114,6 +10895,10 @@ int lower_run(AstNode *program) {
     destruct_scope_free_functions(&program->list);
     chain_destructors_classes(&program->list);        /* phase 9a */
     destroy_globals_in_main(program);                 /* phase 9c */
+    if (g_target == TARGET_VIRCON32) {
+        int errors = lower_union_inits(program);      /* phase 10b: brace-initialized unions */
+        if (errors > 0) return errors;
+    }
     if (V32_ALLOC_HOOK) arena_init_in_main(program);   /* phase 9d */
     if (g_goto_errors > 0) return g_goto_errors;
     if (g_target == TARGET_VIRCON32) {

@@ -33,30 +33,30 @@ if "%HAVE_OPT%"=="0" echo note: v32opt not found in PATH -- skipping the optimiz
 
 REM create the output folders, since the development tools will not
 if not exist bin mkdir bin
-if not exist ..\..\..\..\tmp\tmp.zZaTGzdUPg mkdir ..\..\..\..\tmp\tmp.zZaTGzdUPg
+if not exist ..\..\..\..\tmp\tmp.IBVpcCpzbt mkdir ..\..\..\..\tmp\tmp.IBVpcCpzbt
 
 echo.
 echo Transpile to Vircon32 C
 echo --------------------------
-v32c++ --line-markers --no-build-scripts -o ..\..\..\..\tmp\tmp.zZaTGzdUPg\lm.c line_markers.cpp || goto :failed
+v32c++ --line-markers --no-build-scripts -o ..\..\..\..\tmp\tmp.IBVpcCpzbt\lm.c line_markers.cpp || goto :failed
 
 echo.
 echo Compile the C code
 echo --------------------------
-compile ..\..\..\..\tmp\tmp.zZaTGzdUPg\lm.c -o ..\..\..\..\tmp\tmp.zZaTGzdUPg\lm.asm || goto :failed
-if "%HAVE_OPT%"=="1" v32opt -O3 ..\..\..\..\tmp\tmp.zZaTGzdUPg\lm.asm -o ..\..\..\..\tmp\tmp.zZaTGzdUPg\lmOpt.asm || goto :failed
+compile ..\..\..\..\tmp\tmp.IBVpcCpzbt\lm.c -o ..\..\..\..\tmp\tmp.IBVpcCpzbt\lm.asm || goto :failed
+if "%HAVE_OPT%"=="1" v32opt -O3 ..\..\..\..\tmp\tmp.IBVpcCpzbt\lm.asm -o ..\..\..\..\tmp\tmp.IBVpcCpzbt\lmOpt.asm || goto :failed
 
 echo.
 echo Assemble the ASM code
 echo --------------------------
-assemble ..\..\..\..\tmp\tmp.zZaTGzdUPg\lm.asm -o ..\..\..\..\tmp\tmp.zZaTGzdUPg\lm.vbin || goto :failed
-if "%HAVE_OPT%"=="1" assemble ..\..\..\..\tmp\tmp.zZaTGzdUPg\lmOpt.asm -o ..\..\..\..\tmp\tmp.zZaTGzdUPg\lmOpt.vbin || goto :failed
+assemble ..\..\..\..\tmp\tmp.IBVpcCpzbt\lm.asm -o ..\..\..\..\tmp\tmp.IBVpcCpzbt\lm.vbin || goto :failed
+if "%HAVE_OPT%"=="1" assemble ..\..\..\..\tmp\tmp.IBVpcCpzbt\lmOpt.asm -o ..\..\..\..\tmp\tmp.IBVpcCpzbt\lmOpt.vbin || goto :failed
 
 echo.
 echo Pack the ROM
 echo --------------------------
-packrom ..\..\..\..\tmp\tmp.zZaTGzdUPg\lm.xml -o bin\lm.v32 || goto :failed
-if "%HAVE_OPT%"=="1" packrom ..\..\..\..\tmp\tmp.zZaTGzdUPg\lmOpt.xml -o bin\lmOpt.v32 || goto :failed
+packrom ..\..\..\..\tmp\tmp.IBVpcCpzbt\lm.xml -o bin\lm.v32 || goto :failed
+if "%HAVE_OPT%"=="1" packrom ..\..\..\..\tmp\tmp.IBVpcCpzbt\lmOpt.xml -o bin\lmOpt.v32 || goto :failed
 goto :succeeded
 
 :failed

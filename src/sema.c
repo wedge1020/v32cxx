@@ -456,7 +456,7 @@ static void register_global_var(AstNode *var_decl, const char *ns) {
      * namespace function does (`a::x` -> `a__x`); an `extern` declaration
      * names something defined elsewhere (the SDK, another file) and keeps
      * its own name. */
-    if (ns[0] != '\0' && !var_decl->is_extern && !prescan_line_has_extern(var_decl->file, var_decl->line)) {
+    if (ns[0] != '\0' && !var_decl->is_extern && !var_decl->extern_decl) {
         char *prefix = ns_mangle_prefix(ns);
         size_t len = strlen(prefix) + 2 + strlen(var_decl->str1) + 1;
         e->cname = malloc(len);
@@ -467,6 +467,39 @@ static void register_global_var(AstNode *var_decl, const char *ns) {
     }
     e->next = g_global_var_registry;
     g_global_var_registry = e;
+}
+
+/* The enumerators of a namespace's enum are variables as far as naming goes:
+ * `namespace a { enum E { RED }; } namespace b { enum F { RED }; }` must not
+ * be two `RED`s in the C output, so each is registered with its namespace
+ * and gets the C name `a__RED` like a namespace variable (lower.c phase 0c
+ * renames the declaration and every reference, the way it does for those).
+ * The registry entry's declaration is the AST_ENUM_VALUE and its type the
+ * enum's name. File-scope enumerators are not registered: they keep their
+ * names. */
+static void register_enumerators(AstNode *enum_decl, const char *ns_in) {
+    /* `enum class Color`: its enumerators live in a scope named Color, C name `Color__Red` / `a__Color__Red` */
+    char *scoped_ns = enum_decl->ival == 1
+        ? sema_ns_join(ns_in, enum_decl->str2 != NULL ? enum_decl->str2 : enum_decl->str1) : NULL;
+    const char *ns = scoped_ns != NULL ? scoped_ns : ns_in;
+    if (ns[0] == '\0') return;
+    char *prefix = ns_mangle_prefix(ns);
+    for (int i = 0; i < enum_decl->list.count; i++) {
+        AstNode *ev = enum_decl->list.items[i];
+        if (ev->kind != AST_ENUM_VALUE || ev->str1 == NULL) continue;
+        GlobalVarRegEntry *e = calloc(1, sizeof(GlobalVarRegEntry));
+        e->name = ev->str1;
+        e->type = ast_ident(enum_decl->str1, ev->line);
+        e->ns = strdup(ns);
+        size_t len = strlen(prefix) + 2 + strlen(ev->str1) + 1;
+        e->cname = malloc(len);
+        snprintf(e->cname, len, "%s__%s", prefix, ev->str1);
+        e->decl = ev;
+        e->next = g_global_var_registry;
+        g_global_var_registry = e;
+    }
+    free(prefix);
+    free(scoped_ns);
 }
 
 /* The legacy, namespace-blind lookup (the last declaration of a bare name
@@ -506,6 +539,7 @@ static void free_global_var_registry(void) {
 typedef struct EnumRegEntry {
     const char *name;   /* not owned -- points into the ENUM_DECL's str1 */
     AstNode *decl;       /* not owned -- the AST_ENUM_DECL itself */
+    char *ns;            /* the namespace it was declared in ("" = file scope); enums only */
     struct EnumRegEntry *next;
 } EnumRegEntry;
 
@@ -521,7 +555,7 @@ static EnumRegEntry *g_union_registry = NULL;
 static EnumConstRegEntry *g_enum_const_registry = NULL;
 
 static void enum_registry_add(const char *name, AstNode *decl) {
-    EnumRegEntry *e = malloc(sizeof(EnumRegEntry));
+    EnumRegEntry *e = calloc(1, sizeof(EnumRegEntry));
     e->name = name;
     e->decl = decl;
     e->next = g_enum_registry;
@@ -552,6 +586,8 @@ static AstNode *enum_const_owner_lookup(const char *name) {
 static AstNode *find_enum_decl_by_name(const char *name) {
     for (EnumRegEntry *e = g_enum_registry; e != NULL; e = e->next) {
         if (e->name != NULL && strcmp(e->name, name) == 0) return e->decl;
+        /* an enum of a namespace is `a__E` in C; `E::RED` names it as written */
+        if (e->decl != NULL && e->decl->str2 != NULL && strcmp(e->decl->str2, name) == 0) return e->decl;
     }
     return NULL;
 }
@@ -567,7 +603,7 @@ int sema_is_enum_type(const AstNode *type) {
 
 static void free_enum_registries(void) {
     EnumRegEntry *e = g_enum_registry;
-    while (e != NULL) { EnumRegEntry *next = e->next; free(e); e = next; }
+    while (e != NULL) { EnumRegEntry *next = e->next; free(e->ns); free(e); e = next; }
     g_enum_registry = NULL;
     e = g_union_registry;
     while (e != NULL) { EnumRegEntry *next = e->next; free(e); e = next; }
@@ -609,17 +645,32 @@ static void collect_declarations_in(AstList *decls, const char *ns) {
         }
         else if (n->kind == AST_UNION_DECL) {
             /* shares the enum registry's list type: name -> declaration */
-            EnumRegEntry *e = malloc(sizeof(EnumRegEntry));
+            EnumRegEntry *e = calloc(1, sizeof(EnumRegEntry));
             e->name = n->str1;
             e->decl = n;
             e->next = g_union_registry;
             g_union_registry = e;
         }
         else if (n->kind == AST_ENUM_DECL) {
+            /* enum TYPE names are not qualified by namespace in the C output
+             * (a type is written `E` there, as a class is), so two enums of
+             * one name in different scopes would be one C type, redefined */
+            for (EnumRegEntry *o = g_enum_registry; o != NULL; o = o->next)
+                if (o->name != NULL && strcmp(o->name, n->str1) == 0 && o->decl != n && o->ns != NULL &&
+                    strcmp(o->ns, ns) != 0) {
+                    sema_error(n->line, "enum '%s' is also declared in %s%s%s (line %d): the names of enum "
+                               "types are not qualified by their namespace in the generated C, so two enums "
+                               "of one name in different namespaces clash; rename one",
+                               n->str1, o->ns[0] ? "namespace '" : "file scope", o->ns,
+                               o->ns[0] ? "'" : "", o->decl->line);
+                    break;
+                }
             enum_registry_add(n->str1, n);                 /* the type name */
-            for (int i = 0; i < n->list.count; i++)        /* every constant */
-                if (n->list.items[i]->kind == AST_ENUM_VALUE)
+            g_enum_registry->ns = strdup(ns);
+            for (int i = 0; i < n->list.count; i++)        /* every constant (not a scoped enum's: Color::Red only) */
+                if (n->list.items[i]->kind == AST_ENUM_VALUE && n->ival != 1)
                     enum_const_registry_add(n->list.items[i]->str1, n);
+            register_enumerators(n, ns);                   /* a namespace's: `a__RED` */
             /* do NOT fall through to other handling -- nothing else should
              * touch enum decls here; continue the walk as before */
         }
@@ -2325,7 +2376,24 @@ const char *sema_namespace_var_cname(const AstNode *expr) {
     } else if (expr->kind == AST_QUALIFIED_ID && expr->list.count > 0 &&
                expr->list.items[expr->list.count - 1]->str1 != NULL) {
         char *qual = sema_qualifier_of(expr);
-        e = resolve_global_var(expr->list.items[expr->list.count - 1]->str1, qual);
+        const char *last = expr->list.items[expr->list.count - 1]->str1;
+        e = resolve_global_var(last, qual);
+        if (e == NULL && expr->list.count >= 2) {
+            /* `a::E::RED`, `E::RED`: the qualifier ends in an enum's name,
+             * the enumerator lives in the namespace around it */
+            const char *enum_part = expr->list.items[expr->list.count - 2]->str1;
+            if (enum_part != NULL && find_enum_decl_by_name(enum_part) != NULL) {
+                char *outer = strdup("");
+                for (int i = 0; i < expr->list.count - 2; i++) {
+                    char *next = sema_ns_join(outer, expr->list.items[i]->str1);
+                    free(outer);
+                    outer = next;
+                }
+                e = resolve_global_var(last, outer[0] != '\0' ? outer : NULL);
+                if (e != NULL && e->decl != NULL && e->decl->kind != AST_ENUM_VALUE) e = NULL;
+                free(outer);
+            }
+        }
         free(qual);
     }
     if (e == NULL || strcmp(e->cname, e->name) == 0) return NULL;
@@ -3185,7 +3253,9 @@ static void check_list_new(AstNode *n) {
                             "member initializer?): write the `new T[n]{...}` in a function body");
         return;
     }
-    AstNode *cls = type_to_class(n->type);
+    /* `new T*[n]{p, q}`: the elements are pointers (type_to_class sees through them) */
+    const AstNode *elem_t = resolve_typedef_chain(n->type);
+    AstNode *cls = (elem_t != NULL && elem_t->kind == AST_POINTER_TYPE) ? NULL : type_to_class(n->type);
     if (cls == NULL) {
         for (int i = 0; i < n->list.count; i++)
             if (n->list.items[i]->kind == AST_INIT_LIST)
@@ -3370,10 +3440,19 @@ static void resolve_member_init_list(AstNode *func, AstNode *current_class, Loca
                 AstNode **candidates = NULL;
                 int count = 0, cap = 0;
                 collect_method_candidates(member_class, member_class->str1, &candidates, &count, &cap);
+                if (count == 0 && entry->list.count > 0) {
+                    /* `: p{1, 2}` on a class with no constructor: its members, in order (list-initialization of
+                     * an aggregate; the rest is zero). lower.c builds it (ival = 4). */
+                    LocalVarType *scope = locals;
+                    for (int k = 0; k < entry->list.count; k++) check_node(entry->list.items[k], current_class, &scope);
+                    entry->ival = 4;
+                    continue;
+                }
                 resolve_overload_generic(entry, member_class->str1, candidates, count,
                                           entry->list.items, entry->list.count, current_class, locals);
                 entry->ival = 2;
-            } else if (entry->list.count != 1) {
+            } else if (entry->list.count > 1) {
+                /* (no argument at all, `: w{}` / `: w()`, is the zero of the type) */
                 sema_error(entry->line, "member initializer for '%s' takes exactly one argument",
                            entry->str1);
             } else {

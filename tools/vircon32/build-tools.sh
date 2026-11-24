@@ -10,19 +10,40 @@
 #  v32run, v32prof, v32shot, v32peek and v32io-script.py that used to be copied into this directory
 #  are v32sim's now: tools/oracle/ and tools/ there.)
 #
-#  Needs a v32sim checkout: V32SIM_HOME=/path/to/v32sim (default: ../v32sim beside this project).
-#  Without a ComputerSoftware checkout one is cloned at the commit the tools were verified against.
+#  Needs a v32sim checkout: V32SIM_HOME=/path/to/v32sim (default: ../v32sim beside this project, then ../v32sim.git).
+#  The ComputerSoftware checkout is found the same way: the argument, else ../ComputerSoftware beside this
+#  project, then ../ComputerSoftware.git. With none, one is cloned to ../ComputerSoftware at the commit the
+#  tools were verified against, so later runs find it there. Nothing is cloned inside this project.
 # *****************************************************************************
 set -e
 HERE=$(cd "$(dirname "$0")" && pwd)
-V32SIM_HOME=${V32SIM_HOME:-$(cd "$HERE/../../.." 2>/dev/null && pwd)/v32sim}
+PARENT=$(cd "$HERE/../../.." 2>/dev/null && pwd)   # the folder holding this project and its siblings
+if [ -z "$V32SIM_HOME" ]; then
+    # ../v32sim beside this project, or ../v32sim.git for a checkout named after its repository
+    V32SIM_HOME=$PARENT/v32sim
+    [ -x "$V32SIM_HOME/tools/oracle/build.sh" ] || [ ! -x "$PARENT/v32sim.git/tools/oracle/build.sh" ] ||
+        V32SIM_HOME=$PARENT/v32sim.git
+fi
 [ -x "$V32SIM_HOME/tools/oracle/build.sh" ] || {
-    echo "build-tools.sh: no v32sim at $V32SIM_HOME (set V32SIM_HOME to a v32sim checkout)" >&2; exit 1; }
-SRC="${1:-$HERE/ComputerSoftware}"
+    echo "build-tools.sh: no v32sim at $V32SIM_HOME (nor at $PARENT/v32sim.git; set V32SIM_HOME to a v32sim checkout)" >&2; exit 1; }
 PINNED=5219741ce473ab686931db0933131c317bd50343     # Vircon32 compiler v26.04.24
-if [ ! -d "$SRC" ]; then
+if [ -n "$1" ]; then
+    SRC=$1
+elif [ -d "$PARENT/ComputerSoftware/DevelopmentTools" ]; then
+    SRC=$PARENT/ComputerSoftware
+elif [ -d "$PARENT/ComputerSoftware.git/DevelopmentTools" ]; then
+    SRC=$PARENT/ComputerSoftware.git
+else
+    SRC=$PARENT/ComputerSoftware
+    echo "build-tools.sh: no ComputerSoftware checkout beside this project; cloning one to $SRC"
     git clone --quiet https://github.com/vircon32/ComputerSoftware "$SRC"
     git -C "$SRC" checkout --quiet "$PINNED"
+fi
+[ -d "$SRC/DevelopmentTools" ] || { echo "build-tools.sh: $SRC is not a ComputerSoftware checkout" >&2; exit 1; }
+echo "build-tools.sh: v32sim $V32SIM_HOME, ComputerSoftware $SRC"
+HEAD=$(git -C "$SRC" rev-parse HEAD 2>/dev/null || true)
+if [ -n "$HEAD" ] && [ "$HEAD" != "$PINNED" ]; then
+    echo "build-tools.sh: note: $SRC is at $HEAD, not the verified $PINNED"
 fi
 ONLY="compile assemble packrom" sh "$V32SIM_HOME/tools/oracle/build.sh" "$SRC" "$HERE/bin"
 # The pinned commit's string.h predates the ftoa() rounding-carry fix (0.999999 came out as "0.1"). The project's

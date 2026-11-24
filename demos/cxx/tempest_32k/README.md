@@ -128,4 +128,4 @@ v32c++ -I ../../.. -I inc -o obj/tempest_32k.c tempest_32k.cpp
 ```
 
 Add `-D PROFILE` for the profiling build, in which lives never run out so
-a scripted CPU-vs-CPU run can be measured with `tools/vircon32/v32prof`.
+a scripted CPU-vs-CPU run can be measured with v32sim's `tools/oracle/bin/v32prof`.

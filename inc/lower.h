@@ -351,6 +351,12 @@ typedef struct StructLayout {
  * reserved for a later phase that might have something to report. */
 int lower_run(AstNode *program);
 
+/* the complete zero initializer of a plain aggregate class (`new P()`), or NULL */
+AstNode *lower_zero_initializer(const AstNode *cls);
+int lower_class_holds_pointer(const AstNode *cls);
+int lower_zero_stmts(const AstNode *cls, const AstNode *lv, AstList *out);
+int lower_class_has_union(const AstNode *cls);
+
 /* 1 when a file- or namespace-scope initializer names a function (`int (*h)(int)
  * = square;`, a table of handlers): codegen then prints the function
  * prototypes ahead of the variables, as C input always does. Set by lower_run. */

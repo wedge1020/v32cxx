@@ -2356,10 +2356,10 @@ static void emit_arena_runtime(FILE *out, const AstList *decls) {
     fprintf(out, "    obj = obj;\n    count = count;\n");
     for (int k = 0; k < g_arena_class_count; k++) {
         const AstNode *cd = g_arena_classes[k];
-        fprintf(out, "    if (id == %d) {\n        for (i = count - 1; i >= 0; i--) %s(&((", k + 1,
+        fprintf(out, "    if (id == %d) {\n        for (i = count - 1; i >= 0; i--) %s(((", k + 1,
                 dtor_mangled_name(class_dtor_with_body(cd)));
         print_class_type_name(out, cd->str1);
-        fprintf(out, " *)obj)[i]);\n        return;\n    }\n");
+        fprintf(out, " *)obj) + i);\n        return;\n    }\n");
     }
     fprintf(out, "}\n\n\n");
 
@@ -2417,9 +2417,9 @@ static const char *const gc_runtime_tpl[] = {
     "@IT@ __v32_gc_stack_top = 0;\n",
     "int *__v32_gc_page = NULL;\n",
     "int *__v32_gc_ms = NULL;\n",
-    "int __v32_gc_flist[@NCLS1@];\n",
-    "@IT@ __v32_gc_root_a[@NR@];\n",
-    "int __v32_gc_root_n[@NR@];\n",
+    "@FLISTDECL@;\n",
+    "@ROOTADECL@;\n",
+    "@ROOTNDECL@;\n",
     "\n",
     "\n",
     "int *__v32_gc_hdr(int off)\n",
@@ -2903,7 +2903,13 @@ static void emit_gc_runtime(FILE *out, const AstList *decls) {
         "     * SP to 0x003FFFFF and it grows down): scan [SP, 0x400000) */\n"
         "    __v32_gc_stack_top = 4194304;\n";
     const char *names[] = { "IT", "WORD", "SLOT", "HDR", "G", "NCLS", "NCLS1", "PAGE", "MSTACK", "MINBLK", "NR",
-        "SIZEEXPR", "THRESHEXPR", "RUNDECL", "SPDECL", "SPSET", "ROUNDN", "COLLECT", "STACKTOP", NULL };
+        "SIZEEXPR", "THRESHEXPR", "RUNDECL", "SPDECL", "SPSET", "ROUNDN", "COLLECT", "STACKTOP",
+        "FLISTDECL", "ROOTADECL", "ROOTNDECL", NULL };
+    /* Vircon32 C spells an array `int [n] name`, standard C `int name[n]` */
+    char flist_decl[96], roota_decl[96], rootn_decl[96];
+    snprintf(flist_decl, sizeof flist_decl, std ? "int __v32_gc_flist[%s]" : "int [%s] __v32_gc_flist", nr1);
+    snprintf(roota_decl, sizeof roota_decl, std ? "intptr_t __v32_gc_root_a[%s]" : "int [%s] __v32_gc_root_a", nr);
+    snprintf(rootn_decl, sizeof rootn_decl, std ? "int __v32_gc_root_n[%s]" : "int [%s] __v32_gc_root_n", nr);
     const char *values[] = {
         std ? "intptr_t" : "int",
         std ? "__v32_gc_word" : "int",
@@ -2917,7 +2923,7 @@ static void emit_gc_runtime(FILE *out, const AstList *decls) {
         std ? "    char marker;\n" : "",
         std ? "#if defined(__GNUC__)\n    sp = (intptr_t)__builtin_frame_address(0);\n#else\n    sp = (intptr_t)&marker;\n#endif\n" : "",
         std ? "    n = (n + 15) / 16 * 16;\n" : "",
-        collect, stacktop };
+        collect, stacktop, flist_decl, roota_decl, rootn_decl };
 
     fprintf(out, "/* ---- --alloc=gc runtime: see docs/AGENTS.md, \"Memory management\" ---- */\n");
     if (std) {
@@ -3046,6 +3052,28 @@ static void emit_new_delete_runtime(FILE *out, const AstNode *class_decl) {
         fprintf(out, ";\n");
         if (layout->vtable != NULL) {
             fprintf(out, "    self->vtable = &%s_vtable_instance;\n", class_decl->str1);
+        } else if (g_target == TARGET_VIRCON32 && lower_class_has_union(class_decl)) {
+            /* a union in it takes no brace list: `P zero;` and one assignment per member */
+            AstList st = ast_list_new();
+            AstNode *lv = ast_ident("zero", class_decl->line);
+            if (lower_zero_stmts(class_decl, lv, &st)) {
+                fprintf(out, "    ");
+                print_class_type_name(out, class_decl->str1);
+                fprintf(out, " zero;\n");
+                for (int k = 0; k < st.count; k++) print_stmt(out, st.items[k], 1, 0);
+                fprintf(out, "    *self = zero;\n");
+            }
+        } else if (class_decl->list.count > 0) {
+            /* `new P()` / `new P{}` value-initializes a plain aggregate: zero every member (a pointer
+             * member to NULL, which is -1 here). A complete list, since a short one zeroes nothing in a local. */
+            AstNode *zero = lower_zero_initializer(class_decl);
+            if (zero != NULL && zero->list.count > 0) {
+                fprintf(out, "    ");
+                print_class_type_name(out, class_decl->str1);
+                fprintf(out, " zero = ");
+                print_expr(out, zero);
+                fprintf(out, ";\n    *self = zero;\n");
+            }
         }
         fprintf(out, "    return self;\n}\n\n\n");
     }
@@ -3083,13 +3111,48 @@ static void emit_array_new_runtime(FILE *out, const char *type_name) {
     fprintf(out, "));\n}\n\n\n");
 }
 
+/* `_rest` of a class with no constructor: zero elements k..n-1. A pointer member must read NULL (-1 on
+ * Vircon32), which a byte-wise zero cannot give, so such a class is filled from its complete zero initializer. */
+static void emit_rest_zero_body(FILE *out, const AstNode *cd)
+{
+    AstNode *zero = (g_target == TARGET_VIRCON32 && lower_class_holds_pointer(cd)) ? lower_zero_initializer(cd) : NULL;
+    if (g_target == TARGET_VIRCON32 && lower_class_has_union(cd)) {
+        AstList st = ast_list_new();
+        AstNode *lv = ast_ident("zero", cd->line);
+        if (lower_zero_stmts(cd, lv, &st)) {
+            fprintf(out, " *p, int n, int k)\n{\n    int i;\n    ");
+            print_class_type_name(out, cd->str1);
+            fprintf(out, " zero;\n");
+            for (int k = 0; k < st.count; k++) print_stmt(out, st.items[k], 1, 0);
+            fprintf(out, "    if (p == NULL) return;\n    if (k < 0) k = 0;\n    if (n < k) n = k;\n"
+                         "    for (i = k; i < n; i++) p[i] = zero;\n}\n\n\n");
+            return;
+        }
+    }
+    if (zero != NULL && zero->list.count > 0) {
+        fprintf(out, " *p, int n, int k)\n{\n    int i;\n    ");
+        print_class_type_name(out, cd->str1);
+        fprintf(out, " zero = ");
+        print_expr(out, zero);
+        fprintf(out, ";\n    if (p == NULL) return;\n    if (k < 0) k = 0;\n    if (n < k) n = k;\n"
+                     "    for (i = k; i < n; i++) p[i] = zero;\n}\n\n\n");
+        return;
+    }
+    fprintf(out, " *p, int n, int k)\n{\n    char *z;\n    int i;\n    if (p == NULL) return;\n"
+                 "    if (k < 0) k = 0;\n    if (n < k) n = k;\n    z = (char *)p;\n    for (i = k * sizeof(");
+    print_class_type_name(out, cd->str1);
+    fprintf(out, "); i < n * sizeof(");
+    print_class_type_name(out, cd->str1);
+    fprintf(out, "); i++) z[i] = 0;\n}\n\n\n");
+}
+
 /* A list-initialized `new T[n]{...}` of a primitive (or of a class with no constructor, no
  * destructor and no vtable) is lowered to
  *     v32_new_arr_T_init(n, k)      the allocation, nothing built (n < k allocates k)
  *     ... the caller builds elements 0..k-1 from the list ...
  *     v32_new_arr_T_rest(p, n, k)   zeroes the elements k..n-1
  * so the elements come into being in order, as in C++. */
-static void emit_array_new_runtime_init(FILE *out, const char *type_name)
+static void emit_array_new_runtime_init(FILE *out, const char *type_name, const AstNode *cd)
 {
     print_class_type_name(out, type_name);
     fprintf(out, " *v32_new_arr_%s_init(int n, int k)\n{\n    if (k < 0) k = 0;\n    if (n < k) n = k;\n"
@@ -3100,6 +3163,7 @@ static void emit_array_new_runtime_init(FILE *out, const char *type_name)
     fprintf(out, "));\n}\n\n\n");
     fprintf(out, "void v32_new_arr_%s_rest(", type_name);
     print_class_type_name(out, type_name);
+    if (cd != NULL) { emit_rest_zero_body(out, cd); return; }
     fprintf(out, " *p, int n, int k)\n{\n    char *z;\n    int i;\n    if (p == NULL) return;\n"
                  "    if (k < 0) k = 0;\n    if (n < k) n = k;\n    z = (char *)p;\n    for (i = k * sizeof(");
     print_class_type_name(out, type_name);
@@ -3125,19 +3189,14 @@ static void emit_array_new_runtime_class(FILE *out, const AstNode *cd, int mode)
     int hdr = array_hdr_units();
     if (dtor == NULL && ctor == NULL && !vt) {
         if (mode == 0) emit_array_new_runtime(out, cd->str1);
-        else if (mode == 1) emit_array_new_runtime_init(out, cd->str1);   /* defines _rest too */
+        else if (mode == 1) emit_array_new_runtime_init(out, cd->str1, cd);   /* defines _rest too */
         return;
     }
     if (mode == 2) {
         if (ctor == NULL && !vt) {          /* a destructor only: the rest is zero */
             fprintf(out, "void v32_new_arr_%s_rest(", cd->str1);
             print_class_type_name(out, cd->str1);
-            fprintf(out, " *p, int n, int k)\n{\n    char *z;\n    int i;\n    if (p == NULL) return;\n"
-                         "    if (k < 0) k = 0;\n    if (n < k) n = k;\n    z = (char *)p;\n    for (i = k * sizeof(");
-            print_class_type_name(out, cd->str1);
-            fprintf(out, "); i < n * sizeof(");
-            print_class_type_name(out, cd->str1);
-            fprintf(out, "); i++) z[i] = 0;\n}\n\n\n");
+            emit_rest_zero_body(out, cd);
             return;
         }
         fprintf(out, "void v32_new_arr_%s_rest(", cd->str1);
@@ -3266,11 +3325,28 @@ static void emit_primitive_array_new_runtime(FILE *out) {
     if (g_uses_ptr_array_new)         /* `new T*[n]`: n pointers, whatever they point to */
         fprintf(out, "int **v32_new_arr_ptr(int n)\n{\n    return (int **)%s(n * sizeof(int *));\n}\n\n\n",
                 V32_ALLOC_HOOK ? "__v32_alloc" : "malloc");
+    if (g_uses_ptr_array_new && g_uses_list_new) {   /* `new T*[n]{p, q}`: the listed ones, then null */
+        fprintf(out, "int **v32_new_arr_ptr_init(int n, int k)\n{\n    if (k < 0) k = 0;\n    if (n < k) n = k;\n"
+                     "    return (int **)%s(n * sizeof(int *));\n}\n\n\n", V32_ALLOC_HOOK ? "__v32_alloc" : "malloc");
+        fprintf(out, "void v32_new_arr_ptr_rest(int **p, int n, int k)\n{\n    int i;\n    if (p == NULL) return;\n"
+                     "    if (k < 0) k = 0;\n    if (n < k) n = k;\n    for (i = k; i < n; i++) p[i] = NULL;\n}\n\n\n");
+    }
+    {   /* `new int(5)`, `new float`, `new Node*`: one word through the allocation hook */
+        static const char *const nm[] = { "", "int", "float", "char", "bool" };
+        for (int k = 1; k <= 4; k++)
+            if (g_uses_scalar_new & (1 << k))
+                fprintf(out, "%s *v32_new_%s(%s v)\n{\n    %s *p = (%s *)%s(sizeof(%s));\n    if (p == NULL) return p;\n"
+                             "    *p = v;\n    return p;\n}\n\n\n", nm[k], nm[k], nm[k], nm[k], nm[k],
+                        V32_ALLOC_HOOK ? "__v32_alloc" : "malloc", nm[k]);
+        if (g_uses_scalar_new & (1 << 5))
+            fprintf(out, "int **v32_new_ptr(int *v)\n{\n    int **p = (int **)%s(sizeof(int *));\n    if (p == NULL) return p;\n"
+                         "    *p = v;\n    return p;\n}\n\n\n", V32_ALLOC_HOOK ? "__v32_alloc" : "malloc");
+    }
     if (g_uses_list_new) {
-        emit_array_new_runtime_init(out, "int");
-        emit_array_new_runtime_init(out, "float");
-        emit_array_new_runtime_init(out, "char");
-        emit_array_new_runtime_init(out, "bool");
+        emit_array_new_runtime_init(out, "int", NULL);
+        emit_array_new_runtime_init(out, "float", NULL);
+        emit_array_new_runtime_init(out, "char", NULL);
+        emit_array_new_runtime_init(out, "bool", NULL);
     }
 }
 
@@ -3475,6 +3551,18 @@ static void emit_cart_hint_defines(FILE *out) {
     }
 }
 
+/* `extern T x;` of a variable a pass-through header defines, inside a namespace block: not printed */
+static void drop_header_var_externs(AstList *decls) {
+    int k = 0;
+    for (int i = 0; i < decls->count; i++) {
+        AstNode *d = decls->items[i];
+        if (d != NULL && d->kind == AST_VAR_DECL && (d->extern_decl || d->is_extern) && prescan_is_header_var(d->str1)) continue;
+        if (d != NULL && d->kind == AST_NAMESPACE_DECL) drop_header_var_externs(&d->list);
+        decls->items[k++] = d;
+    }
+    decls->count = k;
+}
+
 void codegen_run(const AstNode *program, FILE *out, int verbose_comments) {
     /* Reset -g's own tracking state -- main.c is single-shot per process
      * today, so this never actually matters in practice, but costs
@@ -3573,6 +3661,9 @@ void codegen_run(const AstNode *program, FILE *out, int verbose_comments) {
     for (int i = 0; i < program->list.count; i++) {
         AstNode *d = program->list.items[i];
         if (d != NULL && d->kind == AST_CLASS_DECL && prescan_is_header_struct(d->str1)) continue;
+        if (d != NULL && d->kind == AST_VAR_DECL && (d->extern_decl || d->is_extern) && prescan_is_header_var(d->str1))
+            continue;       /* `extern int x;` of a variable the header defines: that definition is the variable */
+        if (d != NULL && d->kind == AST_NAMESPACE_DECL) drop_header_var_externs(&d->list);
         visible.items[visible.count++] = d;
     }
     AstNode view = *program;

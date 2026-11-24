@@ -22,8 +22,8 @@ différemment.
 > **État : fonctionnel.** Toute la chaîne — prétraitement, analyse syntaxique,
 > analyse sémantique, abaissement (*lowering*) et génération de code —
 > fonctionne de bout en bout et est vérifiée avec le compilateur, l'assembleur
-> et la console **réels** de Vircon32 (`make realcheck` : 128 programmes
-> compilés et assemblés, dont 59 s'auto-vérifient à l'exécution sur une
+> et la console **réels** de Vircon32 (`make realcheck` : 181 programmes
+> compilés et assemblés, dont 112 s'auto-vérifient à l'exécution sur une
 > console sans écran). Cinq démos d'une certaine taille (trois jeux en C++, un
 > portage de Rogue et un Spy vs Spy en C pur) se construisent avec lui. Voir les [Limitations
 > connues](#limitations-connues) pour un tableau honnête de ce qui manque.
@@ -173,7 +173,7 @@ du périmètre](#délibérément-hors-du-périmètre).
   l'opérateur virgule (tous deux réécrits pour le C de Vircon32, qui n'a ni
   l'un ni l'autre), les opérateurs bit à bit avec la précédence de C, `sizeof`,
   les conversions de style C et de style C++ (`dynamic_cast` avec un
-  avertissement : il n'y a pas de RTTI), `enum`, `union`, `typedef`, pointeurs
+  avertissement : il n'y a pas de RTTI), `enum` (aussi à portée : `enum class Color : int { Red }`, utilisé comme `Color::Red`), `union`, `typedef`, pointeurs
   de fonction dans la syntaxe de déclarateur standard **ou** celle de Vircon32
   (la sortie est toujours celle dont la cible a besoin ; aussi initialisés à la
   portée du fichier ou d'un espace de noms, seuls ou en tableaux, avec un nom
@@ -412,7 +412,7 @@ Vérifiées avec le transpileur actuel et le vrai compilateur Vircon32 (octobre
 
 - Les membres `static` de classe.
 
-- `enum class`, `constexpr`, les lambdas, `mutable`, les classes imbriquées et
+- `constexpr`, les lambdas, `mutable`, les classes imbriquées et
   les énumérations à portée de classe.
 
 - Un paramètre de tableau à deux dimensions (`void f(int g[4][4])`).
@@ -444,6 +444,22 @@ Vérifiées avec le transpileur actuel et le vrai compilateur Vircon32 (octobre
   seule la conversion en flottant au-delà d'`INT_MAX` la lit encore comme négative. Voir `docs/VIRCON32_QUIRKS.fr.md` n° 14.
 - **`const` n'est pas appliqué** — les violations sont laissées au compilateur C. L'entrée
   C omet `const` de la sortie (le compilateur de Vircon32 l'impose là où C ne le fait pas).
+- **Les listes entre accolades sont écrites en entier.** Le compilateur Vircon32 n'écrit
+  que les valeurs listées : une locale `P z{};`, `int a[4] = {0};` ou `P p{1};`
+  garderait les déchets de la pile et un pointeur omis ne serait pas `NULL` : v32c++
+  complète chaque liste d'un tableau ou d'une struct sans constructeur avec le zéro
+  de chaque case manquante, et `new P()`, `new P[n]{}` et `: m{}` mettent à zéro ce
+  qu'ils créent (un membre pointeur, y compris les imbriqués et les tableaux de
+  pointeurs, vaut `NULL`, soit -1 ici et non 0). Le compilateur n'accepte pas
+  d'accolades pour une union : v32c++ la déclare et affecte le premier membre
+  (`U u = {1};` devient `U u; u.a = 1;`, et une union à la portée du fichier au début de
+  `main` ; `{}` met chaque mot à zéro), aussi dans des structs et des tableaux.
+  L'initialisation par accolades marche là où marche un appel de constructeur :
+  `P m{1, 2};` et `int w{5};` comme valeurs par défaut de la classe, `: w{5}` /
+  `: p{}` dans une liste d'initialisation, `new P{1, 2}`, `new Counter{3}`. `new int`,
+  `new int(5)`, `new float{2.5f}` et `new Node*` allouent un mot (avec `--alloc`
+  aussi) et `delete` le libère. `new T[n]()` n'est pas géré. Voir
+  `docs/VIRCON32_QUIRKS.fr.md` n° 31-33.
 - **Les codes de contrôle dans les littéraux de chaîne sont réécrits** : la
   chaîne d'outils Vircon32 ne peut pas assembler une chaîne contenant les codes
   14–31 de la police du BIOS (`┌ ─ ┐ │ ░ ▒ ▓ █` ...) ou d'autres codes de
@@ -459,16 +475,31 @@ Vérifiées avec le transpileur actuel et le vrai compilateur Vircon32 (octobre
   `a__inner__x` ; une variable à la portée du fichier garde son nom), donc `a::x`,
   `b::x` et un `x` à la portée du fichier sont trois variables, comme en C++. Une
   déclaration `extern` dans un espace de noms désigne quelque chose défini
-  ailleurs (le SDK, un fichier C) et garde son nom. Les énumérateurs d'un `enum`
-  d'espace de noms gardent le leur.
+  ailleurs (le SDK, un fichier C) et garde son nom. `extern` est lu par
+  déclaration (`extern int a; int b;` sur une ligne en fait une de chaque, y
+  compris via une macro). Le C de Vircon32 n'a ni `extern` ni éditeur de liens :
+  une variable `extern` est donc imprimée comme une déclaration ordinaire, une
+  seule fois ; c'est la variable elle-même si le programme ne la définit nulle
+  part, et elle disparaît dans la définition s'il y en a une (`namespace hw {
+  extern int v; } int v = 3;` ne fait qu'un seul `v`). Une variable que les
+  en-têtes du SDK définissent (`malloc_first_block` dans `misc.h`), redéclarée `extern`
+  pour la nommer, n'est pas imprimée : la définition de l'en-tête est la variable. Les énumérateurs d'un `enum` d'espace de noms ont leur espace
+  de noms de la même façon (`a::RED` devient `a__RED` ; `a::E::RED`, `using
+  namespace`, `using a::RED`, les étiquettes `case`, les tailles de tableau et
+  les arguments par défaut se résolvent ; les `enum` de la portée du fichier ne
+  changent pas). Le nom du *type* de l'`enum` est lui aussi qualifié
+  (`a::E` devient `a__E`, aussi dans le nom décoré d'une fonction qui le prend) : deux
+  `enum` de même nom dans des espaces de noms différents sont donc deux types. Les
+  énumérateurs d'un `enum` à portée sont `Color__Red` (`ns__Color__Red`) ; un `Red` nu
+  est laissé tel quel (le compilateur Vircon32 le refuse), et la conversion en `int` est admise sans cast (plus permissif que C++).
 - **Nom surchargé comme valeur d'un pointeur de fonction** : `int (*p)(float) =
   over;` choisit la surcharge à la signature du pointeur ; si aucune, ou plus
   d'une, ne convient, c'est une erreur, jamais une supposition. Les fonctions
   membres comme valeur de pointeur ne sont pas prises en charge.
 - **`new T*[n]`** (un tableau de pointeurs) est un simple stockage de la taille
   d'un pointeur : pas de constructeurs, pas d'en-tête de compte ; `delete[]` le
-  libère (les objets pointés restent à l'appelant) ; `new T*[n]{...}` avec liste
-  n'est pas pris en charge.
+  libère (les objets pointés restent à l'appelant) ; `new T*[n]{p, q}` affecte les pointeurs
+  de la liste et met les autres à nul.
 - **Surcharges et valeurs transmises telles quelles** : v32c++ ne peut pas voir
   le type du résultat d'un appel à l'API C. Un appel surchargé se résout tout de
   même quand ses autres arguments tranchent (`v32::minimum(rand(), 10)`) ;
@@ -595,7 +626,7 @@ nombre d'erreurs avant de s'arrêter ; la vérification exige 0 (voir
 joué avec cette entrée de manette scriptée (`tests/119sample.cpp`, le test de
 v32io, l'utilise pour le trafic clavier et souris).
 
-Exécuter, profiler et capturer l'écran des cartouches relève de **v32sim**, le lieu unique pour cela : `build-tools.sh` et `check.sh` n'appellent que son `tools/oracle/build.sh` (les `compile`, `assemble` et `packrom` officiels) et son `tools/v32sim-selfcheck.sh`. `V32SIM_HOME` désigne une copie de v32sim (par défaut `../v32sim`). `V32_ORACLE=1 make realcheck` lance les exemples sur la logique de console officielle, comme second avis. Ce que donnaient `v32prof`, `v32shot` et `v32peek`, ce sont `--frame-stats`, `--profile-*`, `--dump` et les commandes par lots de v32sim.
+Exécuter, profiler et capturer l'écran des cartouches relève de **v32sim**, le lieu unique pour cela : `build-tools.sh` et `check.sh` n'appellent que son `tools/oracle/build.sh` (les `compile`, `assemble` et `packrom` officiels) et son `tools/v32sim-selfcheck.sh`. `V32SIM_HOME` désigne une copie de v32sim (par défaut `../v32sim`, sinon `../v32sim.git`). Les sources de ComputerSoftware sont trouvées de la même façon (`../ComputerSoftware`, sinon `../ComputerSoftware.git`, ou le chemin donné à `build-tools.sh`) ; à défaut, une copie est clonée dans `../ComputerSoftware` au commit vérifié, jamais dans ce projet. `V32_ORACLE=1 make realcheck` lance les exemples sur la logique de console officielle, comme second avis. Ce que donnaient `v32prof`, `v32shot` et `v32peek`, ce sont `--frame-stats`, `--profile-*`, `--dump` et les commandes par lots de v32sim.
 
 Le `string.h` de la chaîne d'outils est le `c_api/string.h` du projet :
 `build-tools.sh` l'installe par-dessus celui des DevTools figées, qui précède la
@@ -840,9 +871,12 @@ scripts/        smoke_test.sh and stage_package.sh (the release workflow's
 AGENTS.md       notes for AI coding agents working on the project
 tools/
   embed-header.sh   regenerates src/stdstring.c from lib/string
-  vircon32/         build-tools.sh (the real Vircon32 toolchain and the
-                    headless tools), check.sh (`make realcheck`), the
-                    build/check scripts that call v32sim
+  prune-release.sh  removes stale, duplicate and generated files (dry run;
+                    --apply uses git rm for tracked ones)
+  vircon32/         build-tools.sh (builds the real Vircon32 toolchain
+                    into bin/ through v32sim) and check.sh (`make
+                    realcheck`); every runner, profiler and debugger is
+                    v32sim's
 ```
 
 (L'arborescence est volontairement laissée en anglais : ce sont les noms et

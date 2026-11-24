@@ -232,9 +232,9 @@ struct stat {
 };
 int stat(char *name, struct stat *st);  /* 0, or -1 when there is no such file */
 int unlink(char *name);
-/* always empty: a macro, not a variable, so a program that never mentions it
- * carries no unused global (the Vircon32 compiler warns about those) */
-#define environ ((char **)0)
+/* `environ` is not declared here, as in POSIX (a program that wants it says
+ * `extern char **environ;`, and v32c++ makes that declaration the variable).
+ * It used to be a macro, which broke exactly that declaration. */
 
 /* ---- the memory card ------------------------------------------------------
  * Files live on the memory card, under the program's own signature (the

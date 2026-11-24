@@ -142,7 +142,12 @@ typedef struct EnumConst { char *name; int value; } EnumConst;
 static EnumConst *g_enum_consts = NULL;
 static int g_enum_const_count = 0;
 
-static int parse_enum_value(const char *name, int *value) {
+/* An enumerator of a namespace's enum is recorded under its bare name (the
+ * latest definition wins, as it always did) and, so that `a::RED`,
+ * `a::E::RED` and `E::RED` fold too, under its qualified names; an
+ * unqualified name is tried in the enclosing namespaces first, innermost
+ * out, so two namespaces' `RED` do not get each other's value. */
+static int enum_table_find(const char *name, int *value) {
     for (int i = g_enum_const_count - 1; i >= 0; i--)
         if (strcmp(g_enum_consts[i].name, name) == 0) {
             *value = g_enum_consts[i].value;
@@ -151,20 +156,146 @@ static int parse_enum_value(const char *name, int *value) {
     return 0;
 }
 
-static void parse_record_enum_values(const AstList *enumerators) {
+static void enum_table_add(const char *name, int value) {
+    g_enum_consts = realloc(g_enum_consts, sizeof(EnumConst) * (size_t)(g_enum_const_count + 1));
+    g_enum_consts[g_enum_const_count].name = strdup(name);
+    g_enum_consts[g_enum_const_count].value = value;
+    g_enum_const_count++;
+}
+
+/* "a::b" for the namespaces being parsed in ("" at file scope); malloc'd. */
+static char *parse_current_ns(void) {
+    const char *parts[32];
+    int n = 0;
+    for (const Scope *sc = g_symtab->current; sc != NULL && n < 32; sc = sc->parent)
+        if (sc->owner_name != NULL && !sc->is_class_scope) parts[n++] = sc->owner_name;
+    size_t len = 1;
+    for (int i = 0; i < n; i++) len += strlen(parts[i]) + 2;
+    char *out = malloc(len);
+    out[0] = '\0';
+    for (int i = n - 1; i >= 0; i--) {
+        if (out[0] != '\0') strcat(out, "::");
+        strcat(out, parts[i]);
+    }
+    return out;
+}
+
+static int parse_enum_value(const char *name, int *value) {
+    char *ns = parse_current_ns();
+    int found = 0;
+    while (!found && ns[0] != '\0') {
+        char *full = malloc(strlen(ns) + strlen(name) + 3);
+        sprintf(full, "%s::%s", ns, name);
+        found = enum_table_find(full, value);
+        free(full);
+        char *cut = strrchr(ns, ':');
+        if (cut != NULL && cut > ns) *(cut - 1) = '\0'; else ns[0] = '\0';
+    }
+    free(ns);
+    return found || enum_table_find(name, value);
+}
+
+/* Is `name` (a bare enumerator) declared in namespace `ns`? For `using a::RED;` */
+static int parse_enumerator_in_ns(const char *ns, const char *name) {
+    char *full = malloc(strlen(ns) + strlen(name) + 3);
+    sprintf(full, "%s::%s", ns, name);
+    int v, found = enum_table_find(full, &v);
+    free(full);
+    return found;
+}
+
+/* ---- enum type names in namespaces ---------------------------------------
+ * An enum declared in a namespace has the C type name `a__E` (`a::b::E` is `a__b__E`), like the
+ * variables and functions there, so two namespaces may each have an `E`. The declaration is
+ * named that way (the bare name stays in AST_ENUM_DECL.str2, for `E::RED`), and every use of
+ * the type name that the symbol table resolves to such an enum -- `E` inside the namespace,
+ * `a::E`, `using a::E` -- is the mangled identifier. Enums at file scope, in a function and in
+ * C input keep their names. */
+static char **g_ns_enums = NULL;        /* the qualified names ("a::E") of the mangled ones */
+static int g_ns_enum_count = 0;
+
+static int parse_in_namespace_only(void) {
+    int any = 0;
+    for (const Scope *sc = g_symtab->current; sc != NULL && sc != g_symtab->global; sc = sc->parent) {
+        if (sc->owner_name == NULL || sc->is_class_scope) return 0;
+        any = 1;
+    }
+    return any;
+}
+
+static char *parse_mangle_qname(const char *q) {
+    char *out = malloc(strlen(q) * 2 + 1), *o = out;
+    for (const char *c = q; *c != '\0'; c++) {
+        if (c[0] == ':' && c[1] == ':') { *o++ = '_'; *o++ = '_'; c++; }
+        else *o++ = *c;
+    }
+    *o = '\0';
+    return out;
+}
+
+static int parse_is_ns_enum(const char *qualified) {
+    for (int i = 0; i < g_ns_enum_count; i++)
+        if (strcmp(g_ns_enums[i], qualified) == 0) return 1;
+    return 0;
+}
+
+static AstNode *parse_enum_type_node(const Symbol *s, int line) {
+    char *m = parse_mangle_qname(s->qualified_name);
+    AstNode *n = ast_ident(m, line);
+    free(m);
+    return n;
+}
+
+/* `E` as written in a type: the mangled identifier when it names an enum of a namespace */
+static AstNode *parse_type_name_node(const char *name, int line) {
+    if (!g_c_mode && g_ns_enum_count > 0) {
+        Symbol *s = symtab_lookup(g_symtab, name);
+        if (s != NULL && s->kind == SYM_ENUM && s->qualified_name != NULL && parse_is_ns_enum(s->qualified_name))
+            return parse_enum_type_node(s, line);
+    }
+    return ast_ident(name, line);
+}
+
+/* `a::b::E` as written in a type */
+static AstNode *parse_qualified_type_node(const AstList *prefix, const char *name, int line) {
+    if (!g_c_mode && g_ns_enum_count > 0) {
+        Scope *sc = NULL;
+        Symbol *s = NULL;
+        for (int i = 0; i < prefix->count; i++) {
+            const char *nm = prefix->items[i]->str1;
+            s = (sc == NULL) ? symtab_lookup(g_symtab, nm) : symtab_lookup_in(sc, nm);
+            if (s == NULL || s->inner_scope == NULL) return NULL;
+            sc = s->inner_scope;
+        }
+        if (sc != NULL) {
+            s = symtab_lookup_in(sc, name);
+            if (s != NULL && s->kind == SYM_ENUM && s->qualified_name != NULL && parse_is_ns_enum(s->qualified_name))
+                return parse_enum_type_node(s, line);
+        }
+    }
+    return NULL;
+}
+
+static void parse_record_enum_values(const AstList *enumerators, const char *enum_name, int scoped) {
     int next = 0, known = 1;
+    char *ns = parse_current_ns();
     for (int i = 0; i < enumerators->count; i++) {
         const AstNode *ev = enumerators->items[i];
         int v;
         if (ev->a != NULL) known = ast_fold_int(ev->a, parse_enum_value, &v);
         else v = next;
         if (!known) continue;
-        g_enum_consts = realloc(g_enum_consts, sizeof(EnumConst) * (size_t)(g_enum_const_count + 1));
-        g_enum_consts[g_enum_const_count].name = strdup(ev->str1);
-        g_enum_consts[g_enum_const_count].value = v;
-        g_enum_const_count++;
+        char buf[512];
+        if (!scoped) enum_table_add(ev->str1, v);          /* `enum class`: only Color::Red */
+        if (ns[0] != '\0' && !scoped) { snprintf(buf, sizeof buf, "%s::%s", ns, ev->str1); enum_table_add(buf, v); }
+        if (enum_name != NULL) {
+            snprintf(buf, sizeof buf, "%s::%s", enum_name, ev->str1);
+            enum_table_add(buf, v);
+            if (ns[0] != '\0') { snprintf(buf, sizeof buf, "%s::%s::%s", ns, enum_name, ev->str1); enum_table_add(buf, v); }
+        }
         next = v + 1;
     }
+    free(ns);
 }
 
 /* ---- tag typedefs (`typedef struct Actor Actor;` and friends) ----------
@@ -246,6 +377,28 @@ static AstNode *tag_decl(AstNode *decl) {
     c_tag_note(decl->str1);
     if (g_c_mode) ast_list_append(&g_tag_decls, decl);
     return decl;
+}
+
+/* An enum with a name: `enum E { ... }` (scoped = 0) or `enum class E [: int] { ... }` (scoped = 1; its
+ * enumerators are reached as E::Red only: sema.c registers them under the scope `E`, C name `E__Red`) */
+static AstNode *make_enum_decl(const char *name, AstList enumerators, int scoped, int line) {
+    AstNode *d;
+    Symbol *sym = NULL;
+    char *cname = NULL;
+    parse_record_enum_values(&enumerators, name, scoped);
+    if (!g_c_mode) sym = symtab_insert(g_symtab, g_symtab->current, name, SYM_ENUM);
+    if (sym != NULL && sym->qualified_name != NULL && strstr(sym->qualified_name, "::") != NULL &&
+        parse_in_namespace_only()) {
+        g_ns_enums = realloc(g_ns_enums, sizeof(char *) * (size_t)(g_ns_enum_count + 1));
+        g_ns_enums[g_ns_enum_count++] = strdup(sym->qualified_name);
+        cname = parse_mangle_qname(sym->qualified_name);
+    }
+    d = ast_new(AST_ENUM_DECL, line);
+    d->str1 = cname != NULL ? cname : strdup(name);
+    d->str2 = strdup(name);
+    d->ival = scoped;
+    d->list = enumerators;
+    return tag_decl(d);
 }
 
 static AstNode *tag_ref(const char *name, int line) {
@@ -559,6 +712,10 @@ static int using_name(const AstList *path, const char *name, int line) {
     Symbol *ns = using_resolve_namespace(path, line);
     if (ns == NULL) return 0;
     Symbol *m = symtab_lookup_in(ns->inner_scope, name);
+    if (m == NULL && parse_enumerator_in_ns(ns->qualified_name, name)) {
+        sema_note_using(ns->qualified_name, name);       /* `using a::RED;`: an enumerator */
+        return 1;
+    }
     if (m == NULL) {
         fprintf(stderr, "%s:%d: error: no '%s' is declared in namespace '%s'\n",
                 g_current_filename, line, name, ns->qualified_name);
@@ -1732,7 +1889,7 @@ anon_tag_decl:
         }
     | ANON_ENUM '{' enumerator_list '}'
         {
-            parse_record_enum_values(&$3);
+            parse_record_enum_values(&$3, NULL, 0);
             $$ = ast_new(AST_ENUM_DECL, @1.first_line);
             $$->str1 = anon_tag_name();
             $$->list = $3;
@@ -2109,7 +2266,7 @@ type_spec:
     | VOID_KW       { $$ = ast_ident("void", @1.first_line); }
     | BOOL_KW       { $$ = ast_ident("bool", @1.first_line); }
     | CHAR_KW       { $$ = ast_ident("char", @1.first_line); }
-    | TYPE_NAME     { $$ = ast_ident($1, @1.first_line); }
+    | TYPE_NAME     { $$ = parse_type_name_node($1, @1.first_line); }
     | TAG_NAME      { $$ = tag_ref($1, @1.first_line); /* C input: a tag
                          used bare, Vircon32 C style -- see c_tag_known */ }
     | class_or_struct_kw name_tok  { $$ = tag_ref($2, @2.first_line);
@@ -2219,9 +2376,13 @@ qname_prefix:
 qualified_type:
     qname_prefix TYPE_NAME
         {
-            $$ = ast_new(AST_QUALIFIED_ID, @1.first_line);
-            $$->list = $1;
-            ast_list_append(&$$->list, ast_ident($2, @2.first_line));
+            AstNode *en = parse_qualified_type_node(&$1, $2, @1.first_line);
+            if (en != NULL) $$ = en;      /* an enum of a namespace: the one mangled name */
+            else {
+                $$ = ast_new(AST_QUALIFIED_ID, @1.first_line);
+                $$->list = $1;
+                ast_list_append(&$$->list, ast_ident($2, @2.first_line));
+            }
         }
     ;
 
@@ -2760,6 +2921,7 @@ designator:
 opt_array_initializer:
       /* empty */                     { $$ = NULL; }
     | '=' braced_init         { $$ = $2; }
+    | braced_init             { $$ = $1; /* `int a[3]{1, 2, 3};` */ }
     | '=' string_seq
         {
             /* `int msg[8] = "Hello";` -- a string literal as an array
@@ -2831,7 +2993,7 @@ tag_typedef_decl:
         }
     | TYPEDEF ENUM '{' enumerator_list '}' name_tok
         {
-            parse_record_enum_values(&$4);
+            parse_record_enum_values(&$4, $6, 0);
             symtab_insert(g_symtab, g_symtab->current, $6, SYM_ENUM);
             $$ = ast_new(AST_ENUM_DECL, @1.first_line);
             $$->str1 = strdup($6);
@@ -2920,14 +3082,18 @@ typedef_decl:
  */
 enum_decl:
     ENUM name_tok '{' enumerator_list '}'
+        { $$ = make_enum_decl($2, $4, 0, @1.first_line); }
+    | ENUM class_or_struct_kw name_tok opt_enum_base '{' enumerator_list '}'
         {
-            parse_record_enum_values(&$4);
-            if (!g_c_mode) symtab_insert(g_symtab, g_symtab->current, $2, SYM_ENUM);
-            $$ = ast_new(AST_ENUM_DECL, @1.first_line);
-            $$->str1 = strdup($2);
-            $$->list = $4;
-            tag_decl($$);
+            /* `enum class Color : int { Red, Green };` -- scoped: Color::Red, no bare Red. The
+             * underlying type is accepted and ignored (every enum is an int here). */
+            $$ = make_enum_decl($3, $6, 1, @1.first_line);
         }
+    ;
+
+opt_enum_base:
+      /* empty */
+    | ':' type_spec
     ;
 
 enumerator_list:
@@ -3003,7 +3169,7 @@ stmt:
     | enum_decl ';'                      { $$ = local_tag_stmt($1, @1.first_line); }
     | ANON_ENUM '{' enumerator_list '}' ';'
         {
-            parse_record_enum_values(&$3);
+            parse_record_enum_values(&$3, NULL, 0);
             AstNode *e = ast_new(AST_ENUM_DECL, @1.first_line);
             e->str1 = anon_tag_name();
             e->list = $3;
@@ -3259,8 +3425,23 @@ stmt:
         {
             /* `extern int seed;` inside a function names a file-scope
              * variable; it declares nothing here. (The lexer only returns
-             * EXTERN inside a function body.) */
-            $$ = decl_group_new(@1.first_line);
+             * EXTERN inside a function body.) If nothing else declares it
+             * (`extern char **environ;`: the C library has no such
+             * variable), the declaration IS the variable, like a file-scope
+             * `extern` with no definition: hoist_static_locals (ast.c)
+             * moves it to file scope (is_static_local == 2), and
+             * merge_tentative_globals drops it when the program defines or
+             * declares the name itself. */
+            $$ = $2;
+            if ($$->kind == AST_VAR_DECL_GROUP) {
+                for (int i = 0; i < $$->list.count; i++) {
+                    $$->list.items[i]->is_static_local = 2;
+                    $$->list.items[i]->is_extern = 1;
+                }
+            } else {
+                $$->is_static_local = 2;
+                $$->is_extern = 1;
+            }
         }
     | EXTERN func_header ';'
         {
@@ -3526,6 +3707,32 @@ unary_expr:
         { $$ = ast_new(AST_NEW, @1.first_line); $$->type = $2; }
     | NEW type_spec '(' opt_arg_list ')'
         { $$ = ast_new(AST_NEW, @1.first_line); $$->type = $2; $$->list = $4; }
+    | NEW type_spec braced_init
+        {
+            /* `new P{}`, `new P{1, 2}`, `new Counter{3}`, `new int{7}`: list-initialization of one object.
+             * The items are the argument list of `new T(...)`; ival = 1 marks the braces (a class
+             * with a constructor takes them as arguments, a plain aggregate as its member list,
+             * a scalar as its value: sema.c and lower.c phase 6). */
+            $$ = ast_new(AST_NEW, @1.first_line);
+            $$->type = $2;
+            $$->list = $3->list;
+            $$->ival = 1;
+        }
+    | NEW type_spec new_stars
+        {
+            /* `new Node*`: one pointer, null */
+            $$ = ast_new(AST_NEW, @1.first_line);
+            $$->type = apply_ptr($2, $3, @1.first_line);
+        }
+    | NEW type_spec new_stars '(' opt_arg_list ')'
+        { $$ = ast_new(AST_NEW, @1.first_line); $$->type = apply_ptr($2, $3, @1.first_line); $$->list = $5; }
+    | NEW type_spec new_stars braced_init
+        {
+            $$ = ast_new(AST_NEW, @1.first_line);
+            $$->type = apply_ptr($2, $3, @1.first_line);
+            $$->list = $4->list;
+            $$->ival = 1;
+        }
     | NEW type_spec '[' expr ']'
         {
             /* new T[N] -- heap-allocated array. N is any runtime
@@ -3560,6 +3767,17 @@ unary_expr:
             $$->type = $2;
             $$->a = $4;
             $$->b = $6;
+        }
+    | NEW type_spec new_stars '[' expr ']' braced_init
+        {
+            /* new T*[N]{a, b, ...} -- an array of pointers with a list: the
+             * listed pointers first, the rest null. Same lowering as the
+             * list-initialized array new above (lower.c, "phase 6c"), with
+             * the pointer helpers v32_new_arr_ptr_init/_rest. */
+            $$ = ast_new(AST_NEW, @1.first_line);
+            $$->type = apply_ptr($2, $3, @1.first_line);
+            $$->a = $5;
+            $$->b = $7;
         }
     | DELETE unary_expr
         { $$ = ast_new(AST_DELETE, @1.first_line); $$->a = $2; }

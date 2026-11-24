@@ -137,7 +137,8 @@ typedef enum {
                               throughout (see var_decl's own grammar
                               comment in parser.y for the full reasoning). */
     AST_TYPEDEF_DECL,     /* str1=new name, type=underlying type */
-    AST_ENUM_DECL,        /* str1=name, list=AST_ENUM_VALUE entries.
+    AST_ENUM_DECL,        /* str1=name (the C type name: `a__E` for an enum of namespace a), str2=the bare name as written,
+                              ival=1 for `enum class` (enumerators reached as Name::X only), list=AST_ENUM_VALUE entries.
                               Top-level/namespace-level only -- NOT
                               supported as a class member (a nested
                               enum), a deliberate scope boundary, not an
@@ -513,7 +514,8 @@ typedef enum {
     AST_THIS,
     AST_NEW,              /* type=type being allocated, list=constructor
                               arguments (may be empty -- `new T` and
-                              `new T()` both produce an empty list; this
+                              `new T()` both produce an empty list (ival=1: the items came
+                              from braces, `new T{...}`); this
                               project doesn't distinguish the two, unlike
                               real C++'s default- vs value-initialization
                               subtlety).
@@ -878,6 +880,11 @@ struct AstNode {
      * hoist_static_locals (ast.c), which moves it to file scope. */
     int is_static_local;
     int is_extern;          /* C input: declared `extern` (a VAR_DECL at file scope) */
+    /* AST_VAR_DECL at file or namespace scope: declared `extern`, in C or C++
+     * input (mark_extern_decls; C++ input lost the keyword in the lexer, so
+     * the prescan reports it per declarator). Not used for C++ output
+     * decisions beyond the C name and merge_extern_names. */
+    int extern_decl;
     /* A FUNC_DEF / FUNC_DECL / VAR_DECL written `static` at file scope.
      * Set only when linking several files (g_link_mode: link.c renames
      * the ones whose names clash); in a single file `static` means nothing
@@ -1003,6 +1010,8 @@ int ast_decode_escape(const char **p);
 /* Post-parse, pre-sema rewrites for C storage classes -- see ast.c. */
 void hoist_static_locals(AstList *decls);
 void merge_tentative_globals(AstList *decls);
+void mark_extern_decls(AstList *decls);
+void merge_extern_names(AstList *decls);
 /* In-class default member initializers (`int lives = 3;` inside a
  * class): each becomes an assignment at the top of every constructor
  * that does not initialize the member itself -- see ast.c. */

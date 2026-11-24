@@ -52,7 +52,7 @@ literals, `1e3`, `.5` and `5.` (`tests/133sample.cpp`, `134sample.c`,
 | 1 | no `struct` keyword on a type | write C++ as usual | handled |
 | 2 | `type[n] name` array declarators | `int a[4]` or `int[4] a` | handled |
 | 3, 4 | reversed function-pointer syntax | standard or Vircon32 form | handled |
-| 5 | pointer null needs `NULL` | `p = 0;`, `p == 0` | handled |
+| 5 | pointer null needs `NULL` | `p = 0;`, `p == 0`, `Node *g = 0;`, `T*&` | handled |
 | 6 | `void main(void)` only | `int main()` and `return 0;` | handled |
 | 7 | prototype parameters need names | names optional | handled |
 | 8 | no `new`/`delete` | `new`/`delete` work (malloc-based, or an arena with `--alloc=arena`, or a garbage collector with `--alloc=gc`); `new T[n]` constructs every element, `new T[n]{a, b}` builds the listed ones and constructs the rest, and `delete[]` destroys them; with `--alloc=gc` a pointer one past the end of an array keeps it alive | handled, with caveats |
@@ -75,9 +75,14 @@ literals, `1e3`, `.5` and `5.` (`tests/133sample.cpp`, `134sample.c`,
 | 26 | pointer vs `void *` compare | C input: handled | handled |
 | 27 | writing through a returned pointer runs the call 2-3 times | any | **lowered** as a statement |
 | 28 | control codes in string literals can't be assembled | any literal, `"\025"` | **lowered** |
+| 31 | a short `{...}` list zeroes nothing in a local; a pointer slot is `NULL` | `P z{};`, `int a[8] = {0};`, `R r = {1};` | **lowered** (every list written out in full) |
+| 32 | no cast to `void`; no `&` of `((T *)p)[i]` | `(void)x;` | **lowered** |
+| 33 | a union takes no brace list | `U u{};`, `U u = {1};` | **lowered** (declaration + assignment of the first member) |
+| 34 | no int to an enumeration: `E e = 0;` | `S s{};` with an enum member, `{1, 0}` | **lowered** (`(E)0`) |
+| 35 | a union is printed before the structs, so a struct member of a union is "not fully defined" | `union V { int a; B b; };` | **not handled** (your code) |
 
 Not covered by any entry because v32c++ has no workaround: templates,
-exceptions, RTTI, multiple inheritance, `enum class`, `constexpr`, lambdas,
+exceptions, RTTI, multiple inheritance, `constexpr`, lambdas,
 `mutable`, nested classes, `static` class members -- see the README's
 "Known limitations".
 
@@ -905,6 +910,22 @@ would make this much easier to spot than the parser error.
   - file-scope `static` and every `extern`, `volatile`: dropped. Two
     file-scope declarations of one variable (`extern int x;` ... `int x =
     5;`) are merged into one;
+  - **the `extern` rule** (Vircon32 C has no `extern` and no linker, so the
+    output has exactly one definition of each variable and the keyword never
+    appears): an `extern` declaration with no definition anywhere IS the
+    variable and is printed as a plain declaration (`extern int c_side;` in a
+    namespace is `int c_side;`, keeping its bare C name); with a definition
+    anywhere in the program it is dropped, also across namespace blocks and
+    for a file-scope definition of the same C name (`namespace hw { extern int
+    v; } int v = 3;`, or `namespace n { extern int v; } namespace n { int v =
+    5; }` -> one `n__v`: `merge_extern_names`, `ast.c`). C++ input loses the
+    keyword in the lexer, so the prescan reads it from the text per declarator
+    (`prescan_decl_is_extern`: `extern int a; int b;` is one of each; through
+    macros too). A local `extern T x;` in a C function with no other
+    declaration of `x` becomes the file-scope variable. Not covered: a variable
+    an SDK header defines (`malloc_first_block`), redeclared `extern`, is
+    defined a second time in the output, since v32c++ does not read variables
+    out of the headers;
   - a `static` LOCAL becomes a file-scope variable named
     `__static<N>_<function>_<name>`, declared ahead of its function, with
     every use renamed (shadowing respected);
@@ -1083,6 +1104,68 @@ phase could be dropped.
   of them, `--silence-unused-args` starts each such function with a bare
   `x;` / `this;` (Vircon32 mode only); it costs a little code, so it is off
   by default. `tests/153sample.cpp`.
+
+## 31. A short initializer list zeroes nothing in a local, and a null pointer is not 0
+
+- **Vircon32 does**: accept `P z = {};`, `int a[4] = {0};` and `P p = {1};` and
+  write only the values listed: for a local the rest of the object keeps whatever
+  the stack held (a file-scope variable is zero-filled by the loader). Zero is not
+  a null pointer either (`NULL` is -1, #29), so a pointer slot the list leaves out
+  of a file-scope table reads 0, not null. A bare `0` is also rejected as the
+  initializer of a pointer at file scope (`Node *g = 0;`, #5).
+- **For v32c++**: Vircon32 mode writes every list of an array or of a struct
+  without a constructor out in full, nested lists and arrays too (`P z{}` is
+  `P z = {0, 0};`, `int a[4] = {0}` is `{0, 0, 0, 0}`, a pointer is `NULL`; a
+  file-scope list is completed only up to its last pointer slot, C input keeps
+  its 0 null). `new P()` and `new P[n]{}` zero what they allocate, `: m{}` zeroes a
+  member (`{ P __v32_zero = {0, 0}; this->m = __v32_zero; }`), and a literal 0
+  initializing a pointer at file or namespace scope, or assigned or compared
+  through `T*&`, prints `NULL`. `new T[n]()` is a parse error. A pointer member (nested
+  structs and arrays of them too) of `new P()`, `new P[n]{}` and `new Q{...}` is `NULL`, not
+  the byte-wise 0 the first version of `new P[n]{}` wrote (its `_rest` helper assigns a complete
+  zero value to each element). `tests/195sample.cpp`, `tests/196sample.cpp` (default, arena, gc).
+
+## 32. No cast to `void`, and no `&` of an indexed cast pointer
+
+- **Vircon32 does**: reject `(void)x;` ("cannot convert expression to type
+  void") and `&((T *)p)[i]` ("reference can only be applied to a memory address").
+- **For v32c++**: `(void)x;` becomes the bare statement `x;` (as `this;` is for an
+  unused `this`), and the runtime helpers write `((T *)p) + i`.
+  `tests/181sample.cpp`.
+
+## 33. A union takes no brace list
+
+- **Vircon32 does**: reject `U u = {};` ("cannot assign multiple values to union")
+  and `U u = {0};` ("cannot assign int to union"), for every union.
+- **For v32c++**: a declaration whose type holds a union and that has a brace list
+  becomes the plain declaration plus one assignment per leaf (`U u = {1};` is
+  `U u; u.a = 1;`), the C rule applied: a list initializes the FIRST member and
+  the other words of the union are zeroed (`((int *)&u)[w] = 0`, a loop for more
+  than 4 words); `{}` zeroes the whole union (a pointer first member is `NULL`).
+  Unions inside structs and arrays work the same (`S s = {3, {4}};`, `U a[2] = {{1}, {2}};`,
+  `U a[] = {...}` is sized from its list; `new S()` / `new S[n]{}` of a struct holding a
+  union write their zero value as assignments). A file-scope or namespace-scope
+  one is assigned at the start of `main` (phase 10b in `lower.c`, with the global
+  objects), so a program without `main` keeps the list as written. A union in
+  a `for` or `if` condition declaration is not lowered. `tests/197sample.cpp`
+  (default, arena, gc).
+
+## 34. No `int` to an enumeration
+
+- **Vircon32 does**: reject `E e = 0;`, `S s = {1, 0};` with an enum member and
+  `e = (int-valued expression)` ("cannot assign int to enumeration"); an enumerator or
+  a cast is fine.
+- **For v32c++**: the zero a list or `new` writes for an enum member is `(E)0`
+  (`desig_zero`, Vircon32 mode only). Assigning an int of your own to an enum variable
+  needs a cast, as in C++. `tests/196sample.cpp`.
+
+## 35. A union is printed before the structs
+
+- **Vircon32 does**: reject a union member of a struct type that is defined after it
+  ("structure 'B' is instanced without being fully defined").
+- **For v32c++**: nothing is done: unions are printed before the classes and structs, so
+  `union V { int a; B b; };` fails in the compiler (a union of scalars and arrays, and a
+  struct holding a union, are fine). Not handled yet.
 
 ## What this list does NOT cover
 

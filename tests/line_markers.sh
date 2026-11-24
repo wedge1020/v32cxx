@@ -14,8 +14,8 @@ cd "$(dirname "$0")"
 t=$(mktemp -d); trap 'rm -rf "$t"' EXIT INT TERM
 fail() { echo "FAIL line_markers: $*" >&2; exit 1; }
 inc=
-"$bin" $inc -o "$t/plain.c" line_markers.cpp >/dev/null 2>&1 || fail "transpile"
-"$bin" $inc --line-markers -o "$t/lm.c" line_markers.cpp >/dev/null 2>&1 || fail "transpile --line-markers"
+"$bin" $inc --no-build-scripts -o "$t/plain.c" line_markers.cpp >/dev/null 2>&1 || fail "transpile"
+"$bin" $inc --line-markers --no-build-scripts -o "$t/lm.c" line_markers.cpp >/dev/null 2>&1 || fail "transpile --line-markers"
 ! grep -q '^#line' "$t/plain.c" || fail "#line without the option"
 n=$(grep -c '^#line' "$t/lm.c"); [ "$n" -ge 4 ] || fail "too few #line ($n)"
 bad=$(grep '^#line' "$t/lm.c" | grep -v '^#line [0-9][0-9]* "line_markers.cpp"$' || true)

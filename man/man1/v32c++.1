@@ -856,7 +856,6 @@ own exit status.
 Not supported (each is a clear error unless noted):
 .B static
 class members;
-.BR "enum class" ,
 .BR constexpr ,
 lambdas,
 .BR mutable ,
@@ -873,9 +872,45 @@ is
 .B "new T*[n]"
 (an array of pointers) allocates n pointer-sized words: no constructors and no count header;
 .B delete[]
-releases it and leaves the pointed-to objects to the caller. Function pointers declared at file or namespace scope may be initialised with a function's name
+releases it and leaves the pointed-to objects to the caller;
+.B "new T*[n]{p, q}"
+sets the listed pointers and nulls the rest. Function pointers declared at file or namespace scope may be initialised with a function's name
 .RI ( "int (*h)(int) = square;" ,
 also in brace lists); an overloaded name is picked by the pointer's own type, and it is an error when no overload, or more than one, fits.
+.PP
+.B new
+of a scalar
+.RI ( "new int" ,
+.IR "new int(5)" ,
+.IR "new float{2.5f}" ,
+.IR "new Node*" )
+allocates one word through the allocation hook (so
+.B --alloc
+works) and
+.B delete
+releases it;
+.I ()
+and
+.I {}
+give 0 (a pointer: NULL), a value is stored.
+List-initialization works where a constructor call does:
+.IR "new P{1, 2}" ,
+.IR "new Counter{3}" ,
+.I "P m{1, 2};"
+and
+.I "int w{5};"
+as in-class default member initializers, and
+.I ": w{5}"
+or
+.I ": p{}"
+in a mem-initializer list. A class with a constructor is built by it; a class without one takes its members in order and zero (NULL for a pointer) for the rest.
+A union cannot be brace-initialized by the Vircon32 compiler:
+.I "U u = {1};"
+is lowered to the declaration plus an assignment of the first member (the rest of the union zeroed; a file-scope union at the start of
+.BR main ),
+and
+.I "U u{};"
+zeroes every word.
 .PP
 Array
 .B new
@@ -1119,6 +1154,30 @@ through
 and with a local of the same name hiding it. A file-scope variable keeps its name, and so does an
 .B extern
 declaration inside a namespace (it names something defined elsewhere, such as the SDK or a C file).
+.B extern
+is read per declaration, and since Vircon32 C has no
+.B extern
+the output holds one plain declaration of the variable (dropped when the program defines it). The enumerators of a namespace's
+.B enum
+are named the same way
+.RI ( a::RED
+is
+.IR a__RED ),
+however they are written; the enum's type name is qualified the same way
+.RI ( a::E
+is
+.IR a__E ,
+also in the mangled name of a function that takes it), so two enums of one name in different namespaces are two types.
+A scoped enum
+.RB ( "enum class Color : int { Red }" ;
+the underlying type is accepted and ignored) has its enumerators reached as
+.I Color::Red
+only (C names
+.IR Color__Red ,
+.IR ns__Color__Red );
+it converts to
+.B int
+without a cast, which C++ would refuse.
 .PP
 A free function declared inside a namespace is emitted under a C name
 that includes the namespace

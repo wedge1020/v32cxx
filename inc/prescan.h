@@ -81,11 +81,13 @@ const char *prescan_intern_filename(const char *filename);
  * so codegen leaves it out of the generated C.
  */
 int prescan_is_header_struct(const char *name);
+int prescan_is_header_var(const char *name);   /* a variable a pass-through header defines (extern redeclarations are left out) */
 
-/* True iff the code line `file`:`line` starts with the word `extern` (not
- * `extern "C"`). lexer.l drops the keyword in C++ input; sema needs it to
- * leave an `extern` namespace-scope variable's name alone. */
-int prescan_line_has_extern(const char *file, int line);
+/* True iff the declarator `name`, on line `line` of `file`, was declared with
+ * the word `extern` (not `extern "C"`): `extern int a; int b;` on one line is
+ * true for a, false for b. lexer.l drops the keyword in C++ input, so the
+ * prescan reads it from the text (see the comment in prescan.c). */
+int prescan_decl_is_extern(const char *file, int line, const char *name);
 
 /*
  * Queues a command-line -D (is_undef = 0; "NAME" or "NAME=VALUE") or -U

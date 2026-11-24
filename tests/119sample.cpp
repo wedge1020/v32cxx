@@ -5,7 +5,7 @@
 //  A keyboard on gamepad port 1 and a mouse on port 2, fed by
 //  tests/119sample.input -- a v32peek input script encoding real v32kbd and
 //  v32mouse protocol traffic, generated from tests/119sample.actions by
-//  tools/vircon32/v32io-script.py. check.sh notices the .input file and
+//  $V32SIM_HOME/tools/v32io-script.py. check.sh notices the .input file and
 //  runs this cartridge with it (every other self-checking sample runs with
 //  no input at all).
 //

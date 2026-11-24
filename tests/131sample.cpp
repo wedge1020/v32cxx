@@ -4,7 +4,7 @@
 //
 //  A keyboard on gamepad port 1, fed by tests/131sample.input -- a v32peek
 //  input script made from tests/131sample.actions by
-//  tools/vircon32/v32io-script.py, which encodes characters the way the
+//  $V32SIM_HOME/tools/v32io-script.py, which encodes characters the way the
 //  v32io adaptor and the modified emulator send them: a codepage prefix
 //  (key code 30 = BIOS characters 128-255, 31 = 0-127) and then a payload,
 //  both as key releases. check.sh sees the .input file and runs this

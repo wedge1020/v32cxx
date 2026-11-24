@@ -15,7 +15,7 @@
 #      with a tests/NNsample.input next to it is played with that input
 #      script -- see 119sample.
 #
-#  Needs tools/vircon32/bin (build-tools.sh) and a v32sim checkout (V32SIM_HOME, default ../v32sim).
+#  Needs tools/vircon32/bin (build-tools.sh) and a v32sim checkout (V32SIM_HOME, default ../v32sim, then ../v32sim.git).
 #  Exit status: 0 if everything passed, 1 otherwise.
 # *****************************************************************************
 
@@ -32,6 +32,23 @@ fi
 failed=0
 built=0
 unpacked=0
+
+# The --alloc=arena / --alloc=gc builds of the samples (tests/real_variants.txt: the same builds `make test` runs
+# as standard C) are transpiled here, so they go through the stock compiler and the emulator like the rest.
+variants=""
+if [ -f "$ROOT/tests/real_variants.txt" ] && [ -x "$ROOT/bin/v32c++" ]; then
+    while read -r vname vsrc vflags; do
+        case "$vname" in ""|"#"*) continue;; esac
+        vfile="$ROOT/tests/$vsrc.cpp"; [ -f "$vfile" ] || vfile="$ROOT/tests/$vsrc.c"
+        # shellcheck disable=SC2086
+        if ( cd "$ROOT" && bin/v32c++ --no-build-scripts $vflags -I . -o "out/${vname}program.c" "$vfile" > "out/${vname}program.txt" 2>&1 ); then
+            variants="$variants $vname:$vsrc"
+        else
+            echo "FAIL (transpile) $vname -- see out/${vname}program.txt"
+            failed=$((failed + 1))
+        fi
+    done < "$ROOT/tests/real_variants.txt"
+fi
 
 for c in "$OUT"/*program.c; do
     [ -e "$c" ] || continue
@@ -66,7 +83,13 @@ echo "real toolchain: $built program(s) compiled and assembled" \
 # The self-checking programs run in v32sim (tools/v32sim-selfcheck.sh): halted within the frame limit and
 # test_errors reads 0. A tests/NNsample.input beside a sample is played by it. V32SIM_HOME is the v32sim checkout
 # (V32SIM overrides the binary); V32_ORACLE=1 runs them on the stock console logic instead.
-V32SIM_HOME=${V32SIM_HOME:-$(cd "$ROOT/.." 2>/dev/null && pwd)/v32sim}
+if [ -z "$V32SIM_HOME" ]; then
+    # ../v32sim beside this project, or ../v32sim.git for a checkout named after its repository
+    PARENT=$(cd "$ROOT/.." 2>/dev/null && pwd)
+    V32SIM_HOME=$PARENT/v32sim
+    [ -f "$V32SIM_HOME/tools/v32sim-selfcheck.sh" ] || [ ! -f "$PARENT/v32sim.git/tools/v32sim-selfcheck.sh" ] ||
+        V32SIM_HOME=$PARENT/v32sim.git
+fi
 SELF="$V32SIM_HOME/tools/v32sim-selfcheck.sh"
 [ -f "$SELF" ] || { echo "check.sh: no v32sim at $V32SIM_HOME (set V32SIM_HOME)" >&2; exit 1; }
 carts=""
@@ -84,10 +107,21 @@ for src in "$ROOT"/tests/*sample.cpp "$ROOT"/tests/*sample.c; do
     [ -e "$ROOT/tests/${num}sample.input" ] && cp "$ROOT/tests/${num}sample.input" "$OUT/$n.input"
     carts="$carts $OUT/$n.v32"
 done
+for v in $variants; do
+    vname=${v%%:*}; vsrc=${v#*:}
+    n="${vname}program"
+    if [ ! -e "$OUT/$n.v32" ]; then
+        echo "FAIL (emulator) $n -- no cartridge built"
+        failed=$((failed + 1))
+        continue
+    fi
+    [ -e "$ROOT/tests/$vsrc.input" ] && cp "$ROOT/tests/$vsrc.input" "$OUT/$n.input"
+    carts="$carts $OUT/$n.v32"
+done
 ran=$(echo $carts | wc -w)
 if [ -n "$carts" ]; then
     # shellcheck disable=SC2086
-    V32BIOS="$BIN/StandardBios.v32" sh "$SELF" -M ${V32_ORACLE:+--oracle} $carts || failed=$((failed + 1))
+    V32BIOS="$BIN/StandardBios.v32" sh "$SELF" -M -F "${V32_FRAMES:-6000}" ${V32_ORACLE:+--oracle} $carts || failed=$((failed + 1))
 fi
 echo "emulator: $ran self-checking program(s) run"
 

@@ -52,7 +52,7 @@ littéraux hexadécimaux/octaux/binaires, `1e3`, `.5` et `5.` (`tests/133sample.
 | 1 | pas de mot-clé `struct` dans un type | écrivez du C++ comme d'habitude | géré |
 | 2 | déclarateurs de tableau `type[n] name` | `int a[4]` ou `int[4] a` | géré |
 | 3, 4 | syntaxe inversée des pointeurs de fonction | forme standard ou Vircon32 | géré |
-| 5 | le pointeur nul exige `NULL` | `p = 0;`, `p == 0` | géré |
+| 5 | le pointeur nul exige `NULL` | `p = 0;`, `p == 0`, `Node *g = 0;`, `T*&` | géré |
 | 6 | uniquement `void main(void)` | `int main()` et `return 0;` | géré |
 | 7 | les paramètres de prototypes exigent des noms | noms facultatifs | géré |
 | 8 | pas de `new`/`delete` | `new`/`delete` fonctionnent (via `malloc`) ; `new T[n]` construit chaque élément, `new T[n]{a, b}` construit ceux de la liste et construit le reste, et `delete[]` les détruit ; avec `--alloc=gc` un pointeur un cran après la fin d'un tableau le garde en vie ; avec `--alloc=arena`, une arène au lieu de `malloc` ; avec `--alloc=gc`, un ramasse-miettes | géré, avec réserves |
@@ -75,9 +75,14 @@ littéraux hexadécimaux/octaux/binaires, `1e3`, `.5` et `5.` (`tests/133sample.
 | 26 | comparaison de pointeur avec `void *` | entrée C : géré | géré |
 | 27 | écrire via un pointeur retourné exécute l'appel 2-3 fois | n'importe lequel | **abaissé** en instruction |
 | 28 | les codes de contrôle dans les littéraux de chaîne ne s'assemblent pas | n'importe quel littéral, `"\025"` | **abaissé** |
+| 31 | une liste `{...}` courte ne met rien à zéro dans une locale ; un pointeur est `NULL` | `P z{};`, `int a[8] = {0};`, `R r = {1};` | **abaissé** (chaque liste est écrite en entier) |
+| 32 | pas de conversion en `void` ; pas de `&` de `((T *)p)[i]` | `(void)x;` | **abaissé** |
+| 33 | une union n'accepte pas de liste entre accolades | `U u{};`, `U u = {1};` | **abaissé** (déclaration + affectation du premier membre) |
+| 34 | pas d'`int` vers une énumération : `E e = 0;` | `S s{};` avec un membre `enum`, `{1, 0}` | **abaissé** (`(E)0`) |
+| 35 | une union est imprimée avant les structs, donc un membre struct d'une union « n'est pas entièrement défini » | `union V { int a; B b; };` | **non géré** (ton code) |
 
 Non couvert par une entrée parce que v32c++ n'a pas de solution : les templates, les
-exceptions, la RTTI, l'héritage multiple, `enum class`, `constexpr`, les lambdas,
+exceptions, la RTTI, l'héritage multiple, `constexpr`, les lambdas,
 `mutable`, les classes imbriquées, les membres `static` de classes — voir les
 « Limitations connues » du README.
 
@@ -840,6 +845,21 @@ rendrait cela beaucoup plus facile à repérer que l'erreur de l'analyseur synta
   - `static` au niveau fichier et tout `extern`, `volatile` : supprimés. Deux déclarations
     de niveau fichier d'une variable (`extern int x;` ... `int x = 5;`) sont fusionnées en
     une seule ;
+  - **la règle d'`extern`** (le C de Vircon32 n'a ni `extern` ni éditeur de liens : la
+    sortie a exactement une définition de chaque variable et le mot n'y figure jamais) :
+    une déclaration `extern` sans définition nulle part EST la variable et s'imprime comme
+    une déclaration ordinaire (`extern int c_side;` dans un espace de noms donne
+    `int c_side;`, avec son nom C simple) ; avec une définition n'importe où dans le
+    programme, elle est supprimée, aussi entre blocs d'espaces de noms et pour une
+    définition de niveau fichier de même nom C (`namespace hw { extern int v; } int v = 3;`,
+    ou `namespace n { extern int v; } namespace n { int v = 5; }` -> un seul `n__v` :
+    `merge_extern_names`, `ast.c`). L'entrée C++ perd le mot dans l'analyseur lexical, donc
+    le préprocesseur le lit dans le texte, par déclarateur (`prescan_decl_is_extern` :
+    `extern int a; int b;` en fait une de chaque ; via des macros aussi). Un `extern T x;`
+    local dans une fonction C sans autre déclaration de `x` devient la variable de niveau
+    fichier. Non couvert : une variable que définit un en-tête du SDK (`malloc_first_block`),
+    redéclarée `extern`, est définie une seconde fois dans la sortie, v32c++ ne lisant pas
+    les variables des en-têtes ;
   - une variable LOCALE `static` devient une variable de niveau fichier nommée
     `__static<N>_<function>_<name>`, déclarée avant sa fonction, chaque usage étant renommé
     (en respectant le masquage) ;
@@ -1015,6 +1035,69 @@ vrai émulateur. Une correction en amont tiendrait en trois lignes dans `EscapeC
   tous, `--silence-unused-args` commence chaque fonction ainsi par un `x;` /
   `this;` isolé (mode Vircon32 seulement) ; cela coûte un peu de code, donc
   désactivée par défaut. `tests/153sample.cpp`.
+
+## 31. Une liste d'initialisation courte ne met rien à zéro dans une locale, et le pointeur nul n'est pas 0
+
+- **Vircon32 fait** : accepter `P z = {};`, `int a[4] = {0};` et `P p = {1};` et
+  n'écrire que les valeurs listées : pour une locale, le reste de l'objet garde ce
+  que la pile contenait (une variable de portée fichier est mise à zéro par le
+  chargeur). Zéro n'est pas non plus un pointeur nul (`NULL` vaut -1, #29), donc un
+  pointeur que la liste omet dans une table de portée fichier vaut 0, pas nul. Un
+  `0` nu est aussi refusé comme initialiseur d'un pointeur global (`Node *g = 0;`, #5).
+- **Pour v32c++** : le mode Vircon32 écrit en entier chaque liste d'un tableau ou
+  d'une struct sans constructeur, les listes imbriquées aussi (`P z{}` devient
+  `P z = {0, 0};`, `int a[4] = {0}` devient `{0, 0, 0, 0}`, un pointeur est `NULL` ;
+  une liste de portée fichier n'est complétée que jusqu'à son dernier pointeur, et
+  l'entrée C garde son 0 nul). `new P()` et `new P[n]{}` mettent à zéro ce qu'ils
+  allouent, `: m{}` met un membre à zéro (`{ P __v32_zero = {0, 0}; this->m =
+  __v32_zero; }`), et un 0 littéral qui initialise un pointeur global ou d'espace de
+  noms, ou affecté ou comparé à travers `T*&`, s'imprime `NULL`. `new T[n]()` est une
+  erreur de syntaxe. Un membre pointeur (aussi dans des structs imbriquées et des tableaux
+  de pointeurs) de `new P()`, `new P[n]{}` et `new Q{...}` vaut `NULL`, et non le 0 octet par
+  octet qu'écrivait la première version de `new P[n]{}` (son aide `_rest` affecte une valeur
+  zéro complète à chaque élément). `tests/195sample.cpp`, `tests/196sample.cpp` (défaut, arena, gc).
+
+## 32. Pas de conversion en `void`, ni de `&` d'un pointeur converti et indexé
+
+- **Vircon32 fait** : refuser `(void)x;` (« cannot convert expression to type
+  void ») et `&((T *)p)[i]` (« reference can only be applied to a memory address »).
+- **Pour v32c++** : `(void)x;` devient l'instruction nue `x;` (comme `this;` pour un
+  `this` inutilisé), et les aides du runtime écrivent `((T *)p) + i`.
+  `tests/181sample.cpp`.
+
+## 33. Une union n'accepte pas de liste entre accolades
+
+- **Vircon32 fait** : refuser `U u = {};` (« cannot assign multiple values to
+  union ») et `U u = {0};` (« cannot assign int to union »), pour toute union.
+- **Pour v32c++** : une déclaration dont le type contient une union et qui porte une
+  liste entre accolades devient la déclaration simple plus une affectation par feuille
+  (`U u = {1};` devient `U u; u.a = 1;`), avec la règle de C : une liste initialise le
+  PREMIER membre et les autres mots de l'union sont mis à zéro (`((int *)&u)[w] = 0`, une
+  boucle au-delà de 4) ; `{}` met toute l'union à zéro (un premier membre pointeur vaut
+  `NULL`). Les unions dans des structs et des tableaux marchent de même (`S s = {3, {4}};`,
+  `U a[2] = {{1}, {2}};`, `U a[] = {...}` prend sa taille de la liste ; `new S()` /
+  `new S[n]{}` d'une struct contenant une union écrivent leur valeur zéro en affectations).
+  Une union de portée fichier ou d'espace de noms est affectée au début de `main` (phase 10b
+  de `lower.c`, avec les objets globaux), donc un programme sans `main` garde la liste telle
+  quelle. Une union déclarée dans la condition d'un `for` ou d'un `if` n'est pas abaissée.
+  `tests/197sample.cpp` (défaut, arena, gc).
+
+## 34. Pas d'`int` vers une énumération
+
+- **Vircon32 fait** : refuser `E e = 0;`, `S s = {1, 0};` avec un membre `enum` et
+  l'affectation d'une expression entière à une variable `enum` (« cannot assign int to
+  enumeration ») ; un énumérateur ou un cast explicite passe.
+- **Pour v32c++** : le zéro qu'écrit une liste ou `new` pour un membre `enum` est `(E)0`
+  (`desig_zero`, mode Vircon32 seulement). Affecter un `int` à soi à une variable `enum`
+  demande un cast, comme en C++. `tests/196sample.cpp`.
+
+## 35. Une union est imprimée avant les structs
+
+- **Vircon32 fait** : refuser un membre d'union de type struct défini après elle
+  (« structure 'B' is instanced without being fully defined »).
+- **Pour v32c++** : rien n'est fait : les unions sont imprimées avant les classes et structs,
+  donc `union V { int a; B b; };` échoue dans le compilateur (une union de scalaires et de
+  tableaux, et une struct qui contient une union, passent). Pas encore géré.
 
 ## Ce que cette liste ne couvre PAS
 

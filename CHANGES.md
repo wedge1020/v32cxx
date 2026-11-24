@@ -2,6 +2,91 @@
 
 ## 20261123-dev
 
+- **Seven gaps in value-initialization, unions, list-initialization, scalar `new`, scoped enums and SDK variables.**
+  Each has a self-checking sample that passes on the machine (`make realcheck`, also the arena/gc variants).
+  - **`new P[n]{}` gave pointer members 0, not NULL (-1).** Its `v32_new_arr_P_rest` zeroed the elements byte-wise. For a class that holds a
+    pointer (nested structs and arrays of them too) the helper now assigns a complete zero value to each element
+    (`P zero = {0, NULL, 0.0}; ... p[i] = zero;`, `emit_rest_zero_body`, `lower_class_holds_pointer`); `new P()` and `new T*[n]{}` were
+    right already and are tested now, and so is `fill_init`'s file-scope rule. A zero written for an `enum` member is `(E)0`: the stock
+    compiler rejects an int for an enumeration (`S s{};`, `{1, 0}` and `new S()` of a struct with an enum member did not compile), QUIRKS #34.
+    `tests/196sample.cpp`.
+  - **Brace-initialized unions** (QUIRKS #33, was "your code"): `U u = {1};`, `U u{};`, `{}` and unions inside structs and arrays
+    are lowered in Vircon32 mode to the plain declaration plus assignments (`lower.c` phase 10b, `ui_init`): a list initializes the first
+    member as in C, the rest of the union is zeroed (`((int *)&u)[w] = 0`, a loop past 4 words), `{}` zeroes it all (a pointer first
+    member is `NULL`), a missing item is the zero of its type. File-scope and namespace-scope ones are assigned at the start of `main`;
+    `U a[] = {...}` is sized from its list; `new S()` / `new S[n]{}` of a struct holding a union write the zero as assignments
+    (`v32_new_S` ended `S zero = {0, {0}};`, which the compiler rejects). Not lowered: a union declared in a `for`/`if` condition.
+    Found, not fixed: unions are printed before the structs, so a union with a struct member fails (QUIRKS #35). `tests/197sample.cpp`.
+  - **List-initialization in three more places** (as `tests/175sample.cpp`): an in-class default with braces (`P m{}; P n{1, 2}; int w{5};
+    Counter c{3}; int a[3]{1, 2};` -- they parsed and were silently dropped; an array member's `a[3]{...}` was a parse error; the
+    lists are now each constructor's `: m{...}` entry or element assignments), `: w{}` / `: w{5}` on a scalar member and `: p{1, 2}`
+    on an aggregate member (sema `ival` 1 with an empty list, new `ival` 4), and `new P{}`, `new P{1, 2}`, `new Counter{3}`,
+    `new int{7}` (grammar `NEW type_spec braced_init`, no new conflicts; an aggregate is the zeroed `v32_new_P()` plus the listed
+    members on a function-level temporary, `new P(1, 2)` too). `tests/198sample.cpp`.
+  - **Scalar `new`**: `new int`, `new int()`, `new int(5)`, `new float(2.5)`, `new int{7}`, `new char('x')`, `new bool(true)`, `new E(v)` and
+    `new Node*` (one pointer, NULL, or `new Node*(p)`) allocate one word through the hook (`v32_new_int/float/char/bool/ptr`, emitted only when
+    used, arena and gc included) and `delete` releases them (it called an undefined `v32_new_int`; `delete pp` of a `T **` called
+    `v32_delete_T`). `tests/199sample.cpp`.
+  - **`enum class`** (scoped enumerations): `enum class Color : int { Red, Green };` (the underlying type is accepted and ignored), reached as
+    `Color::Red` (C names `Color__Red`, `ns__Color__Red`); `switch`/`case`, comparisons, parameters (`f(Color)` and `f(int)` overload),
+    `static_cast<int>(c)`, arrays, members, default arguments work. A bare `Red` is not declared (the stock compiler says so) and a
+    conversion to `int` needs no cast (more permissive than C++).
+  - **Enum types are qualified by their namespace**: `a::E` is `a__E` in the C output (declaration, variables, parameters, casts, `sizeof`
+    and the mangled names of functions that take it: `g__a__E`; they were `g__a_F`), so `namespace a { enum E } namespace b { enum E }` is
+    legal (it was a sema error, `tests/193bad.cpp` is now a positive check). parser.y names the declaration and rewrites each type use the symbol
+    table resolves to it. Output change: every enum of the `v32` wrappers is `v32__BlendMode`, `v32__Key`... and so are the mangled names of
+    functions that take them. `tests/200sample.cpp`.
+  - **A variable an SDK header defines, redeclared `extern`**: `extern malloc_block *malloc_first_block;` (misc.h defines it) was printed as a second
+    definition ("already declared"). prescan.c now notes the names of the header's depth-0 variable definitions (`harvest_var_names`,
+    `prescan_is_header_var`) and codegen leaves the `extern` redeclaration out; sema still sees it for the type. Tested with the real
+    headers (`tests/201sample.cpp`) and `tests/sdkstub` (`tests/201stub.cpp`).
+  Not done: `new T[n]()` (parse error), out-of-line `int a::f()` definitions in namespaces (parse error, as before), union before-struct
+  order (#35).
+- **`make clean` removes what older tooling left in the tree, and `tools/prune-release.sh` removes tracked copies.**
+  `clean` now also deletes `tools/vircon32/ComputerSoftware` (the old in-tree clone) and `tests/Make.sh` /
+  `tests/Make.bat`. Those two came from the sample 98 line in `make test`, which ran v32c++ without
+  `--no-build-scripts` once the toolchain was built; it now uses `$(TBIN)` like every other test. `tests/line_markers.sh` had the same omission (both scripts are written to the current directory, which is `tests/` there). `make test` now fails if either file appears in `tests/`. The new
+  `tools/prune-release.sh` (dry run by default, `--apply` to act; same shape as v32sim's) removes the clone, the
+  private copies of v32sim's tools, those build scripts, bison reports, tracked build outputs and editor/merge
+  leftovers, with `git rm` for tracked paths (staged) and `rm` otherwise.
+
+- **The ComputerSoftware sources are looked up beside the project, not cloned into it.** `build-tools.sh` used to
+  clone the 42 MB ComputerSoftware tree into `tools/vircon32/ComputerSoftware`. It now uses the path it is given,
+  else `../ComputerSoftware`, else `../ComputerSoftware.git` (the same rule as v32sim), and only when there is none
+  clones one to `../ComputerSoftware` at the verified commit. It says which checkouts it used, and notes when the
+  checkout is not at the verified commit. An old `tools/vircon32/ComputerSoftware` can be deleted.
+- **The last private copies of v32sim's tools are gone.** `tools/vircon32/` held `v32run.cpp`, `v32prof.cpp`,
+  `v32shot.cpp`, `v32peek.cpp`, `shim/SDL.h` and `v32io-script.py`, left behind when the runners moved to v32sim
+  (the shim and the script were byte-identical to v32sim's). The docs and sample comments now point at
+  `$V32SIM_HOME/tools/v32io-script.py` and v32sim's `tools/oracle/bin/v32shot` / `v32prof`. `tools/vircon32/` is
+  now just `build-tools.sh` and `check.sh`.
+
+- **Real-toolchain fixes (arena/gc runtimes, null pointers, short initializer lists).** `make realcheck` compiled 150 programs with 7 failing
+  and a failing self-check; now 181 programs, 0 failed, 112 cartridges all passing. Each was a real bug:
+  - A literal `0` initializing a pointer at file or namespace scope (`Node *g = 0;`, `void (*hook)(int) = 0;`, `Node *t[2] = {0, 0};`, a
+    pointer member in `S s = {1, 0};`), or assigned/compared through a `T*&` (`p = 0`, `p != 0`: the reference type hid the pointer, so
+    `*p = 0` reached the compiler as an int) now prints `NULL` (`global_null_init`, `type_is_plain_pointer`; samples 177, 186, 190).
+  - The gc runtime template declared `int __v32_gc_flist[33];` (raw text, so the `type[n] name` rewrite never saw it): the three arrays are
+    tokens now (`@FLISTDECL@`...) spelled per target (samples 182, 185). The arena's destructor switch wrote `&((T *)obj)[i]`, which Vircon32 C
+    rejects ("reference can only be applied to a memory address"): `((T *)obj) + i` (181).
+  - `(void)x;` printed as written, which Vircon32 C rejects ("cannot convert expression to type void"); it is the bare statement `x;` now (181).
+  - `DP q;` with `typedef D *DP;` got a destructor call `D__dtor__void(&q)` at scope exit (`make_destructible` used `type_to_class`, which looks
+    through pointers; now `type_to_value_class`): "cannot assign struct D** to const-qualified struct D*" (184).
+  - A short braced list zeroed nothing in a local (`P z{};` is `P z = {};`, `int a[4] = {0};`, `P p{1};`: the stock compiler writes only
+    the listed values; sample 175 failed on the machine). Vircon32 mode now writes every list of an array or constructor-less struct in
+    full (`fill_init`, `lower.c` phase 0: nested structs and arrays, `0.0`, `NULL`; a file-scope list only up to its last pointer slot, as the loader zeroes the rest;
+    C input keeps its 0 null and its short file-scope lists; unions, brace-elided lists and non-aggregates are left alone). `new P()` and `new P[n]{}`
+    zero what they allocate (`v32_new_P` ends `P zero = {0, 0}; *self = zero;`; `new T[n]{}` used to be the uninitialized `new T[n]`), `: m{}` on a member
+    of a plain aggregate class zeroes it (it was ignored). The local string-to-array lists (`char w[8] = "hey"`) are padded too. See QUIRKS #31-#33.
+  - `tools/vircon32/check.sh` also builds and runs the arena and gc variants listed in `tests/real_variants.txt` (the std_run builds) and the
+    `out/18[125]program.c` ones, with `-F 6000` frames (`V32_FRAMES`); `182program` and `185program` are built with `--heap-words=16384` like their std_run.
+    On the console the collector (push R0-R10, `mov {stk}, SP`, scan to 0x400000) collects cycles, keeps interior pointers and stack roots, and
+    survives the mark-stack overflow and the 100x-heap churn; the out-of-space path (`182full`, `181full`) stops with its message.
+  New sample `tests/195sample.cpp`. Output changes: every `--alloc=arena` program's destructor switch (`+ i`), every `--alloc=gc` program's three
+  array declarations, `(void)x;` statements, global/namespace pointers (`= NULL`), `T*&` zero assignments, short local lists written out, a
+  `P zero = {...}; *self = zero;` in `v32_new_P` of every constructor-less class (standard target too: `new P()` is zeroed there as well).
+  Not fixed: `new int`/`new int()` (no `v32_new_int`), `new P{}` and `new T[n]()` (parse errors), a union with braces (#33) -- all as before.
+
 - **`V32CXX_SDK_INCLUDE=` (set but empty) turns the SDK header search off.** Setting the variable only ever added
   folders in front of the search, so on a machine with the DevTools installed (`compile` on `PATH`, or
   `/usr/local/Vircon32/DevTools/include`) the SDK headers were still found and sample 154, which checks the
@@ -22,7 +107,7 @@
   `using a::x;`, nested namespaces and asm `{x}` operands, a local or parameter hiding the variable.
   Global construction/destruction and the gc root table work on the C names (`__v32_gc_root_a[i] = (int)&app__deep__tail;`).
   A call through a namespace's function-pointer variable (`n::hp(5)`) was "no function 'hp' is declared in namespace 'n'";
-  it is a call through the pointer now. Enumerators of a namespace's enum are not renamed. Output change: every
+  it is a call through the pointer now. (Enumerators of a namespace's enum were not renamed then; they are, see below.) Output change: every
   namespace variable in a program is renamed (`82sample`, `125sample`, `184sample`, `186sample`/`186gc`, the Space
   Invaders demo's `SINE16`, `g_rng`...); `v32/*.hpp` and the other demos are unchanged. Tests `tests/188sample.cpp`
   (default, arena, gc), `188extern.cpp`.
@@ -191,6 +276,48 @@
   outside); `tests/178bad.cpp` and `178bad_sound.cpp` (duplicate cart hints).
 - `make archive` writes `../v32cxx-project-YYYYMMDD.zip` (the date of `VERSION`); `make clean` removes
   `../v32cxx-project-*.zip`.
+- **Enumerators of a namespace's enum are namespaced.** `namespace a { enum E { RED }; } namespace b { enum F { RED }; }`
+  printed two `RED`s in the C output. The enumerators are now `a__RED` / `b__RED` (`a__inner__RED` when nested), the scheme
+  namespace variables got: sema.c registers them in the variable registry (`register_enumerators`; the entry's declaration
+  is the `AST_ENUM_VALUE`) and lower.c phase 0c renames the enumerator and every reference, `case` labels and enumerators'
+  values (`B = RED + 1`) included. All the ways of writing one resolve: `a::RED`, `a::E::RED`, unqualified inside the
+  namespace (reopened too, methods too), `using namespace a;`, `using a::RED;` (the parser took only types, functions and
+  variables there: "no 'RED' is declared in namespace 'a'"), default arguments, initializers, a local hiding it. Array
+  sizes: `int g[a::BLUE];` and `int h[a::E::GREEN];` were "array size is not an integer constant expression"; the parser's
+  enumerator table (`parse_enum_value`) is namespace-aware now (the enclosing namespaces first, then the bare name), and
+  `ast_fold_int` folds a qualified id. The result stays a C `enum` (nothing became a `#define`); file-scope enums are
+  unchanged. The enum's TYPE name is still not qualified (a type is `E` in the output, as a class is), so two enums of one
+  name in different namespaces now give an error instead of a redefinition in the output. `enum class` is not supported (as
+  before). Output change: every `<v32/*.hpp>` user (`v32__BlendAlpha`, `v32__FirstGamepadPort`, ...: those headers declare
+  their enums in `namespace v32`); nothing else differs. Tests `tests/193sample.cpp` (default, arena, gc), `193bad.cpp`.
+- **`extern` is read per declaration; an `extern` and the definition of the same variable are one.** The prescan noted
+  the LINES that held the word `extern`, so `extern int a; int b;` in a namespace left both with their bare names. It now reads
+  the declarator names that follow `extern` (up to the `;`, over continuation lines, after macro expansion: `#define EXT extern`
+  works; comments, strings, `extern "C"` skipped; `prescan_decl_is_extern`), and `ast.c` `mark_extern_decls` records it on the
+  declaration (`extern_decl`; C input has it from the grammar too). The lexer cannot keep the token (`lexer.l` stays as it is),
+  and no marker the grammar already accepts would carry a name, so the text is read instead. What an `extern` variable becomes
+  was not a bug: Vircon32 C has no `extern` ("not declared") and no linker, so the project's rule since `merge_tentative_globals`
+  is one definition, no keyword: an `extern` nothing defines IS the variable (`namespace n { extern int c_side; }` is
+  `int c_side;`, a file-scope `extern int x;` too), and one that something defines is dropped. What was wrong is that this only
+  held for declarations in one list. `merge_extern_names` extends it across namespace blocks and to a file-scope definition of
+  the same C name: `namespace n { extern int v; } namespace n { int v = 5; }` printed `int v;` and `int n__v = 5;`, `namespace hw
+  { extern int v; } int v = 3;` printed `int v;` twice. Documented in `docs/VIRCON32_QUIRKS.md` #24. Not done: a variable an SDK
+  header defines (`malloc_first_block`), redeclared `extern`, is defined a second time (v32c++ does not read variables out of
+  headers). Tests `tests/192sample.cpp` (default, arena, gc), `192bad.cpp` (`extern "C"` is still not in the grammar).
+- **`new T*[n]{p, q}`.** The grammar takes a braced list after `new T*[n]`; it is lowered like `new T[n]{...}`
+  (`v32_new_arr_ptr_init(n, k)` allocates `max(n, k)` pointer words, the listed elements are plain assignments, `v32_new_arr_ptr_rest`
+  nulls the rest, `NULL`: `-1` on Vircon32), on the same function-level temporaries and comma sequence, with casts between
+  `T **` and the helpers' `int **`. `new T*[n]{}` is nulled too (unlike plain `new T*[n]`, as in C++11). Nothing is
+  constructed or destroyed; any `--alloc` mode. Tests `tests/194sample.cpp` (default, arena, gc).
+- **C input: a local `extern T x;` with no other declaration is the variable; `environ`.** Rogue stopped parsing at `src/save.c:167`,
+  `extern char **environ;` inside `restore()` -- not at the `auto char buf[MAXSTR];` below it: `auto` has been accepted and dropped
+  in C input all along (C++ input keeps type deduction), and still is. The real cause: `libc/v32libc.h` defined `environ` as the macro
+  `((char **)0)`, so the declaration read `extern char ** ((char **)0);`. The header no longer declares it, as in POSIX; and a
+  function-local `extern` used to declare nothing at all, so `environ = envp;` named a variable the output never had. It now behaves
+  like a file-scope `extern` nothing defines (see above): hoisted to file scope (`is_static_local == 2`, `hoist_static_locals`) and dropped
+  if the program declares or defines the name itself. Rogue now transpiles completely (every file, rc 0; the Vircon32 compiler
+  was not available here, so nothing beyond the transpile step is claimed). `tests/191sample.c` (also built as standard C and run:
+  `std_run.sh` takes a `.c` sample), and the Makefile transpiles the whole demo.
 ## 20261109-dev
 
 - **`-g` works with v32cc.** `-g` now implies `--line-markers` when the compiler is v32cc, and the generated Make.sh /

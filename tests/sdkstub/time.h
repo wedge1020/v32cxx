@@ -4,6 +4,9 @@
 // be accepted). Only the shapes prescan reads matter here.
 #ifndef TIME_H
 #define TIME_H
+int sdk_tick_count = 5;               // a variable the header defines (tests/201stub.cpp)
+int sdk_table[3] = { 1, 2, 3 };
+int sdk_a, *sdk_b;
 int get_date() { return 0; }
 int get_time() { return 0; }
 struct date_info

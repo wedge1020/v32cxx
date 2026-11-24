@@ -279,8 +279,8 @@ test: all | $(OUT_DIR)
 	-$(TBIN) -vvv    -o out/96failure.c tests/96sample.cpp 1> out/96sample.txt 2>&1
 	$(TBIN)  -vvv    -o out/97program.c tests/97sample.cpp 1> out/97sample.txt 2>&1
 	@if [ -f tools/vircon32/bin/include/video.h ]; then \
-	    echo "V32CXX_SDK_INCLUDE=tools/vircon32/bin/include $(BIN) -vvv -o out/98program.c tests/98sample.cpp"; \
-	    V32CXX_SDK_INCLUDE=tools/vircon32/bin/include $(BIN) -vvv -o out/98program.c tests/98sample.cpp 1> out/98sample.txt 2>&1; \
+	    echo "V32CXX_SDK_INCLUDE=tools/vircon32/bin/include $(TBIN) -vvv -o out/98program.c tests/98sample.cpp"; \
+	    V32CXX_SDK_INCLUDE=tools/vircon32/bin/include $(TBIN) -vvv -o out/98program.c tests/98sample.cpp 1> out/98sample.txt 2>&1; \
 	else echo "skipping sample 98: needs the SDK headers (run tools/vircon32/build-tools.sh)"; fi
 	$(TBIN)  -vvv    -o out/99program.c tests/99sample.cpp 1> out/99sample.txt 2>&1
 	$(TBIN)  -vvv    -o out/100program.c tests/100sample.cpp 1> out/100sample.txt 2>&1
@@ -523,6 +523,7 @@ test: all | $(OUT_DIR)
 	grep -q 'int s1 = 3;' out/175program.c
 	grep -q 'int s3 = 0;' out/175program.c
 	grep -q 'P p = {1, 2};' out/175program.c
+	grep -q 'P z = {0, 0};' out/175program.c
 	grep -q 'Shade s7 = SHADE_DARK;' out/175program.c
 	grep -q 'score_t s8 = 9;' out/175program.c
 	! grep -q 'Counter [a-z_]* = {' out/175program.c
@@ -578,7 +579,7 @@ test: all | $(OUT_DIR)
 	grep -q '__v32_arena_size = 1000 \* sizeof(int);' out/181words.c
 	! $(TBIN) --alloc=bogus -o out/181opt.c tests/181full.cpp 1> out/181opt.txt 2>&1
 	grep -q 'is malloc, arena or gc' out/181opt.txt
-	$(TBIN)  -vvv --alloc=gc -I . -o out/182program.c tests/182sample.cpp 1> out/182sample.txt 2>&1
+	$(TBIN)  -vvv --alloc=gc --heap-words=16384 -I . -o out/182program.c tests/182sample.cpp 1> out/182sample.txt 2>&1
 	grep -q '__v32_gc_init();' out/182program.c
 	grep -q '__v32_gc_root_a\[0\] = (int)&g_keep;' out/182program.c
 	grep -q '__v32_gc_root_a\[3\] = (int)&g_ring\[0\];' out/182program.c
@@ -619,7 +620,7 @@ test: all | $(OUT_DIR)
 	grep -q 'cast it to a pointer to the element type' out/184bad.txt
 	! grep -q ':17: error' out/184bad.txt
 	$(TBIN) -o out/184ok.c tests/184ok.cpp 1> out/184ok.txt 2>&1
-	$(TBIN)  -vvv --alloc=gc -I . -o out/185program.c tests/185sample.cpp 1> out/185sample.txt 2>&1
+	$(TBIN)  -vvv --alloc=gc --heap-words=16384 -I . -o out/185program.c tests/185sample.cpp 1> out/185sample.txt 2>&1
 	grep -q 'n = n + 1;   /\* one trailing unit' out/185program.c
 	sh tests/std_run.sh $(BIN) 185sample --alloc=gc --heap-words=16384 -I .
 	sh tests/std_run.sh $(BIN) 185sample --alloc=gc --heap-words=16384 -DGC_NO_THRESHOLD --gc-threshold=100000000 -I .
@@ -690,6 +691,113 @@ test: all | $(OUT_DIR)
 	sh tests/std_run.sh $(BIN) 190sample
 	sh tests/std_run.sh $(BIN) 190sample --alloc=arena -I .
 	sh tests/std_run.sh $(BIN) 190sample --alloc=gc --heap-words=16384 -I .
+	$(TBIN)  -vvv    -o out/191program.c tests/191sample.c 1> out/191sample.txt 2>&1
+	grep -q '^char \* \* environ;' out/191program.c
+	grep -q '^int seed = 5;' out/191program.c
+	test "`grep -c '^int seed' out/191program.c`" = 1
+	test "`grep -c 'environ;' out/191program.c`" = 1
+	! grep -q 'auto' out/191program.c
+	sh tests/std_run.sh $(BIN) 191sample
+	$(TBIN) -I libc -I demos/c/rogue/v32 -I demos/c/rogue/src -o out/191rogue.c demos/c/rogue/rogue.c 1> out/191rogue.txt 2>&1
+	grep -q '^char \* \* environ;' out/191rogue.c
+	! grep -q 'error' out/191rogue.txt
+	$(TBIN)  -vvv    -o out/192program.c tests/192sample.cpp 1> out/192sample.txt 2>&1
+	grep -q '^int g1;' out/192program.c
+	grep -q '^int g4;' out/192program.c
+	grep -q '^int g5;' out/192program.c
+	grep -q '^int ml2;' out/192program.c
+	grep -q '^int hw__sub = 5;' out/192program.c
+	grep -q '^int c_two;' out/192program.c
+	grep -q '^int c_side;' out/192program.c
+	grep -q '^int hw__mine = 4;' out/192program.c
+	grep -q '^int n__v = 6;' out/192program.c
+	grep -q '^int p__q__w = 9;' out/192program.c
+	grep -q '^int z;' out/192program.c
+	test "`grep -c '^int c_def' out/192program.c`" = 1
+	test "`grep -c '^int n__v\|^int v;' out/192program.c`" = 1
+	! grep -q 'hw__c_def\|hw__c_two\|hw__c_side\|p__q__z' out/192program.c
+	sh tests/std_run.sh $(BIN) 192sample
+	sh tests/std_run.sh $(BIN) 192sample --alloc=arena -I .
+	sh tests/std_run.sh $(BIN) 192sample --alloc=gc --heap-words=16384 -I .
+	! $(TBIN) -o out/192bad.c tests/192bad.cpp 1> out/192bad.txt 2>&1
+	grep -q "192bad.cpp:3: error: syntax error" out/192bad.txt
+	$(TBIN)  -vvv    -o out/193program.c tests/193sample.cpp 1> out/193sample.txt 2>&1
+	grep -q '^    a__RED,' out/193program.c
+	grep -q '^    a__BLUE = (a__GREEN + 1)' out/193program.c
+	grep -q '^    b__RED = 7,' out/193program.c
+	grep -q '^    a__in__DEEP = (a__in__RED + 1)' out/193program.c
+	grep -q '^    TOP_B = 40' out/193program.c
+	grep -q '^enum Top {' out/193program.c
+	grep -q 'case a__BLUE:' out/193program.c
+	grep -q 'a__pick__int(a__GREEN)' out/193program.c
+	! grep -q '^    RED\|^    GREEN\|^    BLUE\|[^_a-z]a__E__\|::' out/193program.c
+	sh tests/std_run.sh $(BIN) 193sample
+	sh tests/std_run.sh $(BIN) 193sample --alloc=arena -I .
+	sh tests/std_run.sh $(BIN) 193sample --alloc=gc --heap-words=16384 -I .
+	$(TBIN) -o out/193bad.c tests/193bad.cpp 1> out/193bad.txt 2>&1
+	grep -q '^enum a__E {' out/193bad.c
+	grep -q '^enum b__E {' out/193bad.c
+	$(TBIN)  -vvv    -o out/194program.c tests/194sample.cpp 1> out/194sample.txt 2>&1
+	grep -q '^int \*\*v32_new_arr_ptr_init(int n, int k)' out/194program.c
+	grep -q '^void v32_new_arr_ptr_rest(int \*\*p, int n, int k)' out/194program.c
+	grep -q 'i = k; i < n; i++) p\[i\] = NULL;' out/194program.c
+	grep -q '(Node \* \*)v32_new_arr_ptr_init(__v32_nl_n[0-9]*, 2)' out/194program.c
+	grep -q 'v32_new_arr_ptr_rest(((int \* \*)__v32_nl_tmp[0-9]*), __v32_nl_n[0-9]*, 2);' out/194program.c
+	! grep -q 'v32_new_arr_ptr_init' out/190program.c out/187program.c
+	sh tests/std_run.sh $(BIN) 194sample
+	sh tests/std_run.sh $(BIN) 194sample --alloc=arena -I .
+	sh tests/std_run.sh $(BIN) 194sample --alloc=gc --heap-words=16384 -I .
+	$(TBIN)  -vvv    -o out/195program.c tests/195sample.cpp 1> out/195sample.txt 2>&1
+	grep -q 'P z = {0, 0};' out/195program.c
+	grep -q 'R \* g_rp = NULL;' out/195program.c
+	grep -q 'R \[2\] gra = {{1, NULL}, {0, NULL, 0.0}};' out/195program.c
+	grep -q 'int \[4\] a = {0, 0, 0, 0};' out/195program.c
+	grep -q '((\*p) = NULL);' out/195program.c
+	grep -q '^    P zero = {0, 0};' out/195program.c
+	sh tests/std_run.sh $(BIN) 195sample
+	sh tests/std_run.sh $(BIN) 195sample --alloc=arena -I .
+	sh tests/std_run.sh $(BIN) 195sample --alloc=gc --heap-words=16384 -I .
+	$(TBIN)  -vvv    -o out/196program.c tests/196sample.cpp 1> out/196sample.txt 2>&1
+	grep -q '^    P zero = {0, NULL, 0.0};' out/196program.c
+	grep -q 'p\[i\] = zero;' out/196program.c
+	sh tests/std_run.sh $(BIN) 196sample
+	sh tests/std_run.sh $(BIN) 196sample --alloc=arena -I .
+	sh tests/std_run.sh $(BIN) 196sample --alloc=gc --heap-words=16384 -I .
+	$(TBIN)  -vvv    -o out/197program.c tests/197sample.cpp 1> out/197sample.txt 2>&1
+	grep -q '(gs.u.a = 2);' out/197program.c
+	grep -q '(g1.a = 7);' out/197program.c
+	grep -q '(ns__nu.a = 9);' out/197program.c
+	! grep -q 'U g1 = ' out/197program.c
+	sh tests/std_run.sh $(BIN) 197sample
+	sh tests/std_run.sh $(BIN) 197sample --alloc=arena -I .
+	sh tests/std_run.sh $(BIN) 197sample --alloc=gc --heap-words=16384 -I .
+	$(TBIN)  -vvv    -o out/198program.c tests/198sample.cpp 1> out/198sample.txt 2>&1
+	grep -q 'Counter__Counter__int((&this->c), 3);' out/198program.c
+	grep -q '(this->w = 5);' out/198program.c
+	grep -q '(this->ptr = NULL);' out/198program.c
+	sh tests/std_run.sh $(BIN) 198sample
+	sh tests/std_run.sh $(BIN) 198sample --alloc=arena -I .
+	sh tests/std_run.sh $(BIN) 198sample --alloc=gc --heap-words=16384 -I .
+	$(TBIN)  -vvv    -o out/199program.c tests/199sample.cpp 1> out/199sample.txt 2>&1
+	grep -q 'v32_new_int(5)' out/199program.c
+	grep -q 'v32_new_ptr(NULL)' out/199program.c
+	! grep -q 'v32_new_Shade' out/199program.c
+	sh tests/std_run.sh $(BIN) 199sample
+	sh tests/std_run.sh $(BIN) 199sample --alloc=arena -I .
+	sh tests/std_run.sh $(BIN) 199sample --alloc=gc --heap-words=16384 -I .
+	$(TBIN)  -vvv    -o out/200program.c tests/200sample.cpp 1> out/200sample.txt 2>&1
+	grep -q 'Color__Red' out/200program.c
+	grep -q 'ns__Mode__On' out/200program.c
+	grep -q '^int g__a__E(a__E x);' out/200program.c
+	grep -q '^int g__b__E(b__E x);' out/200program.c
+	sh tests/std_run.sh $(BIN) 200sample
+	$(TBIN)  -vvv    -o out/201program.c tests/201sample.cpp 1> out/201sample.txt 2>&1
+	! grep -q '^[a-z_]* \*\? *malloc_first_block;\|^[a-z_]* \*\? *malloc_start_address;' out/201program.c
+	grep -q 'malloc_first_block == NULL' out/201program.c
+	V32CXX_SDK_INCLUDE=tests/sdkstub $(TBIN) -vvv -o out/201stub.c tests/201stub.cpp 1> out/201stub.txt 2>&1
+	! grep -q '^int .*sdk_\|^int \*sdk_' out/201stub.c
+	grep -q 'sdk_tick_count + sdk_table\[1\]' out/201stub.c
+	grep -q '^int mine = 3;' out/201stub.c
 # `-vvv` (this project's own verbosity flag, a later round -- see
 # main.c) is passed to every sample specifically so `make test`'s own
 # output still captures the full AST/semantic-analysis/lowering dumps
@@ -774,6 +882,7 @@ test: all | $(OUT_DIR)
 	sh tests/line_markers.sh $(BIN) $(V32CC)
 	sh tests/debug_flow.sh $(BIN)
 	sh tests/exe_relative.sh $(BIN)
+	@test ! -e tests/Make.sh && test ! -e tests/Make.bat || { echo 'a test wrote Make.sh/Make.bat into tests/ (missing --no-build-scripts)'; exit 1; }
 
 # realcheck: `make test`, then push every generated program through the
 # REAL Vircon32 compiler/assembler/packer and boot every self-checking
@@ -946,8 +1055,12 @@ archive: clean
 # directory ENTRIES, not the files inside them, so the archive silently
 # ships empty demo folders.
 
+# clean also removes what older tooling cloned or generated in the tree: build-tools.sh used to clone
+# ComputerSoftware into tools/vircon32/ (it is found beside the project now), and a test used to write
+# Make.sh/Make.bat into tests/. tools/prune-release.sh removes tracked copies of these.
 clean:
 	rm -rf $(BIN_DIR)/* $(OBJ_DIR)/* $(SRC_DIR)/parser.output $(OUT_DIR)/* put/* counterexamples.txt *.zip *.patch ../v32cxx-project.zip ../v32cxx-project-*.zip
+	rm -rf tools/vircon32/ComputerSoftware tests/Make.sh tests/Make.bat
 	$(MAKE) -C demos clean
 	#rm -f $(SRC_DIR)/parser.c $(SRC_DIR)/lexer.c $(INC_DIR)/parser.h
 # Removing the bison/flex-generated files here (not just objects/binary) is

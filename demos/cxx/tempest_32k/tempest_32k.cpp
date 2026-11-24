@@ -104,7 +104,7 @@ void main()
         // PROFILING BUILD (v32c++ -D PROFILE ...): nobody ever runs out
         // of lives, so a scripted CPU-vs-CPU run stays in the thick of
         // play -- deaths and their explosions included -- instead of
-        // ending at GAME OVER. tools/vircon32/v32prof drives it.
+        // ending at GAME OVER. v32sim's tools/oracle/bin/v32prof drives it.
         if( g->lives < 3 ) g->lives = 3;
         if( g->p2_lives < 3 ) g->p2_lives = 3;
 #endif

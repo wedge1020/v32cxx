@@ -42,6 +42,7 @@ PreprocessorLines g_preprocessor_lines = {NULL, 0, 0};
 int g_uses_new_or_delete = 0;
 int g_uses_list_new = 0;
 int g_uses_ptr_array_new = 0;
+int g_uses_scalar_new = 0;
 CodegenTarget g_target = TARGET_VIRCON32;
 int g_reject_bit_fields = 0;   /* --reject-bit-fields */
 int g_signed_shift = 1;        /* cleared by --no-signed-shift */
@@ -942,7 +943,9 @@ int  main (int  argc, char **argv)
             cmode_lower_main_params(&g_program->list);
         }
         hoist_static_locals(&g_program->list);
+        mark_extern_decls(&g_program->list);
         merge_tentative_globals(&g_program->list);
+        merge_extern_names(&g_program->list);
         /* implicit default constructors / destructors, written into the
          * classes that need one -- see ast.c */
         apply_default_member_initializers(&g_program->list);

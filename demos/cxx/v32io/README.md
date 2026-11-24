@@ -90,7 +90,7 @@ looks wrong, run `monitor` first: it shows exactly what each port sends.
 
 ## Testing without a device
 
-`tools/vircon32/v32io-script.py` turns keyboard and mouse actions into an
+`$V32SIM_HOME/tools/v32io-script.py` turns keyboard and mouse actions into an
 input script for the headless tools, which is how these examples were
 checked:
 
@@ -100,8 +100,8 @@ connect 1 1
 at 300
 kbd 1 type Hello, Vircon32!
 EOF
-tools/vircon32/v32io-script.py typing.act > typing.txt
-tools/vircon32/bin/v32shot tools/vircon32/bin/StandardBios.v32 \
+$V32SIM_HOME/tools/v32io-script.py typing.act > typing.txt
+$V32SIM_HOME/tools/oracle/bin/v32shot tools/vircon32/bin/StandardBios.v32 \
     demos/cxx/v32io/bin/typewriter.v32 typing.txt shot 360
 ```
 
@@ -112,7 +112,7 @@ are scripted with `kbd 1 char 233 0x80 20`: BIOS font codes, two frames
 each. `glyphs.actions` is a complete example:
 
 ```sh
-tools/vircon32/v32io-script.py demos/cxx/v32io/glyphs.actions > glyphs.input
-tools/vircon32/bin/v32shot tools/vircon32/bin/StandardBios.v32 \
+$V32SIM_HOME/tools/v32io-script.py demos/cxx/v32io/glyphs.actions > glyphs.input
+$V32SIM_HOME/tools/oracle/bin/v32shot tools/vircon32/bin/StandardBios.v32 \
     demos/cxx/v32io/bin/glyphs.v32 glyphs.input shot 340 520 570
 ```

@@ -863,7 +863,6 @@ Non pris en charge (chacun est une erreur claire sauf indication contraire) :
 membres
 .B static
 de classes ;
-.BR "enum class" ,
 .BR constexpr ,
 lambdas,
 .BR mutable ,
@@ -880,9 +879,45 @@ est
 .B "new T*[n]"
 (un tableau de pointeurs) alloue n mots de la taille d'un pointeur : pas de constructeurs ni d'en-tête de compte ;
 .B delete[]
-le libère et laisse les objets pointés à l'appelant. Les pointeurs de fonction déclarés à la portée du fichier ou d'un espace de noms peuvent être initialisés avec le nom d'une fonction
+le libère et laisse les objets pointés à l'appelant ;
+.B "new T*[n]{p, q}"
+affecte les pointeurs de la liste et met les autres à nul. Les pointeurs de fonction déclarés à la portée du fichier ou d'un espace de noms peuvent être initialisés avec le nom d'une fonction
 .RI ( "int (*h)(int) = square;" ,
 aussi dans des listes entre accolades) ; un nom surchargé est choisi par le type du pointeur lui-même, et c'est une erreur si aucune surcharge, ou plus d'une, ne convient.
+.PP
+.B new
+d'un scalaire
+.RI ( "new int" ,
+.IR "new int(5)" ,
+.IR "new float{2.5f}" ,
+.IR "new Node*" )
+alloue un mot par le crochet d'allocation (donc
+.B --alloc
+marche) et
+.B delete
+le libère ;
+.I ()
+et
+.I {}
+donnent 0 (un pointeur : NULL), une valeur est stockée.
+L'initialisation par accolades marche là où marche un appel de constructeur :
+.IR "new P{1, 2}" ,
+.IR "new Counter{3}" ,
+.I "P m{1, 2};"
+et
+.I "int w{5};"
+comme initialiseurs par défaut de membres de classe, et
+.I ": w{5}"
+ou
+.I ": p{}"
+dans une liste d'initialisation. Une classe avec constructeur est construite par lui ; une classe sans constructeur prend ses membres dans l'ordre et zéro (NULL pour un pointeur) pour le reste.
+Le compilateur Vircon32 n'accepte pas d'accolades pour une union :
+.I "U u = {1};"
+est abaissé en la déclaration plus une affectation du premier membre (le reste de l'union à zéro ; une union de portée fichier au début de
+.BR main ),
+et
+.I "U u{};"
+met chaque mot à zéro.
 .PP
 Le
 .B new
@@ -1131,6 +1166,30 @@ et un
 et avec une variable locale de même nom qui la masque. Une variable à la portée du fichier garde son nom, ainsi qu'une déclaration
 .B extern
 dans un espace de noms (elle désigne quelque chose défini ailleurs, comme le SDK ou un fichier C).
+.B extern
+est lu par déclaration, et comme le C de Vircon32 n'a pas
+.B extern
+la sortie contient une déclaration ordinaire de la variable (supprimée si le programme la définit). Les énumérateurs d'un
+.B enum
+d'espace de noms sont nommés de même
+.RI ( a::RED
+devient
+.IR a__RED ),
+quelle que soit la façon de les écrire ; le nom du type de l'enum est qualifié de même
+.RI ( a::E
+devient
+.IR a__E ,
+aussi dans le nom décoré d'une fonction qui le prend), donc deux enum de même nom dans des espaces de noms différents sont deux types.
+Un enum à portée
+.RB ( "enum class Color : int { Red }" ;
+le type sous-jacent est accepté et ignoré) n'a ses énumérateurs que sous la forme
+.I Color::Red
+(noms C
+.IR Color__Red ,
+.IR ns__Color__Red ) ;
+il se convertit en
+.B int
+sans cast, ce que C++ refuserait.
 .PP
 Une fonction libre déclarée dans un espace de noms est émise sous un nom C qui inclut
 l'espace de noms

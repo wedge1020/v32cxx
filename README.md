@@ -21,7 +21,7 @@ everything Vircon32's own C dialect does differently.
 > **Status: functional.** The whole  pipeline — preprocessing, parsing,
 > semantic analysis,  lowering and code  generation — works end  to end
 > and is  checked against the  **real** Vircon32 compiler,  assembler and
-> console (`make  realcheck`: 128  programs compiled  and assembled,  59 of
+> console (`make  realcheck`: 181  programs compiled  and assembled,  112 of
 > them self-checking  at run time  on a headless console).  Five sizeable
 > demos (three C++ games, a port of Rogue and a plain-C Spy vs Spy) build
 > with it. See [Known
@@ -164,7 +164,7 @@ of scope](#deliberately-out-of-scope).
   fall-through, `do`/`while`, `goto`, the ternary  operator and the comma
   operator (both  rewritten for Vircon32  C, which has  neither), bitwise
   operators  at C's  precedence, `sizeof`,  C-style  and C++-style  casts
-  (`dynamic_cast` with  a warning:  there is  no RTTI),  `enum`, `union`,
+  (`dynamic_cast` with  a warning:  there is  no RTTI),  `enum`  (also  scoped:  `enum class Color : int { Red }`,  used  as  `Color::Red`),  `union`,
   `typedef`,  function pointers  in standard  **or** Vircon32  declarator
   syntax  (output is  always what  the  target needs; initialised at file or
   namespace scope too, singly or in arrays, with an overloaded name picked by the
@@ -390,7 +390,7 @@ Checked against  the current  transpiler and  the real  Vircon32 compiler
 
 - `static` class members.
 
-- `enum  class`,  `constexpr`,  lambdas, `mutable`,  nested  classes  and
+- `constexpr`,  lambdas, `mutable`,  nested  classes  and
   class-scope enums.
 
 - A two-dimensional array parameter (`void f(int g[4][4])`).
@@ -422,6 +422,19 @@ Checked against  the current  transpiler and  the real  Vircon32 compiler
 - **`const` is not enforced** — violations are left to the C compiler. C input
   drops `const` from the output altogether (the Vircon32 compiler enforces it
   where C does not).
+- **Brace lists are written out in full.** The Vircon32 compiler writes only the values
+  listed, so a local `P z{};`, `int a[4] = {0};` or `P p{1};` would keep stack garbage
+  and an omitted pointer would not be `NULL`: v32c++ completes every list of an array
+  or of a struct without a constructor with the zero of each missing slot, and
+  `new P()`, `new P[n]{}` and `: m{}` zero what they make (a pointer member, nested
+  ones and arrays of them included, reads `NULL`, which is -1 here, not 0). A union cannot be
+  brace-initialized by the compiler: v32c++ declares it and assigns the first member
+  (`U u = {1};` is `U u; u.a = 1;`, a file-scope one at the start of `main`; `{}` zeroes every
+  word), also inside structs and arrays. List-initialization works wherever a constructor
+  call does: `P m{1, 2};` and `int w{5};` as in-class defaults, `: w{5}` / `: p{}` in a
+  mem-initializer list, `new P{1, 2}`, `new Counter{3}`. `new int`, `new int(5)`,
+  `new float{2.5f}` and `new Node*` allocate one word (through `--alloc` too) and `delete` frees it.
+  `new T[n]()` is not supported. See `docs/VIRCON32_QUIRKS.md` #31-#33.
 - **Control codes in string literals are rewritten**:  the Vircon32 toolchain
   can't assemble a string holding the BIOS font's codes 14–31 (`┌ ─ ┐ │ ░ ▒ ▓ █`
   ...)  or other control codes,  `"\025"`.  v32c++ moves such a literal into a
@@ -435,14 +448,28 @@ Checked against  the current  transpiler and  the real  Vircon32 compiler
   is `a__inner__x`; a file-scope one keeps its name), so `a::x`, `b::x` and a
   file-scope `x` are three variables, as in C++. An `extern` declaration in a
   namespace names something defined elsewhere (the SDK, a C file) and keeps its
-  own name. Enumerators of a namespace's enum keep theirs.
+  own name. `extern` is read per declaration (`extern int a; int b;` on one line
+  is one of each, through a macro too). Vircon32 C has no `extern` and no linker,
+  so an `extern` variable is printed as a plain declaration, once: it is the
+  variable itself when the program defines it nowhere, and it disappears into the
+  definition when it does (`namespace hw { extern int v; } int v = 3;` is one `v`).
+  A variable the SDK headers define (`malloc_first_block` in `misc.h`),
+  redeclared `extern` to name it, is left out of the output: the header's definition is the
+  variable. Enumerators of a namespace's enum are namespaced the same
+  way (`a::RED` is `a__RED`; `a::E::RED`, `using namespace`, `using a::RED`,
+  `case` labels, array sizes and default arguments all resolve; file-scope enums
+  are unchanged). The enum's *type* name is qualified too (`a::E` is `a__E`,
+  also in the mangled name of a function that takes it), so two enums of one name in
+  different namespaces are two types. A scoped enum's enumerators are `Color__Red`
+  (`ns__Color__Red`); a bare `Red` is left as written (the Vircon32 compiler rejects it), and the conversion to `int`
+  is allowed without a cast (more permissive than C++).
 - **Overloaded name as a function pointer's value**: `int (*p)(float) = over;`
   picks the overload with the pointer's signature; with none, or more than one,
   that fits it is an error, never a guess. Member functions as pointer values
   are not supported.
 - **`new T*[n]`** (an array of pointers) is plain pointer-sized storage: no
   constructors, no count header, `delete[]` releases it (the pointed-to objects
-  stay the caller's); `new T*[n]{...}` with a list is not supported.
+  stay the caller's); `new T*[n]{p, q}` sets the listed pointers and nulls the rest.
 - **Overloads and pass-through  values**: v32c++ can't see the  type of a
   C  API  call's result.  An  overloaded  call  still resolves  when  its
   other arguments  settle it  (`v32::minimum(rand(), 10)`); when  none do
@@ -570,7 +597,7 @@ Running, profiling and screenshots of carts belong to **v32sim**, which is
 the one place for them: `build-tools.sh` and `check.sh` only call its
 `tools/oracle/build.sh` (the stock `compile`, `assemble`, `packrom`) and its
 `tools/v32sim-selfcheck.sh`. Point `V32SIM_HOME` at a v32sim checkout (default:
-`../v32sim` beside this project). `V32_ORACLE=1 make realcheck` runs the
+`../v32sim` beside this project, then `../v32sim.git`). The ComputerSoftware sources are found the same way (`../ComputerSoftware`, then `../ComputerSoftware.git`, or a path given to `build-tools.sh`); with neither, one is cloned to `../ComputerSoftware` at the verified commit, never inside this project. `V32_ORACLE=1 make realcheck` runs the
 self-checking samples on the stock console logic instead, as a second opinion.
 The per-frame load, cycles per function, screenshots and RAM peeks that
 `v32prof`, `v32shot` and `v32peek` gave are v32sim's `--frame-stats`,
@@ -860,9 +887,12 @@ scripts/        smoke_test.sh and stage_package.sh (the release workflow's
 AGENTS.md       notes for AI coding agents working on the project
 tools/
   embed-header.sh   regenerates src/stdstring.c from lib/string
-  vircon32/         build-tools.sh (the real Vircon32 toolchain and the
-                    headless tools), check.sh (`make realcheck`), the
-                    build/check scripts that call v32sim
+  prune-release.sh  removes stale, duplicate and generated files (dry run;
+                    --apply uses git rm for tracked ones)
+  vircon32/         build-tools.sh (builds the real Vircon32 toolchain
+                    into bin/ through v32sim) and check.sh (`make
+                    realcheck`); every runner, profiler and debugger is
+                    v32sim's
 ```
 
 ## Installing

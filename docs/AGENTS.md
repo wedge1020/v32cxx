@@ -17,7 +17,7 @@ destroyed when it ends, and by v32libc's `exit()`),
 operators, references (`T&`, `T*&`), `const`; objects and structs by value (parameters,
 returns); `new`/`delete`; namespaces and `using`; `auto` and range-based `for`;
 `std::string`, `std::array<T,N>`, `std::vector<T>` (fixed per-type forms, not
-templates); `new T[n]`/`delete[]` that construct/destroy every element (`new T[n]{a, b}` too; `new T*[n]` is a plain array of pointers); `--alloc=arena` or `--alloc=gc` with
+templates); `new T[n]`/`delete[]` that construct/destroy every element (`new T[n]{a, b}` too; `new T*[n]` is a plain array of pointers, `new T*[n]{p, q}` nulls the rest); `new int(5)`, `new float{2.5f}`, `new Node*` (one scalar word through the hook: helpers `v32_new_int/float/char/bool/ptr`, `g_uses_scalar_new`, `lower.c` phase 6); list-initialization wherever a constructor call goes (`P m{1, 2};` / `int w{5};` / `int a[3]{1, 2};` as in-class defaults (`ast.c` `apply_default_member_initializers`), `: w{5}` / `: p{1, 2}` (sema `ival` 1 / 4, `lower.c` 8a / 8-pre), `new P{1, 2}` (a comma sequence on `__v32_nl_tmpN`), `new Counter{3}`); brace-initialized unions (`U u = {1};` is a declaration plus an assignment of the first member, a global one at the start of `main`: `lower.c` phase 10b, `ui_init`); `enum class E : int {...}`; `--alloc=arena` or `--alloc=gc` with
 `<v32/memory.hpp>` (see "Memory management" below); `static` locals and file-scope `static`/`extern`/`volatile`; float
 literals of any C form (`1e3`, `.5`, `5.f`); octal/hex/binary literals and
 escapes; `int main()` with `return 0;`; `0` as a null pointer; `<v32/*.hpp>`
@@ -39,7 +39,7 @@ compound literals (file scope too); `_Static_assert`; function-typed parameters;
 `--assembler=CMD` (or `$V32CXX_ASSEMBLER`) names the assembler in the generated Make.sh/Make.bat.
 
 **Do not use** (clear error or unsupported): templates, exceptions, RTTI
-(`dynamic_cast` warns only), multiple inheritance, lambdas, `enum class`,
+(`dynamic_cast` warns only), multiple inheritance, lambdas,
 `constexpr`, `mutable`, nested classes and class-scope enums, `static` class
 members, 2-D array *parameters*, an object passed through `...`.
 
@@ -50,12 +50,20 @@ members, 2-D array *parameters*, an object passed through `...`.
   rewrite off. `unsigned` `<`, `>`, `/`, `%` act unsigned too (`--no-unsigned-ops` turns that off).
 - `delete[]` through a base pointer to a derived array is undefined. `new T[n]{a, b}` builds the listed elements and default-constructs the rest (n smaller than the list: the list's length is allocated; lowered in `lower.c` as a comma sequence on a function-level `__v32_nl_tmpN`, helpers `v32_new_arr_T_init/_rest`, only emitted when used). `delete[]` needs the element class (`delete_array_element_class`, `infer_expr_type`): unknown + some class with a destructor = error asking for a cast.
 - A variable declared in a namespace is `a__x` in the C output (`a::inner::x` is `a__inner__x`), like a namespace function; file-scope
-  and `extern` ones keep their names (lexer.l drops `extern` in C++ input, so prescan notes the lines holding it:
-  `prescan_line_has_extern`). sema.c's variable registry (`GlobalVarRegEntry`: namespace, C name, `resolve_global_var`)
-  does the C++ lookup (enclosing namespaces, then `using`; qualified relative to the current one); `lower.c` phase 0c
-  (`namespace_vars_rename`, right after this-injection) renames the declarations and every reference, a local or
-  parameter hiding it, asm `{x}` operands too. Later phases (global construction, the gc root table, `infer_expr_type`)
-  see the C name only, and the registry answers to both. Enumerators of a namespace enum are not renamed.
+  and `extern` ones keep their names. So do the enumerators of a namespace's enum (`a::RED` is `a__RED`, `a::E::RED`, `using a::RED`,
+  `case`, array sizes and default arguments resolve; the enum stays a C `enum`; its TYPE name is qualified too, `a::E` is `a__E` (parser.y `make_enum_decl`: the declaration is named that way, `AST_ENUM_DECL.str2` keeps the bare name, and `parse_type_name_node` / `parse_qualified_type_node` rewrite every type use the symbol table resolves to such an enum, so signatures, casts, `sizeof` and mangled names agree); `enum class Color` has `ival = 1`: its enumerators are registered in sema.c under a scope named `Color`, so `Color::Red` is `Color__Red` / `ns__Color__Red` and a bare `Red` stays as written, which the stock compiler then rejects: v32c++ does not diagnose undeclared names). lexer.l drops `extern` in C++ input, so prescan.c reads it from the text, per
+  declarator, after macro expansion (`scan_extern_text`, `prescan_decl_is_extern`: `extern int a; int b;` is one of each; `extern "C"`
+  is not in the grammar and is skipped), and `ast.c` `mark_extern_decls` sets `AstNode.extern_decl`. The rule for `extern` on the output
+  (Vircon32 C has no `extern`, no linker): an extern variable nothing defines IS the variable, printed once as a plain declaration; a
+  definition of the same C name anywhere (also another namespace block, or the file scope) absorbs it (`merge_tentative_globals` per
+  list, `merge_extern_names` across lists); a variable a pass-through SDK header defines (`malloc_first_block` in misc.h; prescan.c `harvest_var_names`, names of depth-0 definitions, `prescan_is_header_var`) is the variable: the user's `extern` redeclaration is kept for sema's types and left out of the output (codegen `visible`). A local `extern T x;` in a C function with no other declaration is hoisted to file scope
+  (`is_static_local == 2`, `hoist_static_locals`). sema.c's variable registry (`GlobalVarRegEntry`: namespace, C name, `resolve_global_var`;
+  enumerators go in it too, `register_enumerators`, the entry's decl being the `AST_ENUM_VALUE`)
+  does the C++ lookup (enclosing namespaces, then `using`; qualified relative to the current one; `a::E::RED` strips the enum name);
+  `lower.c` phase 0c (`namespace_vars_rename`, right after this-injection) renames the declarations and every reference, a local or
+  parameter hiding it, asm `{x}` operands too, enumerator values included. parser.y folds `a::RED` / `a::E::RED` in array sizes with a
+  namespace-aware table (`parse_enum_value`). Later phases (global construction, the gc root table, `infer_expr_type`)
+  see the C name only, and the registry answers to both.
 - A file- or namespace-scope function pointer (or an array of them) initialised with a function name gets the C name and
   the `&` (`fnptr_init`, `lower.c`, with the overload picked by the pointer's type, an error when none or several fit);
   prototypes are then printed ahead of the variables (`g_globals_name_functions`).
@@ -114,7 +122,12 @@ Tests: `182sample` (`std_run` with `--alloc=gc --heap-words=16384`, also with `-
 `scrub()`s the stack first and is meant for the default `-O0` build (at `-O2` the cycle can be retained).
 `goto` destructors: `lower.c` phase 9 (`goto_prepass`, `destruct_goto`), phase 0b splits `label: D d;`.
 Behaviour tests built as standard C: `tests/std_run.sh NAME [flags]` with `tests/stddriver.c`
-(179, 180, 181, 182, 183-190; `tests/globals_destroy.sh` runs 177 and 186), `tests/arena_full.sh` and `tests/gc_full.sh` for the out-of-space path.
+(179, 180, 181, 182, 183-194; `tests/globals_destroy.sh` runs 177 and 186), `tests/arena_full.sh` and `tests/gc_full.sh` for the out-of-space path.
+`tools/vircon32/check.sh` runs the arena and gc builds on the REAL machine too: the `make test` outputs `out/181program.c` (arena), `182`, `185` (gc, `--heap-words=16384`: 182's threshold checks assume that heap)
+and every line of `tests/real_variants.txt` (`name source flags`: the std_run arena/gc builds of 179, 184, 186gc, 187-195, plus 182/185 with `-DGC_NO_THRESHOLD`), transpiled by check.sh itself to
+`out/<name>program.c`, compiled by the stock compiler and run in v32sim (`-F 6000` frames: the gc churn tests need more than 1200; `V32_FRAMES` overrides). Add a sample's variants there.
+The gc runtime (`push R0`..`mov {stk}, SP`, stack top 0x400000) and the arena run on hardware this way. Raw-text runtime code must be valid Vircon32 C too: `int [n] name` arrays
+(`FLISTDECL`/`ROOTADECL`/`ROOTNDECL` in `gc_runtime_tpl`), no `&expr[i]` of a cast pointer, no `(void)` cast.
 
 ## Working on the project
 
