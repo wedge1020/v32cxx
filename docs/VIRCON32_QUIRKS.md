@@ -79,7 +79,9 @@ literals, `1e3`, `.5` and `5.` (`tests/133sample.cpp`, `134sample.c`,
 | 32 | no cast to `void`; no `&` of `((T *)p)[i]` | `(void)x;` | **lowered** |
 | 33 | a union takes no brace list | `U u{};`, `U u = {1};` | **lowered** (declaration + assignment of the first member) |
 | 34 | no int to an enumeration: `E e = 0;` | `S s{};` with an enum member, `{1, 0}` | **lowered** (`(E)0`) |
-| 35 | a union is printed before the structs, so a struct member of a union is "not fully defined" | `union V { int a; B b; };` | **not handled** (your code) |
+| 35 | a struct or union member of struct/union type must be defined before it | `union V { int a; B b; };` | **lowered** (every struct, class and union is written after the ones it holds by value; a cycle is an error) |
+| 36 | a pointer to a union may come before the union, after `union U;` | `struct S { U *p; };` then `union U {...};` | **lowered** (`union U;` is written for every union) |
+| 37 | a bare enumerator of an `enum class` is "identifier has not been declared" | `Color c = Red;` | **diagnosed** (v32c++ error: write `Color::Red`) |
 
 Not covered by any entry because v32c++ has no workaround: templates,
 exceptions, RTTI, multiple inheritance, `constexpr`, lambdas,
@@ -1120,7 +1122,7 @@ phase could be dropped.
   its 0 null). `new P()` and `new P[n]{}` zero what they allocate, `: m{}` zeroes a
   member (`{ P __v32_zero = {0, 0}; this->m = __v32_zero; }`), and a literal 0
   initializing a pointer at file or namespace scope, or assigned or compared
-  through `T*&`, prints `NULL`. `new T[n]()` is a parse error. A pointer member (nested
+  through `T*&`, prints `NULL`. `new T[n]()` is `new T[n]{}`. A pointer member (nested
   structs and arrays of them too) of `new P()`, `new P[n]{}` and `new Q{...}` is `NULL`, not
   the byte-wise 0 the first version of `new P[n]{}` wrote (its `_rest` helper assigns a complete
   zero value to each element). `tests/195sample.cpp`, `tests/196sample.cpp` (default, arena, gc).
@@ -1159,13 +1161,37 @@ phase could be dropped.
   (`desig_zero`, Vircon32 mode only). Assigning an int of your own to an enum variable
   needs a cast, as in C++. `tests/196sample.cpp`.
 
-## 35. A union is printed before the structs
+## 35. A struct or union held by value must be defined first
 
-- **Vircon32 does**: reject a union member of a struct type that is defined after it
-  ("structure 'B' is instanced without being fully defined").
-- **For v32c++**: nothing is done: unions are printed before the classes and structs, so
-  `union V { int a; B b; };` fails in the compiler (a union of scalars and arrays, and a
-  struct holding a union, are fine). Not handled yet.
+- **Vircon32 does**: reject a struct or union member whose type is a struct or union defined
+  after it ("structure 'B' is instanced without being fully defined"). A pointer member only
+  needs the type to be declared.
+- **For v32c++**: every struct, class and union is written after the ones it holds BY VALUE
+  (data members, inherited ones, array elements, typedef names, namespace members), and in
+  source order wherever that already works. `union V { int a; B b; };` therefore comes after
+  `struct B`, wherever the source put it. Pointer members need no order (see #36). Two types
+  that hold each other by value cannot exist in C: v32c++ says so
+  (`'U' and 'S' hold each other by value`) and writes nothing. Before this, unions were all
+  printed ahead of the structs. `tests/204sample.cpp`, `tests/204bad.cpp`.
+
+## 36. A union can be forward-declared
+
+- **Vircon32 does**: accept `union U;` (bare name, no `union` keyword in later uses) and a
+  pointer member or parameter of that type before the union is defined.
+- **For v32c++**: `union U;` is written for every union, next to the `struct S;` lines every
+  class already gets, so a pointer to a union may come before it in the output (it is what
+  makes #35's ordering enough). `tests/204sample.cpp`.
+
+## 37. A bare enumerator of an `enum class`
+
+- **Vircon32 does**: it has no scoped enumerations; v32c++ writes `Color::Red` as the C name
+  `Color__Red`. A bare `Red` is a name nothing declares, and the compiler stops with
+  `identifier "Red" has not been declared`, which does not say what to write.
+- **For v32c++**: reports `'Red' is a scoped enumerator: write 'Color::Red'` at the line. Only
+  for a name that means nothing else: a variable, parameter, member, function, class or
+  plain-enum constant of that name still works, and inside the `enum class` itself the
+  bare names of its own enumerators are fine (`Blue = Red + 5`). `tests/205sample.cpp`,
+  `tests/205bad.cpp`.
 
 ## What this list does NOT cover
 

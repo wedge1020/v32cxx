@@ -17,7 +17,7 @@ destroyed when it ends, and by v32libc's `exit()`),
 operators, references (`T&`, `T*&`), `const`; objects and structs by value (parameters,
 returns); `new`/`delete`; namespaces and `using`; `auto` and range-based `for`;
 `std::string`, `std::array<T,N>`, `std::vector<T>` (fixed per-type forms, not
-templates); `new T[n]`/`delete[]` that construct/destroy every element (`new T[n]{a, b}` too; `new T*[n]` is a plain array of pointers, `new T*[n]{p, q}` nulls the rest); `new int(5)`, `new float{2.5f}`, `new Node*` (one scalar word through the hook: helpers `v32_new_int/float/char/bool/ptr`, `g_uses_scalar_new`, `lower.c` phase 6); list-initialization wherever a constructor call goes (`P m{1, 2};` / `int w{5};` / `int a[3]{1, 2};` as in-class defaults (`ast.c` `apply_default_member_initializers`), `: w{5}` / `: p{1, 2}` (sema `ival` 1 / 4, `lower.c` 8a / 8-pre), `new P{1, 2}` (a comma sequence on `__v32_nl_tmpN`), `new Counter{3}`); brace-initialized unions (`U u = {1};` is a declaration plus an assignment of the first member, a global one at the start of `main`: `lower.c` phase 10b, `ui_init`); `enum class E : int {...}`; `--alloc=arena` or `--alloc=gc` with
+templates); `new T[n]`/`delete[]` that construct/destroy every element (`new T[n]{a, b}` too; `new T*[n]` is a plain array of pointers, `new T*[n]{p, q}` nulls the rest); `new int(5)`, `new float{2.5f}`, `new Node*` (one scalar word through the hook: helpers `v32_new_int/float/char/bool/ptr`, `g_uses_scalar_new`, `lower.c` phase 6); list-initialization wherever a constructor call goes (`P m{1, 2};` / `int w{5};` / `int a[3]{1, 2};` as in-class defaults (`ast.c` `apply_default_member_initializers`), `: w{5}` / `: p{1, 2}` (sema `ival` 1 / 4, `lower.c` 8a / 8-pre), `new P{1, 2}` (a comma sequence on `__v32_nl_tmpN`), `new Counter{3}`); brace-initialized unions (`U u = {1};` is a declaration plus an assignment of the first member, a global one at the start of `main`: `lower.c` phase 10b, `ui_init`); `enum class E : int {...}`; out-of-line definitions with namespace-qualified names (`int a::f(E e) {...}`, `void a::C::m()`, `a::C::C(int x) : ... {}`, `a::C::~C()`: `ast.c` `qualify_namespace_definitions` wraps each in `namespace a { ... }` where it stands and strips the namespace names from its qualifier, `parser.y` `ool_enter` points the lexer at the namespace for the parameter types, `sema.c` `register_free_function` copies a prototype's default arguments onto the definition); `--alloc=arena` or `--alloc=gc` with
 `<v32/memory.hpp>` (see "Memory management" below); `static` locals and file-scope `static`/`extern`/`volatile`; float
 literals of any C form (`1e3`, `.5`, `5.f`); octal/hex/binary literals and
 escapes; `int main()` with `return 0;`; `0` as a null pointer; `<v32/*.hpp>`
@@ -51,7 +51,7 @@ members, 2-D array *parameters*, an object passed through `...`.
 - `delete[]` through a base pointer to a derived array is undefined. `new T[n]{a, b}` builds the listed elements and default-constructs the rest (n smaller than the list: the list's length is allocated; lowered in `lower.c` as a comma sequence on a function-level `__v32_nl_tmpN`, helpers `v32_new_arr_T_init/_rest`, only emitted when used). `delete[]` needs the element class (`delete_array_element_class`, `infer_expr_type`): unknown + some class with a destructor = error asking for a cast.
 - A variable declared in a namespace is `a__x` in the C output (`a::inner::x` is `a__inner__x`), like a namespace function; file-scope
   and `extern` ones keep their names. So do the enumerators of a namespace's enum (`a::RED` is `a__RED`, `a::E::RED`, `using a::RED`,
-  `case`, array sizes and default arguments resolve; the enum stays a C `enum`; its TYPE name is qualified too, `a::E` is `a__E` (parser.y `make_enum_decl`: the declaration is named that way, `AST_ENUM_DECL.str2` keeps the bare name, and `parse_type_name_node` / `parse_qualified_type_node` rewrite every type use the symbol table resolves to such an enum, so signatures, casts, `sizeof` and mangled names agree); `enum class Color` has `ival = 1`: its enumerators are registered in sema.c under a scope named `Color`, so `Color::Red` is `Color__Red` / `ns__Color__Red` and a bare `Red` stays as written, which the stock compiler then rejects: v32c++ does not diagnose undeclared names). lexer.l drops `extern` in C++ input, so prescan.c reads it from the text, per
+  `case`, array sizes and default arguments resolve; the enum stays a C `enum`; its TYPE name is qualified too, `a::E` is `a__E` (parser.y `make_enum_decl`: the declaration is named that way, `AST_ENUM_DECL.str2` keeps the bare name, and `parse_type_name_node` / `parse_qualified_type_node` rewrite every type use the symbol table resolves to such an enum, so signatures, casts, `sizeof` and mangled names agree); `enum class Color` has `ival = 1`: its enumerators are registered in sema.c under a scope named `Color`, so `Color::Red` is `Color__Red` / `ns__Color__Red`; a bare `Red` that resolves to nothing else is the error `'Red' is a scoped enumerator: write 'Color::Red'` (`lower.c` phase 0c `nv_walk` asks `sema_scoped_enumerator_hint`; a local, parameter, variable, function, class, plain-enum constant or member of that name wins; the enum's own initializers see their enumerators bare, `Blue = Red + 5`)). lexer.l drops `extern` in C++ input, so prescan.c reads it from the text, per
   declarator, after macro expansion (`scan_extern_text`, `prescan_decl_is_extern`: `extern int a; int b;` is one of each; `extern "C"`
   is not in the grammar and is skipped), and `ast.c` `mark_extern_decls` sets `AstNode.extern_decl`. The rule for `extern` on the output
   (Vircon32 C has no `extern`, no linker): an extern variable nothing defines IS the variable, printed once as a plain declaration; a
@@ -64,6 +64,7 @@ members, 2-D array *parameters*, an object passed through `...`.
   parameter hiding it, asm `{x}` operands too, enumerator values included. parser.y folds `a::RED` / `a::E::RED` in array sizes with a
   namespace-aware table (`parse_enum_value`). Later phases (global construction, the gc root table, `infer_expr_type`)
   see the C name only, and the registry answers to both.
+- Structs, classes and unions are written in dependency order (`codegen.c` `agg_run`: a type after the aggregates it holds BY VALUE, through arrays, typedefs, inheritance and namespaces; source order where that already works; a by-value cycle is the error from `codegen_check_aggregates`), and every union gets a `union U;` forward declaration, so pointers need no order (QUIRKS #35, #36).
 - A file- or namespace-scope function pointer (or an array of them) initialised with a function name gets the C name and
   the `&` (`fnptr_init`, `lower.c`, with the overload picked by the pointer's type, an error when none or several fit);
   prototypes are then printed ahead of the variables (`g_globals_name_functions`).
@@ -131,18 +132,31 @@ The gc runtime (`push R0`..`mov {stk}, SP`, stack top 0x400000) and the arena ru
 
 ## Working on the project
 
-- Build: `make` (bin/v32c++, plus bin/v32c, a copy of it for C input). Tests: `make test`, then
-  `tools/vircon32/check.sh` -- compiles, assembles and packs every output with the
-  REAL Vircon32 toolchain (built by v32sim's tools/oracle) and runs the self-checking
-  samples in v32sim (`V32SIM_HOME`). Passing `make test` alone proves little.
-- Add a test: `tests/NNNsample.cpp` (or `.c`), a line in the Makefile `test:`
-  list, a global `int test_errors = -1;` set to 0 when all is well. A `.input`
-  file beside it (made by v32sim's `tools/v32io-script.py` from `.actions`) feeds a
-  v32io device. Screenshots and CPU load: v32sim (`--frame-stats`, `tools/oracle`).
+- Build: `make` (bin/v32c++, plus bin/v32c, a copy of it for C input). **The gate is `make realcheck`**: it runs `make test`, then
+  `tools/vircon32/check.sh`, which compiles, assembles and packs every output with the REAL Vircon32 toolchain and runs the
+  self-checking samples in v32sim. `make test` alone proves little (it only transpiles, and runs the standard-C builds). A change is done
+  when `make realcheck` reports 0 failed and all cartridges passing, and `V32CXX_SDK_INCLUDE=<dir of the SDK headers> make test` passes too.
+- The real toolchain lives in `tools/vircon32/bin` (never rebuild it casually). `tools/vircon32/build-tools.sh [ComputerSoftware]` builds it
+  through v32sim's `tools/oracle/build.sh`, finding `../v32sim` (or `../v32sim.git`) and `../ComputerSoftware` (or `../ComputerSoftware.git`; with
+  none it clones one beside the project at the verified commit), and writes `bin/BUILD-INFO` (ComputerSoftware path and git HEAD, v32sim path,
+  `compile --version`). `check.sh` refuses a `bin/` without BUILD-INFO (built by an older script: rebuild it) and warns when the
+  ComputerSoftware checkout moved since the build. When a whole run fails with `FAIL (toolchain)`, suspect a stale `bin/` first.
+- **v32sim is the one place for running, profiling and debugging** carts (`--frame-stats`, `--profile-*`, `--dump`, `tools/v32sim-selfcheck.sh`,
+  `tools/v32io-script.py`, `tools/oracle`). Do not add runners, profilers or debuggers to this project: `tools/` holds `embed-header.sh`,
+  `prune-release.sh` and `vircon32/{build-tools.sh,check.sh,bin}` only.
+- Add a test: `tests/NNNsample.cpp` (or `.c`), a block in the Makefile `test:` list, a global `int test_errors = -1;` set to 0 when all is well
+  (it is then run by `check.sh` automatically). `*bad.cpp` files hold the error checks (`! $(TBIN) ...; grep -q "..." out/NNNbad.txt`). A `.input`
+  file beside a sample (made by v32sim's `tools/v32io-script.py` from `.actions`) feeds a v32io device. If the sample allocates, add its arena and gc
+  builds to `tests/real_variants.txt` (`name source flags`; the std_run builds in the Makefile are standard C only, the variants go through the stock
+  compiler and v32sim) -- and note that a sample that defines an SDK name (169sample's `get_cycle_counter`) cannot take the allocator runtime's `misc.h`.
+  To find which line of a self-checking sample fails, replace ` e++;` with `{ if (e == 0) e = __LINE__; }` in a copy: `test_errors` then names it.
+- Output changes must be explained: diff the generated C of every `tests/*`, `demos/` and `v32/` user, before and after, in the default,
+  `--alloc=arena`, `--alloc=gc` and `--target=standard` modes.
+- Conflict counts of the grammar are pinned (`%expect 83`, `%expect-rr 1` in parser.y): a change that moves them is a design question, not a fix.
+  `src/parser.c` and `src/lexer.c` are checked in; regenerate with bison / flex 2.6.4 after editing `parser.y` / `lexer.l`. Where flex is not installed,
+  edit `parser.y` only, and when `make` then tries to run flex `touch src/lexer.c` and run `make` again.
 - Fix v32c++, don't work around it in demo or test source: the point is that
-  input stays ordinary. Generated files `src/lexer.c` and `src/parser.c` are
-  checked in: regenerate with flex 2.6.4 / bison after editing `lexer.l` / `parser.y`
-  (`flex --outfile=src/lexer.c src/lexer.l`).
+  input stays ordinary.
 - Lowering lives in `src/lower.c` (numbered phases; the header comments say
   what each does). Printing is `src/codegen.c`. Vircon32-only rewrites are
   guarded by `g_target == TARGET_VIRCON32`.

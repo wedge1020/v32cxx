@@ -79,7 +79,9 @@ littéraux hexadécimaux/octaux/binaires, `1e3`, `.5` et `5.` (`tests/133sample.
 | 32 | pas de conversion en `void` ; pas de `&` de `((T *)p)[i]` | `(void)x;` | **abaissé** |
 | 33 | une union n'accepte pas de liste entre accolades | `U u{};`, `U u = {1};` | **abaissé** (déclaration + affectation du premier membre) |
 | 34 | pas d'`int` vers une énumération : `E e = 0;` | `S s{};` avec un membre `enum`, `{1, 0}` | **abaissé** (`(E)0`) |
-| 35 | une union est imprimée avant les structs, donc un membre struct d'une union « n'est pas entièrement défini » | `union V { int a; B b; };` | **non géré** (ton code) |
+| 35 | un membre struct ou union de type struct/union doit être défini avant | `union V { int a; B b; };` | **abaissé** (chaque struct, classe et union est écrite après celles qu'elle contient par valeur ; un cycle est une erreur) |
+| 36 | un pointeur vers une union peut précéder l'union, après `union U;` | `struct S { U *p; };` puis `union U {...};` | **abaissé** (`union U;` est écrit pour chaque union) |
+| 37 | un énumérateur non qualifié d'un `enum class` est « identifier has not been declared » | `Color c = Red;` | **diagnostiqué** (erreur de v32c++ : écris `Color::Red`) |
 
 Non couvert par une entrée parce que v32c++ n'a pas de solution : les templates, les
 exceptions, la RTTI, l'héritage multiple, `constexpr`, les lambdas,
@@ -1051,8 +1053,8 @@ vrai émulateur. Une correction en amont tiendrait en trois lignes dans `EscapeC
   l'entrée C garde son 0 nul). `new P()` et `new P[n]{}` mettent à zéro ce qu'ils
   allouent, `: m{}` met un membre à zéro (`{ P __v32_zero = {0, 0}; this->m =
   __v32_zero; }`), et un 0 littéral qui initialise un pointeur global ou d'espace de
-  noms, ou affecté ou comparé à travers `T*&`, s'imprime `NULL`. `new T[n]()` est une
-  erreur de syntaxe. Un membre pointeur (aussi dans des structs imbriquées et des tableaux
+  noms, ou affecté ou comparé à travers `T*&`, s'imprime `NULL`. `new T[n]()` équivaut à
+  `new T[n]{}`. Un membre pointeur (aussi dans des structs imbriquées et des tableaux
   de pointeurs) de `new P()`, `new P[n]{}` et `new Q{...}` vaut `NULL`, et non le 0 octet par
   octet qu'écrivait la première version de `new P[n]{}` (son aide `_rest` affecte une valeur
   zéro complète à chaque élément). `tests/195sample.cpp`, `tests/196sample.cpp` (défaut, arena, gc).
@@ -1091,13 +1093,38 @@ vrai émulateur. Une correction en amont tiendrait en trois lignes dans `EscapeC
   (`desig_zero`, mode Vircon32 seulement). Affecter un `int` à soi à une variable `enum`
   demande un cast, comme en C++. `tests/196sample.cpp`.
 
-## 35. Une union est imprimée avant les structs
+## 35. Une struct ou union contenue par valeur doit être définie avant
 
-- **Vircon32 fait** : refuser un membre d'union de type struct défini après elle
-  (« structure 'B' is instanced without being fully defined »).
-- **Pour v32c++** : rien n'est fait : les unions sont imprimées avant les classes et structs,
-  donc `union V { int a; B b; };` échoue dans le compilateur (une union de scalaires et de
-  tableaux, et une struct qui contient une union, passent). Pas encore géré.
+- **Vircon32 fait** : refuser un membre de type struct ou union défini après lui
+  (« structure 'B' is instanced without being fully defined »). Pour un membre pointeur, il
+  suffit que le type soit déclaré.
+- **Pour v32c++** : chaque struct, classe et union est écrite après celles qu'elle contient
+  PAR VALEUR (membres de données, hérités, éléments de tableau, noms de typedef, membres de
+  namespace), et dans l'ordre de la source là où cela suffit déjà. `union V { int a; B b; };`
+  vient donc après `struct B`, où que la source l'ait mise. Les membres pointeurs n'exigent
+  aucun ordre (voir le n° 36). Deux types qui se contiennent mutuellement par valeur ne
+  peuvent pas exister en C : v32c++ le dit (`'U' and 'S' hold each other by value`) et
+  n'écrit rien. Avant, toutes les unions étaient imprimées devant les structs.
+  `tests/204sample.cpp`, `tests/204bad.cpp`.
+
+## 36. Une union peut être déclarée à l'avance
+
+- **Vircon32 fait** : accepter `union U;` (nom nu, sans le mot `union` dans les usages
+  suivants) et un membre ou paramètre pointeur de ce type avant la définition de l'union.
+- **Pour v32c++** : `union U;` est écrit pour chaque union, à côté des `struct S;` que reçoit
+  déjà chaque classe, si bien qu'un pointeur vers une union peut précéder celle-ci dans la
+  sortie (c'est ce qui rend suffisant l'ordre du n° 35). `tests/204sample.cpp`.
+
+## 37. Un énumérateur non qualifié d'un `enum class`
+
+- **Vircon32 fait** : il n'a pas d'énumérations à portée ; v32c++ écrit `Color::Red` sous le
+  nom C `Color__Red`. Un `Red` nu est un nom que rien ne déclare, et le compilateur s'arrête
+  sur `identifier "Red" has not been declared`, qui ne dit pas quoi écrire.
+- **Pour v32c++** : signale `'Red' is a scoped enumerator: write 'Color::Red'` à cette ligne.
+  Seulement pour un nom qui ne signifie rien d'autre : une variable, un paramètre, un membre,
+  une fonction, une classe ou une constante d'`enum` simple de ce nom marche toujours, et
+  dans l'`enum class` lui-même les noms nus de ses énumérateurs sont permis
+  (`Blue = Red + 5`). `tests/205sample.cpp`, `tests/205bad.cpp`.
 
 ## Ce que cette liste ne couvre PAS
 

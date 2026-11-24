@@ -444,6 +444,8 @@ char *sema_ns_join(const char *outer, const char *name);  /* malloc'd */
  * namespace): the C name, or NULL when it needs no rewriting.
  * sema_rename_namespace_vars renames the declarations (lower.c phase 0c). */
 const char *sema_namespace_var_cname(const AstNode *expr);
+/* malloc'd "Color::Red" when `name` is an `enum class` enumerator and nothing else visible (else NULL). */
+char *sema_scoped_enumerator_hint(const char *name);
 
 /* 1 when the free function `func` has the signature that a pointer of type
  * `fp_type` (AST_FUNC_PTR_TYPE) points to: picks the overload a function

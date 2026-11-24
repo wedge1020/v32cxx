@@ -23,18 +23,36 @@ v32c++, v32c \- transpile un sous-ensemble de C++ (ou de C) en C Vircon32
 .RB [ \-b ]
 .RB [ \-g ]
 .RB [ \-\-line\-markers ]
-.RB [ \-\-alloc=malloc | arena ]
+.RB [ \-\-alloc=malloc | arena | gc ]
 .RB [ \-\-heap\-words=N ]
+.RB [ \-\-gc\-threshold=N ]
 .RB [ \-\-target=vircon32 | standard ]
 .RB [ \-\-reject\-bit\-fields ]
 .RB [ \-\-no\-signed\-shift ]
 .RB [ \-\-no\-unsigned\-ops ]
 .RB [ \-\-warn\-error ]
-.RB [ \-\-yield\-points ]
+.RB [ \-\-yield\-points[=\c
+.IR N ]]
+.RB [ \-\-yield\-func=\c
+.IR name ]
+.RB [ \-\-yield\-counter=\c
+.IR name ]
 .RB [ \-\-rename ]
-.RB [ \-\-assembler ]
+.RB [ \-\-assembler=\c
+.IR cmd ]
+.RB [ \-\-assembler\-style=stock | v32as ]
+.RB [ \-\-compiler=\c
+.IR cmd ]
+.RB [ \-\-compiler\-style=stock | v32cc ]
 .RB [ \-\-silence\-unused\-args ]
 .RB [ \-\-allow\-undefined ]
+.RB [ \-\-list\-warnings ]
+.RB [ \-L
+.IR dir ]...
+.RB [ \-l
+.IR name ]...
+.RB [ \-\-mklib
+.IR lib.v32a ]
 .RB [ \-\-no\-inline\-containers ]
 .I entrée.cpp
 .br
@@ -405,6 +423,9 @@ Donne le nom \fInouveau\fR à toute fonction, variable et paramètre nommé \fIa
 .TP
 .BR \-\-assembler =\fICMD\fR
 Assembleur nommé dans Make.sh et Make.bat. Défaut : la variable d'environnement \fBV32CXX_ASSEMBLER\fR, puis la valeur de config.h à la compilation, puis \fBassemble\fR. Un nom commençant par \fBv32as\fR est lancé comme \fBv32as \-B \-c\fR (\fB\-B \-b\fR pour un BIOS) ; \fB\-\-assembler\-style\fR=\fBstock\fR|\fBv32as\fR corrige cette supposition.
+.TP
+.BR \-\-compiler =\fICMD\fR
+Compilateur C nommé dans Make.sh et Make.bat. Défaut : la variable d'environnement \fBV32CXX_COMPILER\fR, puis \fBcompile\fR. Un nom commençant par \fBv32cc\fR est lancé comme \fBv32cc \-S \-\-target\-compat=v32cxx\fR, et avec \fB\-g\fR aussi \fB\-g\fR (l'assembleur reçoit aussi \fB\-g\fR, et \fB\-\-line\-markers\fR est implicite, si bien que \fBv32sim\fR débogue par les lignes C++) ; \fB\-\-compiler\-style\fR=\fBstock\fR|\fBv32cc\fR corrige cette supposition.
 .TP
 .B \-\-reject\-bit\-fields
 Traite un membre de champ de bits
@@ -918,12 +939,18 @@ est abaissé en la déclaration plus une affectation du premier membre (le reste
 et
 .I "U u{};"
 met chaque mot à zéro.
+Les structs, classes et unions sont écrites dans l'ordre des dépendances (un type après ceux qu'il contient par valeur, donc
+.I "union V { int a; B b; };"
+convient où que B ait été déclarée ; toute union est aussi déclarée à l'avance, pour les pointeurs) ; deux types qui se contiennent mutuellement par valeur sont une erreur.
 .PP
 Le
 .B new
 de tableaux
 .RI ( "new T[n]" )
-construit par défaut chaque élément, dans l'ordre ; pour une classe avec destructeur il
+construit par défaut chaque élément, dans l'ordre (de même
+.IR "new T[n]()" ,
+identique à
+.IR "new T[n]{}" ) ; pour une classe avec destructeur il
 garde le nombre d'éléments dans un mot supplémentaire devant le tableau, et
 .B delete[]
 le relit et détruit les éléments, le dernier d'abord. Un pointeur nul ou un nombre
@@ -1189,7 +1216,14 @@ le type sous-jacent est accepté et ignoré) n'a ses énumérateurs que sous la 
 .IR ns__Color__Red ) ;
 il se convertit en
 .B int
-sans cast, ce que C++ refuserait.
+sans cast, ce que C++ refuserait. Un énumérateur nu est une erreur qui dit quoi écrire
+.RI ( "'Red' is a scoped enumerator: write 'Color::Red'" ),
+sauf si le nom signifie autre chose (une variable, un paramètre, un membre, une fonction ou une classe de ce nom marche toujours).
+.PP
+Une fonction, un constructeur, un destructeur ou un opérateur d'un espace de noms peut être défini hors de lui avec un nom qualifié :
+.RB "int a::f(E e) { ... }, void a::C::m() { ... }, a::C::C(int x) : v(x) {}, a::C::~C() {}."
+La définition signifie ce qu'elle signifierait dans l'espace de noms : son nom C est celui de l'espace de noms, les arguments par défaut viennent de la
+déclaration et les noms de l'espace de noms sont visibles sans qualification dans les paramètres et le corps.
 .PP
 Une fonction libre déclarée dans un espace de noms est émise sous un nom C qui inclut
 l'espace de noms

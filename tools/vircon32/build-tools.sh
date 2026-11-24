@@ -46,6 +46,25 @@ if [ -n "$HEAD" ] && [ "$HEAD" != "$PINNED" ]; then
     echo "build-tools.sh: note: $SRC is at $HEAD, not the verified $PINNED"
 fi
 ONLY="compile assemble packrom" sh "$V32SIM_HOME/tools/oracle/build.sh" "$SRC" "$HERE/bin"
+# Smoke test: the stock compiler finds include/ beside its own executable (SDL_GetBasePath, from v32sim's oracle
+# shim). Compile from a scratch directory, as check.sh does, so a compiler that can't locate its headers stops here.
+SMOKE=$(mktemp -d)
+printf '#include "misc.h"\nvoid main(void) { }\n' > "$SMOKE/smoke.c"
+if ! ( cd "$SMOKE" && "$HERE/bin/compile" smoke.c -o smoke.asm > smoke.log 2>&1 ); then
+    echo "build-tools.sh: the built compiler cannot find its SDK headers:" >&2
+    sed 's/^/    /' "$SMOKE/smoke.log" >&2
+    echo "build-tools.sh: it looks for include/ beside itself via v32sim's tools/oracle/shim/SDL.h" \
+         "(SDL_GetBasePath); update v32sim if that shim doesn't support this OS" >&2
+    rm -rf "$SMOKE"; rm -f "$HERE/bin/BUILD-INFO"; exit 1
+fi
+rm -rf "$SMOKE"
+# Stamp what was built, so check.sh can tell a current toolchain from a stale one.
+{
+    echo "computersoftware=$(cd "$SRC" && pwd)"
+    echo "head=${HEAD:-unknown}"
+    echo "v32sim=$V32SIM_HOME"
+    echo "compiler=$("$HERE/bin/compile" --version 2>/dev/null | head -n 1)"
+} > "$HERE/bin/BUILD-INFO"
 # The pinned commit's string.h predates the ftoa() rounding-carry fix (0.999999 came out as "0.1"). The project's
 # c_api/string.h is the fixed one, so the real toolchain is tested with it (tests/130sample.cpp needs it).
 if [ -f "$HERE/../../c_api/string.h" ] && ! cmp -s "$HERE/../../c_api/string.h" "$HERE/bin/include/string.h"; then

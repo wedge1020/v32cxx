@@ -798,6 +798,32 @@ test: all | $(OUT_DIR)
 	! grep -q '^int .*sdk_\|^int \*sdk_' out/201stub.c
 	grep -q 'sdk_tick_count + sdk_table\[1\]' out/201stub.c
 	grep -q '^int mine = 3;' out/201stub.c
+	$(TBIN)  -vvv    -o out/202program.c tests/202sample.cpp 1> out/202sample.txt 2>&1
+	grep -q 'v32_new_arr_P_init' out/202program.c
+	sh tests/std_run.sh $(BIN) 202sample
+	sh tests/std_run.sh $(BIN) 202sample --alloc=arena -I .
+	sh tests/std_run.sh $(BIN) 202sample --alloc=gc --heap-words=16384 -I .
+	$(TBIN)  -vvv    -o out/203program.c tests/203sample.cpp 1> out/203sample.txt 2>&1
+	grep -q '^int a__f__E_int(E e, int y);' out/203program.c
+	grep -q 'a__b__h__a__b__F_int' out/203program.c
+	grep -q 'C__C__int' out/203program.c
+	! grep -q ' a::' out/203program.c
+	sh tests/std_run.sh $(BIN) 203sample
+	sh tests/std_run.sh $(BIN) 203sample --alloc=arena -I .
+	$(TBIN)  -vvv    -o out/204program.c tests/204sample.cpp 1> out/204sample.txt 2>&1
+	test "$$(grep -n '^union V {' out/204program.c | cut -d: -f1)" -gt "$$(grep -n '^struct B {' out/204program.c | cut -d: -f1)"
+	test "$$(grep -n '^union Pick {' out/204program.c | cut -d: -f1)" -gt "$$(grep -n '^struct Derived {' out/204program.c | cut -d: -f1)"
+	grep -q '^union Late;' out/204program.c
+	sh tests/std_run.sh $(BIN) 204sample
+	! $(TBIN) -o out/204bad.c tests/204bad.cpp 1> out/204bad.txt 2>&1
+	grep -q "204bad.cpp:4: error: 'U' and 'S' hold each other by value" out/204bad.txt
+	$(TBIN)  -vvv    -o out/205program.c tests/205sample.cpp 1> out/205sample.txt 2>&1
+	grep -q 'Color__Blue = (Color__Red + 5)' out/205program.c
+	sh tests/std_run.sh $(BIN) 205sample
+	! $(TBIN) -o out/205bad.c tests/205bad.cpp 1> out/205bad.txt 2>&1
+	grep -q "205bad.cpp:5: error: 'Red' is a scoped enumerator: write 'Shade::Red' or 'Color::Red'" out/205bad.txt
+	grep -q "205bad.cpp:6: error: 'Green' is a scoped enumerator: write 'Color::Green'" out/205bad.txt
+	grep -q "205bad.cpp:3: error: 'Two' is a scoped enumerator: write 'a::K::Two'" out/205bad.txt
 # `-vvv` (this project's own verbosity flag, a later round -- see
 # main.c) is passed to every sample specifically so `make test`'s own
 # output still captures the full AST/semantic-analysis/lowering dumps

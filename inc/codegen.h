@@ -175,6 +175,8 @@
  * below -vv) reproduces this project's previous output exactly,
  * unchanged. */
 void codegen_run(const AstNode *program, FILE *out, int verbose_comments);
+/* 1 (and a message on stderr) when two structs/unions hold each other by value; call before codegen_run. */
+int codegen_check_aggregates(const AstNode *program);
 
 /* --line-markers: write `#line N "file.cpp"` before every function and statement of the
  * generated C whose source line is not already the one the C preprocessor would count, so a

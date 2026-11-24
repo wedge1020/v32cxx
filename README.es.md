@@ -21,8 +21,8 @@ dialecto de C de Vircon32 hace de forma distinta.
 > **Estado: funcional.** Toda la canalización — preprocesamiento, análisis
 > sintáctico, análisis semántico, bajada (*lowering*) y generación de código —
 > funciona de principio a fin y se comprueba con el compilador, el ensamblador y
-> la consola **reales** de Vircon32 (`make realcheck`: 181 programas compilados
-> y ensamblados, 112 de ellos con autocomprobación en tiempo de ejecución en una
+> la consola **reales** de Vircon32 (`make realcheck`: 227 programas compilados
+> y ensamblados, 158 de ellos con autocomprobación en tiempo de ejecución en una
 > consola sin pantalla). Con él se construyen cinco demos de buen tamaño (tres
 > juegos en C++, un port de Rogue y un Spy vs Spy en C puro). Consulta las [Limitaciones
 > conocidas](#limitaciones-conocidas) para ver con honestidad lo que falta.
@@ -65,7 +65,7 @@ alcance](#deliberadamente-fuera-del-alcance).
 - [Gestión de memoria](#gestión-de-memoria)
 - [Teclado y ratón: v32io](#teclado-y-ratón-v32io)
 - [Limitaciones conocidas](#limitaciones-conocidas)
-- [Requisitos](#requisitos) · [Compilación](#compilación) · [Verificación con la cadena de herramientas real](#verificación-con-la-cadena-de-herramientas-real)
+- [Requisitos](#requisitos) · [Compilación](#compilación) · [Verificación con la cadena de herramientas real](#verificación-con-la-cadena-de-herramientas-real) · [Depuración con v32sim](#depuración-con-v32sim)
 - [Uso](#uso) · [Empaquetado del cartucho](#empaquetado-del-cartucho) · [Dialectos de salida](#dialectos-de-salida)
 - [Demos](#demos) · [Documentación](#documentación) · [Estructura del proyecto](#estructura-del-proyecto)
 - [Instalación](#instalación) · [Versionado](#versionado) · [Comentarios](#comentarios)
@@ -150,7 +150,9 @@ alcance](#deliberadamente-fuera-del-alcance).
 
 - Espacios de nombres (anidados, con sus objetos globales construidos y destruidos como los del ámbito de archivo, llamadas cualificadas, nombres de C con
   espacio de nombres para las funciones y variables: `v32::draw(int,int,int)` se convierte
-  en `v32__draw__int_int_int`, `a::x` en `a__x`) y `using`: `using namespace v32;` en el ámbito de
+  en `v32__draw__int_int_int`, `a::x` en `a__x`; las definiciones fuera de la clase pueden escribirse
+  cualificadas, `int a::f(E e) {...}`, `void a::C::m() {...}`, `a::C::C(int x) : v(x) {}`, `a::C::~C() {}`, y significan
+  lo que dentro del espacio de nombres: argumentos por defecto de la declaración, sus nombres visibles sin cualificar) y `using`: `using namespace v32;` en el ámbito de
   archivo o en un bloque, `using v32::Keyboard;` y `using Points = int;`. Las
   funciones encontradas mediante una directiva se sobrecargan junto con las que
   están en el ámbito, como en C++.
@@ -402,7 +404,7 @@ cómo escribirlos).
 ## Limitaciones conocidas
 
 Comprobadas con el transpilador actual y el compilador real de Vircon32
-(octubre de 2026), no arrastradas de notas anteriores.
+(noviembre de 2026), no arrastradas de notas anteriores.
 
 **No soportado** (un error claro, salvo indicación contraria):
 
@@ -454,8 +456,8 @@ Comprobadas con el transpilador actual y el compilador real de Vircon32
   funciona donde funciona una llamada a constructor: `P m{1, 2};` e `int w{5};` como
   valores por defecto en la clase, `: w{5}` / `: p{}` en una lista de inicializadores,
   `new P{1, 2}`, `new Counter{3}`. `new int`, `new int(5)`, `new float{2.5f}` y `new Node*`
-  reservan una palabra (también con `--alloc`) y `delete` la libera. `new T[n]()` no está
-  soportado. Véase `docs/VIRCON32_QUIRKS.es.md` n.º 31-33.
+  reservan una palabra (también con `--alloc`) y `delete` la libera. `new T[n]()` y `new int[n]()` (`new` de arreglo con inicialización por valor) equivalen
+  a `new T[n]{}`. Véase `docs/VIRCON32_QUIRKS.es.md` n.º 31-33.
 - **Los códigos de control en literales de cadena se reescriben**: la cadena
   de herramientas de Vircon32 no puede ensamblar una cadena que contenga los
   códigos 14–31 de la fuente de la BIOS (`┌ ─ ┐ │ ░ ▒ ▓ █` ...) u otros
@@ -485,7 +487,8 @@ Comprobadas con el transpilador actual y el compilador real de Vircon32
   ámbito de archivo no cambian). El nombre del *tipo* del `enum` también se califica
   (`a::E` es `a__E`, también en el nombre decorado de una función que lo recibe), así que dos
   `enum` del mismo nombre en espacios de nombres distintos son dos tipos. Los enumeradores de un
-  `enum` con ámbito son `Color__Red` (`ns__Color__Red`); un `Red` suelto se deja como está (el compilador de Vircon32 lo rechaza), y la
+  `enum` con ámbito son `Color__Red` (`ns__Color__Red`); un `Red` suelto es un error que dice qué escribir (`'Red' is a scoped enumerator: write 'Color::Red'`) salvo que el nombre
+  signifique otra cosa (una variable, una función...), y la
   conversión a `int` se admite sin conversión explícita (más permisivo que C++).
 - **Nombre sobrecargado como valor de un puntero a función**: `int (*p)(float) =
   over;` elige la sobrecarga con la firma del puntero; si ninguna, o más de una,
@@ -503,7 +506,10 @@ Comprobadas con el transpilador actual y el compilador real de Vircon32
 - **Los tipos `native`** pueden apuntarse pero no crearse; el almacenamiento
   debe venir del lado de C.
 - Las **uniones** de más de una palabra no pueden pasarse ni devolverse por
-  valor (v32c++ no avisa; lo informa el compilador de Vircon32).
+  valor (v32c++ no avisa; lo informa el compilador de Vircon32). Los structs, clases y
+  uniones se escriben en orden de dependencia (un tipo después de los que contiene por valor, así que
+  `union V { int a; B b; };` vale donde se haya declarado `B`); dos que se contienen
+  mutuamente por valor son un error, y toda unión se declara por adelantado para los punteros.
 - Los **objetos del ámbito de archivo** (y sus arreglos) se construyen al
   comienzo de `main` y se destruyen cuando termina (después de sus locales, en
   orden inverso), también desde `exit()`/`abort()` de v32libc, cuyo `v32_exit`
@@ -622,6 +628,24 @@ su recuento de errores antes de detenerse; la comprobación exige 0 (ver
 reproduce con esa entrada de gamepad guionizada (`tests/119sample.cpp`, la
 prueba de v32io, la usa para el tráfico de teclado y ratón).
 
+`tools/vircon32/build-tools.sh [COMPUTERSOFTWARE]` construye los `compile`, `assemble` y
+`packrom` oficiales en `tools/vircon32/bin/` (con el `tools/oracle/build.sh` de v32sim) y
+escribe `bin/BUILD-INFO`: la ruta de ComputerSoftware usada, el `HEAD` de git de esa copia, la
+ruta de v32sim y la versión del compilador. Antes prueba el compilador nuevo desde un
+directorio temporal y se detiene con su mensaje si no encuentra las cabeceras del SDK (en
+macOS hace falta un v32sim cuyo shim SDL del oráculo admita `_NSGetExecutablePath`).
+`tools/vircon32/check.sh` (lo que ejecuta
+`make realcheck` tras `make test`) muestra el compilador que usa, **rechaza un `bin/` sin
+`BUILD-INFO`** (construido por un `build-tools.sh` antiguo) y pide
+reconstruirlo, y avisa si la copia de ComputerSoftware ha avanzado desde la construcción. Hoy
+compila y ensambla 227 programas (4 no se empaquetan: sus recursos `#texture`/`#sound` no están
+en `tests/`) y ejecuta 158 cartuchos con autocomprobación, entre ellos las construcciones
+`--alloc=arena` y `--alloc=gc` de `tests/real_variants.txt` (`nombre fuente opciones`: añade allí
+las variantes de una muestra que reserve memoria). `tools/prune-release.sh [--apply]` es el
+limpiador de versiones: por omisión solo simula; lista (y con `--apply` elimina, con `git rm`
+para lo versionado) clones antiguos, copias privadas de las herramientas de v32sim, scripts de
+construcción, informes de bison y restos de editor.
+
 Ejecutar, perfilar y capturar pantallas de cartuchos es cosa de **v32sim**, el lugar único para ello: `build-tools.sh` y `check.sh` solo llaman a su `tools/oracle/build.sh` (los `compile`, `assemble` y `packrom` oficiales) y a su `tools/v32sim-selfcheck.sh`. `V32SIM_HOME` apunta a una copia de v32sim (por omisión `../v32sim`, y si no `../v32sim.git`). Las fuentes de ComputerSoftware se buscan igual (`../ComputerSoftware`, y si no `../ComputerSoftware.git`, o la ruta dada a `build-tools.sh`); sin ninguna, se clona una en `../ComputerSoftware` en el commit verificado, nunca dentro de este proyecto. `V32_ORACLE=1 make realcheck` ejecuta las muestras en la lógica de consola oficial como segunda opinión. Lo que daban `v32prof`, `v32shot` y `v32peek` lo dan `--frame-stats`, `--profile-*`, `--dump` y los comandos por lotes de v32sim.
 
 El `string.h` de la cadena de herramientas es el `c_api/string.h` del propio
@@ -655,7 +679,9 @@ v32c++ -I path/to/v32c++ -o obj/game.c game.cpp
 | `--xml-preserve-paths` | conserva en el XML las rutas de `#texture`/`#sound` tal como se escribieron, y escribe el XML junto al fuente |
 | `-b` | transpila una BIOS en lugar de un cartucho |
 | `-g` | escribe un mapa de depuración línea de C / línea de C++, `<salida>.c.debug` |
-| `--line-markers` | escribe `#line N "file.cpp"` antes de cada función y sentencia del C, para v32cc (ver [Debugging with v32sim](#debugging-with-v32sim)) |
+| `--compiler=CMD` | el compilador de C que llaman los scripts de compilación (por defecto `compile`, o `$V32CXX_COMPILER`); `v32cc` recibe `-S --target-compat=v32cxx` y, con `-g`, `-g` |
+| `--compiler-style=stock\|v32cc` | fuerza cómo se invoca `--compiler` cuando su nombre no lo dice |
+| `--line-markers` | escribe `#line N "file.cpp"` antes de cada función y sentencia del C, para v32cc (ver [Depuración con v32sim](#depuración-con-v32sim)) |
 | `--target=vircon32`/`v32` | C de Vircon32 (el valor por defecto) |
 | `--target=standard`/`std` | C estándar portable en su lugar |
 | `--reject-bit-fields` | convierte un campo de bits en un error en lugar de una advertencia |
@@ -697,6 +723,45 @@ depuración de Vircon32.
 **`-b`** transpila una BIOS: el `<rom>` del XML recibe `type="bios"`, y v32c++
 comprueba que haya exactamente un `#texture`, como máximo un `#sound` y una
 `void error_handler()`, informando de todas las infracciones a la vez.
+
+## Depuración con v32sim
+
+El compilador oficial de Vircon32 rechaza `#line`, así que con él `-g` solo da el mapa línea de C/línea de C++ de arriba (y su
+`<salida>.c.debug` se une al mapa asm/C del propio compilador). `v32cc` respeta `#line`, de modo que con
+`--line-markers` (implícito en `-g --compiler=v32cc`) el archivo y la línea de C++ llegan hasta el ensamblador (`;@src game.cpp:42`), hasta
+`v32as -g` y hasta **v32sim**, que entonces avanza paso a paso, pone puntos de ruptura (`break game.cpp:42`), lista el código fuente y muestra
+trazas por las líneas de C++, y muestra los locales, ya que `v32cc -g` escribe `;@var` por cada local de C que ve:
+
+Un solo comando lo hace todo: `v32c++ -g --compiler=v32cc --assembler=v32as game.cpp` escribe un Make.sh que construye con
+archivos de depuración. A mano:
+
+```sh
+v32c++ --line-markers game.cpp -o game.c
+v32cc -g --target-compat=v32cxx -S game.c -o game.asm      # ;@src game.cpp:N, ;@var, ;@scope
+v32as -g game.asm                                           # luego ensambla/empaqueta como siempre
+v32sim --source -L src game.v32
+```
+
+Un `#line` se escribe solo donde el recuento de líneas del propio compilador de C sería distinto, así que la mayoría de las sentencias
+no necesitan ninguno; el código generado no cambia (sin la opción, la salida es idéntica byte a byte a la de antes).
+El código que escribe el transpilador sin equivalente en C++ (los reservadores `v32_new_*`, una llamada a destructor al salir de un
+ámbito, el epílogo de una función) toma la línea de la sentencia más cercana; la `}` final de una función muestra
+la línea siguiente a su última sentencia.
+
+**Nombres que muestra un depurador.** Los locales y parámetros conservan sus nombres de C++. El transpilador escribe además:
+
+| Nombre | Qué es |
+| ------ | ------ |
+| `this` | el primer parámetro explícito de todo método |
+| `Class__method__sig`, `Class__Class__void`, `Class__dtor__void` | un método, constructor (`sig` son los tipos de los parámetros, `void` si no hay) y destructor, como funciones de C |
+| `__v32_ret_tmpN`, `__v32_tern_tmpN`, `__v32_ref_tmpN`, `__v32_sret_tmpN` | temporales para un valor de retorno (vivo a través de los destructores), un `?:` extraído, un argumento por referencia |
+| `__v32_ctor_arr_iN`, `__v32_mctor_iN` | contadores de bucle que construyen elementos de arreglo / miembros arreglo |
+| `__v32_destroy_globals`, `__v32_globals_live`, `__v32_gret_tmp` | la función que destruye los objetos del ámbito de archivo (se llama al terminar `main` y desde `v32_exit`), su indicador de una sola vez y un valor de `return` retenido mientras se ejecuta |
+| `__v32_byval_x` | un parámetro de tipo clase pasado por puntero: la función lo copia a un local `x` al entrar |
+| `v32_new_Class`, `v32_delete_Class`, `v32_new_arr_T` | ayudantes de `new`, `delete` y `new[]` |
+
+Los nombres que empiezan por `__v32_` son del transpilador, no del programa. v32sim y v32as se saltan los nombres `__` en
+`locals`.
 
 ## Empaquetado del cartucho
 
@@ -864,14 +929,16 @@ scripts/        smoke_test.sh and stage_package.sh (the release workflow's
                 install, for DEST_LANG)
 .github/        workflows/release-builds.yml, the build and release workflow;
                 release-notes.md, the release page text it publishes
-AGENTS.md       notes for AI coding agents working on the project
+docs/AGENTS.md  notes for AI coding agents working on the project
 tools/
   embed-header.sh   regenerates src/stdstring.c from lib/string
   prune-release.sh  removes stale, duplicate and generated files (dry run;
                     --apply uses git rm for tracked ones)
   vircon32/         build-tools.sh (builds the real Vircon32 toolchain
-                    into bin/ through v32sim) and check.sh (`make
-                    realcheck`); every runner, profiler and debugger is
+                    into bin/ through v32sim, finding ../v32sim(.git) and
+                    ../ComputerSoftware(.git), and writes bin/BUILD-INFO)
+                    and check.sh (`make realcheck`; refuses a bin/ without
+                    BUILD-INFO); every runner, profiler and debugger is
                     v32sim's
 ```
 

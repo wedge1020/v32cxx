@@ -22,18 +22,36 @@ v32c++, v32c \- transpile a subset of C/C++ to Vircon32 C
 .RB [ \-b ]
 .RB [ \-g ]
 .RB [ \-\-line\-markers ]
-.RB [ \-\-alloc=malloc | arena ]
+.RB [ \-\-alloc=malloc | arena | gc ]
 .RB [ \-\-heap\-words=N ]
+.RB [ \-\-gc\-threshold=N ]
 .RB [ \-\-target=vircon32 | standard ]
 .RB [ \-\-reject\-bit\-fields ]
 .RB [ \-\-no\-signed\-shift ]
 .RB [ \-\-no\-unsigned\-ops ]
 .RB [ \-\-warn\-error ]
-.RB [ \-\-yield\-points ]
+.RB [ \-\-yield\-points[=\c
+.IR N ]]
+.RB [ \-\-yield\-func=\c
+.IR name ]
+.RB [ \-\-yield\-counter=\c
+.IR name ]
 .RB [ \-\-rename ]
-.RB [ \-\-assembler ]
+.RB [ \-\-assembler=\c
+.IR cmd ]
+.RB [ \-\-assembler\-style=stock | v32as ]
+.RB [ \-\-compiler=\c
+.IR cmd ]
+.RB [ \-\-compiler\-style=stock | v32cc ]
 .RB [ \-\-silence\-unused\-args ]
 .RB [ \-\-allow\-undefined ]
+.RB [ \-\-list\-warnings ]
+.RB [ \-L
+.IR dir ]...
+.RB [ \-l
+.IR name ]...
+.RB [ \-\-mklib
+.IR lib.v32a ]
 .RB [ \-\-no\-inline\-containers ]
 .I input.cpp
 .RI [ more-inputs ]
@@ -398,6 +416,9 @@ Give every function, variable and parameter called \fIold\fR the name \fInew\fR,
 .TP
 .BR \-\-assembler =\fICMD\fR
 Assembler named in the generated Make.sh and Make.bat. Default: the environment variable \fBV32CXX_ASSEMBLER\fR, then the build-time setting in config.h, then \fBassemble\fR. A name starting with \fBv32as\fR is run as \fBv32as \-B \-c\fR (\fB\-B \-b\fR for a BIOS); \fB\-\-assembler\-style\fR=\fBstock\fR|\fBv32as\fR overrides that guess.
+.TP
+.BR \-\-compiler =\fICMD\fR
+C compiler named in the generated Make.sh and Make.bat. Default: the environment variable \fBV32CXX_COMPILER\fR, then \fBcompile\fR. A name starting with \fBv32cc\fR is run as \fBv32cc \-S \-\-target\-compat=v32cxx\fR, and with \fB\-g\fR also \fB\-g\fR (the assembler gets \fB\-g\fR too, and \fB\-\-line\-markers\fR is implied, so that \fBv32sim\fR debugs by the C++ lines); \fB\-\-compiler\-style\fR=\fBstock\fR|\fBv32cc\fR overrides that guess.
 .TP
 .B \-\-reject\-bit\-fields
 Treat a bit-field member
@@ -911,11 +932,17 @@ is lowered to the declaration plus an assignment of the first member (the rest o
 and
 .I "U u{};"
 zeroes every word.
+Structs, classes and unions are written in dependency order (a type after the ones it holds by value, so
+.I "union V { int a; B b; };"
+is fine wherever B was declared; every union is also forward-declared, for pointers); two that hold each other by value are an error.
 .PP
 Array
 .B new
 .RI ( "new T[n]" )
-default-constructs each element, in order; for a class with a destructor it
+default-constructs each element, in order (so does
+.IR "new T[n]()" ,
+the same as
+.IR "new T[n]{}" ); for a class with a destructor it
 keeps the element count in one extra word in front of the array, and
 .B delete[]
 reads it back and destroys the elements, last first. A null pointer or a
@@ -1177,7 +1204,14 @@ only (C names
 .IR ns__Color__Red );
 it converts to
 .B int
-without a cast, which C++ would refuse.
+without a cast, which C++ would refuse. A bare enumerator is an error that says what to write
+.RI ( "'Red' is a scoped enumerator: write 'Color::Red'" ),
+unless the name means something else (a variable, parameter, member, function or class of that name still works).
+.PP
+A function, constructor, destructor or operator of a namespace may be defined outside it with a qualified name:
+.RB "int a::f(E e) { ... }, void a::C::m() { ... }, a::C::C(int x) : v(x) {}, a::C::~C() {}."
+The definition means what it would inside the namespace: its C name is the namespace's, default arguments come from the declaration, and the
+namespace's names are visible unqualified in the parameters and the body.
 .PP
 A free function declared inside a namespace is emitted under a C name
 that includes the namespace

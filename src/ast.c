@@ -545,6 +545,114 @@ void mark_extern_decls(AstList *decls) {
     }
 }
 
+/* ---- namespace-qualified out-of-line definitions -----------------------
+ *
+ * `int a::f(E e) {...}`, `void a::C::m() {...}`, `a::C::C(int x) : v(x) {}`,
+ * `a::C::~C() {}`: a definition written at file scope whose qualifier chain
+ * starts with namespace names. C++ treats the body as if it stood inside the
+ * namespace (its names visible unqualified, default arguments from the
+ * declaration), so that is what is built: the definition is wrapped, where it
+ * stands, in `namespace a { ... }` (one block per qualifier, nested for
+ * `a::b::f`), and the namespace names are dropped from its qualifier chain.
+ * What is left of the chain (`C` of `a::C::m`) is an ordinary class-qualified
+ * definition, which sema's attach_out_of_line resolves inside the block; a
+ * chain that was all namespaces leaves a plain function definition. Reopening
+ * a namespace is already supported, so nothing else needs to know.
+ * Runs before anything walks the tree. */
+static int ns_path_known(char **paths, int n, const char *p) {
+    for (int i = 0; i < n; i++) if (strcmp(paths[i], p) == 0) return 1;
+    return 0;
+}
+
+static void collect_ns_paths(AstList *decls, const char *prefix, char ***paths, int *n, int *cap) {
+    for (int i = 0; i < decls->count; i++) {
+        AstNode *d = decls->items[i];
+        if (d == NULL || d->kind != AST_NAMESPACE_DECL || d->str1 == NULL) continue;
+        size_t len = strlen(prefix) + strlen(d->str1) + 3;
+        char *full = malloc(len);
+        snprintf(full, len, "%s%s%s", prefix, prefix[0] ? "::" : "", d->str1);
+        if (!ns_path_known(*paths, *n, full)) {
+            if (*n == *cap) { *cap = *cap ? *cap * 2 : 16; *paths = realloc(*paths, sizeof(char *) * (size_t)*cap); }
+            (*paths)[(*n)++] = strdup(full);
+        }
+        collect_ns_paths(&d->list, full, paths, n, cap);
+        free(full);
+    }
+}
+
+/* Inside `namespace a::b`, `a::b::D` is `D`: a parameter or return type of a wrapped definition that spells
+ * its own namespace out is written the way the declaration inside the namespace spells it, so the two
+ * signatures compare equal (and mangle alike). */
+static void strip_own_namespace(AstNode *t, AstNode **names, int nsn) {
+    while (t != NULL) {
+        if (t->kind == AST_CONST_TYPE || t->kind == AST_POINTER_TYPE || t->kind == AST_REFERENCE_TYPE ||
+            t->kind == AST_ARRAY_TYPE) { t = t->a; continue; }
+        if (t->kind == AST_QUALIFIED_ID && t->list.count > nsn) {
+            for (int k = 0; k < nsn; k++)
+                if (t->list.items[k]->str1 == NULL || strcmp(t->list.items[k]->str1, names[k]->str1) != 0) return;
+            if (t->list.count - nsn == 1) {
+                AstNode *last = t->list.items[t->list.count - 1];
+                t->kind = AST_IDENT;
+                t->str1 = strdup(last->str1);
+                t->list.count = 0;
+            } else {
+                for (int k = nsn; k < t->list.count; k++) t->list.items[k - nsn] = t->list.items[k];
+                t->list.count -= nsn;
+            }
+        }
+        return;
+    }
+}
+
+void qualify_namespace_definitions(AstList *decls) {
+    char **paths = NULL;
+    int n = 0, cap = 0;
+    collect_ns_paths(decls, "", &paths, &n, &cap);
+    for (int i = 0; n > 0 && i < decls->count; i++) {
+        AstNode *d = decls->items[i];
+        if (d == NULL || d->kind != AST_FUNC_DEF || d->b == NULL || d->b->kind != AST_QUALIFIED_ID) continue;
+        AstList *q = &d->b->list;
+        /* the longest leading run of qualifier names that is a known namespace path */
+        char buf[1024];
+        buf[0] = '\0';
+        int nsn = 0;
+        for (int k = 0; k < q->count; k++) {
+            const char *nm = q->items[k]->str1;
+            size_t used = strlen(buf);
+            if (nm == NULL || used + strlen(nm) + 3 >= sizeof buf) break;
+            snprintf(buf + used, sizeof buf - used, "%s%s", used ? "::" : "", nm);
+            if (!ns_path_known(paths, n, buf)) break;
+            nsn = k + 1;
+        }
+        if (nsn == 0) continue;
+        AstNode *ns_names[64];
+        if (nsn > 64) nsn = 64;
+        for (int k = 0; k < nsn; k++) ns_names[k] = q->items[k];
+        AstNode *rest = NULL;
+        if (nsn < q->count) {
+            /* keep the class part as the qualifier chain */
+            rest = ast_new(AST_QUALIFIED_ID, d->b->line);
+            rest->file = d->b->file;
+            for (int k = nsn; k < q->count; k++) ast_list_append(&rest->list, q->items[k]);
+        }
+        d->b = rest;
+        for (int k = 0; k < d->list.count; k++)
+            if (d->list.items[k] != NULL) strip_own_namespace(d->list.items[k]->type, ns_names, nsn);
+        strip_own_namespace(d->type, ns_names, nsn);
+        AstNode *inner = d;
+        for (int k = nsn - 1; k >= 0; k--) {
+            AstNode *w = ast_new(AST_NAMESPACE_DECL, d->line);
+            w->file = d->file;
+            w->str1 = strdup(ns_names[k]->str1);
+            ast_list_append(&w->list, inner);
+            inner = w;
+        }
+        decls->items[i] = inner;
+    }
+    for (int i = 0; i < n; i++) free(paths[i]);
+    free(paths);
+}
+
 typedef struct { AstNode *node; char *key; char *qkey; } ExternKeyed;
 
 static void collect_extern_keys(AstList *decls, const char *prefix, ExternKeyed **v, int *n, int *cap) {

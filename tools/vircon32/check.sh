@@ -28,6 +28,19 @@ if [ ! -x "$BIN/compile" ] || [ ! -x "$BIN/assemble" ] || [ ! -x "$BIN/packrom" 
     echo "check.sh: toolchain not built -- run tools/vircon32/build-tools.sh first" >&2
     exit 1
 fi
+# A toolchain without BUILD-INFO predates the current build-tools.sh (often one built before v32sim could be
+# found); its compiler may not match what the tests expect, so refuse it rather than report a wall of failures.
+if [ ! -f "$BIN/BUILD-INFO" ]; then
+    echo "check.sh: $BIN was built by an older build-tools.sh (no BUILD-INFO) -- rebuild it with tools/vircon32/build-tools.sh" >&2
+    exit 1
+fi
+CS_SRC=$(sed -n 's/^computersoftware=//p' "$BIN/BUILD-INFO")
+CS_HEAD=$(sed -n 's/^head=//p' "$BIN/BUILD-INFO")
+NOW=$(git -C "$CS_SRC" rev-parse HEAD 2>/dev/null || true)
+if [ -n "$NOW" ] && [ "$CS_HEAD" != unknown ] && [ "$NOW" != "$CS_HEAD" ]; then
+    echo "check.sh: warning: $CS_SRC moved to $NOW since the toolchain was built from $CS_HEAD -- rerun tools/vircon32/build-tools.sh" >&2
+fi
+echo "check.sh: toolchain $(sed -n 's/^compiler=//p' "$BIN/BUILD-INFO") from $CS_SRC"
 
 failed=0
 built=0

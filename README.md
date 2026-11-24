@@ -21,7 +21,7 @@ everything Vircon32's own C dialect does differently.
 > **Status: functional.** The whole  pipeline — preprocessing, parsing,
 > semantic analysis,  lowering and code  generation — works end  to end
 > and is  checked against the  **real** Vircon32 compiler,  assembler and
-> console (`make  realcheck`: 181  programs compiled  and assembled,  112 of
+> console (`make  realcheck`: 227  programs compiled  and assembled,  158 of
 > them self-checking  at run time  on a headless console).  Five sizeable
 > demos (three C++ games, a port of Rogue and a plain-C Spy vs Spy) build
 > with it. See [Known
@@ -146,7 +146,10 @@ of scope](#deliberately-out-of-scope).
 ### The rest of the language
 
 - Namespaces (nested, with their global objects built and destroyed like file-scope ones, qualified calls, namespaced  C names for functions and variables:
-  `v32::draw(int,int,int)`    becomes   `v32__draw__int_int_int`, `a::x` becomes `a__x`),    and
+  `v32::draw(int,int,int)`    becomes   `v32__draw__int_int_int`, `a::x` becomes `a__x`;
+  out-of-line definitions may be written qualified, `int a::f(E e) {...}`, `void a::C::m() {...}`,
+  `a::C::C(int x) : v(x) {}`, `a::C::~C() {}`, and mean what they would inside the namespace:
+  default arguments from the declaration, its names visible unqualified),    and
   `using`: `using  namespace v32;` at  file scope  or in a  block, `using
   v32::Keyboard;`, and `using  Points = int;`. Functions  found through a
   directive overload with the ones in scope, as in C++.
@@ -384,7 +387,7 @@ of  every  glyph  in   the  BIOS  font  and  how  to   type  it)  are  in
 ## Known limitations
 
 Checked against  the current  transpiler and  the real  Vircon32 compiler
-(October 2026), not carried over from older notes.
+(November 2026), not carried over from older notes.
 
 **Not supported** (a clear error unless noted):
 
@@ -434,7 +437,7 @@ Checked against  the current  transpiler and  the real  Vircon32 compiler
   call does: `P m{1, 2};` and `int w{5};` as in-class defaults, `: w{5}` / `: p{}` in a
   mem-initializer list, `new P{1, 2}`, `new Counter{3}`. `new int`, `new int(5)`,
   `new float{2.5f}` and `new Node*` allocate one word (through `--alloc` too) and `delete` frees it.
-  `new T[n]()` is not supported. See `docs/VIRCON32_QUIRKS.md` #31-#33.
+  `new T[n]()` and `new int[n]()` (value-initialized array new) are the same as `new T[n]{}`. See `docs/VIRCON32_QUIRKS.md` #31-#33.
 - **Control codes in string literals are rewritten**:  the Vircon32 toolchain
   can't assemble a string holding the BIOS font's codes 14–31 (`┌ ─ ┐ │ ░ ▒ ▓ █`
   ...)  or other control codes,  `"\025"`.  v32c++ moves such a literal into a
@@ -461,7 +464,8 @@ Checked against  the current  transpiler and  the real  Vircon32 compiler
   are unchanged). The enum's *type* name is qualified too (`a::E` is `a__E`,
   also in the mangled name of a function that takes it), so two enums of one name in
   different namespaces are two types. A scoped enum's enumerators are `Color__Red`
-  (`ns__Color__Red`); a bare `Red` is left as written (the Vircon32 compiler rejects it), and the conversion to `int`
+  (`ns__Color__Red`); a bare `Red` is an error that says what to write (`'Red' is a scoped enumerator: write
+  'Color::Red'`) unless the name means something else (a variable, a function...), and the conversion to `int`
   is allowed without a cast (more permissive than C++).
 - **Overloaded name as a function pointer's value**: `int (*p)(float) = over;`
   picks the overload with the pointer's signature; with none, or more than one,
@@ -478,7 +482,10 @@ Checked against  the current  transpiler and  the real  Vircon32 compiler
 - **`native` types** can be pointed to  but not created; the storage must
   come from the C side.
 - **Unions** larger  than one word can't  be passed or returned  by value
-  (v32c++ doesn't warn; the Vircon32 compiler reports it).
+  (v32c++ doesn't warn; the Vircon32 compiler reports it). Structs, classes and unions are
+  written in dependency order (a type after the ones it holds by value, so
+  `union V { int a; B b; };` is fine wherever `B` was declared); two that hold each
+  other by value are an error, and every union is forward-declared for pointers.
 - **File-scope objects** (and arrays of them) are constructed at the top of
   `main` and destroyed when it ends (after its locals, in reverse order),
   also from `exit()`/`abort()` of v32libc, whose `v32_exit` runs them first
@@ -592,6 +599,25 @@ its  error  count  there  before  halting;  the  check  requires  0  (see
 `tests/94sample.cpp`). A sample with  a `tests/NNsample.input` next to it
 is played  with that  scripted gamepad input  (`tests/119sample.cpp`, the
 v32io test, uses it for keyboard and mouse traffic).
+
+`tools/vircon32/build-tools.sh [COMPUTERSOFTWARE]` builds the stock `compile`,
+`assemble` and `packrom` into `tools/vircon32/bin/` (through v32sim's
+`tools/oracle/build.sh`) and stamps `bin/BUILD-INFO`: the ComputerSoftware path it
+used, that checkout's git `HEAD`, the v32sim path and the compiler's version.
+It first smoke-tests the new compiler from a scratch directory and stops with its
+message if it can't find its SDK headers (on macOS that needs a v32sim whose oracle
+SDL shim supports `_NSGetExecutablePath`).
+`tools/vircon32/check.sh` (what `make realcheck` runs after `make test`) prints
+the compiler it uses, **refuses a `bin/` without `BUILD-INFO`** -- one built by an
+older `build-tools.sh` -- telling you to rebuild it, and warns when
+the ComputerSoftware checkout has moved since the build. Today it compiles and
+assembles 227 programs (4 are not packed: their `#texture`/`#sound` assets are not in
+`tests/`) and runs 158 self-checking cartridges, among them the `--alloc=arena` and
+`--alloc=gc` builds listed in `tests/real_variants.txt` (`name source flags`: add a
+sample's variants there when it allocates). `tools/prune-release.sh [--apply]` is the
+release cleaner: a dry run by default, it lists (and with `--apply` removes, with
+`git rm` for tracked files) stale clones, private copies of v32sim's tools, build
+scripts, bison reports and editor leftovers.
 
 Running, profiling and screenshots of carts belong to **v32sim**, which is
 the one place for them: `build-tools.sh` and `check.sh` only call its
@@ -884,14 +910,16 @@ scripts/        smoke_test.sh and stage_package.sh (the release workflow's
                 install, for DEST_LANG)
 .github/        workflows/release-builds.yml, the build and release workflow;
                 release-notes.md, the release page text it publishes
-AGENTS.md       notes for AI coding agents working on the project
+docs/AGENTS.md  notes for AI coding agents working on the project
 tools/
   embed-header.sh   regenerates src/stdstring.c from lib/string
   prune-release.sh  removes stale, duplicate and generated files (dry run;
                     --apply uses git rm for tracked ones)
   vircon32/         build-tools.sh (builds the real Vircon32 toolchain
-                    into bin/ through v32sim) and check.sh (`make
-                    realcheck`); every runner, profiler and debugger is
+                    into bin/ through v32sim, finding ../v32sim(.git) and
+                    ../ComputerSoftware(.git), and writes bin/BUILD-INFO)
+                    and check.sh (`make realcheck`; refuses a bin/ without
+                    BUILD-INFO); every runner, profiler and debugger is
                     v32sim's
 ```
 

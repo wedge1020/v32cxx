@@ -256,6 +256,31 @@ static AstNode *parse_type_name_node(const char *name, int line) {
     return ast_ident(name, line);
 }
 
+/* `int a::f(E e) {...}`: the parameter types and the body of an out-of-line definition are looked up
+ * in the namespace its qualifier names, as if the definition stood inside it (the lexer then calls
+ * `E` a type, `a::E` being declared). The leading namespace names of the chain move the symbol table
+ * to that namespace's scope; ool_leave() puts it back. `skip_last` is for the constructor form, whose
+ * chain ends in the constructor's own name. */
+static Scope *g_ool_saved_scope = NULL;
+static void ool_enter(const AstList *chain, int skip_last) {
+    g_ool_saved_scope = NULL;
+    if (g_c_mode || chain == NULL) return;
+    Scope *sc = g_symtab->global;
+    int entered = 0;
+    int n = chain->count - (skip_last ? 1 : 0);
+    for (int i = 0; i < n; i++) {
+        const char *nm = chain->items[i]->str1;
+        Symbol *sym = nm ? symtab_lookup_own(sc, nm) : NULL;
+        if (sym == NULL || sym->kind != SYM_NAMESPACE || sym->inner_scope == NULL) break;
+        sc = sym->inner_scope;
+        entered = 1;
+    }
+    if (entered) { g_ool_saved_scope = g_symtab->current; g_symtab->current = sc; }
+}
+static void ool_leave(void) {
+    if (g_ool_saved_scope != NULL) { g_symtab->current = g_ool_saved_scope; g_ool_saved_scope = NULL; }
+}
+
 /* `a::b::E` as written in a type */
 static AstNode *parse_qualified_type_node(const AstList *prefix, const char *name, int line) {
     if (!g_c_mode && g_ns_enum_count > 0) {
@@ -1970,7 +1995,7 @@ func_def:
  */
 
 out_of_line_def:
-    type_spec pointer_opt qname_prefix func_name '(' { symtab_push_scope(g_symtab, NULL, 0); } opt_param_list ')' opt_const block
+    type_spec pointer_opt qname_prefix func_name '(' { ool_enter(&$3, 0); symtab_push_scope(g_symtab, NULL, 0); } opt_param_list ')' opt_const block
         {
             $$ = ast_new(AST_FUNC_DEF, @1.first_line);
             $$->str1 = strdup($4);
@@ -1993,8 +2018,9 @@ out_of_line_def:
             $$->b = ast_new(AST_QUALIFIED_ID, @3.first_line);
             $$->b->list = $3;
             symtab_pop_scope(g_symtab);
+            ool_leave();
         }
-    | qname_prefix OPERATOR type_spec pointer_opt '(' { symtab_push_scope(g_symtab, NULL, 0); } ')' opt_const block
+    | qname_prefix OPERATOR type_spec pointer_opt '(' { ool_enter(&$1, 0); symtab_push_scope(g_symtab, NULL, 0); } ')' opt_const block
         {
             /* An out-of-line conversion operator: `Counter::operator int() const { ... }` */
             $$ = ast_new(AST_FUNC_DEF, @1.first_line);
@@ -2011,8 +2037,9 @@ out_of_line_def:
             $$->b = ast_new(AST_QUALIFIED_ID, @1.first_line);
             $$->b->list = $1;
             symtab_pop_scope(g_symtab);
+            ool_leave();
         }
-    | qualified_type '(' { symtab_push_scope(g_symtab, NULL, 0); } opt_param_list ')' opt_member_init_list block
+    | qualified_type '(' { ool_enter($1->kind == AST_QUALIFIED_ID ? &$1->list : NULL, 1); symtab_push_scope(g_symtab, NULL, 0); } opt_param_list ')' opt_member_init_list block
         {
             /* Constructor: Class::Class(...) {}.
              *
@@ -2061,8 +2088,9 @@ out_of_line_def:
                 ast_list_append(&$$->b->list, parts->items[i]);
             }
             symtab_pop_scope(g_symtab);
+            ool_leave();
         }
-    | qname_prefix '~' TYPE_NAME '(' ')' block
+    | qname_prefix '~' TYPE_NAME '(' ')' { ool_enter(&$1, 0); } block
         {
             /* Destructor: Class::~Class() {} -- never takes parameters, so
              * no function-scope push/pop is needed here (unlike the two
@@ -2074,9 +2102,10 @@ out_of_line_def:
             $$->str1 = dtor_name;
             $$->type = NULL;
             $$->list = ast_list_new();
-            $$->a = $6;
+            $$->a = $7;
             $$->b = ast_new(AST_QUALIFIED_ID, @1.first_line);
             $$->b->list = $1;
+            ool_leave();
         }
     ;
 
@@ -3778,6 +3807,21 @@ unary_expr:
             $$->type = apply_ptr($2, $3, @1.first_line);
             $$->a = $5;
             $$->b = $7;
+        }
+    | NEW type_spec '[' expr ']' '(' ')'
+        {
+            /* new T[N]() -- value-initialized array: same as new T[N]{} */
+            $$ = ast_new(AST_NEW, @1.first_line);
+            $$->type = $2;
+            $$->a = $4;
+            $$->b = ast_new(AST_INIT_LIST, @1.first_line);
+        }
+    | NEW type_spec new_stars '[' expr ']' '(' ')'
+        {
+            $$ = ast_new(AST_NEW, @1.first_line);
+            $$->type = apply_ptr($2, $3, @1.first_line);
+            $$->a = $5;
+            $$->b = ast_new(AST_INIT_LIST, @1.first_line);
         }
     | DELETE unary_expr
         { $$ = ast_new(AST_DELETE, @1.first_line); $$->a = $2; }

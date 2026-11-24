@@ -1011,6 +1011,7 @@ int ast_decode_escape(const char **p);
 void hoist_static_locals(AstList *decls);
 void merge_tentative_globals(AstList *decls);
 void mark_extern_decls(AstList *decls);
+void qualify_namespace_definitions(AstList *decls);
 void merge_extern_names(AstList *decls);
 /* In-class default member initializers (`int lives = 3;` inside a
  * class): each becomes an assignment at the top of every constructor

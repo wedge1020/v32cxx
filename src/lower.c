@@ -10575,6 +10575,9 @@ static void nv_declare(const char *name) {
     g_nv.names[g_nv.count++] = (char *)name;
 }
 
+static int g_scoped_enum_errors = 0;
+static int g_nv_in_enum = 0;     /* inside `enum class E { A, B = A + 1 }`: the bare enumerator is visible there */
+
 static int nv_is_local(const char *name) {
     for (int i = g_nv.count - 1; i >= 0; i--)
         if (strcmp(g_nv.names[i], name) == 0) return 1;
@@ -10651,6 +10654,15 @@ static void nv_walk(AstNode *n) {
             if (n->str1 != NULL && !nv_is_local(n->str1)) {
                 const char *c = sema_namespace_var_cname(n);
                 if (c != NULL) n->str1 = strdup(c);
+                else if (!g_nv_in_enum && !g_c_mode) {
+                    char *hint = sema_scoped_enumerator_hint(n->str1);
+                    if (hint != NULL) {
+                        fprintf(stderr, "%s:%d: error: '%s' is a scoped enumerator: write '%s'\n",
+                                n->file ? n->file : g_current_filename, n->line, n->str1, hint);
+                        free(hint);
+                        g_scoped_enum_errors++;
+                    }
+                }
             }
             return;
         case AST_QUALIFIED_ID: {
@@ -10758,10 +10770,15 @@ static void nv_decls(AstList *decls, const char *ns) {
             case AST_ENUM_DECL: {
                 /* `enum F { B = RED + 1 }`: the values may name enumerators */
                 const char *saved = sema_get_lookup_namespace();
-                sema_set_lookup_namespace(ns);
+                /* an `enum class`'s own initializers see its enumerators bare: look in its scope */
+                char *own = n->ival == 1 ? sema_ns_join(ns, n->str2 != NULL ? n->str2 : n->str1) : NULL;
+                sema_set_lookup_namespace(own != NULL ? own : ns);
+                g_nv_in_enum = 1;
                 for (int j = 0; j < n->list.count; j++)
                     if (n->list.items[j]->kind == AST_ENUM_VALUE) nv_walk(n->list.items[j]->a);
+                g_nv_in_enum = 0;
                 sema_set_lookup_namespace(saved);
+                free(own);
                 break;
             }
             default:
@@ -10837,6 +10854,7 @@ int lower_run(AstNode *program) {
     g_sar_needed = 0;
     g_udiv_needed = 0;
     g_goto_errors = 0;
+    g_scoped_enum_errors = 0;
     g_delete_errors = 0;
     g_fnref_errors = 0;
     g_globals_name_functions = 0;
@@ -10855,6 +10873,7 @@ int lower_run(AstNode *program) {
      * phase 9b instead of warned about.) */
     this_inject_classes(&program->list);
     namespace_vars_rename(program);                   /* phase 0c */
+    if (g_scoped_enum_errors > 0) return g_scoped_enum_errors;
     inject_member_ctor_calls_classes(&program->list); /* phase 8-pre -- MUST run
         before phase 8: both prepend, and member construction has to end up
         AFTER base-ctor (8b) / member-assigns (8a) / vtable-init (8) in the

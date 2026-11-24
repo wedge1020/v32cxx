@@ -81,7 +81,9 @@ cadena de herramientas y el emulador reales).
 | 32 | no hay conversión a `void`; no hay `&` de `((T *)p)[i]` | `(void)x;` | **bajado** |
 | 33 | una unión no admite lista entre llaves | `U u{};`, `U u = {1};` | **bajado** (declaración + asignación del primer miembro) |
 | 34 | no hay `int` a enumeración: `E e = 0;` | `S s{};` con un miembro `enum`, `{1, 0}` | **bajado** (`(E)0`) |
-| 35 | una unión se imprime antes que los structs, así que un miembro struct de una unión «no está completamente definido» | `union V { int a; B b; };` | **no manejado** (tu código) |
+| 35 | un miembro struct o unión de tipo struct/unión debe estar definido antes | `union V { int a; B b; };` | **bajado** (todo struct, clase y unión se escribe después de los que contiene por valor; un ciclo es un error) |
+| 36 | un puntero a una unión puede ir antes que la unión, tras `union U;` | `struct S { U *p; };` y luego `union U {...};` | **bajado** (se escribe `union U;` para cada unión) |
+| 37 | un enumerador sin calificar de un `enum class` es «identifier has not been declared» | `Color c = Red;` | **diagnosticado** (error de v32c++: escribe `Color::Red`) |
 
 No cubierto por ninguna entrada porque v32c++ no tiene solución: plantillas,
 excepciones, RTTI, herencia múltiple, `constexpr`, lambdas,
@@ -1116,7 +1118,7 @@ el emulador reales. Una corrección aguas arriba serían tres líneas en `Escape
   nulo). `new P()` y `new P[n]{}` ponen a cero lo que reservan, `: m{}` pone a cero
   un miembro (`{ P __v32_zero = {0, 0}; this->m = __v32_zero; }`), y un 0 literal que
   inicializa un puntero global o de espacio de nombres, o que se asigna o compara a
-  través de `T*&`, se imprime `NULL`. `new T[n]()` es un error de sintaxis. Un miembro
+  través de `T*&`, se imprime `NULL`. `new T[n]()` equivale a `new T[n]{}`. Un miembro
   puntero (también en structs anidados y arreglos de ellos) de `new P()`, `new P[n]{}` y
   `new Q{...}` vale `NULL`, no el 0 byte a byte que escribía la primera versión de
   `new P[n]{}` (su ayudante `_rest` asigna un valor cero completo a cada elemento).
@@ -1155,13 +1157,38 @@ el emulador reales. Una corrección aguas arriba serían tres líneas en `Escape
   (`desig_zero`, solo en modo Vircon32). Asignar un `int` propio a una variable `enum`
   requiere conversión explícita, como en C++. `tests/196sample.cpp`.
 
-## 35. Una unión se imprime antes que los structs
+## 35. Un struct o unión contenido por valor debe definirse antes
 
-- **Vircon32 hace**: rechazar un miembro de unión de tipo struct definido después de ella
-  («structure 'B' is instanced without being fully defined»).
-- **Para v32c++**: no se hace nada: las uniones se imprimen antes que las clases y structs,
-  así que `union V { int a; B b; };` falla en el compilador (una unión de escalares y
-  arreglos, y un struct que contiene una unión, sí valen). Aún no manejado.
+- **Vircon32 hace**: rechazar un miembro de tipo struct o unión definido después de él
+  («structure 'B' is instanced without being fully defined»). A un miembro puntero le basta
+  con que el tipo esté declarado.
+- **Para v32c++**: todo struct, clase y unión se escribe después de los que contiene POR
+  VALOR (miembros de datos, heredados, elementos de arreglo, nombres de typedef, miembros de
+  namespace), y en orden de fuente donde eso ya vale. Así `union V { int a; B b; };` queda
+  después de `struct B`, donde sea que la fuente la pusiera. Los miembros puntero no piden
+  orden (véase el n.º 36). Dos tipos que se contienen mutuamente por valor no pueden existir
+  en C: v32c++ lo dice (`'U' and 'S' hold each other by value`) y no escribe nada. Antes,
+  todas las uniones se imprimían delante de los structs. `tests/204sample.cpp`,
+  `tests/204bad.cpp`.
+
+## 36. Una unión puede declararse por adelantado
+
+- **Vircon32 hace**: aceptar `union U;` (nombre sin la palabra `union` en los usos
+  posteriores) y un miembro o parámetro puntero de ese tipo antes de definir la unión.
+- **Para v32c++**: se escribe `union U;` para cada unión, junto a los `struct S;` que ya
+  recibe cada clase, de modo que un puntero a una unión puede ir antes que ella en la salida
+  (es lo que hace suficiente el orden del n.º 35). `tests/204sample.cpp`.
+
+## 37. Un enumerador sin calificar de un `enum class`
+
+- **Vircon32 hace**: no tiene enumeraciones con ámbito; v32c++ escribe `Color::Red` como el
+  nombre C `Color__Red`. Un `Red` suelto es un nombre que nada declara, y el compilador se
+  detiene con `identifier "Red" has not been declared`, que no dice qué escribir.
+- **Para v32c++**: informa `'Red' is a scoped enumerator: write 'Color::Red'` en esa línea.
+  Solo para un nombre que no significa otra cosa: una variable, parámetro, miembro, función,
+  clase o constante de `enum` simple con ese nombre sigue valiendo, y dentro del propio
+  `enum class` los nombres sueltos de sus enumeradores valen (`Blue = Red + 5`).
+  `tests/205sample.cpp`, `tests/205bad.cpp`.
 
 ## Qué NO cubre esta lista
 

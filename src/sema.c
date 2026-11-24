@@ -374,6 +374,14 @@ static void register_free_function(AstNode *func, const char *ns) {
             strcmp(e->func->str1, func->str1) == 0 &&
             (g_c_mode ||    /* C: one name, one function */
              param_lists_match(&e->func->list, &func->list))) {
+            /* default arguments are written once, on the declaration (`int f(int a, int b = 7);`
+             * then `int f(int a, int b) {...}`): whichever of the pair lacks one gets a copy */
+            for (int k = 0; k < e->func->list.count && k < func->list.count; k++) {
+                AstNode *p1 = e->func->list.items[k], *p2 = func->list.items[k];
+                if (p1->kind != AST_PARAM || p2->kind != AST_PARAM) continue;
+                if (p1->a != NULL && p2->a == NULL) p2->a = ast_clone_expr(p1->a);
+                else if (p2->a != NULL && p1->a == NULL) p1->a = ast_clone_expr(p2->a);
+            }
             if (func->kind == AST_FUNC_DEF && e->func->kind != AST_FUNC_DEF) {
                 e->func = func;
             }
@@ -441,6 +449,7 @@ typedef struct GlobalVarRegEntry {
                           * namespace-scope variable, `x` at file scope or for an
                           * `extern` declaration (a name defined elsewhere) */
     AstNode *decl;       /* the AST_VAR_DECL */
+    AstNode *enum_decl;  /* an enumerator's AST_ENUM_DECL (else NULL) */
     struct GlobalVarRegEntry *next;
 } GlobalVarRegEntry;
 
@@ -495,6 +504,7 @@ static void register_enumerators(AstNode *enum_decl, const char *ns_in) {
         e->cname = malloc(len);
         snprintf(e->cname, len, "%s__%s", prefix, ev->str1);
         e->decl = ev;
+        e->enum_decl = enum_decl;
         e->next = g_global_var_registry;
         g_global_var_registry = e;
     }
@@ -2398,6 +2408,33 @@ const char *sema_namespace_var_cname(const AstNode *expr) {
     }
     if (e == NULL || strcmp(e->cname, e->name) == 0) return NULL;
     return e->cname;
+}
+
+/* A bare name that is an enumerator of an `enum class` and nothing else: returns the qualified spelling
+ * to suggest (`Color::Red`, `a::Color::Red`; two enums with one enumerator name are joined with " or "),
+ * malloc'd, or NULL. "Nothing else" is every other thing the name can mean here: a variable or enumerator
+ * visible from the current namespace, a function, a class, a union, an enum, a typedef (a local or a
+ * parameter is the caller's business). lower.c phase 0c asks, per identifier. */
+char *sema_scoped_enumerator_hint(const char *name) {
+    if (name == NULL) return NULL;
+    if (resolve_global_var(name, NULL) != NULL) return NULL;
+    for (FreeFuncRegEntry *f = g_free_func_registry; f != NULL; f = f->next)
+        if (f->func != NULL && f->func->str1 != NULL && strcmp(f->func->str1, name) == 0) return NULL;
+    if (find_class(name) != NULL || find_typedef_target(name) != NULL || typedef_registry_is_native(name)) return NULL;
+    if (find_enum_decl_by_name(name) != NULL || enum_const_owner_lookup(name) != NULL) return NULL;
+    for (EnumRegEntry *u = g_union_registry; u != NULL; u = u->next)
+        if (u->name != NULL && strcmp(u->name, name) == 0) return NULL;
+    char *out = NULL;
+    for (GlobalVarRegEntry *e = g_global_var_registry; e != NULL; e = e->next) {
+        if (e->decl == NULL || e->decl->kind != AST_ENUM_VALUE || e->enum_decl == NULL || e->enum_decl->ival != 1) continue;
+        if (strcmp(e->name, name) != 0) continue;
+        size_t len = strlen(e->ns) + strlen(name) + 8 + (out ? strlen(out) + 6 : 0);
+        char *next = malloc(len);
+        snprintf(next, len, "%s%s%s::%s", out ? out : "", out ? "' or '" : "", e->ns, name);
+        free(out);
+        out = next;
+    }
+    return out;
 }
 
 /* Renames every namespace-scope variable declaration to its C name

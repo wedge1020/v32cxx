@@ -930,6 +930,8 @@ int  main (int  argc, char **argv)
      * before anything else looks at the AST (ast.c). */
     if (rc == 0 && g_program != NULL && desugar_unnamed_objects(&g_program->list) != 0) rc = 1;
 
+    if (rc == 0 && g_program != NULL) qualify_namespace_definitions(&g_program->list);
+
     if (rc == 0 && g_program != NULL) {
         /* C storage classes, resolved before anything else looks at the
          * tree: static locals become file-scope variables, and repeated
@@ -996,6 +998,7 @@ int  main (int  argc, char **argv)
             /* calls through `...`, now that sema has said which they are */
             int lower_errors = rewrite_variadic_calls(&g_program->list);
             if (lower_errors == 0) lower_errors = lower_run(g_program);
+            if (lower_errors == 0) lower_errors = codegen_check_aggregates(g_program);
             if (verbosity >= 3) {
                 lower_dump(g_program);
                 lower_notes_print();

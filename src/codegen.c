@@ -709,17 +709,6 @@ static void emit_union(FILE *out, const AstNode *n) {
     fprintf(out, "};\n\n");
 }
 
-static void emit_unions(FILE *out, const AstList *decls) {
-    for (int i = 0; i < decls->count; i++) {
-        const AstNode *n = decls->items[i];
-        if (n->kind == AST_UNION_DECL) {
-            if (g_c_mode) continue;     /* written with the structs, in order: emit_classes */
-            emit_union(out, n);
-        } else if (n->kind == AST_NAMESPACE_DECL) {
-            emit_unions(out, &n->list);
-        }
-    }
-}
 
 
 /* ---- global (file-scope) variables --------------------------------------
@@ -1142,30 +1131,133 @@ static void emit_vtable_instances_classes(FILE *out, const AstList *decls) {
     }
 }
 
-/* ---- top-level walk ---------------------------------------------------
+/* ---- aggregate types, in dependency order ------------------------------
  *
- * Emits every class's vtable struct type (if any) immediately followed
- * by its own struct definition, in natural source-encounter order,
- * recursing into namespaces (flattened -- see print_type's own doc
- * comment on AST_QUALIFIED_ID for why that's consistent with the rest of
- * this compiler rather than a new limitation). See codegen.h for the
- * open question this ordering doesn't resolve in general.
- */
-static void emit_classes(FILE *out, const AstList *decls) {
+ * Every struct, class and union is written after the aggregates it holds BY VALUE: the stock compiler
+ * rejects `union V { int a; B b; };` printed before `struct B` ("not fully defined", QUIRKS #35), and
+ * a struct holding a union or a struct declared later fails the same way. A pointer member needs no
+ * order (the forward declarations above cover it). Source order is kept wherever it already works:
+ * a depth-first walk in source order that writes a type's by-value members first. Namespaces are
+ * flattened (class and union C names are bare). A by-value cycle (A holds B holds A) cannot exist in C:
+ * codegen_check_aggregates reports it before anything is written.
+ * What counts as by value: a struct's data fields, inherited ones included (the layout is flat), a
+ * union's members; through arrays, `const`, and typedef names; not through pointers or references. */
+typedef struct { const AstNode *decl; int state; } AggEntry;     /* state: 0 new, 1 on the stack, 2 written */
+typedef struct { AggEntry *v; int n, cap; const AstList *roots; const AstNode *err_from, *err_to; int errors; int emit; FILE *out; } AggSet;
+
+static void agg_collect(AggSet *a, const AstList *decls) {
     for (int i = 0; i < decls->count; i++) {
         const AstNode *n = decls->items[i];
-        if (n->kind == AST_CLASS_DECL) {
-            emit_vtable_struct(out, n);
-            emit_struct(out, n);
-        } else if (n->kind == AST_UNION_DECL && g_c_mode) {
-            /* C input: structs and unions hold each other by value (a
-             * union of two structs, inside a struct), so they are written
-             * in the order the source declares them. */
-            emit_union(out, n);
+        if (n == NULL) continue;
+        if (n->kind == AST_CLASS_DECL || n->kind == AST_UNION_DECL) {
+            if (a->n == a->cap) { a->cap = a->cap ? a->cap * 2 : 64; a->v = realloc(a->v, sizeof(AggEntry) * (size_t)a->cap); }
+            a->v[a->n].decl = n;
+            a->v[a->n].state = 0;
+            a->n++;
         } else if (n->kind == AST_NAMESPACE_DECL) {
-            emit_classes(out, &n->list);
+            agg_collect(a, &n->list);
         }
     }
+}
+
+static const AstNode *agg_find_typedef(const AstList *decls, const char *name) {
+    for (int i = 0; i < decls->count; i++) {
+        const AstNode *n = decls->items[i];
+        if (n == NULL) continue;
+        if (n->kind == AST_TYPEDEF_DECL && n->str1 != NULL && strcmp(n->str1, name) == 0) return n;
+        if (n->kind == AST_NAMESPACE_DECL) {
+            const AstNode *f = agg_find_typedef(&n->list, name);
+            if (f != NULL) return f;
+        }
+    }
+    return NULL;
+}
+
+static void agg_write(AggSet *a, int idx);
+
+/* the aggregate a by-value use of `type` needs written first, or -1 */
+static int agg_type_dep(AggSet *a, const AstNode *type, int depth) {
+    while (type != NULL && depth < 16) {
+        if (type->kind == AST_CONST_TYPE || type->kind == AST_ARRAY_TYPE) { type = type->a; continue; }
+        const char *name = NULL;
+        if (type->kind == AST_IDENT) name = type->str1;
+        else if (type->kind == AST_QUALIFIED_ID && type->list.count > 0) name = type->list.items[type->list.count - 1]->str1;
+        else return -1;                 /* pointer, reference, function pointer, primitive */
+        if (name == NULL) return -1;
+        for (int i = 0; i < a->n; i++)
+            if (a->v[i].decl->str1 != NULL && strcmp(a->v[i].decl->str1, name) == 0) return i;
+        const AstNode *td = agg_find_typedef(a->roots, name);
+        if (td == NULL) return -1;
+        type = td->type;
+        depth++;
+    }
+    return -1;
+}
+
+static void agg_visit_dep(AggSet *a, int from, const AstNode *type) {
+    int d = agg_type_dep(a, type, 0);
+    if (d < 0) return;
+    if (a->v[d].state == 1) {
+        if (a->errors == 0) { a->err_from = a->v[from].decl; a->err_to = a->v[d].decl; }
+        a->errors++;
+        return;
+    }
+    if (a->v[d].state == 0) agg_write(a, d);
+}
+
+static void agg_write(AggSet *a, int idx) {
+    const AstNode *n = a->v[idx].decl;
+    a->v[idx].state = 1;
+    if (n->kind == AST_UNION_DECL) {
+        for (int j = 0; j < n->list.count; j++) {
+            const AstNode *m = n->list.items[j];
+            if (m != NULL && m->kind == AST_VAR_DECL) agg_visit_dep(a, idx, m->type);
+        }
+    } else {
+        StructLayout *layout = (StructLayout *)n->lower_info;
+        if (layout != NULL)
+            for (int j = 0; j < layout->count; j++)
+                if (layout->fields[j].kind != FIELD_VTABLE_PTR) agg_visit_dep(a, idx, layout->fields[j].type);
+    }
+    a->v[idx].state = 2;
+    if (!a->emit) return;
+    if (n->kind == AST_UNION_DECL) {
+        emit_union(a->out, n);
+    } else {
+        emit_vtable_struct(a->out, n);
+        emit_struct(a->out, n);
+    }
+}
+
+static int agg_run(const AstList *decls, int emit, FILE *out, const AstNode **from, const AstNode **to) {
+    AggSet a = {0};
+    a.roots = decls;
+    a.emit = emit;
+    a.out = out;
+    agg_collect(&a, decls);
+    for (int i = 0; i < a.n; i++)
+        if (a.v[i].state == 0) agg_write(&a, i);
+    if (from) *from = a.err_from;
+    if (to) *to = a.err_to;
+    int errors = a.errors;
+    free(a.v);
+    return errors;
+}
+
+static void emit_classes(FILE *out, const AstList *decls) {
+    agg_run(decls, 1, out, NULL, NULL);
+}
+
+/* A by-value cycle between structs/unions: an error, said before any output is written. */
+int codegen_check_aggregates(const AstNode *program) {
+    const AstNode *from = NULL, *to = NULL;
+    int errors = agg_run(&program->list, 0, NULL, &from, &to);
+    if (errors > 0 && from != NULL && to != NULL) {
+        fprintf(stderr, "%s:%d: error: '%s' and '%s' hold each other by value (a type cannot contain itself): "
+                        "make one of the members a pointer\n",
+                from->file ? from->file : "?", from->line, from->str1, to->str1);
+    }
+    return errors > 0 ? 1 : 0;
 }
 
 /* ---- forward declarations ----------------------------------------------
@@ -1191,7 +1283,8 @@ static void emit_forward_declarations(FILE *out, const AstList *decls) {
         const AstNode *n = decls->items[i];
         if (n->kind == AST_CLASS_DECL) {
             fprintf(out, "struct %s;\n", n->str1);
-        } else if (n->kind == AST_UNION_DECL && g_c_mode) {
+        } else if (n->kind == AST_UNION_DECL) {
+            /* a pointer to a union may come before the union (the stock compiler takes `union U;`) */
             fprintf(out, "union %s;\n", n->str1);
         } else if (n->kind == AST_NAMESPACE_DECL) {
             emit_forward_declarations(out, &n->list);
@@ -3677,7 +3770,6 @@ void codegen_run(const AstNode *program, FILE *out, int verbose_comments) {
     emit_typedefs(out, &program->list);
     fprintf(out, "\n");
     emit_enums(out, &program->list);
-    emit_unions(out, &program->list);
     emit_classes(out, &program->list);
     /* C input: a file-scope initializer may name a function (a table of
      * handlers), so the prototypes go ahead of the variables there. */
