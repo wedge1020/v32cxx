@@ -2,6 +2,12 @@
 
 ## 20261123-dev
 
+- **`V32CXX_SDK_INCLUDE=` (set but empty) turns the SDK header search off.** Setting the variable only ever added
+  folders in front of the search, so on a machine with the DevTools installed (`compile` on `PATH`, or
+  `/usr/local/Vircon32/DevTools/include`) the SDK headers were still found and sample 154, which checks the
+  "SDK header not found" warning, failed `make test`. Empty now means no SDK headers at all (`main.c`); unset keeps the
+  full search. `make test` also runs sample 154 with a fake SDK on `PATH` to cover it.
+
 - **Namespace-scope variables get their namespace in their C name.** `namespace a { int x = 1; } namespace b { int x = 2; }`
   was `int x = 1; int x = 2;` (a redefinition, or with no initializers one merged variable), and both `a::x` and
   `b::x` read `x`; so did a namespace variable that clashed with a file-scope one. Now a variable declared in a

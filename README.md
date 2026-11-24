@@ -229,7 +229,7 @@ Before parsing, v32c++ does what a C++ preprocessor would:
   `include/`  folder  next to  the  Vircon32  `compile` on  your  `PATH`,
   then  `/usr/local/Vircon32/DevTools/include`),   so  SDK   macros  like
   `screen_width` or  `color_red` work in  array sizes and `#if`,  and are
-  typed for overload resolution. `-v` lists the folders searched. A symlinked `compile` is followed. When a `#include` names an SDK header (`misc.h`, `video.h`, ...) that cannot be found at all, v32c++ now warns, since a type it defines (`malloc_block *b;`) would otherwise be read as a multiplication.
+  typed for overload resolution. `-v` lists the folders searched; `V32CXX_SDK_INCLUDE=` (set but empty) turns the search off, as if the SDK were not installed. A symlinked `compile` is followed. When a `#include` names an SDK header (`misc.h`, `video.h`, ...) that cannot be found at all, v32c++ now warns, since a type it defines (`malloc_block *b;`) would otherwise be read as a multiplication.
 - Defines are passed through to the generated C, and named constants keep
   their names  there; macros Vircon32's  own preprocessor can't  take are
   expanded instead.  Line numbers in  diagnostics and `-g` maps  point at

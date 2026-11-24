@@ -383,7 +383,13 @@ static int add_path_list(char **dirs, int n, int max, const char *list) {
  * holding video.h, so an unrelated `compile` is ignored), then
  * V32CXX_SDK_INCLUDE_PATH. Returns the count, or -1 past `max`. */
 static int build_sdk_include_dirs(char **dirs, int max) {
-    int n = add_path_list(dirs, 0, max, getenv(V32CXX_SDK_INCLUDE_ENV_VAR));
+    /* Set but empty (`V32CXX_SDK_INCLUDE= v32c++ ...`): no SDK headers at all,
+     * not even the ones beside `compile` or in V32CXX_SDK_INCLUDE_PATH. That is
+     * how to transpile as if the SDK were not installed (sample 154). Unset
+     * keeps the full search below. */
+    const char *env = getenv(V32CXX_SDK_INCLUDE_ENV_VAR);
+    if (env != NULL && env[0] == '\0') return 0;
+    int n = add_path_list(dirs, 0, max, env);
     if (n < 0) return -1;
     const char *path = getenv("PATH");
     for (const char *p = path; p != NULL && *p; ) {

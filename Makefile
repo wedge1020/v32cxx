@@ -408,6 +408,9 @@ test: all | $(OUT_DIR)
 	test "`grep -c '^    this;$$' out/153quiet.c`" = 1
 	-V32CXX_SDK_INCLUDE= $(TBIN) -o out/154nosdk.c tests/154sample.c 1> out/154sample.txt 2>&1
 	grep -q 'SDK header "misc.h" not found' out/154sample.txt
+	rm -rf out/154sdk && mkdir -p out/154sdk/include && printf 'exit 0\n' > out/154sdk/compile && chmod +x out/154sdk/compile && : > out/154sdk/include/video.h && : > out/154sdk/include/misc.h
+	-PATH="$$PWD/out/154sdk:$$PATH" V32CXX_SDK_INCLUDE= $(TBIN) -o out/154fake.c tests/154sample.c 1> out/154fake.txt 2>&1
+	grep -q 'SDK header "misc.h" not found' out/154fake.txt
 	grep -q "has no effect: if 'malloc_block' was meant as a type" out/154sample.txt
 	grep -q '^#ifndef INT_MIN' libc/v32libc.h
 	! grep -q 'environ' libc/v32libc.c
