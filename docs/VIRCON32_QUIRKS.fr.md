@@ -55,7 +55,7 @@ littéraux hexadécimaux/octaux/binaires, `1e3`, `.5` et `5.` (`tests/133sample.
 | 5 | le pointeur nul exige `NULL` | `p = 0;`, `p == 0` | géré |
 | 6 | uniquement `void main(void)` | `int main()` et `return 0;` | géré |
 | 7 | les paramètres de prototypes exigent des noms | noms facultatifs | géré |
-| 8 | pas de `new`/`delete` | `new`/`delete` fonctionnent (via `malloc`) ; `new T[n]` construit chaque élément et `delete[]` les détruit ; avec `--alloc=arena`, une arène au lieu de `malloc` ; avec `--alloc=gc`, un ramasse-miettes | géré, avec réserves |
+| 8 | pas de `new`/`delete` | `new`/`delete` fonctionnent (via `malloc`) ; `new T[n]` construit chaque élément, `new T[n]{a, b}` construit ceux de la liste et construit le reste, et `delete[]` les détruit ; avec `--alloc=gc` un pointeur un cran après la fin d'un tableau le garde en vie ; avec `--alloc=arena`, une arène au lieu de `malloc` ; avec `--alloc=gc`, un ramasse-miettes | géré, avec réserves |
 | 9 | `misc.h` pour `malloc`/`rand`... | `<cstdlib>`, `<cstring>` | géré |
 | 10 | pas d'opérateur ternaire | `?:` partout | **abaissé** |
 | 11 | paramètres et retours d'un mot | structures et classes par valeur | **abaissé** (les unions de plus d'un mot restent exclues) |

@@ -3164,12 +3164,220 @@ static const char *type_name_for_new(AstNode *type) {
         last resort, not expected to be reached in practice */
 }
 
+/* `delete[] e`: the class of the ELEMENTS of the array e points to, or NULL
+ * for a plain release. Only a class with a destructor keeps a count header
+ * in front of its elements, and freeing such an array from the wrong address
+ * is silent heap damage, so a plain release is only chosen when the element
+ * type is KNOWN not to be a class (a primitive, a pointer, an enum, a type
+ * that is no class). When the type cannot be worked out (`void *`, an
+ * expression sema cannot type) and the program has a class with a
+ * destructor, that is an error with a way out (a cast). Pointer levels
+ * count: `delete[] pp` with `T **pp` releases an array of pointers. */
+static int g_delete_errors = 0;
+static int g_have_header_class = 0;
+
+static int hierarchy_has_dtor(const AstNode *c) {
+    for (int depth = 0; c != NULL && depth < 64; depth++) {
+        ClassLayout *layout = (ClassLayout *)c->sema_info;
+        if (layout == NULL) return 0;
+        for (int i = 0; i < layout->methods.count; i++) {
+            const AstNode *m = layout->methods.items[i];
+            if (m->str1 != NULL && m->str1[0] == '~' && m->kind == AST_FUNC_DEF) return 1;
+        }
+        c = layout->base_class_decl;
+    }
+    return 0;
+}
+
+static void scan_header_classes(const AstList *decls) {
+    for (int i = 0; i < decls->count; i++) {
+        const AstNode *n = decls->items[i];
+        if (n == NULL) continue;
+        if (n->kind == AST_CLASS_DECL && hierarchy_has_dtor(n)) g_have_header_class = 1;
+        else if (n->kind == AST_NAMESPACE_DECL) scan_header_classes(&n->list);
+    }
+}
+
+static const AstNode *strip_cv_ref(const AstNode *t) {
+    t = resolve_typedef_chain(t);
+    while (t != NULL && (t->kind == AST_CONST_TYPE || t->kind == AST_REFERENCE_TYPE)) t = resolve_typedef_chain(t->a);
+    return t;
+}
+
+static AstNode *delete_array_element_class(const AstNode *n, AstNode *class_decl, LocalVarType *locals) {
+    const AstNode *t = strip_cv_ref(infer_expr_type(n->a, class_decl, locals));
+    const AstNode *elem = NULL;
+    if (t != NULL && (t->kind == AST_POINTER_TYPE || t->kind == AST_ARRAY_TYPE)) elem = strip_cv_ref(t->a);
+    if (elem != NULL) {
+        if (elem->kind == AST_POINTER_TYPE || elem->kind == AST_ARRAY_TYPE ||
+            elem->kind == AST_FUNC_PTR_TYPE) return NULL;      /* an array of pointers */
+        if (elem->kind == AST_IDENT || elem->kind == AST_QUALIFIED_ID) {
+            AstNode *cls = type_to_class(elem);
+            if (cls != NULL) return cls;
+            if (elem->kind == AST_IDENT && elem->str1 != NULL && strcmp(elem->str1, "void") != 0)
+                return NULL;                                   /* a primitive, an enum, a plain struct */
+        }
+    }
+    if (!g_have_header_class) return NULL;   /* no class keeps a count header: a plain release is right */
+    fprintf(stderr, "%s:%d: error: delete[]: v32c++ cannot tell the element type of this operand, and an array of a "
+            "class with a destructor must be released through its count header; cast it to a pointer to the "
+            "element type, e.g. `delete[] (Type *)p`\n",
+            n->file != NULL ? n->file : g_current_filename, n->line);
+    g_delete_errors++;
+    return NULL;
+}
+
+/* ---- phase 6, list-initialized array new ---------------------------------
+ *
+ *     p = new T[n]{a, {b, c}, T(d)};
+ *
+ * becomes (T a class with constructors; k = 3 elements in the list)
+ *
+ *     p = (__v32_nl_tmp0 = v32_new_arr_T_init(n, 3),
+ *          T__T__int(&__v32_nl_tmp0[0], a), T__T__int_int(&__v32_nl_tmp0[1], b, c),
+ *          T__T__int(&__v32_nl_tmp0[2], d), __v32_nl_tmp0);
+ *
+ * v32_new_arr_T_init (codegen.c) is the allocation of `new T[n]` (the count
+ * header included, in every --alloc mode) that default-constructs only the
+ * elements from k on (zeroes them, for a scalar or a class with no
+ * constructor), because the first k are built here from the list. The
+ * comma form works in every expression context (an argument, a return
+ * value, an initializer); phase 10 turns it into statements for Vircon32.
+ * The temporary is declared at the top of the function, like the
+ * reference-parameter ones. With n < k the C++ program is undefined
+ * (std::bad_array_new_length): the helper allocates k elements instead. */
+static AstNode *call_stmt_on(AstNode *callee_ctor, AstNode *object, const AstList *args, int line);
+static AstNode *default_construct_stmt(AstNode *object, AstNode *cls, int line);
+static int copy_is_plain_assignment(AstNode *item, AstNode *cls, AstNode *class_decl, LocalVarType *locals);
+static AstList g_nl_temps;          /* declarations owed to the current function */
+static int g_nl_counter = 0;
+static int g_nl_in_func = 0;
+
+static void flush_list_new_temporaries(AstNode *func) {
+    if (g_nl_temps.count > 0 && func->a != NULL && func->a->kind == AST_BLOCK) {
+        AstList body = ast_list_new();
+        for (int i = 0; i < g_nl_temps.count; i++) ast_list_append(&body, g_nl_temps.items[i]);
+        for (int i = 0; i < func->a->list.count; i++) ast_list_append(&body, func->a->list.items[i]);
+        func->a->list = body;
+    }
+    g_nl_temps = ast_list_new();
+    g_nl_counter = 0;
+}
+
+static AstNode *comma_of(AstNode *a, AstNode *b, int line) {
+    AstNode *c = ast_new(AST_BINOP, line);
+    c->str1 = strdup(",");
+    c->a = a;
+    c->b = b;
+    return c;
+}
+
+/* the expression that builds element `idx` of the array in `tmp` from `item`, or NULL */
+static AstNode *list_new_element(AstNode *item, const char *tmp, int idx, AstNode *cls,
+                                 AstNode *class_decl, LocalVarType *locals, int line) {
+    AstNode *object = ast_new(AST_SUBSCRIPT, line);
+    object->a = ast_ident(tmp, line);
+    object->b = ast_new(AST_INT_LIT, line);
+    object->b->ival = idx;
+    AstNode *st = NULL;
+    if (cls != NULL && item->kind == AST_DIRECT_INIT &&
+        !(item->ival == 1 && item->list.count == 1 && copy_is_plain_assignment(item, cls, class_decl, locals))) {
+        CallResolution *cr = (CallResolution *)item->sema_info;
+        if (cr != NULL && cr->resolved_target != NULL) {
+            fill_default_args(&item->list, cr->resolved_target, 1);
+            st = call_stmt_on(cr->resolved_target, object, &item->list, line);
+        } else if (item->list.count == 0) {
+            st = default_construct_stmt(object, cls, line);
+        }
+        return st != NULL ? st->a : NULL;     /* no constructor matches: sema reported it */
+    }
+    AstNode *assign = ast_new(AST_ASSIGN, line);
+    assign->str1 = strdup("=");
+    assign->a = object;
+    assign->b = (item->kind == AST_DIRECT_INIT) ? item->list.items[0] : item;
+    return assign;
+}
+
 static void new_delete_rewrite_expr(AstNode **slot, AstNode *class_decl, LocalVarType *locals) {
     AstNode *n = *slot;
     if (n == NULL) return;
     switch (n->kind) {
         case AST_NEW: {
-            g_uses_new_or_delete = 1; /* see driver.h's own doc comment on
+            g_uses_new_or_delete = 1;
+            if (n->a != NULL && n->b != NULL) {
+                g_uses_list_new = 1;
+                new_delete_rewrite_expr(&n->a, class_decl, locals);
+                for (int i = 0; i < n->list.count; i++) new_delete_rewrite_expr(&n->list.items[i], class_decl, locals);
+                AstNode *cls = type_to_class(n->type);
+                int k = n->list.count;
+                const char *tname = type_name_for_new(n->type);
+                if (k == 0) {                       /* `new T[n]{}` is `new T[n]` */
+                    size_t len0 = strlen("v32_new_arr_") + strlen(tname) + 1;
+                    char *name0 = malloc(len0);
+                    snprintf(name0, len0, "v32_new_arr_%s", tname);
+                    AstNode *plain = ast_new(AST_CALL, n->line);
+                    plain->a = ast_ident(name0, n->line);
+                    free(name0);
+                    ast_list_append(&plain->list, n->a);
+                    *slot = plain;
+                    break;
+                }
+                if (!g_nl_in_func) {
+                    fprintf(stderr, "%s:%d: error: a list-initialized array new needs a function body to build its "
+                            "elements in\n", n->file != NULL ? n->file : g_current_filename, n->line);
+                    g_delete_errors++;
+                    break;
+                }
+                char tmp[64], ntmp[64];
+                snprintf(tmp, sizeof tmp, "__v32_nl_tmp%d", g_nl_counter);
+                snprintf(ntmp, sizeof ntmp, "__v32_nl_n%d", g_nl_counter);
+                g_nl_counter++;
+                AstNode *decl = ast_new(AST_VAR_DECL, n->line);
+                decl->str1 = strdup(tmp);
+                decl->type = ast_new(AST_POINTER_TYPE, n->line);
+                decl->type->a = n->type;
+                ast_list_append(&g_nl_temps, decl);
+                AstNode *ndecl = ast_new(AST_VAR_DECL, n->line);
+                ndecl->str1 = strdup(ntmp);
+                ndecl->type = ast_ident("int", n->line);
+                ast_list_append(&g_nl_temps, ndecl);
+
+                /* (ntmp = n, tmp = _init(ntmp, k), element 0, ..., _rest(tmp, ntmp, k), tmp) */
+                AstNode *setn = ast_new(AST_ASSIGN, n->line);
+                setn->str1 = strdup("=");
+                setn->a = ast_ident(ntmp, n->line);
+                setn->b = n->a;
+                char *fname = malloc(strlen("v32_new_arr__init") + strlen(tname) + 1);
+                sprintf(fname, "v32_new_arr_%s_init", tname);
+                AstNode *alloc = ast_new(AST_CALL, n->line);
+                alloc->a = ast_ident(fname, n->line);
+                ast_list_append(&alloc->list, ast_ident(ntmp, n->line));
+                AstNode *kn = ast_new(AST_INT_LIT, n->line);
+                kn->ival = k;
+                ast_list_append(&alloc->list, kn);
+                AstNode *set = ast_new(AST_ASSIGN, n->line);
+                set->str1 = strdup("=");
+                set->a = ast_ident(tmp, n->line);
+                set->b = alloc;
+                AstNode *chain = comma_of(setn, set, n->line);
+                for (int i = 0; i < k; i++) {
+                    AstNode *el = list_new_element(n->list.items[i], tmp, i, cls, class_decl, locals, n->line);
+                    if (el != NULL) chain = comma_of(chain, el, n->line);
+                }
+                sprintf(fname, "v32_new_arr_%s_rest", tname);
+                AstNode *rest = ast_new(AST_CALL, n->line);
+                rest->a = ast_ident(fname, n->line);
+                free(fname);
+                ast_list_append(&rest->list, ast_ident(tmp, n->line));
+                ast_list_append(&rest->list, ast_ident(ntmp, n->line));
+                AstNode *kn2 = ast_new(AST_INT_LIT, n->line);
+                kn2->ival = k;
+                ast_list_append(&rest->list, kn2);
+                chain = comma_of(chain, rest, n->line);
+                *slot = comma_of(chain, ast_ident(tmp, n->line), n->line);
+                lower_note(n->line, "new %s[n]{...}: %d element(s) built from the list, the rest by the allocator", type_name_for_new(n->type), k);
+                break;
+            } /* see driver.h's own doc comment on
                 this flag for exactly why codegen.c needs it -- a real
                 bug otherwise */
             /* Array-new (`new T[N]`) is a COMPLETELY different shape
@@ -3290,6 +3498,7 @@ static void new_delete_rewrite_expr(AstNode **slot, AstNode *class_decl, LocalVa
              * at all -- best-effort, matching this project's established
              * philosophy elsewhere rather than guessing. */
             AstNode *obj_class = resolve_expr_class(n->a, class_decl, locals);
+            if (n->ival) obj_class = delete_array_element_class(n, class_decl, locals);
             const char *fn_name = "v32_delete";
             char *built_name = NULL;
             if (obj_class != NULL) {
@@ -3415,7 +3624,10 @@ static void new_delete_rewrite_stmt(AstNode **slot, AstNode *class_decl, LocalVa
 static void new_delete_rewrite_in_method(AstNode *method, AstNode *class_decl) {
     if (method->kind != AST_FUNC_DEF) return;
     LocalVarType *locals = seed_locals_from_params(method);
+    g_nl_in_func = 1;
     new_delete_rewrite_stmt(&method->a, class_decl, &locals);
+    g_nl_in_func = 0;
+    flush_list_new_temporaries(method);
 }
 
 static void new_delete_rewrite_classes(AstList *decls) {
@@ -3441,7 +3653,10 @@ static void new_delete_rewrite_free_functions(AstList *decls) {
             new_delete_rewrite_free_functions(&n->list);
         } else if (n->kind == AST_FUNC_DEF && n->b == NULL) {
             LocalVarType *locals = seed_locals_from_params(n);
+            g_nl_in_func = 1;
             new_delete_rewrite_stmt(&n->a, NULL, &locals);
+            g_nl_in_func = 0;
+            flush_list_new_temporaries(n);
         }
     }
 }
@@ -3751,7 +3966,7 @@ static AstNode *array_object_dims(AstNode *type, int *dims, int *ndims) {
     }
     if (n == 0 || type == NULL || (type->kind != AST_IDENT && type->kind != AST_QUALIFIED_ID)) return NULL;
     *ndims = n;
-    return type_to_class(type);
+    return type_to_value_class(type);
 }
 
 static int has_in_place_element(const AstNode *n) {
@@ -4006,7 +4221,7 @@ static void inject_ctor_calls_block(AstNode *block, AstNode *class_decl, LocalVa
              * plain scalar, so without this guard this branch wrongly
              * tried to construct each element as if it were a `Widget`
              * value. */
-            AstNode *elem_class = type_to_class(stmt->type->a);
+            AstNode *elem_class = type_to_value_class(stmt->type->a);
             if (elem_class != NULL) {
                 AstNode *loop = build_array_ctor_loop(stmt, elem_class, arr_ctor_counter);
                 if (loop != NULL) {
@@ -4036,7 +4251,7 @@ static void inject_ctor_calls_block(AstNode *block, AstNode *class_decl, LocalVa
              * this guard closes both at once, since the vtable-init
              * fallback just below would have inherited the identical
              * mistake otherwise. */
-            AstNode *var_class = type_to_class(stmt->type);
+            AstNode *var_class = type_to_value_class(stmt->type);
             if (var_class != NULL) {
                 AstNode *ctor = find_zero_arg_constructor(var_class);
                 if (ctor != NULL) {
@@ -4226,14 +4441,26 @@ static void inject_ctor_calls_stmt(AstNode **slot, AstNode *class_decl, LocalVar
  *
  * Covers what the local case covers: a default constructor, constructor
  * arguments (`Enemy g_boss(1, 2);`), arrays, and vtable-only classes.
- * Top-level declarations only (not ones inside a namespace), and only
- * when this file defines main().
+ * Declarations inside a namespace (nested, or reopened) count too, in source
+ * order with the top-level ones. Only when this file defines main().
  *
  * The destructors of those objects (and arrays of them) run when main()
  * ends, after its own locals', in the reverse of this order -- see
  * destroy_globals_in_main (phase 9c), and from exit()/abort() of v32libc.
  */
 static int g_main_ctor_stmts = 0; /* how many statements main() starts with for the above */
+
+/* The file-scope variables in source order, those inside a namespace (nested
+ * ones too, and a reopened one at its own place) at the position of the
+ * namespace: they are built and destroyed with the top-level ones. */
+static void collect_scope_vars(const AstList *decls, AstList *out) {
+    for (int i = 0; i < decls->count; i++) {
+        AstNode *n = decls->items[i];
+        if (n == NULL) continue;
+        if (n->kind == AST_VAR_DECL && n->type != NULL) ast_list_append(out, n);
+        else if (n->kind == AST_NAMESPACE_DECL) collect_scope_vars(&n->list, out);
+    }
+}
 
 static void construct_globals_in_main(AstNode *program) {
     g_main_ctor_stmts = 0;
@@ -4244,8 +4471,8 @@ static void construct_globals_in_main(AstNode *program) {
         if (n == NULL) continue;
         if (n->kind == AST_FUNC_DEF && n->b == NULL && n->str1 != NULL &&
             strcmp(n->str1, "main") == 0) main_func = n;
-        if (n->kind == AST_VAR_DECL && n->type != NULL) ast_list_append(&scratch->list, n);
     }
+    collect_scope_vars(&program->list, &scratch->list);
     if (main_func == NULL || main_func->a == NULL || main_func->a->kind != AST_BLOCK) return;
 
     LocalVarType *locals = NULL;
@@ -4365,7 +4592,7 @@ static AstNode *member_array_elem_class(const AstNode *type, int *ndims) {
     if (n == 0 || n > MAX_ARRAY_DIMS || type == NULL ||
         (type->kind != AST_IDENT && type->kind != AST_QUALIFIED_ID)) return NULL;
     if (ndims != NULL) *ndims = n;
-    return type_to_class((AstNode *)type);
+    return type_to_value_class((AstNode *)type);
 }
 
 /* `this->member`, or `this->member[i0][i1]...` for an array member: one
@@ -4571,7 +4798,7 @@ static void inject_member_ctor_calls_classes(AstList *decls) {
                         if (field->type->kind == AST_REFERENCE_TYPE) continue;
                         AstNode *var_class = (field->type->kind == AST_ARRAY_TYPE)
                                            ? member_array_elem_class(field->type, NULL)
-                                           : type_to_class(field->type);
+                                           : type_to_value_class(field->type);
                         if (var_class == NULL) continue;         /* not a class */
                         if (var_class == n) continue;            /* self-recursion */
                         if (member_is_explicitly_initialized(m, field->str1)) {
@@ -7528,8 +7755,8 @@ static void arena_init_in_main(AstNode *program) {
  * the cartridge): it calls v32_exit_destructors first, then the program's own
  * v32_exit_hook, so a hook the program sets keeps working beside it. A
  * program with no global that needs a destructor, or with no main(), is not
- * touched at all. Objects in a namespace are not covered (nor are they
- * constructed, see phase 7b).
+ * touched at all. Objects inside a namespace (nested ones too) are covered
+ * like the top-level ones, in source order.
  */
 static void wrap_main_returns(AstNode **slot, AstNode *ret_type) {
     AstNode *n = *slot;
@@ -7593,8 +7820,10 @@ static void destroy_globals_in_main(AstNode *program) {
     /* the file-scope objects whose class has a destructor, in declaration order */
     DestructibleLocal *list = NULL, *tail = NULL;
     int count = 0;
-    for (int i = 0; i < program->list.count; i++) {
-        AstNode *n = program->list.items[i];
+    AstList scope_vars = ast_list_new();
+    collect_scope_vars(&program->list, &scope_vars);
+    for (int i = 0; i < scope_vars.count; i++) {
+        AstNode *n = scope_vars.items[i];
         if (n == NULL || n->kind != AST_VAR_DECL || n->type == NULL || n->str1 == NULL || n->is_extern) continue;
         const AstNode *rt = resolve_typedef_chain(n->type);
         while (rt != NULL && rt->kind == AST_CONST_TYPE) rt = rt->a;
@@ -9477,6 +9706,9 @@ int lower_run(AstNode *program) {
     g_sar_needed = 0;
     g_udiv_needed = 0;
     g_goto_errors = 0;
+    g_delete_errors = 0;
+    g_have_header_class = 0;
+    scan_header_classes(&program->list);
     lower_notes_reset(); /* always start this run's log empty -- see
         lower_notes_print's own doc comment */
     {   /* phase 0: designated initializers become positional (G2) */
@@ -9520,6 +9752,7 @@ int lower_run(AstNode *program) {
     insert_pointer_cast_free_functions(&program->list);
     new_delete_rewrite_classes(&program->list);      /* phase 6 */
     new_delete_rewrite_free_functions(&program->list);
+    if (g_delete_errors > 0) return g_delete_errors;
     inject_ctor_calls_classes(&program->list);        /* phase 7 */
     inject_ctor_calls_free_functions(&program->list);
     construct_globals_in_main(program);               /* phase 7b */

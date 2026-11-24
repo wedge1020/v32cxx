@@ -745,9 +745,31 @@ static AstNode *object_initializer(AstNode *obj) {
 
 /* Replaces every unnamed object under *slot (an expression), innermost
  * first, appending one declaration per object to `prefix`. */
+static AstNode *array_element_class_of_type(const AstNode *t, const ClassList *all);
+static void keep_array_elements(AstNode *list, int depth, int ndims, AstNode *cls,
+                                const ClassList *all, AstList *prefix);
+
 static void lift_objects_expr(AstNode **slot, const ClassList *all, AstList *prefix) {
     AstNode *n = *slot;
     if (n == NULL) return;
+    if (n->kind == AST_NEW && n->a != NULL && n->b != NULL && n->b->kind == AST_INIT_LIST) {
+        /* `new T[n]{a, {b, c}, T(d)}`: the elements of the brace list are built in
+         * place, as for a local array of objects (keep_array_elements), and move to
+         * the node's own list; the now empty list in `b` marks it as list-initialized */
+        lift_objects_expr(&n->a, all, prefix);
+        AstNode *cls = array_element_class_of_type(n->type, all);
+        if (cls != NULL) {
+            keep_array_elements(n->b, 0, 1, cls, all, prefix);
+        } else {
+            for (int i = 0; i < n->b->list.count; i++) {
+                if (n->b->list.items[i] != NULL && n->b->list.items[i]->kind == AST_INIT_LIST) continue;
+                lift_objects_expr(&n->b->list.items[i], all, prefix);
+            }
+        }
+        n->list = n->b->list;
+        n->b->list = ast_list_new();
+        return;
+    }
     lift_objects_expr(&n->a, all, prefix);
     lift_objects_expr(&n->b, all, prefix);
     lift_objects_expr(&n->c, all, prefix);
@@ -793,6 +815,12 @@ static AstNode *array_object_class(const AstNode *t, const ClassList *all, int *
     }
     if (dims == 0 || t == NULL || t->kind != AST_IDENT) return NULL;
     *ndims = dims;
+    return class_named(all, t->str1);
+}
+
+static AstNode *array_element_class_of_type(const AstNode *t, const ClassList *all) {
+    while (t != NULL && t->kind == AST_CONST_TYPE) t = t->a;
+    if (t == NULL || t->kind != AST_IDENT || t->str1 == NULL) return NULL;
     return class_named(all, t->str1);
 }
 
@@ -1129,12 +1157,62 @@ static void desugar_objects_decls(AstList *decls, const ClassList *all) {
     }
 }
 
+/* A typedef used as a base class: `typedef Base B; class D : public B {...};`
+ * and `D() : B(3) {}`. The base is renamed to the class it stands for before
+ * sema (which looks bases up by their class name), in the class itself, in
+ * the initializer lists of its constructors (in-class or out of line). */
+static void canonicalize_init_list(AstNode *ctor, const AstNode *base, const AstNode *cls, const ClassList *all) {
+    if (ctor->c == NULL) return;
+    for (int i = 0; i < ctor->c->list.count; i++) {
+        AstNode *e = ctor->c->list.items[i];
+        if (e == NULL || e->str1 == NULL || strcmp(e->str1, base->str1) == 0) continue;
+        if (class_named(all, e->str1) != base) continue;
+        int is_member = 0;
+        for (int k = 0; k < cls->list.count; k++)
+            if (cls->list.items[k] != NULL && cls->list.items[k]->kind == AST_VAR_DECL &&
+                strcmp(cls->list.items[k]->str1, e->str1) == 0) is_member = 1;
+        if (is_member) continue;
+        e->str1 = strdup(base->str1);
+    }
+}
+
+static void canonicalize_out_of_line_ctors(AstList *decls, const AstNode *cls, const AstNode *base, const ClassList *all) {
+    for (int i = 0; i < decls->count; i++) {
+        AstNode *n = decls->items[i];
+        if (n == NULL) continue;
+        if (n->kind == AST_NAMESPACE_DECL) { canonicalize_out_of_line_ctors(&n->list, cls, base, all); continue; }
+        if (n->kind != AST_FUNC_DEF || n->b == NULL || n->str1 == NULL) continue;
+        if (strcmp(n->str1, cls->str1) != 0) continue;
+        canonicalize_init_list(n, base, cls, all);
+    }
+}
+
+static void canonicalize_typedef_bases(AstList *decls, const ClassList *all) {
+    for (int i = 0; i < all->count; i++) {
+        AstNode *c = all->items[i];
+        if (c->str2 == NULL) continue;
+        int exact = 0;
+        for (int k = 0; k < all->count; k++)
+            if (strcmp(all->items[k]->str1, c->str2) == 0) exact = 1;
+        if (exact) continue;
+        AstNode *base = class_named(all, c->str2);
+        if (base == NULL) continue;   /* sema reports an unknown base */
+        c->str2 = strdup(base->str1);
+        for (int j = 0; j < c->list.count; j++) {
+            AstNode *m = c->list.items[j];
+            if (is_func(m) && strcmp(m->str1, c->str1) == 0) canonicalize_init_list(m, base, c, all);
+        }
+        canonicalize_out_of_line_ctors(decls, c, base, all);
+    }
+}
+
 int desugar_unnamed_objects(AstList *decls) {
     g_scalar_names_enums = ast_list_new();
     g_scalar_typedefs = ast_list_new();
     collect_scalar_names(decls);
     ClassList all = { NULL, 0, 0 };
     collect_classes(decls, &all);
+    canonicalize_typedef_bases(decls, &all);
     g_obj_errors = 0;
     desugar_objects_decls(decls, &all);
     free(all.items);

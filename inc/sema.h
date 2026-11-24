@@ -386,6 +386,9 @@ const AstNode *find_declaring_class(const AstNode *class_decl, const AstNode *ta
  * reason as everything else in this section -- lower.c's new/delete
  * lowering needs to know which class `new T` allocates. */
 AstNode *type_to_class(const AstNode *type);
+/* like type_to_class, but NULL for a pointer or reference type, typedef'd or not
+ * (`typedef Counter *CP; CP a[2];` is an array of pointers, not of objects) */
+AstNode *type_to_value_class(const AstNode *type);
 
 /* Follows an AST_IDENT that names a registered typedef through to its
  * underlying type (chasing a typedef-of-typedef chain), stopping at the

@@ -11,13 +11,13 @@ C compiler is much more limited than C, and most of that is hidden from you.
 **Just write it, these all work:** `//` and `/* */` comments; adjacent string
 literals; backslash continuation (macros, literals, `//` comments); the ternary
 and comma operators anywhere; `switch` with fall-through, `goto`, `do`/`while`;
-classes with inheritance and virtual functions, constructors/destructors (array members of
-class type take `= {...}` / `: m{...}`; global objects are built at the start of `main` and
+classes with inheritance (the base may be a typedef of a class: `typedef Base B; class D : public B`, `D() : B(3)`; `ast.c` canonicalize_typedef_bases) and virtual functions, constructors/destructors (array members of
+class type take `= {...}` / `: m{...}`; global objects, namespace ones too, are built at the start of `main` and
 destroyed when it ends, and by v32libc's `exit()`),
 operators, references, `const`; objects and structs by value (parameters,
 returns); `new`/`delete`; namespaces and `using`; `auto` and range-based `for`;
 `std::string`, `std::array<T,N>`, `std::vector<T>` (fixed per-type forms, not
-templates); `new T[n]`/`delete[]` that construct/destroy every element; `--alloc=arena` or `--alloc=gc` with
+templates); `new T[n]`/`delete[]` that construct/destroy every element (`new T[n]{a, b}` too); `--alloc=arena` or `--alloc=gc` with
 `<v32/memory.hpp>` (see "Memory management" below); `static` locals and file-scope `static`/`extern`/`volatile`; float
 literals of any C form (`1e3`, `.5`, `5.f`); octal/hex/binary literals and
 escapes; `int main()` with `return 0;`; `0` as a null pointer; `<v32/*.hpp>`
@@ -48,9 +48,8 @@ members, `T *&`, 2-D array *parameters*, an object passed through `...`.
 - `>>` of a signed value is rewritten to shift arithmetically (a few extra instructions);
   an `unsigned` value shifts logically and is left alone. `--no-signed-shift` turns the
   rewrite off. `unsigned` `<`, `>`, `/`, `%` act unsigned too (`--no-unsigned-ops` turns that off).
-- `new T[n]{a, b}` (list-initialized array new) is not supported; `delete[]` through a base pointer to a derived array is undefined.
-- Global objects in a namespace are neither constructed nor destroyed (top-level ones are,
-  see phase 7b/9c in `lower.c`); two `#texture`/`#sound` hints with one name are an error.
+- `delete[]` through a base pointer to a derived array is undefined. `new T[n]{a, b}` builds the listed elements and default-constructs the rest (n smaller than the list: the list's length is allocated; lowered in `lower.c` as a comma sequence on a function-level `__v32_nl_tmpN`, helpers `v32_new_arr_T_init/_rest`, only emitted when used). `delete[]` needs the element class (`delete_array_element_class`, `infer_expr_type`): unknown + some class with a destructor = error asking for a cast.
+- Global objects in a namespace (nested too) are built and destroyed like top-level ones, in source order (phase 7b/9c in `lower.c`, `collect_scope_vars`); `static` class data members are an error; two `#texture`/`#sound` hints with one name are an error.
 - `goto` into a scope past the declaration of an object with a destructor is an error; `const` is not enforced (C input drops it from the
   output, since the SDK compiler enforces it where C does not).
 - Inline `asm` for another CPU (RISC-V) is passed on unchanged and cannot assemble.
@@ -93,7 +92,7 @@ per target. One block from the SDK `malloc` (+ page table + 512-entry mark stack
 `[size, state 0 free/1 used/3 marked, next-free offset]`, 32 exact size-class free lists + a first-fit list, wilderness
 bump, sweep coalesces and gives a trailing free run back to the wilderness. Marking: page table (256 units, rebuilt at the start of every
 collection) maps any interior word to its block; explicit mark stack, overflow = rescan all marked blocks until quiet.
-Roots: `__v32_gc_roots_init` (built from the file-scope `AST_VAR_DECL`s: pointers, class objects, arrays of them, `std::vector`s;
+Every block has one trailing unit (`n = n + 1` in `__v32_alloc`, Boehm style), so a pointer one past the end of an object (`p + n`, an `end()`) lies in its own block, not the next one's (`185sample`). Roots (namespace-scope variables included, nested too): `__v32_gc_roots_init` (built from the file-scope `AST_VAR_DECL`s: pointers, class objects, arrays of them, `std::vector`s;
 not plain numbers/enums/function pointers/`extern`/rom; hoisted function statics are file-scope, so they are included) and the
 stack: Vircon32 `__v32_gc_collect` pushes R0-R10 in asm, reads SP, scans `[SP, 0x400000)`; standard C uses
 `__builtin_unwind_init` + `setjmp` and scans from `__v32_gc_run`'s frame to `__libc_stack_end`. `delete` frees at once
@@ -105,7 +104,7 @@ Tests: `182sample` (`std_run` with `--alloc=gc --heap-words=16384`, also with `-
 `scrub()`s the stack first and is meant for the default `-O0` build (at `-O2` the cycle can be retained).
 `goto` destructors: `lower.c` phase 9 (`goto_prepass`, `destruct_goto`), phase 0b splits `label: D d;`.
 Behaviour tests built as standard C: `tests/std_run.sh NAME [flags]` with `tests/stddriver.c`
-(179, 180, 181, 182), `tests/arena_full.sh` and `tests/gc_full.sh` for the out-of-space path.
+(179, 180, 181, 182, 183-187; `tests/globals_destroy.sh` runs 177 and 186), `tests/arena_full.sh` and `tests/gc_full.sh` for the out-of-space path.
 
 ## Working on the project
 

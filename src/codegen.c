@@ -2693,6 +2693,8 @@ static const char *const gc_runtime_tpl[] = {
     "    char *p;\n",
     "    if (n < 1) n = 1;\n",
     "    if (n > __v32_gc_size) __v32_gc_fatal();\n",
+    "    n = n + 1;   /* one trailing unit (as in Boehm): a pointer one past the end of the object, as an\n",
+    "                  * iterator or `p + n` makes, still lies inside its own block, not in the next one */\n",
     "@ROUNDN@    need = n + @HDR@;\n",
     "    if (need > __v32_gc_size) __v32_gc_fatal();\n",
     "    if (__v32_gc_since >= __v32_gc_thresh) __v32_gc_collect();\n",
@@ -3081,25 +3083,90 @@ static void emit_array_new_runtime(FILE *out, const char *type_name) {
     fprintf(out, "));\n}\n\n\n");
 }
 
+/* A list-initialized `new T[n]{...}` of a primitive (or of a class with no constructor, no
+ * destructor and no vtable) is lowered to
+ *     v32_new_arr_T_init(n, k)      the allocation, nothing built (n < k allocates k)
+ *     ... the caller builds elements 0..k-1 from the list ...
+ *     v32_new_arr_T_rest(p, n, k)   zeroes the elements k..n-1
+ * so the elements come into being in order, as in C++. */
+static void emit_array_new_runtime_init(FILE *out, const char *type_name)
+{
+    print_class_type_name(out, type_name);
+    fprintf(out, " *v32_new_arr_%s_init(int n, int k)\n{\n    if (k < 0) k = 0;\n    if (n < k) n = k;\n"
+                 "    return (", type_name);
+    print_class_type_name(out, type_name);
+    fprintf(out, " *)%s(n * sizeof(", V32_ALLOC_HOOK ? "__v32_alloc" : "malloc");
+    print_class_type_name(out, type_name);
+    fprintf(out, "));\n}\n\n\n");
+    fprintf(out, "void v32_new_arr_%s_rest(", type_name);
+    print_class_type_name(out, type_name);
+    fprintf(out, " *p, int n, int k)\n{\n    char *z;\n    int i;\n    if (p == NULL) return;\n"
+                 "    if (k < 0) k = 0;\n    if (n < k) n = k;\n    z = (char *)p;\n    for (i = k * sizeof(");
+    print_class_type_name(out, type_name);
+    fprintf(out, "); i < n * sizeof(");
+    print_class_type_name(out, type_name);
+    fprintf(out, "); i++) z[i] = 0;\n}\n\n\n");
+}
+
 /* `new T[n]` of a class: every element is default-constructed, in order.
  * A class with a destructor gets one header word in front of the elements
  * holding n (the pointer handed out is past it), so that `delete[]` can
  * destroy them last first; a class without one has no header and
  * `delete[]` is a plain release. n < 0 counts as 0. */
-static void emit_array_new_runtime_class(FILE *out, const AstNode *cd) {
+static void emit_array_new_runtime_class(FILE *out, const AstNode *cd, int mode)
+{
+    /* mode 0: `v32_new_arr_T(n)`. mode 1/2: the `_init(n, k)` / `_rest(p, n, k)` pair behind
+     * `new T[n]{...}` (see emit_array_new_runtime_init): _init allocates (the count header
+     * included) and builds nothing, _rest default-constructs the elements k..n-1. */
     const AstNode *dtor = class_dtor_with_body(cd);
     const AstNode *ctor = class_zero_ctor(cd);
     ClassLayout *layout = (ClassLayout *)cd->sema_info;
     int vt = (layout != NULL && layout->vtable != NULL);
     int hdr = array_hdr_units();
-    if (dtor == NULL && ctor == NULL && !vt) { emit_array_new_runtime(out, cd->str1); return; }
+    if (dtor == NULL && ctor == NULL && !vt) {
+        if (mode == 0) emit_array_new_runtime(out, cd->str1);
+        else if (mode == 1) emit_array_new_runtime_init(out, cd->str1);   /* defines _rest too */
+        return;
+    }
+    if (mode == 2) {
+        if (ctor == NULL && !vt) {          /* a destructor only: the rest is zero */
+            fprintf(out, "void v32_new_arr_%s_rest(", cd->str1);
+            print_class_type_name(out, cd->str1);
+            fprintf(out, " *p, int n, int k)\n{\n    char *z;\n    int i;\n    if (p == NULL) return;\n"
+                         "    if (k < 0) k = 0;\n    if (n < k) n = k;\n    z = (char *)p;\n    for (i = k * sizeof(");
+            print_class_type_name(out, cd->str1);
+            fprintf(out, "); i < n * sizeof(");
+            print_class_type_name(out, cd->str1);
+            fprintf(out, "); i++) z[i] = 0;\n}\n\n\n");
+            return;
+        }
+        fprintf(out, "void v32_new_arr_%s_rest(", cd->str1);
+        print_class_type_name(out, cd->str1);
+        fprintf(out, " *p, int n, int k)\n{\n    int i;\n    if (p == NULL) return;\n"
+                     "    if (k < 0) k = 0;\n    if (n < k) n = k;\n");
+        if (ctor != NULL) {
+            fprintf(out, "    for (i = k; i < n; i++) %s(&p[i]", dtor_mangled_name(ctor));
+            for (int k = 1; k < ctor->list.count; k++) {
+                fprintf(out, ", ");
+                print_expr(out, ctor->list.items[k]->a);
+            }
+            fprintf(out, ");\n");
+        } else {
+            fprintf(out, "    for (i = k; i < n; i++) p[i].vtable = &%s_vtable_instance;\n", cd->str1);
+        }
+        fprintf(out, "}\n\n\n");
+        return;
+    }
 
     print_class_type_name(out, cd->str1);
-    fprintf(out, " *v32_new_arr_%s(int n)\n{\n    ", cd->str1);
+    if (mode == 1) fprintf(out, " *v32_new_arr_%s_init(int n, int k)\n{\n    ", cd->str1);
+    else fprintf(out, " *v32_new_arr_%s(int n)\n{\n    ", cd->str1);
     print_class_type_name(out, cd->str1);
-    fprintf(out, " *p;\n    int i;\n");
+    fprintf(out, " *p;\n");
+    if (mode == 0) fprintf(out, "    int i;\n");
     if (dtor != NULL) fprintf(out, "    char *raw;\n    int *hdr;\n");
     fprintf(out, "    if (n < 0) n = 0;\n");
+    if (mode == 1) fprintf(out, "    if (k < 0) k = 0;\n    if (n < k) n = k;\n");
     if (dtor != NULL) {
         if (g_alloc_arena)
             fprintf(out, "    raw = (char *)__v32_alloc_rec(n * sizeof(");
@@ -3120,14 +3187,14 @@ static void emit_array_new_runtime_class(FILE *out, const AstNode *cd) {
         print_class_type_name(out, cd->str1);
         fprintf(out, "));\n    if (p == NULL) return NULL;\n");
     }
-    if (ctor != NULL) {
+    if (mode == 0 && ctor != NULL) {
         fprintf(out, "    for (i = 0; i < n; i++) %s(&p[i]", dtor_mangled_name(ctor));
         for (int k = 1; k < ctor->list.count; k++) {
             fprintf(out, ", ");
             print_expr(out, ctor->list.items[k]->a);
         }
         fprintf(out, ");\n");
-    } else if (vt) {
+    } else if (mode == 0 && vt) {
         fprintf(out, "    for (i = 0; i < n; i++) p[i].vtable = &%s_vtable_instance;\n", cd->str1);
     }
     fprintf(out, "    return p;\n}\n\n\n");
@@ -3163,7 +3230,11 @@ static void emit_array_new_runtime_classes(FILE *out, const AstList *decls) {
     for (int i = 0; i < decls->count; i++) {
         const AstNode *n = decls->items[i];
         if (n->kind == AST_CLASS_DECL) {
-            emit_array_new_runtime_class(out, n);
+            emit_array_new_runtime_class(out, n, 0);
+            if (g_uses_list_new) {
+                emit_array_new_runtime_class(out, n, 1);
+                emit_array_new_runtime_class(out, n, 2);
+            }
             emit_array_delete_runtime(out, n);
         } else if (n->kind == AST_NAMESPACE_DECL) {
             emit_array_new_runtime_classes(out, &n->list);
@@ -3192,6 +3263,12 @@ static void emit_primitive_array_new_runtime(FILE *out) {
     emit_array_new_runtime(out, "float");
     emit_array_new_runtime(out, "char");
     emit_array_new_runtime(out, "bool");
+    if (g_uses_list_new) {
+        emit_array_new_runtime_init(out, "int");
+        emit_array_new_runtime_init(out, "float");
+        emit_array_new_runtime_init(out, "char");
+        emit_array_new_runtime_init(out, "bool");
+    }
 }
 
 static void emit_v32_delete(FILE *out) {

@@ -80,7 +80,7 @@ alcance](#deliberadamente-fuera-del-alcance).
   dentro de espacios de nombres.
 
 - **Herencia simple**, con conversiones de puntero y de referencia de derivada
-  a base.
+  a base; un `typedef` de una clase también nombra una base (`typedef Base B; class D : public B { D() : B(3) {} };`).
 
 - **Constructores y destructores**, dentro o fuera de la clase; constructores
   sobrecargados; constructores de copia; argumentos por defecto. Listas de
@@ -146,7 +146,7 @@ alcance](#deliberadamente-fuera-del-alcance).
 
 ### El resto del lenguaje
 
-- Espacios de nombres (anidados, llamadas cualificadas, nombres de C con
+- Espacios de nombres (anidados, con sus objetos globales construidos y destruidos como los del ámbito de archivo, llamadas cualificadas, nombres de C con
   espacio de nombres para las funciones: `v32::draw(int,int,int)` se convierte
   en `v32__draw__int_int_int`) y `using`: `using namespace v32;` en el ámbito de
   archivo o en un bloque, `using v32::Keyboard;` y `using Points = int;`. Las
@@ -338,9 +338,7 @@ reintenta), cuando se asignaron `--gc-threshold=N` palabras desde la última
 Una recolección completa es una pausa: llama a `gc_collect()` una vez por
 fotograma en un momento tranquilo. Quedarse sin espacio tras una recolección
 muestra "OUT OF MEMORY (gc heap full)" y se detiene. Límites: un entero que
-parece una dirección del montón mantiene vivo un bloque muerto; un puntero
-oculto al recolector (con XOR, o solo una posición más allá del final de su
-bloque) no mantiene nada vivo; la memoria de `malloc`/`v32::HeapBlock` directos
+parece una dirección del montón mantiene vivo un bloque muerto; un puntero oculto al recolector (con XOR) no mantiene nada vivo (uno más allá del final de un arreglo, `p + n` o un `end()`, sí vale: cada bloque tiene una palabra final de más y sigue dentro de su propio bloque); la memoria de `malloc`/`v32::HeapBlock` directos
 no se gestiona; no hay finalizadores, y el montón se examina de forma
 conservadora (los mapas de punteros precisos por clase quedan para el futuro).
 Las funciones `arena_*` no existen con `--alloc=gc`, ni las `gc_*` con
@@ -418,10 +416,7 @@ Comprobadas con el transpilador actual y el compilador real de Vircon32
   orden; para una clase con destructor, una palabra de cabecera delante de los
   elementos guarda `n`, de modo que `delete[]` los destruye del último al
   primero y libera el bloque. `n` puede ser cero o calcularse en ejecución, y
-  `delete[]` de un puntero nulo no hace nada. `delete[]` a través de un puntero
-  a la base sobre un arreglo de derivadas es indefinido (como en C++), y
-  `new T[n]{a, b}` (`new` de arreglos con lista de inicialización) no está
-  soportado.
+  `delete[]` de un puntero nulo no hace nada. `delete[]` a través de un puntero a la base sobre un arreglo de derivadas es indefinido (como en C++). `delete[]` tiene que conocer la clase de los elementos para liberar un arreglo de una clase con destructor desde su cabecera: v32c++ deduce el tipo a través de typedefs, miembros, índices, aritmética de punteros, llamadas (también por puntero a función), conversiones, `auto` y `std::vector<T *>`/`std::array<T *, N>`; si aun así no puede (un `void *`) y el programa tiene una clase con destructor, es un error que pide una conversión (`delete[] (T *)p`). **`new T[n]{a, b}`** construye los primeros elementos desde la lista (`{x, y}` llama a un constructor, `T(x)` o un valor simple a uno de conversión o de copia) y construye por defecto el resto (cero para un escalar o una clase sin constructor); la lista puede ser más corta que `n` pero no más larga (en C++ lanza `std::bad_array_new_length`): con un `n` menor en ejecución, v32c++ reserva la longitud de la lista. Sirve en cualquier expresión (se baja a una secuencia con comas sobre un temporal de la función) y con la cabecera de cuenta y `--alloc=arena`/`gc`. Una clase con constructores pero sin uno por defecto exige que `n` sea una constante no mayor que la lista.
 - **`goto`** fuera de un ámbito destruye los objetos de clase (y sus arreglos)
   que están vivos allí y no en la etiqueta, el último construido primero, como
   hacen `break` y `return`. Un `goto` que saltaría por encima de la declaración
@@ -466,9 +461,7 @@ Comprobadas con el transpilador actual y el compilador real de Vircon32
 - Los **objetos del ámbito de archivo** (y sus arreglos) se construyen al
   comienzo de `main` y se destruyen cuando termina (después de sus locales, en
   orden inverso), también desde `exit()`/`abort()` de v32libc, cuyo `v32_exit`
-  los ejecuta primero (una sola vez). Los objetos declarados dentro de un
-  espacio de nombres no se construyen ni se destruyen, y un programa que no
-  define `main` no construye ninguno.
+  los ejecuta primero (una sola vez). Los objetos declarados dentro de un espacio de nombres (anidados o reabiertos también) se construyen y destruyen con ellos, en orden de código fuente; un programa que no define `main` no construye ninguno. Los miembros de datos `static` de una clase no están soportados (es un error).
 - Un `#include` de `.h` que no se encuentra en ningún sitio se pasa tal cual
   cada vez que aparece (el compilador de C informa entonces de que falta).
   `docs/DESIGN_NOTES.md` (solo en inglés) contiene la historia de desarrollo

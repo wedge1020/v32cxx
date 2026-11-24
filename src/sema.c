@@ -1443,6 +1443,13 @@ AstNode *type_to_class(const AstNode *type) {
     }
 }
 
+AstNode *type_to_value_class(const AstNode *type) {
+    const AstNode *t = resolve_typedef_chain(type);
+    while (t != NULL && t->kind == AST_CONST_TYPE) t = resolve_typedef_chain(t->a);
+    if (t == NULL || t->kind == AST_POINTER_TYPE || t->kind == AST_REFERENCE_TYPE) return NULL;
+    return type_to_class(t);
+}
+
 /* Searches `class_decl`'s own members first, then walks up base_class_decl
  * (single inheritance, so this is a simple chain, not a search tree),
  * looking for a member named `name`. Name-only match -- see the TODO
@@ -1758,7 +1765,15 @@ AstNode *infer_expr_type(const AstNode *expr, AstNode *current_class, LocalVarTy
                  * prototype was dropped from the output, its type is known */
                 return cmode_dropped_prototype_type(callee->str1);
             }
-            if (method == NULL || (method->kind != AST_FUNC_DECL && method->kind != AST_FUNC_DEF)) return NULL;
+            if (method == NULL || (method->kind != AST_FUNC_DECL && method->kind != AST_FUNC_DEF)) {
+                /* a call through a function pointer (`fp()`, `tbl[i]()`, `o.cb()`):
+                 * its return type is the pointer type's own */
+                const AstNode *ft = (callee != NULL)
+                    ? resolve_typedef_chain(infer_expr_type(callee, current_class, locals)) : NULL;
+                while (ft != NULL && (ft->kind == AST_CONST_TYPE || ft->kind == AST_POINTER_TYPE)) ft = resolve_typedef_chain(ft->a);
+                if (ft != NULL && ft->kind == AST_FUNC_PTR_TYPE) return ft->type;
+                return NULL;
+            }
             return method->type;
         }
         case AST_COMPOUND_LIT:
@@ -1914,6 +1929,22 @@ AstNode *infer_expr_type(const AstNode *expr, AstNode *current_class, LocalVarTy
             }
             const AstNode *lt = infer_expr_type(expr->a, current_class, locals);
             const AstNode *rt = infer_expr_type(expr->b, current_class, locals);
+            /* pointer arithmetic (`p + n`, `n + p`, `p - n`): the pointer's type */
+            if (expr->str1 != NULL && (strcmp(expr->str1, "+") == 0 || strcmp(expr->str1, "-") == 0)) {
+                for (int side = 0; side < 2; side++) {
+                    const AstNode *pt = resolve_typedef_chain(side == 0 ? lt : rt);
+                    const AstNode *ot = resolve_typedef_chain(side == 0 ? rt : lt);
+                    if (side == 1 && strcmp(expr->str1, "-") == 0) break;
+                    if (pt == NULL || ot == NULL) continue;
+                    while (pt->kind == AST_CONST_TYPE && pt->a != NULL) pt = resolve_typedef_chain(pt->a);
+                    if (pt->kind != AST_POINTER_TYPE && pt->kind != AST_ARRAY_TYPE) continue;
+                    if (ot->kind == AST_POINTER_TYPE || ot->kind == AST_ARRAY_TYPE) continue;
+                    if (pt->kind == AST_POINTER_TYPE) return (AstNode *)pt;
+                    AstNode *ptr = ast_new(AST_POINTER_TYPE, expr->line);
+                    ptr->a = pt->a;
+                    return ptr;
+                }
+            }
             if (lt == NULL || rt == NULL) return NULL;
             const AstNode *l = resolve_typedef_chain(lt);
             const AstNode *r = resolve_typedef_chain(rt);
@@ -2993,6 +3024,46 @@ static void resolve_call(AstNode *call, AstNode *current_class, LocalVarType *lo
  * constructor at all (count == 0), this is silently a no-op -- not this
  * pass's job to diagnose "no such constructor"; an implicitly
  * default-constructible type is a perfectly ordinary case. */
+/* `new T[n]{a, b, ...}`: what the elements and the rest of the array need. */
+static void check_list_new(AstNode *n) {
+    if (n->b->list.count > 0) {
+        sema_error(n->line, "a list-initialized array new is not supported here (inside a class's default "
+                            "member initializer?): write the `new T[n]{...}` in a function body");
+        return;
+    }
+    AstNode *cls = type_to_class(n->type);
+    if (cls == NULL) {
+        for (int i = 0; i < n->list.count; i++)
+            if (n->list.items[i]->kind == AST_INIT_LIST)
+                sema_error(n->line, "`new %s[n]{...}`: an element of a scalar type takes a value, not a list in braces",
+                           n->type != NULL && n->type->kind == AST_IDENT ? n->type->str1 : "T");
+        return;
+    }
+    AstNode **ctors = NULL;
+    int nctors = 0, cctors = 0;
+    collect_method_candidates(cls, cls->str1, &ctors, &nctors, &cctors);
+    if (nctors == 0) {
+        for (int i = 0; i < n->list.count; i++)
+            if (n->list.items[i]->kind == AST_INIT_LIST)
+                sema_error(n->line, "`new %s[n]{...}`: class '%s' has no constructor, so an element cannot be built "
+                                    "from a list in braces", cls->str1, cls->str1);
+        free(ctors);
+        return;
+    }
+    int has_default = 0;
+    for (int i = 0; i < nctors; i++) {
+        int all_defaulted = 1;
+        for (int p = 0; p < ctors[i]->list.count; p++)
+            if (ctors[i]->list.items[p]->a == NULL) { all_defaulted = 0; break; }
+        if (all_defaulted) has_default = 1;
+    }
+    free(ctors);
+    int exact = n->a != NULL && n->a->kind == AST_INT_LIT && n->a->ival <= n->list.count;   /* no element is left over */
+    if (!has_default && !exact)
+        sema_error(n->line, "`new %s[n]{...}`: the elements after the list are default-constructed, but class '%s' "
+                            "has no default constructor", cls->str1, cls->str1);
+}
+
 static void resolve_new_expr(AstNode *new_node, AstNode *current_class, LocalVarType *locals) {
     AstNode *cls = type_to_class(new_node->type);
     if (cls == NULL) return; /* not a registered class at all */
@@ -3850,6 +3921,13 @@ static void check_node(AstNode *n, AstNode *current_class, LocalVarType **locals
         case AST_NEW:
             for (int i = 0; i < n->list.count; i++) check_node(n->list.items[i], current_class, locals);
             check_node(n->a, current_class, locals); /* array-new's own size expression, if any (NULL otherwise) */
+            if (n->b != NULL) {
+                /* `new T[n]{...}`: ast.c moved the elements (AST_DIRECT_INIT, resolved just
+                 * above like `T x(args);`, or plain values) to the node's own list; they are
+                 * not arguments of a constructor of T itself */
+                check_list_new(n);
+                break;
+            }
             resolve_new_expr(n, current_class, *locals);
             break;
         case AST_DIRECT_INIT:

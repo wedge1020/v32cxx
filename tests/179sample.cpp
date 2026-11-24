@@ -10,8 +10,9 @@
 //  negated id; the default constructor gives 9, Wide's gives 5. test_errors
 //  must end at 0. (Also built with --alloc=arena by `make test`.)
 //
-//  Not covered: `new T[n]{a, b}` (list-initialized array new) and delete[]
-//  through a base pointer to a derived array, which is undefined in C++ too.
+//  Not covered: delete[] through a base pointer to a derived array, which is
+//  undefined in C++ too. (`new T[n]{a, b}` is 187sample, the operand types
+//  `delete[]` can work out are 184sample.)
 // *****************************************************************************
 
 int test_errors = -1;

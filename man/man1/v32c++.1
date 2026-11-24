@@ -874,9 +874,26 @@ reads it back and destroys the elements, last first. A null pointer or a
 count of zero is fine.
 .B delete[]
 through a base pointer to an array of a derived class is undefined, as in
-C++, and a list-initialized array new
+C++. In
+.B delete[]
+the element class must be known to release an array of a class with a destructor from its header: its type is worked out through typedefs, members, indexing, pointer arithmetic, calls, casts and
+.BR auto ;
+where it can't be (a
+.BR "void *" )
+and the program has such a class, it is an error asking for a cast.
+.PP
+.B new
 .RI ( "new T[n]{a, b}" )
-is not supported.
+builds the first elements from the list (
+.I {x, y}
+calls a constructor,
+.I T(x)
+or a plain value a converting or copy one) and default-constructs the rest (zero for a scalar or a class without constructors). A run-time
+.I n
+smaller than the list is undefined in C++; v32c++ allocates the list's length. It works in any expression, with the count header, and with
+.B --alloc=arena
+and
+.BR --alloc=gc .
 .PP
 Never supported, by design: templates, exceptions, RTTI, multiple
 inheritance.
@@ -1066,6 +1083,10 @@ available alongside them. Three more,
 provide keyboard and mouse support (see
 .B KEYBOARD AND MOUSE
 below).
+.PP
+Objects declared inside a namespace (nested ones too) are constructed at the start of
+.B main
+and destroyed when it ends, in source order with the file-scope ones. A typedef of a class may name a base class, in the class head and in a constructor's initializer list.
 .PP
 A free function declared inside a namespace is emitted under a C name
 that includes the namespace
@@ -1574,7 +1595,7 @@ finds the block), and live blocks are scanned conservatively too. \fBdelete\fP r
 destructor and frees at once; collected objects get no destructor. Out of space after a
 collection the cartridge prints "OUT OF MEMORY (gc heap full)" and halts. An integer
 that looks like a heap address keeps a dead block alive; a pointer hidden from the
-collector (xor-ed, or one past the end of its block) keeps nothing alive; raw
+collector (xor-ed) keeps nothing alive (one past the end of an array is fine: every block has one trailing word); raw
 \fBmalloc\fP memory is not managed. Precise per-class pointer maps and finalizers are
 future work.
 .B <v32/memory.hpp>

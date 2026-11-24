@@ -33,30 +33,30 @@ if "%HAVE_OPT%"=="0" echo note: v32opt not found in PATH -- skipping the optimiz
 
 REM create the output folders, since the development tools will not
 if not exist bin mkdir bin
-if not exist ..\..\..\..\tmp mkdir ..\..\..\..\tmp
+if not exist ..\..\..\..\tmp\tmp.kcP4BBJFD8 mkdir ..\..\..\..\tmp\tmp.kcP4BBJFD8
 
 echo.
 echo Transpile to Vircon32 C
 echo --------------------------
-v32c++ "--alloc=gc" -I ..\..\src --no-build-scripts -o ..\..\..\..\tmp\g.c 182sample.cpp || goto :failed
+v32c++ --line-markers --no-build-scripts -o ..\..\..\..\tmp\tmp.kcP4BBJFD8\lm.c line_markers.cpp || goto :failed
 
 echo.
 echo Compile the C code
 echo --------------------------
-compile ..\..\..\..\tmp\g.c -o ..\..\..\..\tmp\g.asm || goto :failed
-if "%HAVE_OPT%"=="1" v32opt -O3 ..\..\..\..\tmp\g.asm -o ..\..\..\..\tmp\gOpt.asm || goto :failed
+compile ..\..\..\..\tmp\tmp.kcP4BBJFD8\lm.c -o ..\..\..\..\tmp\tmp.kcP4BBJFD8\lm.asm || goto :failed
+if "%HAVE_OPT%"=="1" v32opt -O3 ..\..\..\..\tmp\tmp.kcP4BBJFD8\lm.asm -o ..\..\..\..\tmp\tmp.kcP4BBJFD8\lmOpt.asm || goto :failed
 
 echo.
 echo Assemble the ASM code
 echo --------------------------
-assemble ..\..\..\..\tmp\g.asm -o ..\..\..\..\tmp\g.vbin || goto :failed
-if "%HAVE_OPT%"=="1" assemble ..\..\..\..\tmp\gOpt.asm -o ..\..\..\..\tmp\gOpt.vbin || goto :failed
+assemble ..\..\..\..\tmp\tmp.kcP4BBJFD8\lm.asm -o ..\..\..\..\tmp\tmp.kcP4BBJFD8\lm.vbin || goto :failed
+if "%HAVE_OPT%"=="1" assemble ..\..\..\..\tmp\tmp.kcP4BBJFD8\lmOpt.asm -o ..\..\..\..\tmp\tmp.kcP4BBJFD8\lmOpt.vbin || goto :failed
 
 echo.
 echo Pack the ROM
 echo --------------------------
-packrom ..\..\..\..\tmp\g.xml -o bin\g.v32 || goto :failed
-if "%HAVE_OPT%"=="1" packrom ..\..\..\..\tmp\gOpt.xml -o bin\gOpt.v32 || goto :failed
+packrom ..\..\..\..\tmp\tmp.kcP4BBJFD8\lm.xml -o bin\lm.v32 || goto :failed
+if "%HAVE_OPT%"=="1" packrom ..\..\..\..\tmp\tmp.kcP4BBJFD8\lmOpt.xml -o bin\lmOpt.v32 || goto :failed
 goto :succeeded
 
 :failed

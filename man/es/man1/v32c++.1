@@ -877,11 +877,26 @@ la lee y destruye los elementos, el último primero. Un puntero nulo o una canti
 cero no dan problema.
 .B delete[]
 a través de un puntero base a un arreglo de una clase derivada es indefinido, como en
-C++, y el
+C++. En
+.B delete[]
+hay que conocer la clase de los elementos para liberar un arreglo de una clase con destructor desde su cabecera: el tipo se deduce a través de typedefs, miembros, índices, aritmética de punteros, llamadas, conversiones y
+.BR auto ;
+si no se puede (un
+.BR "void *" )
+y el programa tiene tal clase, es un error que pide una conversión.
+.PP
 .B new
-de arreglos con lista de inicialización
 .RI ( "new T[n]{a, b}" )
-no está soportado.
+construye los primeros elementos desde la lista (
+.I {x, y}
+llama a un constructor,
+.I T(x)
+o un valor simple a uno de conversión o de copia) y construye por defecto el resto (cero para un escalar o una clase sin constructores). Un
+.I n
+menor que la lista en ejecución es indefinido en C++; v32c++ reserva la longitud de la lista. Sirve en cualquier expresión, con la cabecera de cuenta y con
+.B --alloc=arena
+y
+.BR --alloc=gc .
 .PP
 Nunca soportado, por diseño: plantillas, excepciones, RTTI, herencia múltiple.
 .SH ENTRADA EN C
@@ -1072,6 +1087,10 @@ modo que la API de C en bruto sigue disponible junto a ellos. Tres más,
 dan soporte de teclado y ratón (véase
 .B TECLADO Y RATÓN
 más abajo).
+.PP
+Los objetos declarados dentro de un espacio de nombres (anidados también) se construyen al comienzo de
+.B main
+y se destruyen cuando termina, en orden de código fuente con los del ámbito de archivo. Un typedef de una clase puede nombrar una clase base, en la cabecera de la clase y en la lista de inicializadores de un constructor.
 .PP
 Una función libre declarada dentro de un espacio de nombres se emite con un nombre
 de C que incluye el espacio de nombres
@@ -1583,7 +1602,7 @@ examinan de forma conservadora. \fBdelete\fP ejecuta el destructor y libera al i
 los objetos recolectados no reciben destructor. Sin espacio tras una recolección el
 cartucho muestra "OUT OF MEMORY (gc heap full)" y se detiene. Un entero que parece una
 dirección del montón mantiene vivo un bloque muerto; un puntero oculto al recolector
-(con XOR, o una posición más allá del final de su bloque) no mantiene nada vivo; la
+(con XOR) no mantiene nada vivo (uno más allá del final de un arreglo sí vale: cada bloque tiene una palabra final de más); la
 memoria de \fBmalloc\fP directo no se gestiona. Los mapas de punteros precisos por clase
 y los finalizadores quedan para el futuro.
 .B <v32/memory.hpp>

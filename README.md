@@ -80,7 +80,7 @@ of scope](#deliberately-out-of-scope).
   classes inside namespaces.
 
 - **Single  inheritance**,  with  derived-to-base pointer  and  reference
-  conversions.
+  conversions; a typedef of a class names a base too (`typedef Base B; class D : public B { D() : B(3) {} };`).
 
 - **Constructors and  destructors**, in-class or  out-of-line; overloaded
   constructors; copy constructors;  default arguments. Member-initializer
@@ -144,7 +144,7 @@ of scope](#deliberately-out-of-scope).
 
 ### The rest of the language
 
-- Namespaces (nested, qualified calls, namespaced  C names for functions:
+- Namespaces (nested, with their global objects built and destroyed like file-scope ones, qualified calls, namespaced  C names for functions:
   `v32::draw(int,int,int)`    becomes   `v32__draw__int_int_int`),    and
   `using`: `using  namespace v32;` at  file scope  or in a  block, `using
   v32::Keyboard;`, and `using  Points = int;`. Functions  found through a
@@ -327,8 +327,7 @@ is retried), after `--gc-threshold=N` words were allocated since the last one
 collection is a pause: call `gc_collect()` once per frame at a quiet point.
 Out of space after a collection prints "OUT OF MEMORY (gc heap full)" and
 halts. Limits: an integer that looks like a heap address keeps a dead block
-alive; a pointer hidden from the collector (xor-ed, or only one past the end
-of its block) keeps nothing alive; raw `malloc`/`v32::HeapBlock` memory is not
+alive; a pointer hidden from the collector (xor-ed) keeps nothing alive (a pointer one past the end of an array, `p + n` or an `end()`, is fine: every block has one trailing word, so it still lies inside its own block); raw `malloc`/`v32::HeapBlock` memory is not
 managed; there are no finalizers, and the heap is scanned conservatively
 (precise per-class pointer maps are future work). The `arena_*` functions
 do not exist with `--alloc=gc`, nor the `gc_*` ones with `--alloc=arena`.
@@ -400,8 +399,7 @@ Checked against  the current  transpiler and  the real  Vircon32 compiler
   for a class with a destructor one header word in front of the elements
   keeps `n`, so `delete[]` destroys them last first and frees the block. `n`
   may be zero or computed at run time, and `delete[]` of null does nothing.
-  `delete[]` through a base pointer to a derived array is undefined (as in
-  C++), and `new T[n]{a, b}` (a list-initialized array new) is not supported.
+  `delete[]` through a base pointer to a derived array is undefined (as in C++). `delete[]` has to know the element class to release an array of a class with a destructor from its header: v32c++ works the type out through typedefs, members, indexing, pointer arithmetic, calls (function pointers too), casts, `auto` and `std::vector<T *>`/`std::array<T *, N>`; if it still cannot (a `void *`) and the program has a class with a destructor, that is an error asking for a cast (`delete[] (T *)p`). **`new T[n]{a, b}`** builds the first elements from the list (`{x, y}` calls a constructor, `T(x)` or a plain value a converting or copy one) and default-constructs the rest (zero for a scalar or a class without a constructor); the list may be shorter than `n` but not (in C++ it throws `std::bad_array_new_length`) longer: with a smaller run-time `n` v32c++ allocates the list's length. It works in any expression (it is lowered to a comma sequence on a function-level temporary) and with the count header and `--alloc=arena`/`gc`. A class with constructors but no default one needs `n` to be a constant not above the list's length.
 - **`goto`** out of a scope destroys the class objects (and arrays of them)
   that are live there and not at the label, last built first, as `break` and
   `return` do. A `goto` that would jump past the declaration of an object
@@ -442,8 +440,7 @@ Checked against  the current  transpiler and  the real  Vircon32 compiler
 - **File-scope objects** (and arrays of them) are constructed at the top of
   `main` and destroyed when it ends (after its locals, in reverse order),
   also from `exit()`/`abort()` of v32libc, whose `v32_exit` runs them first
-  (once). Objects declared inside a namespace are neither constructed nor
-  destroyed, and a program that does not define `main` constructs none.
+  (once). Objects declared inside a namespace (nested or reopened ones too) are built and destroyed with them, in source order; a program that does not define `main` constructs none. `static` class data members are not supported (an error).
 - An  `.h`  include  that  can't  be found  anywhere  is  passed  through
   each  time  it  appears  (the  C compiler  then  reports  it  missing).
   `docs/DESIGN_NOTES.md`  has  the  more  detailed  development  history,

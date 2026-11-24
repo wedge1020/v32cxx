@@ -3529,6 +3529,17 @@ unary_expr:
             $$->type = $2;
             $$->a = $4;
         }
+    | NEW type_spec '[' expr ']' braced_init
+        {
+            /* new T[N]{a, b, ...} -- list-initialized array new: the braced
+             * list (an AST_INIT_LIST, in `b`) builds the first elements,
+             * the rest are default-constructed (zero for a scalar). Lowered
+             * in lower.c, "phase 6c". */
+            $$ = ast_new(AST_NEW, @1.first_line);
+            $$->type = $2;
+            $$->a = $4;
+            $$->b = $6;
+        }
     | DELETE unary_expr
         { $$ = ast_new(AST_DELETE, @1.first_line); $$->a = $2; }
     | DELETE '[' ']' unary_expr

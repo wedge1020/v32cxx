@@ -595,6 +595,50 @@ test: all | $(OUT_DIR)
 	grep -q "no function 'gc_collect' is declared" out/182bad2.txt
 	! $(TBIN) --gc-threshold=0 -o out/182bad3.c tests/181full.cpp 1> out/182bad3.txt 2>&1
 	! grep -q '__v32_gc' out/179program.c out/181program.c
+	$(TBIN)  -vvv    -o out/183program.c tests/183sample.cpp 1> out/183sample.txt 2>&1
+	grep -q 'Base__Base__int(((Base \*)this), 3);' out/183program.c
+	grep -q 'Base__Base__int(((Base \*)this), a);' out/183program.c
+	sh tests/std_run.sh $(BIN) 183sample
+	$(TBIN)  -vvv    -o out/184program.c tests/184sample.cpp -I . 1> out/184sample.txt 2>&1
+	grep -q 'v32_delete_arr_D(pp\[0\]);' out/184program.c
+	grep -q 'v32_delete_arr_D(h.arr2\[0\]);' out/184program.c
+	grep -q 'v32_delete_arr_D(g_factory());' out/184program.c
+	grep -q 'v32_delete_arr_D((rest - 1));' out/184program.c
+	grep -q 'v32_delete_arr_D(vec\[0\]);\|v32_delete_arr_D(this->vec.m_data\[0\]);' out/184program.c
+	grep -q 'v32_delete(arr);' out/184program.c
+	sh tests/std_run.sh $(BIN) 184sample -I .
+	sh tests/std_run.sh $(BIN) 184sample --alloc=arena -I .
+	sh tests/std_run.sh $(BIN) 184sample --alloc=gc --heap-words=16384 -I .
+	! $(TBIN) -o out/184bad.c tests/184bad.cpp 1> out/184bad.txt 2>&1
+	grep -q "184bad.cpp:15: error: delete\[\]: v32c++ cannot tell the element type of this operand" out/184bad.txt
+	grep -q 'cast it to a pointer to the element type' out/184bad.txt
+	! grep -q ':17: error' out/184bad.txt
+	$(TBIN) -o out/184ok.c tests/184ok.cpp 1> out/184ok.txt 2>&1
+	$(TBIN)  -vvv --alloc=gc -I . -o out/185program.c tests/185sample.cpp 1> out/185sample.txt 2>&1
+	grep -q 'n = n + 1;   /\* one trailing unit' out/185program.c
+	sh tests/std_run.sh $(BIN) 185sample --alloc=gc --heap-words=16384 -I .
+	sh tests/std_run.sh $(BIN) 185sample --alloc=gc --heap-words=16384 -DGC_NO_THRESHOLD --gc-threshold=100000000 -I .
+	! grep -q 'one trailing unit' out/179program.c out/181program.c
+	$(TBIN)  -vvv    -o out/186program.c tests/186sample.cpp 1> out/186sample.txt 2>&1
+	grep -q 'Counter__Counter__int((&arr\[1\]), 4);' out/186program.c
+	grep -q 'Counter__Counter__int((&deep), 5);' out/186program.c
+	grep -q 'Counter__dtor__void((&again));' out/186program.c
+	test "`grep -n 'Counter__Counter__int((&g), 2);' out/186program.c | head -1 | cut -d: -f1`" -lt "`grep -n 'Counter__Counter__int((&t2), 6);' out/186program.c | head -1 | cut -d: -f1`"
+	$(TBIN)  -vvv --alloc=gc -I . -o out/186gc.c tests/186gc.cpp 1> out/186gc.txt 2>&1
+	grep -q '__v32_gc_root_a\[[0-9]\] = (int)&tail;' out/186gc.c
+	grep -q '__v32_gc_root_a\[[0-9]\] = (int)&owner;' out/186gc.c
+	sh tests/std_run.sh $(BIN) 186gc --alloc=gc --heap-words=16384 -I .
+	$(TBIN)  -vvv    -o out/187program.c tests/187sample.cpp 1> out/187sample.txt 2>&1
+	grep -q 'v32_new_arr_Item_init(__v32_nl_n[0-9]*, 3)' out/187program.c
+	grep -q 'v32_new_arr_Item_rest(' out/187program.c
+	! grep -q 'v32_new_arr_.*_init' out/179program.c out/181program.c
+	sh tests/std_run.sh $(BIN) 187sample
+	sh tests/std_run.sh $(BIN) 187sample --alloc=arena -I .
+	sh tests/std_run.sh $(BIN) 187sample --alloc=gc --heap-words=16384 -I .
+	! $(TBIN) -o out/187bad.c tests/187bad.cpp 1> out/187bad.txt 2>&1
+	grep -q "187bad.cpp:16: .*class 'NoDefault' has no default constructor" out/187bad.txt
+	grep -q "187bad.cpp:17: .*class 'Bare' has no constructor" out/187bad.txt
+	grep -q "187bad.cpp:18: .*takes a value, not a list in braces" out/187bad.txt
 # `-vvv` (this project's own verbosity flag, a later round -- see
 # main.c) is passed to every sample specifically so `make test`'s own
 # output still captures the full AST/semantic-analysis/lowering dumps

@@ -883,11 +883,26 @@ le relit et détruit les éléments, le dernier d'abord. Un pointeur nul ou un n
 nul ne pose pas de problème.
 .B delete[]
 à travers un pointeur de base vers un tableau d'une classe dérivée est indéfini, comme
-en C++, et le
+en C++. Dans
+.B delete[]
+la classe des éléments doit être connue pour libérer un tableau d'une classe avec destructeur depuis son en-tête : le type se déduit à travers les typedefs, les membres, l'indexation, l'arithmétique de pointeurs, les appels, les conversions et
+.BR auto ;
+s'il ne peut pas l'être (un
+.BR "void *" )
+et que le programme a une telle classe, c'est une erreur qui demande une conversion.
+.PP
 .B new
-de tableau avec liste d'initialisation
 .RI ( "new T[n]{a, b}" )
-n'est pas pris en charge.
+construit les premiers éléments depuis la liste (
+.I {x, y}
+appelle un constructeur,
+.I T(x)
+ou une simple valeur un constructeur de conversion ou de copie) et construit le reste par défaut (zéro pour un scalaire ou une classe sans constructeur). Un
+.I n
+plus petit que la liste à l'exécution est indéfini en C++ ; v32c++ alloue la longueur de la liste. Cela marche dans toute expression, avec l'en-tête de compte et avec
+.B --alloc=arena
+et
+.BR --alloc=gc .
 .PP
 Jamais pris en charge, par conception : templates, exceptions, RTTI, héritage
 multiple.
@@ -1082,6 +1097,10 @@ l'API C brute reste disponible à côté. Trois autres,
 apportent la prise en charge du clavier et de la souris (voir
 .B CLAVIER ET SOURIS
 ci-dessous).
+.PP
+Les objets déclarés dans un espace de noms (imbriqué aussi) sont construits au début de
+.B main
+et détruits quand elle se termine, dans l'ordre du source avec ceux de la portée du fichier. Un typedef d'une classe peut nommer une classe de base, dans l'en-tête de la classe et dans la liste d'initialisation d'un constructeur.
 .PP
 Une fonction libre déclarée dans un espace de noms est émise sous un nom C qui inclut
 l'espace de noms
@@ -1594,8 +1613,7 @@ pages retrouve le bloc), et les blocs vivants sont aussi parcourus de façon con
 \fBdelete\fP exécute le destructeur et libère aussitôt ; les objets collectés ne reçoivent
 pas de destructeur. Faute de place après une collecte la cartouche affiche
 "OUT OF MEMORY (gc heap full)" et s'arrête. Un entier qui ressemble à une adresse du tas
-garde un bloc mort en vie ; un pointeur caché au collecteur (XOR, ou un cran après la fin
-de son bloc) ne garde rien en vie ; la mémoire de \fBmalloc\fP direct n'est pas gérée. Les
+garde un bloc mort en vie ; un pointeur caché au collecteur (XOR) ne garde rien en vie (un cran après la fin d'un tableau convient : chaque bloc a un mot final de plus) ; la mémoire de \fBmalloc\fP direct n'est pas gérée. Les
 cartes de pointeurs précises par classe et les finaliseurs restent à faire.
 .B <v32/memory.hpp>
 fournit

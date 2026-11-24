@@ -2,12 +2,52 @@
 
 ## 20261123-dev
 
+- **`delete[]` finds the element class in every spelling.** A class with a destructor keeps a count header in front of
+  its array, so `delete[]` of an operand whose class was not resolved (the fallback was the plain `v32_delete`) freed the
+  wrong address. `infer_expr_type` (`sema.c`) now types pointer arithmetic (`p + n`, `n + p`, `p - n`) and a call
+  through a function pointer; a pointer to pointers is an array of pointers (a plain release, as it always should have
+  been); typedef'd, member (`.`/`->`/inherited/`this`), indexed, returned, cast, `auto`, namespace and
+  `std::vector<T *>`/`std::array<T *, N>` operands were already found. Where the type is still unknown (a `void *`) and
+  the program has a class with a destructor, it is now an error asking for a cast (`lower.c`
+  `delete_array_element_class`); a primitive, or a program without such a class, stays a plain free. Also fixed on
+  the way: an array of a typedef'd pointer to a class (`typedef D *DP; DP a[2];`, a member too) was built and destroyed as
+  an array of objects (`type_to_value_class`). Tests `tests/184sample.cpp`, `184bad.cpp`, `184ok.cpp`.
+- **`new T[n]{a, b, ...}` (list-initialized array new).** The listed elements are built from the list (`{x, y}` calls a
+  constructor, `T(x)` or a plain value a converting or copy one, a scalar is assigned), then the rest are
+  default-constructed (zero for a scalar or a class without constructors); `new T[n]{}` is `new T[n]`. Grammar: one
+  new production, no conflicts (`%expect` unchanged). `ast.c` (`lift_objects_expr`) turns the items into in-place
+  constructor calls like a local array's, `sema.c` `check_list_new` checks them (a class with constructors but no
+  default one needs a constant `n` not above the list), `lower.c` phase 6 lowers it to a comma sequence on a
+  function-level temporary, so it works in any expression:
+  `(__v32_nl_n0 = n, __v32_nl_tmp0 = v32_new_arr_T_init(__v32_nl_n0, 2), T__T__int(&__v32_nl_tmp0[0], 1), ..., v32_new_arr_T_rest(__v32_nl_tmp0, __v32_nl_n0, 2), __v32_nl_tmp0)`.
+  The helpers (`codegen.c`, emitted only for a program that uses the form) allocate with the count header in every
+  `--alloc` mode and leave elements `0..k-1` to the caller, so elements are built in order. `n` smaller than the list
+  is undefined in C++ (`std::bad_array_new_length`): the list's length is allocated. Tests `tests/187sample.cpp`
+  (default, arena, gc), `187bad.cpp`.
+- **Objects in a namespace are constructed and destroyed.** `namespace game { Counter g(1); Counter arr[2] = {...}; }`
+  (nested and reopened namespaces too) was emitted as a broken initializer and never run; now phases 7b/9c
+  (`construct_globals_in_main`, `destroy_globals_in_main`) collect the variables of namespaces in source order with the
+  top-level ones, and destroy them in reverse. The gc root table already covered namespace scope (checked,
+  `tests/186gc.cpp`). `static` class data members are not supported by this compiler (an error). Tests
+  `tests/186sample.cpp` (with `tests/177driver.c`), `186gc.cpp`. Output change: `82sample` now constructs its
+  namespaced `Counter`.
+- **A typedef as a base class.** `typedef Base B; class D : public B {...};` was "inherits from unknown base"; the
+  base (and a base named in a constructor's initializer list, in the class or out of line, `D() : B(3) {}`) is renamed
+  to the class the typedef chain ends at before sema (`ast.c` `canonicalize_typedef_bases`). Test `tests/183sample.cpp`
+  (virtual functions through the typedef'd base).
+- **`--alloc=gc`: a pointer one past the end of an array keeps its own block alive.** Blocks lie one after the other, so
+  `p + n` (an iterator's `end()`) pointed at the header of the NEXT block: that one was kept and the array was freed.
+  Every block now has one trailing unit (`n = n + 1` in `__v32_alloc`, as in Boehm's collector), so the end pointer
+  stays inside its block; the page-table lookup is unchanged. Default and arena output are unchanged; the gc runtime
+  text gains two lines. Test `tests/185sample.cpp` (an `int[8]` and an array of objects with a count header, each
+  reachable only through its one-past-end pointer, survive and the neighbour is freed; fails with the old runtime).
+
 - **`new T[n]` constructs and `delete[]` destroys.** `new T[n]` default-constructs every element in order (a
   constructor with default arguments, or the vtable setup of a class with virtual functions and no constructor, as for
   a stack array); for a class with a destructor one header word in front of the elements holds `n` and the pointer
   returned is past it, so `delete[] p` (static type known) destroys the elements last first and frees from the header.
   A class without a destructor has no header. `n == 0`, a negative `n` (0) and `delete[]` of null work. `delete[]`
-  through a base pointer to a derived array stays undefined, as in C++; `new T[n]{a, b}` is not supported.
+  through a base pointer to a derived array stays undefined, as in C++ (`new T[n]{a, b}`: see the entry above).
   `codegen.c` `emit_array_new_runtime_class`/`emit_array_delete_runtime`, `lower.c` (`v32_delete_arr_Class`). Test:
   `tests/179sample.cpp`, run as standard C (`tests/std_run.sh`).
 - **`--alloc=gc`, `--gc-threshold=N`: a conservative mark-sweep garbage collector** on the same hook as the arena

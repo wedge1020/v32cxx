@@ -83,7 +83,7 @@ du périmètre](#délibérément-hors-du-périmètre).
   dans des espaces de noms.
 
 - **Héritage simple**, avec conversions de pointeur et de référence de dérivée
-  vers base.
+  vers base ; un `typedef` d'une classe nomme aussi une base (`typedef Base B; class D : public B { D() : B(3) {} };`).
 
 - **Constructeurs et destructeurs**, dans la classe ou hors classe ;
   constructeurs surchargés ; constructeurs de copie ; arguments par défaut.
@@ -151,7 +151,7 @@ du périmètre](#délibérément-hors-du-périmètre).
 
 ### Le reste du langage
 
-- Espaces de noms (imbriqués, appels qualifiés, noms C avec espace de noms pour
+- Espaces de noms (imbriqués, avec leurs objets globaux construits et détruits comme ceux de la portée du fichier, appels qualifiés, noms C avec espace de noms pour
   les fonctions : `v32::draw(int,int,int)` devient `v32__draw__int_int_int`) et
   `using` : `using namespace v32;` à la portée du fichier ou dans un bloc,
   `using v32::Keyboard;` et `using Points = int;`. Les fonctions trouvées par
@@ -343,8 +343,7 @@ appelez `v32::gc_collect()` ; `gc_used()`, `gc_free()` (mots) et
 appelez `gc_collect()` une fois par image, à un moment calme. Manquer de place
 après une collecte affiche « OUT OF MEMORY (gc heap full) » et s'arrête.
 Limites : un entier qui ressemble à une adresse du tas garde un bloc mort en
-vie ; un pointeur caché au collecteur (XOR, ou seulement un cran après la fin
-de son bloc) ne garde rien en vie ; la mémoire de `malloc`/`v32::HeapBlock`
+vie ; un pointeur caché au collecteur (XOR) ne garde rien en vie (un pointeur un cran après la fin d'un tableau, `p + n` ou un `end()`, convient : chaque bloc a un mot final de plus et reste dans son propre bloc) ; la mémoire de `malloc`/`v32::HeapBlock`
 directs n'est pas gérée ; pas de finaliseurs, et le tas est parcouru de façon
 conservatrice (des cartes de pointeurs précises par classe restent à faire).
 Les fonctions `arena_*` n'existent pas avec `--alloc=gc`, ni les `gc_*` avec
@@ -421,10 +420,7 @@ Vérifiées avec le transpileur actuel et le vrai compilateur Vircon32 (octobre
   l'ordre ; pour une classe avec destructeur, un mot d'en-tête devant les
   éléments garde `n`, de sorte que `delete[]` les détruit du dernier au
   premier et libère le bloc. `n` peut être nul ou calculé à l'exécution, et
-  `delete[]` d'un pointeur nul ne fait rien. `delete[]` à travers un pointeur
-  de base sur un tableau de dérivées est indéfini (comme en C++), et
-  `new T[n]{a, b}` (`new` de tableau avec liste d'initialisation) n'est pas
-  pris en charge.
+  `delete[]` d'un pointeur nul ne fait rien. `delete[]` à travers un pointeur de base sur un tableau de dérivées est indéfini (comme en C++). `delete[]` doit connaître la classe des éléments pour libérer un tableau d'une classe avec destructeur depuis son en-tête : v32c++ déduit le type à travers les typedefs, les membres, l'indexation, l'arithmétique de pointeurs, les appels (aussi par pointeur de fonction), les conversions, `auto` et `std::vector<T *>`/`std::array<T *, N>` ; s'il n'y arrive pas (un `void *`) et que le programme a une classe avec destructeur, c'est une erreur qui demande une conversion (`delete[] (T *)p`). **`new T[n]{a, b}`** construit les premiers éléments depuis la liste (`{x, y}` appelle un constructeur, `T(x)` ou une simple valeur un constructeur de conversion ou de copie) et construit le reste par défaut (zéro pour un scalaire ou une classe sans constructeur) ; la liste peut être plus courte que `n`, pas plus longue (C++ lève `std::bad_array_new_length`) : avec un `n` plus petit à l'exécution, v32c++ alloue la longueur de la liste. Cela marche dans toute expression (abaissé en une séquence avec virgules sur un temporaire de la fonction) et avec l'en-tête de compte et `--alloc=arena`/`gc`. Une classe avec constructeurs mais sans constructeur par défaut exige un `n` constant au plus égal à la liste.
 - **`goto`** hors d'une portée détruit les objets de classe (et leurs
   tableaux) vivants à cet endroit et pas à l'étiquette, le dernier construit
   d'abord, comme le font `break` et `return`. Un `goto` qui sauterait par-dessus
@@ -467,9 +463,7 @@ Vérifiées avec le transpileur actuel et le vrai compilateur Vircon32 (octobre
 - Les **objets à la portée du fichier** (et leurs tableaux) sont construits en
   début de `main` et détruits quand elle se termine (après ses variables locales, dans
   l'ordre inverse), aussi depuis `exit()`/`abort()` de v32libc, dont `v32_exit`
-  les exécute d'abord (une seule fois). Les objets déclarés dans un espace de
-  noms ne sont ni construits ni détruits, et un programme qui ne définit pas
-  `main` n'en construit aucun.
+  les exécute d'abord (une seule fois). Les objets déclarés dans un espace de noms (imbriqué ou rouvert aussi) sont construits et détruits avec eux, dans l'ordre du source ; un programme qui ne définit pas `main` n'en construit aucun. Les membres de données `static` d'une classe ne sont pas pris en charge (erreur).
 - Un `#include` de `.h` introuvable est transmis tel quel à chaque occurrence
   (le compilateur C signale alors qu'il manque). `docs/DESIGN_NOTES.md`
   (en anglais seulement) contient l'historique de développement plus détaillé,
