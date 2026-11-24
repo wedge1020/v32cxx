@@ -957,6 +957,7 @@ void ast_list_append_flatten(AstList *list, AstNode *node); /* see its own
 
 #define ATTR_NO_YIELD 1
 #define ATTR_ROM 2
+#define ATTR_QUALIFIED_DEF 4   /* AST_FUNC_DEF written `int a::f() {...}` (set by qualify_namespace_definitions, which then wraps it in `namespace a`): sema checks that `a` declares a match */
 extern int g_attr_pending;
 AstNode *ast_new(AstKind kind, int line);
 AstNode *ast_ident(const char *name, int line);

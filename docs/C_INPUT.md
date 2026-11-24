@@ -241,7 +241,7 @@ command line as well is fine (it is not taken twice).
 | `asm { "mov R1, {&buf}" }`, `{&func}`, `{*p}` | The SDK compiler only interpolates plain variables. `{&x}` becomes a hidden local `int *__v32_a_x = &x;` before the asm (also keeps a function that only asm names alive); `{*p}` a hidden `int __v32_d_p = *p;`. |
 | `const int t[] __attribute__((rom)) = {...};` (file scope; integer, char or float literals) | The words are emitted as assembler data in the program image behind a hidden `int *__v32_rom_t(void)`; every use of `t` becomes that call, `sizeof(t)` the element count. Read-only; anything else is reported (`-Wrom`) and kept as a normal global. |
 | `unsigned` `<`, `>`, `<=`, `>=`, `/`, `%` | Done as unsigned operations (`--no-unsigned-ops` prints them as written). |
-| `--rename old=new` | Renames a function, variable or parameter program-wide, for names that clash with the SDK (struct members are untouched). |
+| `--rename old=new` | Renames a function, variable or parameter program-wide, for names that clash with the SDK (struct members are untouched). The SDK headers define their functions: a C function that `misc.h` (added for `new` and `--alloc`) or `video.h` (added for `--alloc`) also defines is an error naming the header (QUIRKS #38). |
 | `--yield-points[=N]` | Inserts `if (get_cycle_counter() > N) yield();` at function entry, loop bodies and labels (`--yield-func=`, `--yield-counter=` rename the two functions); `__attribute__((no_yield))`, functions with asm and `__v32_*` helpers are skipped. |
 | `--warn-error[=kind,...]`, `--list-warnings` | Turns v32c++'s own warnings (or just the listed kinds) into a failed build with no output file. |
 

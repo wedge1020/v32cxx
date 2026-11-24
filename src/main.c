@@ -999,6 +999,7 @@ int  main (int  argc, char **argv)
             int lower_errors = rewrite_variadic_calls(&g_program->list);
             if (lower_errors == 0) lower_errors = lower_run(g_program);
             if (lower_errors == 0) lower_errors = codegen_check_aggregates(g_program);
+            if (lower_errors == 0) lower_errors = codegen_check_sdk_clash(g_program);
             if (verbosity >= 3) {
                 lower_dump(g_program);
                 lower_notes_print();

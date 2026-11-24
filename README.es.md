@@ -21,8 +21,8 @@ dialecto de C de Vircon32 hace de forma distinta.
 > **Estado: funcional.** Toda la canalización — preprocesamiento, análisis
 > sintáctico, análisis semántico, bajada (*lowering*) y generación de código —
 > funciona de principio a fin y se comprueba con el compilador, el ensamblador y
-> la consola **reales** de Vircon32 (`make realcheck`: 227 programas compilados
-> y ensamblados, 158 de ellos con autocomprobación en tiempo de ejecución en una
+> la consola **reales** de Vircon32 (`make realcheck`: 233 programas compilados
+> y ensamblados, 164 de ellos con autocomprobación en tiempo de ejecución en una
 > consola sin pantalla). Con él se construyen cinco demos de buen tamaño (tres
 > juegos en C++, un port de Rogue y un Spy vs Spy en C puro). Consulta las [Limitaciones
 > conocidas](#limitaciones-conocidas) para ver con honestidad lo que falta.
@@ -458,6 +458,16 @@ Comprobadas con el transpilador actual y el compilador real de Vircon32
   `new P{1, 2}`, `new Counter{3}`. `new int`, `new int(5)`, `new float{2.5f}` y `new Node*`
   reservan una palabra (también con `--alloc`) y `delete` la libera. `new T[n]()` y `new int[n]()` (`new` de arreglo con inicialización por valor) equivalen
   a `new T[n]{}`. Véase `docs/VIRCON32_QUIRKS.es.md` n.º 31-33.
+- **Definiciones y escritura de los tipos.** Una definición calificada necesita una declaración en ese espacio
+  de nombres (`int a::zz() {}` sin `zz` en `a`, o `int a::f(float)` cuando `a` solo tiene `f(int)`, es un error,
+  como en C++). Toda escritura de un tipo de parámetro (`D` dentro del espacio o por `using`, `a::D`, un typedef)
+  es un solo tipo para emparejar y para el nombre en C; un `::` inicial (`::a::D`) no se acepta. Los miembros de
+  tipo clase, unión o enum calificados con un espacio de nombres se ponen a cero como los demás (`new H`,
+  `H h{}`, `new H[n]{}`). Pendiente: `new U` de una unión misma, `new E[n]` de un enum.
+- **Un programa C no puede definir lo que definen las cabeceras del SDK.** `misc.h` (añadida por `new` y
+  `--alloc`) y `video.h` (añadida por `--alloc`) tienen cuerpos de funciones: una función C del mismo nombre
+  (`malloc`, `clear_screen`) es un error que nombra la cabecera; renómbrala o usa `--rename`. El runtime del
+  asignador no incluye `time.h`, así que `get_cycle_counter` queda libre. Véase `docs/VIRCON32_QUIRKS.es.md` n.º 38.
 - **Los códigos de control en literales de cadena se reescriben**: la cadena
   de herramientas de Vircon32 no puede ensamblar una cadena que contenga los
   códigos 14–31 de la fuente de la BIOS (`┌ ─ ┐ │ ░ ▒ ▓ █` ...) u otros
@@ -633,13 +643,14 @@ prueba de v32io, la usa para el tráfico de teclado y ratón).
 escribe `bin/BUILD-INFO`: la ruta de ComputerSoftware usada, el `HEAD` de git de esa copia, la
 ruta de v32sim y la versión del compilador. Antes prueba el compilador nuevo desde un
 directorio temporal y se detiene con su mensaje si no encuentra las cabeceras del SDK (en
-macOS hace falta un v32sim cuyo shim SDL del oráculo admita `_NSGetExecutablePath`).
+macOS toda la comprobación necesita un v32sim con las correcciones de macOS: `SDL_GetBasePath` en el shim del oráculo, sin `sed -i`).
+`make realcheck` ejecuta antes `build-tools.sh` si falta `tools/vircon32/bin/BUILD-INFO`, y `make clean` borra `tools/vircon32/bin`.
 `tools/vircon32/check.sh` (lo que ejecuta
 `make realcheck` tras `make test`) muestra el compilador que usa, **rechaza un `bin/` sin
 `BUILD-INFO`** (construido por un `build-tools.sh` antiguo) y pide
 reconstruirlo, y avisa si la copia de ComputerSoftware ha avanzado desde la construcción. Hoy
-compila y ensambla 227 programas (4 no se empaquetan: sus recursos `#texture`/`#sound` no están
-en `tests/`) y ejecuta 158 cartuchos con autocomprobación, entre ellos las construcciones
+compila y ensambla 233 programas (4 no se empaquetan: sus recursos `#texture`/`#sound` no están
+en `tests/`) y ejecuta 164 cartuchos con autocomprobación, entre ellos las construcciones
 `--alloc=arena` y `--alloc=gc` de `tests/real_variants.txt` (`nombre fuente opciones`: añade allí
 las variantes de una muestra que reserve memoria). `tools/prune-release.sh [--apply]` es el
 limpiador de versiones: por omisión solo simula; lista (y con `--apply` elimina, con `git rm`

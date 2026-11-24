@@ -82,6 +82,7 @@ literals, `1e3`, `.5` and `5.` (`tests/133sample.cpp`, `134sample.c`,
 | 35 | a struct or union member of struct/union type must be defined before it | `union V { int a; B b; };` | **lowered** (every struct, class and union is written after the ones it holds by value; a cycle is an error) |
 | 36 | a pointer to a union may come before the union, after `union U;` | `struct S { U *p; };` then `union U {...};` | **lowered** (`union U;` is written for every union) |
 | 37 | a bare enumerator of an `enum class` is "identifier has not been declared" | `Color c = Red;` | **diagnosed** (v32c++ error: write `Color::Red`) |
+| 38 | the SDK headers *define* their functions, so a program defining one of the same name is "redefinition" | `void clear_screen(int c) {...}` with `video.h` included | **diagnosed** (v32c++ error naming the header; `--rename`) |
 
 Not covered by any entry because v32c++ has no workaround: templates,
 exceptions, RTTI, multiple inheritance, `constexpr`, lambdas,
@@ -1192,6 +1193,19 @@ phase could be dropped.
   plain-enum constant of that name still works, and inside the `enum class` itself the
   bare names of its own enumerators are fine (`Blue = Red + 5`). `tests/205sample.cpp`,
   `tests/205bad.cpp`.
+
+## 38. The SDK headers define their functions
+
+- **Vircon32 does**: `misc.h`, `video.h`, `time.h`... hold function *bodies* (`malloc`, `memset`, `clear_screen`,
+  `get_cycle_counter`...), and with no linker everything is one translation unit. A program that defines a function
+  of the same name as one in a header that is included is a redefinition, reported by the compiler at the second
+  definition, far from the cause.
+- **For v32c++**: C++ input mangles every free function, so only C input can clash. The headers v32c++ adds on its
+  own are `misc.h` (`new`, the allocators) and, with `--alloc`, `video.h` (the out-of-memory screen); the allocator
+  runtime does not include `time.h` (its `end_frame()` is the `wait` instruction, written directly), so
+  `get_cycle_counter` is free (`tests/169sample.c`). A C function that one of those two headers defines is an error
+  naming the function and the header: rename it, or `--rename old=new`. A header the program includes itself is the
+  program's business (the stock compiler's message). `tests/209bad.c`.
 
 ## What this list does NOT cover
 

@@ -824,6 +824,36 @@ test: all | $(OUT_DIR)
 	grep -q "205bad.cpp:5: error: 'Red' is a scoped enumerator: write 'Shade::Red' or 'Color::Red'" out/205bad.txt
 	grep -q "205bad.cpp:6: error: 'Green' is a scoped enumerator: write 'Color::Green'" out/205bad.txt
 	grep -q "205bad.cpp:3: error: 'Two' is a scoped enumerator: write 'a::K::Two'" out/205bad.txt
+	$(TBIN)  -vvv    -o out/206program.c tests/206sample.cpp 1> out/206sample.txt 2>&1
+	grep -q 'zero.k.a = 0' out/206program.c
+	sh tests/std_run.sh $(BIN) 206sample
+	sh tests/std_run.sh $(BIN) 206sample --alloc=arena -I .
+	sh tests/std_run.sh $(BIN) 206sample --alloc=gc --heap-words=16384 -I .
+	! $(TBIN) -o out/207bad.c tests/207bad.cpp 1> out/207bad.txt 2>&1
+	grep -q "207bad.cpp:7: no declaration of 'zz' in namespace 'a' matches this definition" out/207bad.txt
+	grep -q "207bad.cpp:8: no matching declaration for out-of-line definition of 'nope' in class 'C'" out/207bad.txt
+	grep -q "207bad.cpp:9: no declaration of 'f' in namespace 'a' matches this definition" out/207bad.txt
+	grep -q "207bad.cpp:12: no declaration of 'g' in namespace 'a::in' matches this definition" out/207bad.txt
+	grep -q "207bad.cpp:14: no declaration of 'missing' in namespace 'a::in' matches this definition" out/207bad.txt
+	test "$$(grep -c 'matches this definition\|no matching declaration' out/207bad.txt)" = 5
+	$(TBIN)  -vvv    -o out/208program.c tests/208sample.cpp 1> out/208sample.txt 2>&1
+	for f in a__f__D a__g__D a__h__D_ptr a__lf__D a__in__p2__D b__q__D b__q2__D c__r__D c__r2__D c__r3__D_ptr \
+	         C__C__D C__m__D C__n__D C__op_add__D C__op_sub__D; do \
+	    test "$$(grep -c "^[a-z]* $$f(.*);$$" out/208program.c)" = 1 && test "$$(grep -c "^[a-z]* $$f(.*)$$" out/208program.c)" = 1 \
+	        || { echo "208: prototype/definition differ: $$f"; exit 1; }; \
+	done
+	! grep -q '__a_D\|a_in_E\|_AD\b' out/208program.c
+	sh tests/std_run.sh $(BIN) 208sample
+	@if [ -f tools/vircon32/bin/include/video.h ]; then \
+	    echo "209bad: a C program defining SDK functions, with --alloc=arena (needs the SDK headers)"; \
+	    ! V32CXX_SDK_INCLUDE=tools/vircon32/bin/include $(TBIN) --alloc=arena -o out/209bad.c tests/209bad.c 1> out/209bad.txt 2>&1 \
+	    && grep -q "209bad.c:3: error: 'clear_screen' is also defined by the SDK header 'video.h'" out/209bad.txt \
+	    && grep -q "209bad.c:4: error: 'malloc' is also defined by the SDK header 'misc.h'" out/209bad.txt \
+	    && grep -q "use --rename malloc=NEW_NAME" out/209bad.txt \
+	    && ! grep -q "get_cycle_counter" out/209bad.txt \
+	    && V32CXX_SDK_INCLUDE=tools/vircon32/bin/include $(TBIN) --alloc=arena -o out/169arena.c tests/169sample.c 1> out/169arena.txt 2>&1 \
+	    && ! grep -q '#include "time.h"' out/169arena.c || { echo "209bad/169arena failed"; exit 1; }; \
+	else echo "skipping 209bad: needs the SDK headers (run tools/vircon32/build-tools.sh)"; fi
 # `-vvv` (this project's own verbosity flag, a later round -- see
 # main.c) is passed to every sample specifically so `make test`'s own
 # output still captures the full AST/semantic-analysis/lowering dumps
@@ -915,6 +945,7 @@ test: all | $(OUT_DIR)
 # sample (one that declares `int test_errors`) on a headless console.
 # Needs tools/vircon32/bin: run tools/vircon32/build-tools.sh once first.
 realcheck: test
+	@test -f tools/vircon32/bin/BUILD-INFO || { echo 'realcheck: no toolchain in tools/vircon32/bin -- building it'; sh tools/vircon32/build-tools.sh; }
 	tools/vircon32/check.sh
 
 # Show the version (from inc/v32cxx.h) and stamp it, with today's date,
@@ -1081,12 +1112,13 @@ archive: clean
 # directory ENTRIES, not the files inside them, so the archive silently
 # ships empty demo folders.
 
-# clean also removes what older tooling cloned or generated in the tree: build-tools.sh used to clone
+# clean also removes the stock toolchain build-tools.sh built in tools/vircon32/bin (make realcheck rebuilds it
+# when it is missing), and what older tooling cloned or generated in the tree: build-tools.sh used to clone
 # ComputerSoftware into tools/vircon32/ (it is found beside the project now), and a test used to write
 # Make.sh/Make.bat into tests/. tools/prune-release.sh removes tracked copies of these.
 clean:
 	rm -rf $(BIN_DIR)/* $(OBJ_DIR)/* $(SRC_DIR)/parser.output $(OUT_DIR)/* put/* counterexamples.txt *.zip *.patch ../v32cxx-project.zip ../v32cxx-project-*.zip
-	rm -rf tools/vircon32/ComputerSoftware tests/Make.sh tests/Make.bat
+	rm -rf tools/vircon32/bin tools/vircon32/ComputerSoftware tests/Make.sh tests/Make.bat
 	$(MAKE) -C demos clean
 	#rm -f $(SRC_DIR)/parser.c $(SRC_DIR)/lexer.c $(INC_DIR)/parser.h
 # Removing the bison/flex-generated files here (not just objects/binary) is

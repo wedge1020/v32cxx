@@ -84,6 +84,7 @@ cadena de herramientas y el emulador reales).
 | 35 | un miembro struct o unión de tipo struct/unión debe estar definido antes | `union V { int a; B b; };` | **bajado** (todo struct, clase y unión se escribe después de los que contiene por valor; un ciclo es un error) |
 | 36 | un puntero a una unión puede ir antes que la unión, tras `union U;` | `struct S { U *p; };` y luego `union U {...};` | **bajado** (se escribe `union U;` para cada unión) |
 | 37 | un enumerador sin calificar de un `enum class` es «identifier has not been declared» | `Color c = Red;` | **diagnosticado** (error de v32c++: escribe `Color::Red`) |
+| 38 | las cabeceras del SDK *definen* sus funciones, así que un programa que defina una del mismo nombre es «redefinition» | `void clear_screen(int c) {...}` con `video.h` incluida | **diagnosticado** (error de v32c++ con el nombre de la cabecera; `--rename`) |
 
 No cubierto por ninguna entrada porque v32c++ no tiene solución: plantillas,
 excepciones, RTTI, herencia múltiple, `constexpr`, lambdas,
@@ -1189,6 +1190,20 @@ el emulador reales. Una corrección aguas arriba serían tres líneas en `Escape
   clase o constante de `enum` simple con ese nombre sigue valiendo, y dentro del propio
   `enum class` los nombres sueltos de sus enumeradores valen (`Blue = Red + 5`).
   `tests/205sample.cpp`, `tests/205bad.cpp`.
+
+## 38. Las cabeceras del SDK definen sus funciones
+
+- **Vircon32 hace**: `misc.h`, `video.h`, `time.h`... contienen el *cuerpo* de las funciones (`malloc`, `memset`,
+  `clear_screen`, `get_cycle_counter`...), y sin enlazador todo es una sola unidad de traducción. Un programa que
+  define una función con el mismo nombre que una de una cabecera incluida es una redefinición, que el compilador
+  señala en la segunda definición, lejos de la causa.
+- **Para v32c++**: la entrada C++ decora todas las funciones libres, así que solo la entrada C puede chocar. Las
+  cabeceras que v32c++ añade por su cuenta son `misc.h` (`new`, los asignadores) y, con `--alloc`, `video.h` (la
+  pantalla de memoria agotada); el runtime del asignador no incluye `time.h` (su `end_frame()` es la instrucción
+  `wait`, escrita directamente), así que `get_cycle_counter` queda libre (`tests/169sample.c`). Una función C que
+  una de esas dos cabeceras define es un error con el nombre de la función y de la cabecera: renómbrala o usa
+  `--rename viejo=nuevo`. Una cabecera que el programa incluye él mismo es asunto del programa (mensaje del
+  compilador oficial). `tests/209bad.c`.
 
 ## Qué NO cubre esta lista
 

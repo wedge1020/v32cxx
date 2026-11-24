@@ -1017,6 +1017,51 @@ static void harvest_type_names(const char *line) {
     }
 }
 
+/* Does the SDK header `header` (misc.h, video.h...) DEFINE a function called `name`? Those headers define
+ * (not just declare) their functions, so a program defining one of the same name cannot be linked with the
+ * header's text. Found in the SDK include directories; a header that is not found defines nothing here.
+ * The scan reads the text the way the headers are written: a line at brace depth 0 that starts a
+ * declaration, holds `name(` and does not end in `;` is a definition. Comments and preprocessor lines are
+ * skipped. */
+int prescan_sdk_header_defines(const char *header, const char *name) {
+    char *path = search_dirs(header, g_sdk_dirs, g_sdk_dir_count);
+    FILE *f;
+    char line[1024];
+    int depth = 0, in_comment = 0, found = 0;
+    size_t nlen = name != NULL ? strlen(name) : 0;
+    if (path == NULL || nlen == 0) { free(path); return 0; }
+    f = fopen(path, "r");
+    free(path);
+    if (f == NULL) return 0;
+    while (!found && fgets(line, sizeof line, f) != NULL) {
+        char code[1024];
+        size_t k = 0;
+        for (const char *c = line; *c != '\0'; c++) {          /* the line without comments */
+            if (in_comment) { if (c[0] == '*' && c[1] == '/') { in_comment = 0; c++; } continue; }
+            if (c[0] == '/' && c[1] == '*') { in_comment = 1; c++; continue; }
+            if (c[0] == '/' && c[1] == '/') break;
+            code[k++] = *c;
+        }
+        code[k] = '\0';
+        while (k > 0 && isspace((unsigned char)code[k - 1])) code[--k] = '\0';
+        if (depth == 0 && (isalpha((unsigned char)code[0]) || code[0] == '_') && k > 0 && code[k - 1] != ';') {
+            for (const char *p = strchr(code, '('); p != NULL && !found; p = NULL) {
+                const char *e = p;
+                while (e > code && isspace((unsigned char)e[-1])) e--;
+                const char *b = e;
+                while (b > code && (isalnum((unsigned char)b[-1]) || b[-1] == '_')) b--;
+                if ((size_t)(e - b) == nlen && strncmp(b, name, nlen) == 0) found = 1;
+            }
+        }
+        for (const char *c = code; *c != '\0'; c++) {
+            if (*c == '{') depth++;
+            else if (*c == '}' && depth > 0) depth--;
+        }
+    }
+    fclose(f);
+    return found;
+}
+
 /* resolve_include, then the SDK directories (pass-through .h only). */
 static char *resolve_header(const char *target, int angle, const char *including_file,
                             char *const *dirs, int ndirs) {

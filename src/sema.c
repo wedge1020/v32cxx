@@ -367,6 +367,21 @@ char *sema_ns_join(const char *outer, const char *name) {
  * first one registered wins; not this pass's job to flag a duplicate
  * body as an error, only to avoid the ambiguous-overload
  * misdiagnosis. */
+/* `int a::f(float) {...}` defines a function the namespace has to declare (C++ [namespace.memdef]): no
+ * declaration of that name AND signature in `a` (an earlier one: prototype or definition) is an error, also
+ * when `a` has `f` with other parameters. The definition was wrapped in `namespace a` by ast.c, so it
+ * would otherwise register as a new function. */
+static void check_qualified_definition(const AstNode *func, const char *ns) {
+    if (g_c_mode || !(func->attr_flags & ATTR_QUALIFIED_DEF) || func->str1 == NULL) return;
+    for (FreeFuncRegEntry *e = g_free_func_registry; e != NULL; e = e->next)
+        if (strcmp(e->ns, ns) == 0 && strcmp(e->func->str1, func->str1) == 0 &&
+            param_lists_match(&e->func->list, &func->list)) return;
+    const char *saved_file = g_sema_file;
+    if (func->file != NULL) g_sema_file = func->file;
+    sema_error(func->line, "no declaration of '%s' in namespace '%s' matches this definition", func->str1, ns);
+    g_sema_file = saved_file;
+}
+
 static void register_free_function(AstNode *func, const char *ns) {
     for (FreeFuncRegEntry *e = g_free_func_registry; e != NULL; e = e->next) {
         if (strcmp(e->ns, ns) == 0 &&   /* same name+signature in a DIFFERENT
@@ -641,6 +656,7 @@ static void collect_declarations_in(AstList *decls, const char *ns) {
              * class's method being defined outside the class body, and
              * its real, callable identity lives on the class's member
              * list, found via the class registry instead. */
+            if (n->kind == AST_FUNC_DEF) check_qualified_definition(n, ns);
             register_free_function(n, ns);
         } else if (n->kind == AST_VAR_DECL) {
             /* A file-scope or namespace-scope global -- see
@@ -762,6 +778,23 @@ const AstNode *resolve_typedef_chain(const AstNode *type) {
     return type;
 }
 
+/* The one spelling of a type that signatures are compared and mangled by: typedefs looked through, and a
+ * namespace-qualified name (`a::D`, `::a::D`, `a::in::D`, `a::DT` a typedef there) reduced to its last
+ * component. Classes, unions and typedefs keep their bare names in the C output and every registry here is
+ * flat, so that component IS the type; an enum of a namespace is already the one mangled identifier
+ * (parser.y). Without this `void f(D d)` declared in `a` and `void a::f(a::D d)` defined outside it were one
+ * function to the registry but `f__D` and `f__a_D` to the C output. */
+static const AstNode *canonical_type(const AstNode *type) {
+    for (int guard = 0; guard < 64; guard++) {
+        type = resolve_typedef_chain(type);
+        if (type != NULL && type->kind == AST_QUALIFIED_ID && type->list.count > 0)
+            type = type->list.items[type->list.count - 1];
+        else
+            break;
+    }
+    return type;
+}
+
 static int types_equal(const AstNode *t1, const AstNode *t2) {
     if (t1 == NULL || t2 == NULL) {
         return t1 == t2;
@@ -781,8 +814,8 @@ static int types_equal(const AstNode *t1, const AstNode *t2) {
      * than simply ignoring the distinction. */
     while (t1->kind == AST_CONST_TYPE) t1 = t1->a;
     while (t2->kind == AST_CONST_TYPE) t2 = t2->a;
-    t1 = resolve_typedef_chain(t1);
-    t2 = resolve_typedef_chain(t2);
+    t1 = canonical_type(t1);
+    t2 = canonical_type(t2);
     if (t1 == NULL || t2 == NULL) {
         return t1 == t2;
     }
@@ -838,7 +871,7 @@ static int param_lists_match(const AstList *a, const AstList *b) {
  * by its underlying spelling would produce two DIFFERENT C names for
  * what's supposed to be recognized as the same signature. */
 static char *type_signature_str(const AstNode *type) {
-    type = resolve_typedef_chain(type);
+    type = canonical_type(type);
     if (type == NULL) {
         return strdup("void");
     }

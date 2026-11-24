@@ -8888,13 +8888,23 @@ static int lower_is_enum_name(const char *name) {
     return enum_name_in(g_lower_unions, name);
 }
 
-static const AstNode *lower_find_union(const char *name) {
-    if (g_lower_unions == NULL || name == NULL) return NULL;
-    for (int i = 0; i < g_lower_unions->count; i++) {
-        const AstNode *n = g_lower_unions->items[i];
-        if (n->kind == AST_UNION_DECL && strcmp(n->str1, name) == 0) return n;
+static const AstNode *union_in(const AstList *decls, const char *name) {
+    for (int i = 0; i < decls->count; i++) {
+        const AstNode *n = decls->items[i];
+        if (n == NULL) continue;
+        if (n->kind == AST_UNION_DECL && n->str1 != NULL && strcmp(n->str1, name) == 0) return n;
+        if (n->kind == AST_NAMESPACE_DECL) {
+            const AstNode *u = union_in(&n->list, name);
+            if (u != NULL) return u;
+        }
     }
     return NULL;
+}
+
+/* a union by its (bare) C name, in a namespace too: unions keep their bare names like classes do */
+static const AstNode *lower_find_union(const char *name) {
+    if (g_lower_unions == NULL || name == NULL) return NULL;
+    return union_in(g_lower_unions, name);
 }
 
 /* ---- phase 12: C input ------------------------------------------------------
@@ -8944,10 +8954,20 @@ static AstNode *c_int_lit(int value, int line) {
     return n;
 }
 
+/* The type with typedefs and `const` looked through. A namespace-qualified name (`n::K`, `n::in::W`,
+ * `n::KT` a typedef there) is its last component: classes, unions and typedefs keep their bare C names
+ * and the registries are flat, and an enum of a namespace is already the one mangled identifier
+ * (parser.y). So every helper below that asks "is this a class / union / enum / scalar?" sees the
+ * same plain identifier whatever way the type was spelled. */
 static const AstNode *c_resolved_type(const AstNode *t) {
-    if (t == NULL) return NULL;
-    t = resolve_typedef_chain(t);
-    while (t != NULL && t->kind == AST_CONST_TYPE) t = resolve_typedef_chain(t->a);
+    for (int guard = 0; t != NULL && guard < 32; guard++) {
+        t = resolve_typedef_chain(t);
+        while (t != NULL && t->kind == AST_CONST_TYPE) t = resolve_typedef_chain(t->a);
+        if (t != NULL && t->kind == AST_QUALIFIED_ID && t->list.count > 0)
+            t = t->list.items[t->list.count - 1];
+        else
+            break;
+    }
     return t;
 }
 

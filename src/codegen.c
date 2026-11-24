@@ -2409,7 +2409,7 @@ static void emit_alloc_fatal(FILE *out, const char *fname, const char *std_text,
         fprintf(out, "    clear_screen(color_black);\n    select_texture(-1);\n"
                      "    print_at(8, 8, \"%s\");\n"
                      "    print_at(8, 24, \"See --heap-words\");\n"
-                     "    end_frame();\n    asm {\n        \"hlt\"\n    }\n", screen_text);
+                     "    asm {\n        \"wait\"\n        \"hlt\"\n    }\n", screen_text);
     }
     fprintf(out, "}\n\n\n");
 }
@@ -3656,6 +3656,44 @@ static void drop_header_var_externs(AstList *decls) {
     decls->count = k;
 }
 
+/* Does the output include misc.h (malloc and friends)? */
+static int codegen_needs_misc(const AstNode *program) {
+    int needs_misc = program_has_any_class(&program->list) || g_uses_new_or_delete || V32_ALLOC_HOOK;
+    if (needs_misc && g_c_mode && !g_uses_new_or_delete && !V32_ALLOC_HOOK) {
+        /* C input: a struct is only data, and nothing from misc.h is
+         * needed on its account. */
+        needs_misc = 0;
+    }
+    return needs_misc;
+}
+
+/* The SDK headers define their functions (they are one translation unit with the program: there is no
+ * linker), so a C program that defines a function of the same name as one in a header v32c++ itself adds
+ * -- misc.h for the allocator's malloc, video.h for the out-of-memory message -- would be rejected by the
+ * stock compiler as a redefinition, far from the cause. Reported here, naming the header and the way out.
+ * (C++ input mangles every free function, so only C names can clash; a header the program includes itself
+ * is the program's own business and the stock compiler's message.) Returns the number of clashes. */
+int codegen_check_sdk_clash(const AstNode *program) {
+    if (g_target != TARGET_VIRCON32 || !g_c_mode || !codegen_needs_misc(program)) return 0;
+    const char *headers[2] = { "misc.h", "video.h" };
+    int nheaders = V32_ALLOC_HOOK ? 2 : 1, errors = 0;
+    for (int i = 0; i < program->list.count; i++) {
+        const AstNode *d = program->list.items[i];
+        if (d == NULL || d->kind != AST_FUNC_DEF || d->str1 == NULL) continue;
+        for (int h = 0; h < nheaders; h++) {
+            if (!prescan_sdk_header_defines(headers[h], d->str1)) continue;
+            fprintf(stderr, "%s:%d: error: '%s' is also defined by the SDK header '%s', which v32c++ includes for %s: "
+                    "rename it in your program or use --rename %s=NEW_NAME\n",
+                    d->file != NULL ? d->file : g_current_filename, d->line, d->str1, headers[h],
+                    h == 0 ? (V32_ALLOC_HOOK ? "the --alloc runtime and `new`" : "`new`") : "the --alloc runtime's out-of-memory message",
+                    d->str1);
+            errors++;
+            break;
+        }
+    }
+    return errors;
+}
+
 void codegen_run(const AstNode *program, FILE *out, int verbose_comments) {
     /* Reset -g's own tracking state -- main.c is single-shot per process
      * today, so this never actually matters in practice, but costs
@@ -3716,12 +3754,7 @@ void codegen_run(const AstNode *program, FILE *out, int verbose_comments) {
      * which "any class exists" alone would never catch, silently
      * dropping misc.h and every runtime function that depends on it
      * from the output despite being called. */
-    int needs_misc = program_has_any_class(&program->list) || g_uses_new_or_delete || V32_ALLOC_HOOK;
-    if (needs_misc && g_c_mode && !g_uses_new_or_delete && !V32_ALLOC_HOOK) {
-        /* C input: a struct is only data, and nothing from misc.h is
-         * needed on its account. */
-        needs_misc = 0;
-    }
+    int needs_misc = codegen_needs_misc(program);
     if (needs_misc) {
         /* Vircon32 mode: "misc.h", Vircon32's own header providing
          * malloc/free/rand/srand/exit (among others). Standard mode:
@@ -3739,7 +3772,7 @@ void codegen_run(const AstNode *program, FILE *out, int verbose_comments) {
         if (V32_ALLOC_HOOK) {
             /* the arena's out-of-space message */
             if (g_target == TARGET_STANDARD) fprintf(out, "#include <stdio.h>\n");
-            else fprintf(out, "#include \"video.h\"\n#include \"time.h\"\n");
+            else fprintf(out, "#include \"video.h\"\n");   /* not time.h: `wait` is end_frame()'s whole body */
         }
         if (g_alloc_gc && g_target == TARGET_STANDARD)   /* memset, setjmp, intptr_t for the collector */
             fprintf(out, "#include <string.h>\n#include <setjmp.h>\n#include <stdint.h>\n");

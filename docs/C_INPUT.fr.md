@@ -251,7 +251,7 @@ représentent `rogue`, `rogue -r` et `rogue -s`.
 | `asm { "mov R1, {&buf}" }`, `{&func}`, `{*p}` | `{&x}` devient une variable locale cachée `int *__v32_a_x = &x;` avant l'asm (garde en vie une fonction que seul l'asm nomme) ; `{*p}`, un `int __v32_d_p = *p;` caché. |
 | `const int t[] __attribute__((rom)) = {...};` (portée fichier ; littéraux entiers, caractère ou flottants) | Les données sont émises comme données d'assembleur dans l'image du programme derrière une fonction cachée `int *__v32_rom_t(void)` ; chaque usage de `t` devient cet appel, `sizeof(t)` le nombre d'éléments. Lecture seule ; le reste est signalé (`-Wrom`) et reste global normal. |
 | `<`, `>`, `<=`, `>=`, `/`, `%` d'`unsigned` | Faits en non signé (`--no-unsigned-ops` les imprime tels quels). |
-| `--rename ancien=nouveau` | Renomme fonction, variable ou paramètre dans tout le programme, pour les noms qui heurtent le SDK. |
+| `--rename ancien=nouveau` | Renomme fonction, variable ou paramètre dans tout le programme, pour les noms qui heurtent le SDK. Les en-têtes du SDK définissent leurs fonctions : une fonction C que `misc.h` (ajouté pour `new` et `--alloc`) ou `video.h` (ajouté pour `--alloc`) définit aussi est une erreur nommant l'en-tête (QUIRKS #38). |
 | `--yield-points[=N]` | Insère `if (get_cycle_counter() > N) yield();` à l'entrée des fonctions, corps de boucle et étiquettes (`--yield-func=`, `--yield-counter=`) ; `__attribute__((no_yield))`, fonctions avec asm et aides `__v32_*` ignorées. |
 | `--warn-error[=type,...]`, `--list-warnings` | Transforme les avertissements de v32c++ (ou seulement les types listés) en échec sans fichier de sortie. |
 

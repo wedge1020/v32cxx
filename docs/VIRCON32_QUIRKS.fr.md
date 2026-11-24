@@ -82,6 +82,7 @@ littéraux hexadécimaux/octaux/binaires, `1e3`, `.5` et `5.` (`tests/133sample.
 | 35 | un membre struct ou union de type struct/union doit être défini avant | `union V { int a; B b; };` | **abaissé** (chaque struct, classe et union est écrite après celles qu'elle contient par valeur ; un cycle est une erreur) |
 | 36 | un pointeur vers une union peut précéder l'union, après `union U;` | `struct S { U *p; };` puis `union U {...};` | **abaissé** (`union U;` est écrit pour chaque union) |
 | 37 | un énumérateur non qualifié d'un `enum class` est « identifier has not been declared » | `Color c = Red;` | **diagnostiqué** (erreur de v32c++ : écris `Color::Red`) |
+| 38 | les en-têtes du SDK *définissent* leurs fonctions, donc un programme qui en définit une du même nom est une « redefinition » | `void clear_screen(int c) {...}` avec `video.h` incluse | **diagnostiqué** (erreur de v32c++ nommant l'en-tête ; `--rename`) |
 
 Non couvert par une entrée parce que v32c++ n'a pas de solution : les templates, les
 exceptions, la RTTI, l'héritage multiple, `constexpr`, les lambdas,
@@ -1125,6 +1126,20 @@ vrai émulateur. Une correction en amont tiendrait en trois lignes dans `EscapeC
   une fonction, une classe ou une constante d'`enum` simple de ce nom marche toujours, et
   dans l'`enum class` lui-même les noms nus de ses énumérateurs sont permis
   (`Blue = Red + 5`). `tests/205sample.cpp`, `tests/205bad.cpp`.
+
+## 38. Les en-têtes du SDK définissent leurs fonctions
+
+- **Vircon32 fait** : `misc.h`, `video.h`, `time.h`... contiennent le *corps* des fonctions (`malloc`, `memset`,
+  `clear_screen`, `get_cycle_counter`...), et sans éditeur de liens tout est une seule unité de traduction. Un
+  programme qui définit une fonction du même nom qu'une fonction d'un en-tête inclus est une redéfinition, signalée
+  par le compilateur à la seconde définition, loin de la cause.
+- **Pour v32c++** : l'entrée C++ décore toutes les fonctions libres, donc seule l'entrée C peut entrer en conflit.
+  Les en-têtes que v32c++ ajoute de lui-même sont `misc.h` (`new`, les allocateurs) et, avec `--alloc`, `video.h`
+  (l'écran de mémoire épuisée) ; le runtime de l'allocateur n'inclut pas `time.h` (son `end_frame()` est
+  l'instruction `wait`, écrite directement), donc `get_cycle_counter` reste libre (`tests/169sample.c`). Une
+  fonction C que l'un de ces deux en-têtes définit est une erreur nommant la fonction et l'en-tête : renomme-la ou
+  `--rename ancien=nouveau`. Un en-tête que le programme inclut lui-même est son affaire (message du compilateur
+  officiel). `tests/209bad.c`.
 
 ## Ce que cette liste ne couvre PAS
 

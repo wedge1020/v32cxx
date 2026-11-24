@@ -81,6 +81,7 @@ const char *prescan_intern_filename(const char *filename);
  * so codegen leaves it out of the generated C.
  */
 int prescan_is_header_struct(const char *name);
+int prescan_sdk_header_defines(const char *header, const char *name);   /* does that SDK header define a function `name`? */
 int prescan_is_header_var(const char *name);   /* a variable a pass-through header defines (extern redeclarations are left out) */
 
 /* True iff the declarator `name`, on line `line` of `file`, was declared with

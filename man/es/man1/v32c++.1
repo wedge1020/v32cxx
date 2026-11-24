@@ -418,7 +418,7 @@ Lista los tipos de advertencia y termina.
 Inserta \fBif (get_cycle_counter() > N) yield();\fR en cada entrada de función, cuerpo de bucle y etiqueta (N por defecto 100000), para una apropiación cooperativa. \fB\-\-yield\-func\fR=\fINOMBRE\fR y \fB\-\-yield\-counter\fR=\fINOMBRE\fR cambian las dos funciones. Se omiten las funciones marcadas \fB__attribute__((no_yield))\fR, las que contienen \fBasm\fR y las auxiliares \fB__v32_*\fR.
 .TP
 .B \-\-rename \fIviejo\fR=\fInuevo\fR
-Da el nombre \fInuevo\fR a toda función, variable y parámetro llamado \fIviejo\fR, en todo el programa (los miembros de struct no cambian). Repetible. Pensado para nombres que chocan con el SDK de Vircon32.
+Da el nombre \fInuevo\fR a toda función, variable y parámetro llamado \fIviejo\fR, en todo el programa (los miembros de struct no cambian). Repetible. Pensado para nombres que chocan con el SDK de Vircon32: un programa C que define una función que también define \fBmisc.h\fR (añadida por \fBnew\fR y \fB\-\-alloc\fR) o \fBvideo.h\fR (añadida por \fB\-\-alloc\fR) es un error que nombra la cabecera, y esta es la salida.
 .TP
 .BR \-\-assembler =\fICMD\fR
 Ensamblador que nombran Make.sh y Make.bat. Por defecto: la variable de entorno \fBV32CXX_ASSEMBLER\fR, luego el valor de config.h en compilación, luego \fBassemble\fR. Un nombre que empiece por \fBv32as\fR se ejecuta como \fBv32as \-B \-c\fR (\fB\-B \-b\fR para una BIOS); \fB\-\-assembler\-style\fR=\fBstock\fR|\fBv32as\fR cambia esa suposición.

@@ -636,6 +636,7 @@ void qualify_namespace_definitions(AstList *decls) {
             for (int k = nsn; k < q->count; k++) ast_list_append(&rest->list, q->items[k]);
         }
         d->b = rest;
+        if (rest == NULL) d->attr_flags |= ATTR_QUALIFIED_DEF;     /* sema: a declaration in `a` must match */
         for (int k = 0; k < d->list.count; k++)
             if (d->list.items[k] != NULL) strip_own_namespace(d->list.items[k]->type, ns_names, nsn);
         strip_own_namespace(d->type, ns_names, nsn);

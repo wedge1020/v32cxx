@@ -22,8 +22,8 @@ différemment.
 > **État : fonctionnel.** Toute la chaîne — prétraitement, analyse syntaxique,
 > analyse sémantique, abaissement (*lowering*) et génération de code —
 > fonctionne de bout en bout et est vérifiée avec le compilateur, l'assembleur
-> et la console **réels** de Vircon32 (`make realcheck` : 227 programmes
-> compilés et assemblés, dont 158 s'auto-vérifient à l'exécution sur une
+> et la console **réels** de Vircon32 (`make realcheck` : 233 programmes
+> compilés et assemblés, dont 164 s'auto-vérifient à l'exécution sur une
 > console sans écran). Cinq démos d'une certaine taille (trois jeux en C++, un
 > portage de Rogue et un Spy vs Spy en C pur) se construisent avec lui. Voir les [Limitations
 > connues](#limitations-connues) pour un tableau honnête de ce qui manque.
@@ -463,6 +463,16 @@ Vérifiées avec le transpileur actuel et le vrai compilateur Vircon32 (novembre
   aussi) et `delete` le libère. `new T[n]()` et `new int[n]()` (`new` de tableau initialisé par valeur) valent
   `new T[n]{}`. Voir
   `docs/VIRCON32_QUIRKS.fr.md` n° 31-33.
+- **Définitions et écriture des types.** Une définition qualifiée a besoin d'une déclaration dans cet espace de
+  noms (`int a::zz() {}` sans `zz` dans `a`, ou `int a::f(float)` quand `a` n'a que `f(int)`, est une erreur,
+  comme en C++). Toute écriture d'un type de paramètre (`D` dans l'espace ou par `using`, `a::D`, un typedef) est
+  un seul type pour l'appariement et pour le nom C ; un `::` initial (`::a::D`) n'est pas accepté. Les membres de
+  type classe, union ou enum qualifiés par un espace de noms sont mis à zéro comme les autres (`new H`, `H h{}`,
+  `new H[n]{}`). Reste : `new U` d'une union elle-même, `new E[n]` d'un enum.
+- **Un programme C ne peut pas définir ce que définissent les en-têtes du SDK.** `misc.h` (ajouté pour `new` et
+  `--alloc`) et `video.h` (ajouté pour `--alloc`) contiennent des corps de fonctions : une fonction C du même nom
+  (`malloc`, `clear_screen`) est une erreur nommant l'en-tête ; renomme-la ou utilise `--rename`. Le runtime de
+  l'allocateur n'inclut pas `time.h`, donc `get_cycle_counter` reste libre. Voir `docs/VIRCON32_QUIRKS.fr.md` n° 38.
 - **Les codes de contrôle dans les littéraux de chaîne sont réécrits** : la
   chaîne d'outils Vircon32 ne peut pas assembler une chaîne contenant les codes
   14–31 de la police du BIOS (`┌ ─ ┐ │ ░ ▒ ▓ █` ...) ou d'autres codes de
@@ -638,13 +648,14 @@ v32io, l'utilise pour le trafic clavier et souris).
 écrit `bin/BUILD-INFO` : le chemin de ComputerSoftware utilisé, le `HEAD` git de cette copie, le
 chemin de v32sim et la version du compilateur. Il teste d'abord le nouveau compilateur depuis
 un répertoire temporaire et s'arrête avec son message s'il ne trouve pas les en-têtes du SDK
-(sous macOS, il faut un v32sim dont le shim SDL de l'oracle gère `_NSGetExecutablePath`).
+(sous macOS, toute la vérification demande un v32sim avec les correctifs macOS : `SDL_GetBasePath` dans le shim de l'oracle, pas de `sed -i`).
+`make realcheck` lance d'abord `build-tools.sh` si `tools/vircon32/bin/BUILD-INFO` manque, et `make clean` supprime `tools/vircon32/bin`.
 `tools/vircon32/check.sh` (ce que lance
 `make realcheck` après `make test`) affiche le compilateur utilisé, **refuse un `bin/` sans
 `BUILD-INFO`** (construit par un ancien `build-tools.sh`) en demandant
 de le reconstruire, et avertit si la copie de ComputerSoftware a avancé depuis la construction.
-Il compile et assemble aujourd'hui 227 programmes (4 ne sont pas empaquetés : leurs ressources
-`#texture`/`#sound` ne sont pas dans `tests/`) et lance 158 cartouches auto-vérifiantes, dont les
+Il compile et assemble aujourd'hui 233 programmes (4 ne sont pas empaquetés : leurs ressources
+`#texture`/`#sound` ne sont pas dans `tests/`) et lance 164 cartouches auto-vérifiantes, dont les
 constructions `--alloc=arena` et `--alloc=gc` de `tests/real_variants.txt` (`nom source options` :
 ajoutez-y les variantes d'un échantillon qui alloue). `tools/prune-release.sh [--apply]` est le
 nettoyeur de publication : par défaut une simulation, il liste (et avec `--apply` supprime, par

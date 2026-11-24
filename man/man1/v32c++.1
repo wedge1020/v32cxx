@@ -412,7 +412,7 @@ List the warning kinds and exit.
 Insert \fBif (get_cycle_counter() > N) yield();\fR at every function entry, loop body and label (default N 100000), for cooperative preemption. \fB\-\-yield\-func\fR=\fINAME\fR and \fB\-\-yield\-counter\fR=\fINAME\fR rename the two functions. A function marked \fB__attribute__((no_yield))\fR, one holding \fBasm\fR, and \fB__v32_*\fR helpers are skipped.
 .TP
 .B \-\-rename \fIold\fR=\fInew\fR
-Give every function, variable and parameter called \fIold\fR the name \fInew\fR, program-wide (struct members are untouched). Repeatable. Meant for names that clash with the Vircon32 SDK.
+Give every function, variable and parameter called \fIold\fR the name \fInew\fR, program-wide (struct members are untouched). Repeatable. Meant for names that clash with the Vircon32 SDK: a C program that defines a function which \fBmisc.h\fR (added for \fBnew\fR and \fB\-\-alloc\fR) or \fBvideo.h\fR (added for \fB\-\-alloc\fR) also defines is an error naming the header, and this is the way out.
 .TP
 .BR \-\-assembler =\fICMD\fR
 Assembler named in the generated Make.sh and Make.bat. Default: the environment variable \fBV32CXX_ASSEMBLER\fR, then the build-time setting in config.h, then \fBassemble\fR. A name starting with \fBv32as\fR is run as \fBv32as \-B \-c\fR (\fB\-B \-b\fR for a BIOS); \fB\-\-assembler\-style\fR=\fBstock\fR|\fBv32as\fR overrides that guess.

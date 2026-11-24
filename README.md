@@ -21,7 +21,7 @@ everything Vircon32's own C dialect does differently.
 > **Status: functional.** The whole  pipeline — preprocessing, parsing,
 > semantic analysis,  lowering and code  generation — works end  to end
 > and is  checked against the  **real** Vircon32 compiler,  assembler and
-> console (`make  realcheck`: 227  programs compiled  and assembled,  158 of
+> console (`make  realcheck`: 233  programs compiled  and assembled,  164 of
 > them self-checking  at run time  on a headless console).  Five sizeable
 > demos (three C++ games, a port of Rogue and a plain-C Spy vs Spy) build
 > with it. See [Known
@@ -438,6 +438,16 @@ Checked against  the current  transpiler and  the real  Vircon32 compiler
   mem-initializer list, `new P{1, 2}`, `new Counter{3}`. `new int`, `new int(5)`,
   `new float{2.5f}` and `new Node*` allocate one word (through `--alloc` too) and `delete` frees it.
   `new T[n]()` and `new int[n]()` (value-initialized array new) are the same as `new T[n]{}`. See `docs/VIRCON32_QUIRKS.md` #31-#33.
+- **Definitions and type spellings.** A qualified definition needs a declaration in that namespace
+  (`int a::zz() {}` with no `zz` in `a`, or `int a::f(float)` when `a` only has `f(int)`, is an error, as in C++).
+  Every spelling of a parameter type (`D` inside the namespace or by `using`, `a::D`, a typedef) is one type for
+  matching and for the C name; a leading `::` (`::a::D`) is not accepted. Members of a namespace-qualified
+  class, union or enum type are zeroed like any other (`new H`, `H h{}`, `new H[n]{}`). Not done: `new U` of a
+  union itself, `new E[n]` of an enum.
+- **A C program cannot define what the SDK headers define.** `misc.h` (added for `new` and `--alloc`) and
+  `video.h` (added for `--alloc`) hold function bodies: a C function of the same name (`malloc`, `clear_screen`) is an error
+  naming the header; rename it or use `--rename`. The allocator runtime does not include `time.h`, so
+  `get_cycle_counter` is free. See `docs/VIRCON32_QUIRKS.md` #38.
 - **Control codes in string literals are rewritten**:  the Vircon32 toolchain
   can't assemble a string holding the BIOS font's codes 14–31 (`┌ ─ ┐ │ ░ ▒ ▓ █`
   ...)  or other control codes,  `"\025"`.  v32c++ moves such a literal into a
@@ -605,14 +615,15 @@ v32io test, uses it for keyboard and mouse traffic).
 `tools/oracle/build.sh`) and stamps `bin/BUILD-INFO`: the ComputerSoftware path it
 used, that checkout's git `HEAD`, the v32sim path and the compiler's version.
 It first smoke-tests the new compiler from a scratch directory and stops with its
-message if it can't find its SDK headers (on macOS that needs a v32sim whose oracle
-SDL shim supports `_NSGetExecutablePath`).
+message if it can't find its SDK headers (on macOS the whole check needs a v32sim with the macOS fixes: oracle
+shim `SDL_GetBasePath`, no `sed -i`).
+`make realcheck` runs `build-tools.sh` first when `tools/vircon32/bin/BUILD-INFO` is missing, and `make clean` removes `tools/vircon32/bin`.
 `tools/vircon32/check.sh` (what `make realcheck` runs after `make test`) prints
 the compiler it uses, **refuses a `bin/` without `BUILD-INFO`** -- one built by an
 older `build-tools.sh` -- telling you to rebuild it, and warns when
 the ComputerSoftware checkout has moved since the build. Today it compiles and
-assembles 227 programs (4 are not packed: their `#texture`/`#sound` assets are not in
-`tests/`) and runs 158 self-checking cartridges, among them the `--alloc=arena` and
+assembles 233 programs (4 are not packed: their `#texture`/`#sound` assets are not in
+`tests/`) and runs 164 self-checking cartridges, among them the `--alloc=arena` and
 `--alloc=gc` builds listed in `tests/real_variants.txt` (`name source flags`: add a
 sample's variants there when it allocates). `tools/prune-release.sh [--apply]` is the
 release cleaner: a dry run by default, it lists (and with `--apply` removes, with

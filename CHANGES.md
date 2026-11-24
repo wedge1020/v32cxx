@@ -2,8 +2,8 @@
 
 ## 20261123-dev
 
-Every feature below has a self-checking sample that passes on the machine (`make realcheck`: 227 programs compiled and
-assembled, 0 failed, 158 cartridges all passing in v32sim, the `--alloc=arena` / `--alloc=gc` variants included).
+Every feature below has a self-checking sample that passes on the machine (`make realcheck`: 233 programs compiled and
+assembled, 0 failed, 164 cartridges all passing in v32sim, the `--alloc=arena` / `--alloc=gc` variants included).
 
 ### New features
 
@@ -179,8 +179,25 @@ assembled, 0 failed, 158 cartridges all passing in v32sim, the `--alloc=arena` /
   `codegen_check_aggregates`. `tests/204sample.cpp`, `204bad.cpp`.
 - **Scoped enumerators**: the stock compiler's answer to a bare `Red` was `identifier "Red" has not been declared`; v32c++ now says what to write
   (#37, above). `Blue = Red + 5` inside an `enum class` printed the bare `Red` and was rejected; it is `Color__Red`.
-- **Definitions that spell the type differently** (`D operator+(D o)` declared, `a::b::D a::b::D::operator+(a::b::D o)` defined) match the
-  declaration.
+- **Definitions that spell a type differently** (`D operator+(D o)` declared, `a::b::D a::b::D::operator+(a::b::D o)` defined; `void f(D d)`
+  declared in `a`, `void a::f(a::D d)` or `void b::q(a::D d)` with `using a::D;` defined) match the declaration and get **one C name**: sema's
+  `canonical_type` (typedefs looked through, a qualified name reduced to its last component, as classes, unions and typedefs keep bare C names)
+  now serves both `types_equal` and the mangling, so the prototype, the definition and every call agree for free functions, methods,
+  constructors and operators. Before, the registry merged the pair but the output declared `b__q__D` and defined `b__q__a_D`. Visible in the
+  output: parameters of a namespace-qualified class type mangle without the qualifier (`length_of__std_string_ref` is `length_of__string_ref`,
+  `is__v32_String_ref_int_ptr` is `is__String_ref_int_ptr`). `tests/208sample.cpp` (greps for one prototype and one definition per name, and
+  calls through every spelling). Left: a leading `::` (`::a::D`) is not in the grammar.
+- **A qualified definition needs a matching declaration**: `int a::zz() {}` with no `zz` in `a`, and `int a::f(float) {}` when `a` only has
+  `f(int)`, were accepted as new functions. Now `no declaration of 'zz' in namespace 'a' matches this definition` (`a::in` for a nested
+  one); the class form (`void a::C::nope() {}`) was already `no matching declaration for out-of-line definition of 'nope' in class 'C'`.
+  `ast.c` marks the definition it wraps in `namespace a` (`ATTR_QUALIFIED_DEF`), `sema.c` `check_qualified_definition`. `tests/207bad.cpp`.
+- **Zeroing of members of a namespace-qualified type**: `new Holder`, `new Holder()`, `Holder h{}`, `new Holder[n]{}` / `()` (the `_rest`
+  helper), short brace lists and unions did not zero a member of type `n::K` (struct/class), `n::N` (union), `n::E` (enum), a typedef of
+  one, one in a nested namespace, or one seen through `using namespace n` (the zero helpers only recognized a plain identifier, and
+  `lower_find_union` only the file scope). `c_resolved_type` now reduces a qualified name to its last component, `lower_find_union` looks into
+  namespaces. Tested on the machine with the stack and the heap dirtied first, in the default, arena and gc builds. `tests/206sample.cpp`.
+  Left for later: `new U` of a union itself (`v32_new_U` is never defined), `new E[n]` of an enum, `new T[n]{ T() }` for an aggregate (the
+  listed element is not built).
 - **`Counter arr[3]` and friends** no longer run constructors or destructors twice (see List-initialization).
 - **Class members**: a class member named like an enumerator of an `enum class`, a local, a parameter or a function is not mistaken for it.
 
@@ -197,6 +214,10 @@ assembled, 0 failed, 158 cartridges all passing in v32sim, the `--alloc=arena` /
 - `--alloc=arena` programs: the destructor switch uses `+ i`; `--alloc=gc` programs: the three array declarations are spelled per target and
   the runtime gains the trailing-unit line; default output is unchanged.
 - `(void)x;` is the statement `x;`.
+- `--alloc=arena` / `--alloc=gc` programs no longer include `time.h`: the out-of-memory screen ends with the `wait` instruction, which is all
+  `end_frame()` is, instead of calling it. A program defining its own `get_cycle_counter` (`169sample.c`) now builds with the allocators.
+- Mangled names of functions taking a namespace-qualified class by type lose the qualifier (`length_of__string_ref`, not
+  `length_of__std_string_ref`; `is__String_ref_int_ptr`, not `is__v32_String_ref_int_ptr`), so every spelling of the type agrees.
 - Every union is forward-declared (`union U;`) and structs, classes and unions are written in dependency order, so a union now stands where the
   source put it instead of before every struct.
 - C input: file-scope function tables carry the `&` in the `--target=standard` output too (`156sample.c`, `159lib_a.c`, `172sample.c`).
@@ -204,15 +225,15 @@ assembled, 0 failed, 158 cartridges all passing in v32sim, the `--alloc=arena` /
 
 ### Tooling and tests
 
+- **`make clean` removes the stock toolchain too (`tools/vircon32/bin`), and `make realcheck` runs `tools/vircon32/build-tools.sh` first when
+  `tools/vircon32/bin/BUILD-INFO` is missing**, so a fresh checkout or a cleaned tree needs only `make realcheck`.
 - **The toolchain records how it was built.** `tools/vircon32/build-tools.sh` writes `bin/BUILD-INFO` (the ComputerSoftware path it used, that
   checkout's git `HEAD`, the v32sim path, and `compile --version`). `tools/vircon32/check.sh` refuses a `bin/` without it ("built by an older
   build-tools.sh ... rebuild it"), prints the compiler it is about to use, and warns when the ComputerSoftware checkout has moved since the
   build. `build-tools.sh` also smoke-tests the compiler it built: it compiles a file that includes `misc.h` from a scratch
   directory, as `check.sh` does, and stops with the compiler's message if the SDK headers can't be found. That is what made every
-  C++ sample fail with `FAIL (toolchain)` / `cannot open include file "misc.h"` on macOS: the stock compiler finds `include/` beside
-  itself through `SDL_GetBasePath()`, and v32sim's oracle SDL shim implemented that with Linux's `/proc/self/exe` only, so on a Mac
-  it looked in the current directory. The fix is in v32sim (`tools/oracle/shim/SDL.h` uses `_NSGetExecutablePath()` on macOS);
-  update v32sim and rerun `build-tools.sh`.
+  C++ sample fail with `FAIL (toolchain)` / `cannot open include file "misc.h"` on macOS. Running the whole check on macOS needs a v32sim with
+  the macOS fixes (oracle shim `SDL_GetBasePath`, no `sed -i` in `v32sim-selfcheck.sh`); update v32sim and rerun `build-tools.sh`.
 - **The ComputerSoftware sources are looked up beside the project, not cloned into it.** `build-tools.sh` uses the path it is given, else
   `../ComputerSoftware`, else `../ComputerSoftware.git` (the same rule as v32sim), and only when there is none clones one to
   `../ComputerSoftware` at the verified commit; it says which checkouts it used and notes when the checkout is not at the verified commit.
@@ -225,12 +246,15 @@ assembled, 0 failed, 158 cartridges all passing in v32sim, the `--alloc=arena` /
   default, `--apply` to act; same shape as v32sim's) removes the clone, the private copies of v32sim's tools, those build scripts, bison
   reports, tracked build outputs and editor/merge leftovers, with `git rm` for tracked paths (staged) and `rm` otherwise.
 - **`make realcheck` is the gate.** It runs `make test`, then compiles, assembles and packs every output with the real Vircon32 toolchain and
-  runs the self-checking samples in v32sim (`-F 6000` frames; `V32_FRAMES` overrides): 227 programs compiled, 0 failed, 158 cartridges passing.
+  runs the self-checking samples in v32sim (`-F 6000` frames; `V32_FRAMES` overrides): 233 programs compiled, 0 failed, 164 cartridges passing.
   `tests/real_variants.txt` (`name source flags`) lists the arena and gc builds of the samples that allocate (179, 184, 186gc, 187-199, 102,
-  105, 108, 110-112, 114-117, 125, 176, 183, 202, plus 182/185 with `-DGC_NO_THRESHOLD`); check.sh transpiles them itself. Every sample in
-  `tests/` was also transpiled in both modes and compiled and assembled by the stock compiler: the one mode-specific failure is 169sample
-  (it defines the SDK's `get_cycle_counter`, which the allocator runtime's `misc.h` declares), left out on purpose. New self-checking
-  samples: `tests/174sample.cpp` ... `205sample.cpp` (with `*bad.cpp` error checks); a `.input` file beside a sample feeds a v32io device.
+  105, 108, 110-112, 114-117, 125, 169 (with `--yield-points=10`), 176, 183, 202, 206, plus 182/185 with `-DGC_NO_THRESHOLD`); check.sh transpiles them itself. Every sample in
+  `tests/` was also transpiled in both modes and compiled and assembled by the stock compiler: the one that failed in the allocator
+  builds, 169sample (it defines the SDK's `get_cycle_counter`), passes since the runtime stopped including `time.h`. **A C program that
+  defines a function the SDK headers also define** (`clear_screen`, `malloc`...) cannot take a header v32c++ itself adds (`misc.h` for `new`
+  and the allocators, `video.h` for the out-of-memory message): that is now one error naming the function, the header and `--rename`
+  (`codegen_check_sdk_clash`, `prescan_sdk_header_defines`; `tests/209bad.c`). New self-checking
+  samples: `tests/174sample.cpp` ... `208sample.cpp` (with `*bad.cpp` error checks); a `.input` file beside a sample feeds a v32io device.
 - `tests/std_run.sh NAME [flags]` builds a sample as standard C with `tests/stddriver.c` and runs it (default, `--alloc=arena`, `--alloc=gc`);
   `tests/arena_full.sh` and `tests/gc_full.sh` cover the out-of-space paths. `make test` also runs sample 90 and 154 against a stub SDK
   (`tests/sdkstub`) so the SDK-present paths are covered without the SDK.

@@ -249,7 +249,7 @@ entradas de menú representan `rogue`, `rogue -r` y `rogue -s`.
 | `asm { "mov R1, {&buf}" }`, `{&func}`, `{*p}` | `{&x}` pasa a ser una variable local oculta `int *__v32_a_x = &x;` antes del asm (mantiene viva una función nombrada solo en asm); `{*p}`, un `int __v32_d_p = *p;` oculto. |
 | `const int t[] __attribute__((rom)) = {...};` (ámbito de archivo; literales enteros, de carácter o flotantes) | Los datos se emiten como datos del ensamblador en la imagen del programa tras una función oculta `int *__v32_rom_t(void)`; cada uso de `t` pasa a ser esa llamada y `sizeof(t)` el número de elementos. Solo lectura; lo demás se avisa (`-Wrom`) y queda como global normal. |
 | `<`, `>`, `<=`, `>=`, `/`, `%` de `unsigned` | Se hacen sin signo (`--no-unsigned-ops` los imprime tal cual). |
-| `--rename viejo=nuevo` | Renombra función, variable o parámetro en todo el programa, para nombres que chocan con el SDK. |
+| `--rename viejo=nuevo` | Renombra función, variable o parámetro en todo el programa, para nombres que chocan con el SDK. Las cabeceras del SDK definen sus funciones: una función C que también define `misc.h` (añadida por `new` y `--alloc`) o `video.h` (añadida por `--alloc`) es un error que nombra la cabecera (QUIRKS #38). |
 | `--yield-points[=N]` | Inserta `if (get_cycle_counter() > N) yield();` en la entrada de funciones, cuerpos de bucle y etiquetas (`--yield-func=`, `--yield-counter=`); se omiten `__attribute__((no_yield))`, funciones con asm y auxiliares `__v32_*`. |
 | `--warn-error[=tipo,...]`, `--list-warnings` | Convierte las advertencias de v32c++ (o solo los tipos indicados) en un fallo sin archivo de salida. |
 
