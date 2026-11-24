@@ -2,6 +2,52 @@
 
 ## 20261123-dev
 
+- **Namespace-scope variables get their namespace in their C name.** `namespace a { int x = 1; } namespace b { int x = 2; }`
+  was `int x = 1; int x = 2;` (a redefinition, or with no initializers one merged variable), and both `a::x` and
+  `b::x` read `x`; so did a namespace variable that clashed with a file-scope one. Now a variable declared in a
+  namespace is `a__x` (`a__inner__x` when nested), the scheme namespace functions already use; file-scope variables and
+  `extern` declarations (names defined elsewhere: `lexer.l` drops `extern` in C++ input, so `prescan.c` notes the lines
+  that hold it, `prescan_line_has_extern`) keep their names. `sema.c` registers every variable with its namespace and
+  C name (`GlobalVarRegEntry`, `resolve_global_var`: the enclosing namespaces from the innermost out, then `using`
+  directives and declarations; a qualified name relative to the current namespace first) and `infer_expr_type` uses the
+  scoped lookup, so `a::c.get()` and `b::c.get()` find the right class; `lower.c` phase 0c (`namespace_vars_rename`,
+  right after this-injection, so a class member is already `this->m`) renames the declarations and every reference:
+  qualified, unqualified inside the namespace (reopened, in a function or a method, out of line too), `using namespace a;`,
+  `using a::x;`, nested namespaces and asm `{x}` operands, a local or parameter hiding the variable.
+  Global construction/destruction and the gc root table work on the C names (`__v32_gc_root_a[i] = (int)&app__deep__tail;`).
+  A call through a namespace's function-pointer variable (`n::hp(5)`) was "no function 'hp' is declared in namespace 'n'";
+  it is a call through the pointer now. Enumerators of a namespace's enum are not renamed. Output change: every
+  namespace variable in a program is renamed (`82sample`, `125sample`, `184sample`, `186sample`/`186gc`, the Space
+  Invaders demo's `SINE16`, `g_rng`...); `v32/*.hpp` and the other demos are unchanged. Tests `tests/188sample.cpp`
+  (default, arena, gc), `188extern.cpp`.
+- **Function-pointer initializers at file and namespace scope use the C name.** `D *(*g)() = f;`, `int (*h)(int) = &square;`
+  and `int (*ops[2])(int) = { inc, dec };` kept the source name (`= f`: no such function in the output; the `&` that
+  Vircon32 needs was missing too); locals and assignments always worked. They now go through the same rewrite
+  (`fnptr_init` in `lower.c`): the mangled name with an explicit `&`, namespace-qualified names and arrays of pointers
+  (typedef'd too) included, and the function prototypes are printed ahead of the variables when such an initializer
+  names a function (`g_globals_name_functions`), as for C input. An OVERLOADED name is now picked by the pointer's own type
+  (`int (*p)(float) = over;`, also for locals and plain assignments; `sema_function_matches_pointer_type`); when no
+  overload, or more than one, has that signature it is an error, not a guess. Member functions are not covered. Output
+  change: C input's file-scope function tables now carry the `&` in `--target=standard` output as well
+  (`156sample.c`, `159lib_a.c`, `172sample.c`; the Vircon32 output already had it). Tests `tests/189sample.cpp`
+  (default, arena, gc), `189bad.cpp`.
+- **`new T*[n]` and `T*&`.** Grammar only, no change to the conflict counts: `pointer_opt` accepts `*&`, `new T*[n]` /
+  `new T**[n]` is a production of its own (the `NEW type_spec` rule has the lowest precedence so a `*` after `new T` is
+  part of the type, as in C++). `new T*[n]` is an array of pointers: plain pointer-sized words, no constructors, no count
+  header (`v32_new_arr_ptr(n)`, emitted only when used, in every `--alloc` mode, `sizeof(int *)` words), cast to `T **`;
+  `delete[]` releases it plainly, leaving the pointed-to objects to the caller. `T*&` is lowered to `T**` like any
+  reference (phase 5): the call site passes the address of a variable, a member or an array element, the body assigns
+  through it, reads it, passes it on to another `T*&` function, a `T*&` local binds to a variable, and a function may
+  return one. Tests `tests/190sample.cpp` (default, arena, gc).
+
+- **`native X;` accepted when the real SDK headers are found.** With the Vircon32 SDK installed, prescan harvests
+  `struct date_info` / `struct time_info` from `time.h`, and sema then rejected `native date_info;` as a conflict
+  with an earlier struct (sample 90 failed `make test` on any machine with the DevTools installed). A `native`
+  redeclaration of a struct that came from a pass-through SDK header is now redundant, not a conflict: the known
+  layout is kept (`sema.c`). `make test` runs sample 90 a second time against a stub `tests/sdkstub/time.h`, so the
+  SDK-present path is covered without the SDK. A `native` that conflicts with the program's own struct or typedef is
+  still an error (sample 91).
+
 - **`delete[]` finds the element class in every spelling.** A class with a destructor keeps a count header in front of
   its array, so `delete[]` of an operand whose class was not resolved (the fallback was the plain `v32_delete`) freed the
   wrong address. `infer_expr_type` (`sema.c`) now types pointer arithmetic (`p + n`, `n + p`, `p - n`) and a call

@@ -862,9 +862,22 @@ de clases;
 .BR constexpr ,
 lambdas,
 .BR mutable ,
-clases anidadas y enumeraciones de ámbito de clase, y declaradores apilados como
-.IR "T *&" ;
+clases anidadas y enumeraciones de ámbito de clase;
 un parámetro que sea un arreglo bidimensional.
+.PP
+Una referencia a un puntero
+.RI ( "void reset(Node*& p)" ,
+también una variable local y un tipo de retorno) se baja a un puntero a puntero, como
+.I T&
+es
+.IR T* .
+.PP
+.B "new T*[n]"
+(un arreglo de punteros) reserva n palabras del tamaño de un puntero: sin constructores ni cabecera de cuenta;
+.B delete[]
+lo libera y deja los objetos apuntados al llamador. Los punteros a función declarados en el ámbito de archivo o de un espacio de nombres pueden inicializarse con el nombre de una función
+.RI ( "int (*h)(int) = square;" ,
+también en listas entre llaves); un nombre sobrecargado se elige por el tipo del propio puntero, y es un error si ninguna sobrecarga, o más de una, encaja.
 .PP
 El
 .B new
@@ -1091,6 +1104,24 @@ más abajo).
 Los objetos declarados dentro de un espacio de nombres (anidados también) se construyen al comienzo de
 .B main
 y se destruyen cuando termina, en orden de código fuente con los del ámbito de archivo. Un typedef de una clase puede nombrar una clase base, en la cabecera de la clase y en la lista de inicializadores de un constructor.
+.PP
+Una variable declarada dentro de un espacio de nombres también se emite con un nombre de C que incluye el espacio de nombres
+.RI ( a::x
+pasa a ser
+.IR a__x ,
+.I a::inner::x
+pasa a ser
+.IR a__inner__x ),
+de modo que
+.IR a::x ,
+.I b::x
+y una
+.I x
+de ámbito de archivo son tres variables, como en C++. Todas las formas de nombrar una se resuelven: cualificada, sin cualificar dentro del espacio de nombres (también reabierto), mediante
+.B using
+y con una variable local del mismo nombre que la oculta. Una variable de ámbito de archivo conserva su nombre, y también una declaración
+.B extern
+dentro de un espacio de nombres (nombra algo definido en otra parte, como el SDK o un archivo C).
 .PP
 Una función libre declarada dentro de un espacio de nombres se emite con un nombre
 de C que incluye el espacio de nombres

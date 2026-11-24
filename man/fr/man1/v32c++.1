@@ -867,10 +867,22 @@ de classes ;
 .BR constexpr ,
 lambdas,
 .BR mutable ,
-classes imbriquées et énumérations de portée de classe, et déclarateurs empilés
-comme
-.IR "T *&"  ;
+classes imbriquées et énumérations de portée de classe ;
 un paramètre de type tableau à deux dimensions.
+.PP
+Une référence à un pointeur
+.RI ( "void reset(Node*& p)" ,
+aussi une variable locale et un type de retour) est abaissée en pointeur de pointeur, comme
+.I T&
+est
+.IR T* .
+.PP
+.B "new T*[n]"
+(un tableau de pointeurs) alloue n mots de la taille d'un pointeur : pas de constructeurs ni d'en-tête de compte ;
+.B delete[]
+le libère et laisse les objets pointés à l'appelant. Les pointeurs de fonction déclarés à la portée du fichier ou d'un espace de noms peuvent être initialisés avec le nom d'une fonction
+.RI ( "int (*h)(int) = square;" ,
+aussi dans des listes entre accolades) ; un nom surchargé est choisi par le type du pointeur lui-même, et c'est une erreur si aucune surcharge, ou plus d'une, ne convient.
 .PP
 Le
 .B new
@@ -1101,6 +1113,24 @@ ci-dessous).
 Les objets déclarés dans un espace de noms (imbriqué aussi) sont construits au début de
 .B main
 et détruits quand elle se termine, dans l'ordre du source avec ceux de la portée du fichier. Un typedef d'une classe peut nommer une classe de base, dans l'en-tête de la classe et dans la liste d'initialisation d'un constructeur.
+.PP
+Une variable déclarée dans un espace de noms est elle aussi émise sous un nom C qui inclut l'espace de noms
+.RI ( a::x
+devient
+.IR a__x ,
+.I a::inner::x
+devient
+.IR a__inner__x ),
+si bien que
+.IR a::x ,
+.I b::x
+et un
+.I x
+à la portée du fichier sont trois variables, comme en C++. Toutes les façons d'en nommer une se résolvent : qualifiée, non qualifiée dans l'espace de noms (rouvert aussi), par
+.B using
+et avec une variable locale de même nom qui la masque. Une variable à la portée du fichier garde son nom, ainsi qu'une déclaration
+.B extern
+dans un espace de noms (elle désigne quelque chose défini ailleurs, comme le SDK ou un fichier C).
 .PP
 Une fonction libre déclarée dans un espace de noms est émise sous un nom C qui inclut
 l'espace de noms

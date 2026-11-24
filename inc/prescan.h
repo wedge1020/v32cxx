@@ -82,6 +82,11 @@ const char *prescan_intern_filename(const char *filename);
  */
 int prescan_is_header_struct(const char *name);
 
+/* True iff the code line `file`:`line` starts with the word `extern` (not
+ * `extern "C"`). lexer.l drops the keyword in C++ input; sema needs it to
+ * leave an `extern` namespace-scope variable's name alone. */
+int prescan_line_has_extern(const char *file, int line);
+
 /*
  * Queues a command-line -D (is_undef = 0; "NAME" or "NAME=VALUE") or -U
  * (is_undef = 1; "NAME"), applied in order when prescan_expand starts.

@@ -134,8 +134,9 @@ extern int yydebug;
     ANON_ENUM = 340,               /* ANON_ENUM  */
     EXTERN = 341,                  /* EXTERN  */
     VA_ARG = 342,                  /* VA_ARG  */
-    SIZEOF_TYPE_PREC = 343,        /* SIZEOF_TYPE_PREC  */
-    LOWER_THAN_ELSE = 344          /* LOWER_THAN_ELSE  */
+    NEW_PLAIN_PREC = 343,          /* NEW_PLAIN_PREC  */
+    SIZEOF_TYPE_PREC = 344,        /* SIZEOF_TYPE_PREC  */
+    LOWER_THAN_ELSE = 345          /* LOWER_THAN_ELSE  */
   };
   typedef enum yytokentype yytoken_kind_t;
 #endif
@@ -144,7 +145,7 @@ extern int yydebug;
 #if ! defined YYSTYPE && ! defined YYSTYPE_IS_DECLARED
 union YYSTYPE
 {
-#line 912 "src/parser.y"
+#line 913 "src/parser.y"
 
     AstNode *node;
     AstList list;
@@ -160,7 +161,7 @@ union YYSTYPE
      * on. */
     struct { int ival; double fval; char *macro; int uns; } lit;
 
-#line 164 "inc/parser.h"
+#line 165 "inc/parser.h"
 
 };
 typedef union YYSTYPE YYSTYPE;

@@ -178,7 +178,7 @@ exactement ce qu'un programme a reçu, lisez `ARRAY_TEMPLATE` et
 Noms : `array_<T>_<N>`, avec `::` et `*` écrits `_` et `_ptr`
 (`std::array<Enemy *, 2>` est `array_Enemy_ptr_2` ; `std::vector<int>` est
 `vector_int`). Pour un type d'élément pointeur, le texte généré utilise un nom de
-`typedef`, parce que cette grammaire n'a pas de déclarateur `T *&` ; une fois
+`typedef` (d'avant que la grammaire ait un déclarateur `T *&`) ; une fois
 analysé, le `typedef` est remplacé par le vrai type pointeur et n'atteint jamais
 le C généré.
 

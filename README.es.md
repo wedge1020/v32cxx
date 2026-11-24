@@ -139,7 +139,9 @@ alcance](#deliberadamente-fuera-del-alcance).
 
 - **Referencias** — parámetros, valores de retorno, variables locales,
   miembros de datos (`int &r;`, enlazada en la lista de inicialización del
-  constructor), `const T &` enlazada a temporales.
+  constructor), `const T &` enlazada a temporales y referencias a punteros
+  (`void reset(Node*& p)`, se baja a `Node**`; `Node*& r = p;`, y una función
+  puede devolver una).
 
 - `const` (variables, punteros a const, `T * const`, funciones miembro
   `const`) — se acepta y se emite, pero no se aplica.
@@ -147,8 +149,8 @@ alcance](#deliberadamente-fuera-del-alcance).
 ### El resto del lenguaje
 
 - Espacios de nombres (anidados, con sus objetos globales construidos y destruidos como los del ámbito de archivo, llamadas cualificadas, nombres de C con
-  espacio de nombres para las funciones: `v32::draw(int,int,int)` se convierte
-  en `v32__draw__int_int_int`) y `using`: `using namespace v32;` en el ámbito de
+  espacio de nombres para las funciones y variables: `v32::draw(int,int,int)` se convierte
+  en `v32__draw__int_int_int`, `a::x` en `a__x`) y `using`: `using namespace v32;` en el ámbito de
   archivo o en un bloque, `using v32::Keyboard;` y `using Points = int;`. Las
   funciones encontradas mediante una directiva se sobrecargan junto con las que
   están en el ámbito, como en C++.
@@ -169,7 +171,9 @@ alcance](#deliberadamente-fuera-del-alcance).
   estilo de C y de C++ (`dynamic_cast` con una advertencia: no hay RTTI),
   `enum`, `union`, `typedef`, punteros a función en la sintaxis de declaración
   estándar **o** la de Vircon32 (la salida es siempre la que necesita el
-  destino), arreglos multidimensionales con tamaños dados por expresiones
+  destino; también inicializados en el ámbito de archivo o de un espacio de
+  nombres, solos o en arreglos, con un nombre sobrecargado elegido por el tipo
+  del puntero), arreglos multidimensionales con tamaños dados por expresiones
   constantes, inicializadores con llaves, literales hexadecimales, octales y
   binarios con sufijos, `nullptr`, concatenación de cadenas adyacentes,
   declaradores múltiples (`int a, *b, c[4];`, y objetos:
@@ -405,7 +409,7 @@ Comprobadas con el transpilador actual y el compilador real de Vircon32
 - Miembros `static` de clases.
 
 - `enum class`, `constexpr`, lambdas, `mutable`, clases anidadas y
-  enumeraciones en el ámbito de una clase, declaradores apilados como `T *&`.
+  enumeraciones en el ámbito de una clase.
 
 - Un parámetro que sea un arreglo bidimensional (`void f(int g[4][4])`).
 - Plantillas, excepciones, RTTI y herencia múltiple: nunca (ver más abajo)
@@ -448,7 +452,21 @@ Comprobadas con el transpilador actual y el compilador real de Vircon32
   simple** (`v32::String` es `String` en el C generado), de modo que un
   programa no puede tener una clase propia con el mismo nombre que una de una
   cabecera que incluya (`String`, `Channel`, `Keyboard`, `Mouse`, ...). Las
-  funciones libres sí tienen su espacio de nombres.
+  funciones libres y las variables sí tienen su espacio de nombres: una variable
+  declarada en un espacio de nombres es `a__x` en el C generado (`a::inner::x` es
+  `a__inner__x`; una del ámbito de archivo conserva su nombre), así que `a::x`,
+  `b::x` y una `x` de ámbito de archivo son tres variables, como en C++. Una
+  declaración `extern` en un espacio de nombres nombra algo definido en otra parte
+  (el SDK, un archivo C) y conserva su nombre. Los enumeradores de un `enum` de un
+  espacio de nombres conservan el suyo.
+- **Nombre sobrecargado como valor de un puntero a función**: `int (*p)(float) =
+  over;` elige la sobrecarga con la firma del puntero; si ninguna, o más de una,
+  encaja, es un error, nunca una conjetura. Las funciones miembro como valor de
+  puntero no se admiten.
+- **`new T*[n]`** (un arreglo de punteros) es almacenamiento simple del tamaño de
+  un puntero: sin constructores, sin cabecera de cuenta; `delete[]` lo libera (los
+  objetos apuntados siguen siendo del llamador); `new T*[n]{...}` con lista no se
+  admite.
 - **Sobrecargas y valores de paso directo**: v32c++ no puede ver el tipo del
   resultado de una llamada a la API de C. Una llamada sobrecargada aún se
   resuelve cuando sus demás argumentos lo deciden (`v32::minimum(rand(), 10)`);

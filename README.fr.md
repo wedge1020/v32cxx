@@ -144,7 +144,9 @@ du périmètre](#délibérément-hors-du-périmètre).
 
 - **Références** — paramètres, valeurs de retour, variables locales, membres de
   données (`int &r;`, liée dans la liste d'initialisation du constructeur),
-  `const T &` liée à des temporaires.
+  `const T &` liée à des temporaires et références à des pointeurs
+  (`void reset(Node*& p)`, abaissé en `Node**` ; `Node*& r = p;`, et une fonction
+  peut en renvoyer une).
 
 - `const` (variables, pointeurs vers const, `T * const`, fonctions membres
   `const`) — accepté et émis, mais pas appliqué.
@@ -152,7 +154,7 @@ du périmètre](#délibérément-hors-du-périmètre).
 ### Le reste du langage
 
 - Espaces de noms (imbriqués, avec leurs objets globaux construits et détruits comme ceux de la portée du fichier, appels qualifiés, noms C avec espace de noms pour
-  les fonctions : `v32::draw(int,int,int)` devient `v32__draw__int_int_int`) et
+  les fonctions et variables : `v32::draw(int,int,int)` devient `v32__draw__int_int_int`, `a::x` devient `a__x`) et
   `using` : `using namespace v32;` à la portée du fichier ou dans un bloc,
   `using v32::Keyboard;` et `using Points = int;`. Les fonctions trouvées par
   une directive sont surchargées avec celles de la portée, comme en C++.
@@ -173,7 +175,9 @@ du périmètre](#délibérément-hors-du-périmètre).
   les conversions de style C et de style C++ (`dynamic_cast` avec un
   avertissement : il n'y a pas de RTTI), `enum`, `union`, `typedef`, pointeurs
   de fonction dans la syntaxe de déclarateur standard **ou** celle de Vircon32
-  (la sortie est toujours celle dont la cible a besoin), tableaux
+  (la sortie est toujours celle dont la cible a besoin ; aussi initialisés à la
+  portée du fichier ou d'un espace de noms, seuls ou en tableaux, avec un nom
+  surchargé choisi par le type du pointeur), tableaux
   multidimensionnels à tailles en expressions constantes, initialiseurs entre
   accolades, littéraux hexadécimaux, octaux et binaires avec suffixes,
   `nullptr`, concaténation de chaînes adjacentes, déclarateurs multiples
@@ -409,7 +413,7 @@ Vérifiées avec le transpileur actuel et le vrai compilateur Vircon32 (octobre
 - Les membres `static` de classe.
 
 - `enum class`, `constexpr`, les lambdas, `mutable`, les classes imbriquées et
-  les énumérations à portée de classe, les déclarateurs empilés comme `T *&`.
+  les énumérations à portée de classe.
 
 - Un paramètre de tableau à deux dimensions (`void f(int g[4][4])`).
 - Gabarits, exceptions, RTTI et héritage multiple : jamais (voir ci-dessous)
@@ -449,8 +453,22 @@ Vérifiées avec le transpileur actuel et le vrai compilateur Vircon32 (octobre
 - **Les classes dans un espace de noms gardent leur nom C simple**
   (`v32::String` est `String` dans le C généré), si bien qu'un programme ne peut
   pas avoir sa propre classe du même nom qu'une de celles d'un en-tête qu'il
-  inclut (`String`, `Channel`, `Keyboard`, `Mouse`, ...). Les fonctions libres,
-  elles, ont correctement leur espace de noms.
+  inclut (`String`, `Channel`, `Keyboard`, `Mouse`, ...). Les fonctions libres
+  et les variables, elles, ont correctement leur espace de noms : une variable
+  déclarée dans un espace de noms est `a__x` dans le C généré (`a::inner::x` est
+  `a__inner__x` ; une variable à la portée du fichier garde son nom), donc `a::x`,
+  `b::x` et un `x` à la portée du fichier sont trois variables, comme en C++. Une
+  déclaration `extern` dans un espace de noms désigne quelque chose défini
+  ailleurs (le SDK, un fichier C) et garde son nom. Les énumérateurs d'un `enum`
+  d'espace de noms gardent le leur.
+- **Nom surchargé comme valeur d'un pointeur de fonction** : `int (*p)(float) =
+  over;` choisit la surcharge à la signature du pointeur ; si aucune, ou plus
+  d'une, ne convient, c'est une erreur, jamais une supposition. Les fonctions
+  membres comme valeur de pointeur ne sont pas prises en charge.
+- **`new T*[n]`** (un tableau de pointeurs) est un simple stockage de la taille
+  d'un pointeur : pas de constructeurs, pas d'en-tête de compte ; `delete[]` le
+  libère (les objets pointés restent à l'appelant) ; `new T*[n]{...}` avec liste
+  n'est pas pris en charge.
 - **Surcharges et valeurs transmises telles quelles** : v32c++ ne peut pas voir
   le type du résultat d'un appel à l'API C. Un appel surchargé se résout tout de
   même quand ses autres arguments tranchent (`v32::minimum(rand(), 10)`) ;

@@ -6,6 +6,7 @@
 #include "sema.h"
 #include "cmode.h"
 #include "driver.h"
+#include "prescan.h" /* prescan_is_header_struct */
 
 static int g_error_count = 0;
 
@@ -435,22 +436,47 @@ static void free_free_func_registry(void) {
 typedef struct GlobalVarRegEntry {
     const char *name;   /* not owned -- points into the AST_VAR_DECL's own str1 */
     AstNode *type;       /* not owned either -- the AST_VAR_DECL's own type node */
+    char *ns;            /* the namespace it was declared in ("" = file scope, "a::b") */
+    char *cname;         /* the name it has in the generated C: `a__x` for a
+                          * namespace-scope variable, `x` at file scope or for an
+                          * `extern` declaration (a name defined elsewhere) */
+    AstNode *decl;       /* the AST_VAR_DECL */
     struct GlobalVarRegEntry *next;
 } GlobalVarRegEntry;
 
 static GlobalVarRegEntry *g_global_var_registry = NULL;
 
-static void register_global_var(AstNode *var_decl) {
-    GlobalVarRegEntry *e = malloc(sizeof(GlobalVarRegEntry));
+static void register_global_var(AstNode *var_decl, const char *ns) {
+    GlobalVarRegEntry *e = calloc(1, sizeof(GlobalVarRegEntry));
     e->name = var_decl->str1;
     e->type = var_decl->type;
+    e->ns = strdup(ns);
+    e->decl = var_decl;
+    /* A namespace-scope variable gets its namespace in its C name, the way a
+     * namespace function does (`a::x` -> `a__x`); an `extern` declaration
+     * names something defined elsewhere (the SDK, another file) and keeps
+     * its own name. */
+    if (ns[0] != '\0' && !var_decl->is_extern && !prescan_line_has_extern(var_decl->file, var_decl->line)) {
+        char *prefix = ns_mangle_prefix(ns);
+        size_t len = strlen(prefix) + 2 + strlen(var_decl->str1) + 1;
+        e->cname = malloc(len);
+        snprintf(e->cname, len, "%s__%s", prefix, var_decl->str1);
+        free(prefix);
+    } else {
+        e->cname = strdup(var_decl->str1);
+    }
     e->next = g_global_var_registry;
     g_global_var_registry = e;
 }
 
+/* The legacy, namespace-blind lookup (the last declaration of a bare name
+ * wins), plus the generated C name, so a variable renamed by
+ * sema_rename_namespace_vars is still found under its new name. The
+ * scoped resolve_global_var below is tried first by the callers that know
+ * the lookup scope. */
 static AstNode *find_global_var_type(const char *name) {
     for (GlobalVarRegEntry *e = g_global_var_registry; e != NULL; e = e->next) {
-        if (strcmp(e->name, name) == 0) return e->type;
+        if (strcmp(e->name, name) == 0 || strcmp(e->cname, name) == 0) return e->type;
     }
     return NULL;
 }
@@ -459,6 +485,8 @@ static void free_global_var_registry(void) {
     GlobalVarRegEntry *e = g_global_var_registry;
     while (e != NULL) {
         GlobalVarRegEntry *next = e->next;
+        free(e->ns);
+        free(e->cname);
         free(e);
         e = next;
     }
@@ -573,7 +601,7 @@ static void collect_declarations_in(AstList *decls, const char *ns) {
              * find_global_var_type's own doc comment for exactly why this
              * needs tracking at all (a method call on one, not a plain
              * field read, is what actually breaks without it). */
-            register_global_var(n);
+            register_global_var(n, ns);
         } else if (n->kind == AST_NAMESPACE_DECL) {
             char *inner = sema_ns_join(ns, n->str1);
             collect_declarations_in(&n->list, inner);
@@ -607,6 +635,11 @@ static void collect_declarations_in(AstList *decls, const char *ns) {
             if (typedef_registry_is_native(n->str1)) {
                 /* Repeat `native X;` (the same name declared by two
                  * v32/ headers, say) -- idempotent, nothing to add. */
+            } else if (find_class(n->str1) != NULL && prescan_is_header_struct(n->str1)) {
+                /* The struct was harvested from a pass-through SDK header
+                 * (prescan.c): when the real headers are found, `native X;`
+                 * names a type v32c++ already knows. Redundant, not a
+                 * conflict: keep the known layout, add nothing. */
             } else if (find_class(n->str1) != NULL ||
                        find_typedef_target(n->str1) != NULL) {
                 /* Only reachable via parser.y's `NATIVE TYPE_NAME`
@@ -1597,7 +1630,11 @@ static void check_member_access(int line, const char *member_name, const AstNode
  * AST_QUALIFIED_ID needed the identical lookup for its own last
  * component's name (see that case's own doc comment for why a
  * namespace-qualified name resolves the same way as a bare one here). */
-static AstNode *lookup_ident_expr_type(const char *name, AstNode *current_class, LocalVarType *locals) {
+static GlobalVarRegEntry *resolve_global_var(const char *name, const char *qual);
+static char *sema_qualifier_of(const AstNode *qid);
+
+static AstNode *lookup_ident_expr_type(const char *name, AstNode *current_class, LocalVarType *locals,
+                                       const AstNode *qid) {
     LocalVarType *lv = find_local(locals, name);
     if (lv != NULL) return lv->type;
     if (current_class != NULL) {
@@ -1605,6 +1642,13 @@ static AstNode *lookup_ident_expr_type(const char *name, AstNode *current_class,
         AstNode *member = find_member_in_hierarchy(current_class, name, &owner);
         if (member != NULL && member->kind == AST_VAR_DECL) return member->type;
     }
+    /* a variable of a namespace: scoped lookup first, so `a::x` and `b::x`
+     * (or a file-scope `x`) are told apart; the flat, last-wins lookup is
+     * the fallback it always was */
+    char *qual = (qid != NULL) ? sema_qualifier_of(qid) : NULL;
+    GlobalVarRegEntry *g = resolve_global_var(name, qual);
+    free(qual);
+    if (g != NULL) return g->type;
     return find_global_var_type(name);
 }
 
@@ -1632,7 +1676,7 @@ AstNode *infer_expr_type(const AstNode *expr, AstNode *current_class, LocalVarTy
         case AST_THIS:
             return (current_class != NULL) ? ast_ident(current_class->str1, expr->line) : NULL;
         case AST_IDENT: {
-            AstNode *t = lookup_ident_expr_type(expr->str1, current_class, locals);
+            AstNode *t = lookup_ident_expr_type(expr->str1, current_class, locals, NULL);
             if (t != NULL) return t;
             /* Not a local/member/global: an enum constant's type is its
              * owning enum -- a bare AST_IDENT spelling of the enum's name,
@@ -1650,7 +1694,7 @@ AstNode *infer_expr_type(const AstNode *expr, AstNode *current_class, LocalVarTy
         case AST_QUALIFIED_ID: {
             if (expr->list.count == 0) return NULL;
             const char *last = expr->list.items[expr->list.count - 1]->str1;
-            AstNode *t = lookup_ident_expr_type(last, current_class, locals);
+            AstNode *t = lookup_ident_expr_type(last, current_class, locals, expr);
             if (t != NULL) return t;
             /* Same enum-constant fallback as AST_IDENT above, keyed off the
              * qualified name's last component -- the same "take the last
@@ -2195,6 +2239,107 @@ void collect_qualified_free_function_candidates(const AstNode *qid, AstNode ***o
     }
     free(scope);
     free(qual);
+}
+
+/* Does the free function `func` have the signature a pointer of type
+ * `fp_type` (an AST_FUNC_PTR_TYPE) points to: the same return type and the
+ * same parameter types (typedef- and const-transparent, like overload
+ * resolution)? Picks the overload `int (*p)(float) = over;` means. */
+int sema_function_matches_pointer_type(const AstNode *func, const AstNode *fp_type) {
+    if (func == NULL || fp_type == NULL || fp_type->kind != AST_FUNC_PTR_TYPE) return 0;
+    int fp_count = fp_type->list.count;
+    if (fp_count == 1 && fp_type->list.items[0] != NULL && fp_type->list.items[0]->kind == AST_IDENT &&
+        strcmp(fp_type->list.items[0]->str1, "void") == 0) fp_count = 0;      /* (void) */
+    if (func->list.count != fp_count) return 0;
+    if (!types_equal(func->type, fp_type->type)) return 0;
+    for (int i = 0; i < fp_count; i++)
+        if (!types_equal(func->list.items[i]->type, fp_type->list.items[i])) return 0;
+    return 1;
+}
+
+/* "a::b" for the qualified id `a::b::x` (every component but the last);
+ * malloc'd, "" for a one-part id. */
+static char *sema_qualifier_of(const AstNode *qid) {
+    char *qual = strdup("");
+    for (int i = 0; i < qid->list.count - 1; i++) {
+        const char *part = qid->list.items[i]->str1;
+        if (part == NULL) continue;
+        char *next = sema_ns_join(qual, part);
+        free(qual);
+        qual = next;
+    }
+    return qual;
+}
+
+/* ---- namespace-aware variable lookup -------------------------------------
+ *
+ * The same scoping the function lookup above follows, for the variables
+ * the registry holds (file scope and namespaces):
+ *   - QUALIFIED (`qual` = "a::b"): `a::b` tried relative to the lookup
+ *     namespace first, then as written. No fallback to other scopes.
+ *   - UNQUALIFIED (`qual` NULL): the lookup namespace, each enclosing one
+ *     out to file scope (the first scope that declares the name wins),
+ *     then what the using-directives / using-declarations bring in.
+ * NULL when nothing is found; the caller decides about fallbacks. */
+static GlobalVarRegEntry *find_var_in_ns(const char *name, const char *ns) {
+    GlobalVarRegEntry *found = NULL;
+    for (GlobalVarRegEntry *e = g_global_var_registry; e != NULL; e = e->next)
+        if (strcmp(e->name, name) == 0 && strcmp(e->ns, ns) == 0) found = e;  /* first declared */
+    return found;
+}
+
+static GlobalVarRegEntry *resolve_global_var(const char *name, const char *qual) {
+    char *scope = strdup(g_lookup_ns);
+    GlobalVarRegEntry *found = NULL;
+    for (;;) {
+        if (qual != NULL && qual[0] != '\0') {
+            char *full = sema_ns_join(scope, qual);
+            found = find_var_in_ns(name, full);
+            free(full);
+        } else if (qual == NULL) {
+            found = find_var_in_ns(name, scope);
+        }
+        if (found != NULL || scope[0] == '\0') break;
+        ns_pop(scope);
+    }
+    free(scope);
+    if (found != NULL || qual != NULL) return found;
+    for (UsingEntry *u = g_usings; u != NULL && found == NULL; u = u->next) {
+        if (u->name != NULL && strcmp(u->name, name) != 0) continue;
+        found = find_var_in_ns(name, u->ns);
+    }
+    return found;
+}
+
+/* The name a variable reference has in the generated C, when it differs
+ * from what was written: `x` inside `namespace a` or `a::x` -> `a__x`.
+ * `expr` is an AST_IDENT or AST_QUALIFIED_ID; the caller has checked it is
+ * not shadowed by a local, and has set the lookup namespace. NULL: not a
+ * namespace-scope variable (a file-scope one, an `extern` one, a function,
+ * an enumerator ...), leave the reference alone. */
+const char *sema_namespace_var_cname(const AstNode *expr) {
+    if (expr == NULL) return NULL;
+    GlobalVarRegEntry *e = NULL;
+    if (expr->kind == AST_IDENT && expr->str1 != NULL) {
+        e = resolve_global_var(expr->str1, NULL);
+    } else if (expr->kind == AST_QUALIFIED_ID && expr->list.count > 0 &&
+               expr->list.items[expr->list.count - 1]->str1 != NULL) {
+        char *qual = sema_qualifier_of(expr);
+        e = resolve_global_var(expr->list.items[expr->list.count - 1]->str1, qual);
+        free(qual);
+    }
+    if (e == NULL || strcmp(e->cname, e->name) == 0) return NULL;
+    return e->cname;
+}
+
+/* Renames every namespace-scope variable declaration to its C name
+ * (`int x` in `namespace a` becomes `a__x`). Run once, before the
+ * references are rewritten. */
+void sema_rename_namespace_vars(void) {
+    for (GlobalVarRegEntry *e = g_global_var_registry; e != NULL; e = e->next) {
+        if (e->decl != NULL && strcmp(e->cname, e->decl->str1) != 0 && strcmp(e->decl->str1, e->name) == 0)
+            e->decl->str1 = strdup(e->cname);
+    }
 }
 
 /* Real, previously-undiscovered bug found while auditing common intro-
@@ -2922,7 +3067,7 @@ static void rewrite_functor_call(AstNode *call, AstNode *current_class, LocalVar
         free(c);
         if (cc > 0) return;
     } else if (callee->kind == AST_IDENT) {
-        if (lookup_ident_expr_type(callee->str1, current_class, locals) == NULL) return;
+        if (lookup_ident_expr_type(callee->str1, current_class, locals, NULL) == NULL) return;
     } else if (callee->kind != AST_SUBSCRIPT && callee->kind != AST_UNOP &&
                callee->kind != AST_CALL && callee->kind != AST_QUALIFIED_ID) {
         return;
@@ -2997,6 +3142,15 @@ static void resolve_call(AstNode *call, AstNode *current_class, LocalVarType *lo
                 char *next = sema_ns_join(qual, callee->list.items[i]->str1);
                 free(qual);
                 qual = next;
+            }
+            /* ... unless it names a function POINTER variable of that
+             * namespace (`n::handler(3)`): a call through it, which the
+             * variable's C name (lower.c phase 0c) turns into a plain
+             * call of a pointer. */
+            if (resolve_global_var(name, qual) != NULL) {
+                free(qual);
+                free(candidates);
+                return;
             }
             sema_error(call->line, "no function '%s' is declared in namespace '%s'",
                        name, qual);

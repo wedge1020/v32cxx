@@ -137,15 +137,16 @@ of scope](#deliberately-out-of-scope).
 
 - **References**  — parameters,  return  values,  locals, data  members
   (`int &r;`, bound  in the constructor's initializer list),  `const T &`
-  binding to temporaries.
+  binding to temporaries, and references to pointers (`void reset(Node*& p)`,
+  lowered to `Node**`; `Node*& r = p;`, and a function may return one).
 
 - `const`  (variables, pointers  to const,  `T *  const`, `const`  member
   functions) — accepted and emitted, not enforced.
 
 ### The rest of the language
 
-- Namespaces (nested, with their global objects built and destroyed like file-scope ones, qualified calls, namespaced  C names for functions:
-  `v32::draw(int,int,int)`    becomes   `v32__draw__int_int_int`),    and
+- Namespaces (nested, with their global objects built and destroyed like file-scope ones, qualified calls, namespaced  C names for functions and variables:
+  `v32::draw(int,int,int)`    becomes   `v32__draw__int_int_int`, `a::x` becomes `a__x`),    and
   `using`: `using  namespace v32;` at  file scope  or in a  block, `using
   v32::Keyboard;`, and `using  Points = int;`. Functions  found through a
   directive overload with the ones in scope, as in C++.
@@ -165,7 +166,9 @@ of scope](#deliberately-out-of-scope).
   operators  at C's  precedence, `sizeof`,  C-style  and C++-style  casts
   (`dynamic_cast` with  a warning:  there is  no RTTI),  `enum`, `union`,
   `typedef`,  function pointers  in standard  **or** Vircon32  declarator
-  syntax  (output is  always what  the  target needs),  multi-dimensional
+  syntax  (output is  always what  the  target needs; initialised at file or
+  namespace scope too, singly or in arrays, with an overloaded name picked by the
+  pointer's type),  multi-dimensional
   arrays with  constant-expression sizes, brace  initializers, hex/octal/
   binary   literals    with   suffixes,   `nullptr`,    adjacent   string
   concatenation, multiple declarators  (`int a, *b, c[4];`,  and objects:
@@ -388,7 +391,7 @@ Checked against  the current  transpiler and  the real  Vircon32 compiler
 - `static` class members.
 
 - `enum  class`,  `constexpr`,  lambdas, `mutable`,  nested  classes  and
-  class-scope enums, stacked declarators like `T *&`.
+  class-scope enums.
 
 - A two-dimensional array parameter (`void f(int g[4][4])`).
 - Templates, exceptions, RTTI and multiple inheritance: never (see below)
@@ -427,7 +430,19 @@ Checked against  the current  transpiler and  the real  Vircon32 compiler
 - **Classes in  a namespace  keep their bare  C name**  (`v32::String` is
   `String` in  the generated C),  so a program  can't have its  own class
   with the same name as one in a header it includes (`String`, `Channel`,
-  `Keyboard`, `Mouse`, ...). Free functions are namespaced properly.
+  `Keyboard`, `Mouse`, ...). Free functions and variables are namespaced properly:
+  a variable declared in a namespace is `a__x` in the generated C (`a::inner::x`
+  is `a__inner__x`; a file-scope one keeps its name), so `a::x`, `b::x` and a
+  file-scope `x` are three variables, as in C++. An `extern` declaration in a
+  namespace names something defined elsewhere (the SDK, a C file) and keeps its
+  own name. Enumerators of a namespace's enum keep theirs.
+- **Overloaded name as a function pointer's value**: `int (*p)(float) = over;`
+  picks the overload with the pointer's signature; with none, or more than one,
+  that fits it is an error, never a guess. Member functions as pointer values
+  are not supported.
+- **`new T*[n]`** (an array of pointers) is plain pointer-sized storage: no
+  constructors, no count header, `delete[]` releases it (the pointed-to objects
+  stay the caller's); `new T*[n]{...}` with a list is not supported.
 - **Overloads and pass-through  values**: v32c++ can't see the  type of a
   C  API  call's result.  An  overloaded  call  still resolves  when  its
   other arguments  settle it  (`v32::minimum(rand(), 10)`); when  none do

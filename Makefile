@@ -269,6 +269,8 @@ test: all | $(OUT_DIR)
 	$(TBIN)  -vvv    -o out/88program.c tests/88sample.cpp 1> out/88sample.txt 2>&1
 	$(TBIN)  -vvv    -o out/89program.c tests/89sample.cpp 1> out/89sample.txt 2>&1
 	$(TBIN)  -vvv    -o out/90program.c tests/90sample.cpp 1> out/90sample.txt 2>&1
+	V32CXX_SDK_INCLUDE=tests/sdkstub $(TBIN) -vvv -o out/90sdk.c tests/90sample.cpp 1> out/90sdk.txt 2>&1
+	grep -q 'SDK header search: tests/sdkstub' out/90sdk.txt
 	-$(TBIN) -vvv    -o out/91failure.c tests/91sample.cpp 1> out/91sample.txt 2>&1
 	$(TBIN)  -vvv    -o out/92program.c tests/92sample.cpp 1> out/92sample.txt 2>&1
 	-$(TBIN) -vvv    -o out/93failure.c tests/93sample.cpp 1> out/93sample.txt 2>&1
@@ -620,13 +622,13 @@ test: all | $(OUT_DIR)
 	sh tests/std_run.sh $(BIN) 185sample --alloc=gc --heap-words=16384 -DGC_NO_THRESHOLD --gc-threshold=100000000 -I .
 	! grep -q 'one trailing unit' out/179program.c out/181program.c
 	$(TBIN)  -vvv    -o out/186program.c tests/186sample.cpp 1> out/186sample.txt 2>&1
-	grep -q 'Counter__Counter__int((&arr\[1\]), 4);' out/186program.c
-	grep -q 'Counter__Counter__int((&deep), 5);' out/186program.c
-	grep -q 'Counter__dtor__void((&again));' out/186program.c
-	test "`grep -n 'Counter__Counter__int((&g), 2);' out/186program.c | head -1 | cut -d: -f1`" -lt "`grep -n 'Counter__Counter__int((&t2), 6);' out/186program.c | head -1 | cut -d: -f1`"
+	grep -q 'Counter__Counter__int((&game__arr\[1\]), 4);' out/186program.c
+	grep -q 'Counter__Counter__int((&game__inner__deep), 5);' out/186program.c
+	grep -q 'Counter__dtor__void((&game__again));' out/186program.c
+	test "`grep -n 'Counter__Counter__int((&game__g), 2);' out/186program.c | head -1 | cut -d: -f1`" -lt "`grep -n 'Counter__Counter__int((&t2), 6);' out/186program.c | head -1 | cut -d: -f1`"
 	$(TBIN)  -vvv --alloc=gc -I . -o out/186gc.c tests/186gc.cpp 1> out/186gc.txt 2>&1
-	grep -q '__v32_gc_root_a\[[0-9]\] = (int)&tail;' out/186gc.c
-	grep -q '__v32_gc_root_a\[[0-9]\] = (int)&owner;' out/186gc.c
+	grep -q '__v32_gc_root_a\[[0-9]\] = (int)&app__deep__tail;' out/186gc.c
+	grep -q '__v32_gc_root_a\[[0-9]\] = (int)&app__owner;' out/186gc.c
 	sh tests/std_run.sh $(BIN) 186gc --alloc=gc --heap-words=16384 -I .
 	$(TBIN)  -vvv    -o out/187program.c tests/187sample.cpp 1> out/187sample.txt 2>&1
 	grep -q 'v32_new_arr_Item_init(__v32_nl_n[0-9]*, 3)' out/187program.c
@@ -639,6 +641,52 @@ test: all | $(OUT_DIR)
 	grep -q "187bad.cpp:16: .*class 'NoDefault' has no default constructor" out/187bad.txt
 	grep -q "187bad.cpp:17: .*class 'Bare' has no constructor" out/187bad.txt
 	grep -q "187bad.cpp:18: .*takes a value, not a list in braces" out/187bad.txt
+	$(TBIN)  -vvv    -o out/188program.c tests/188sample.cpp 1> out/188sample.txt 2>&1
+	grep -q '^int a__x = 1;' out/188program.c
+	grep -q '^int b__x = 2;' out/188program.c
+	grep -q '^int x = 100;' out/188program.c
+	grep -q '^int a__inner__x = 3;' out/188program.c
+	grep -q 'Cell__Cell__int((&a__inner__c), 23);' out/188program.c
+	grep -q 'Other__Other__int((&b__c), 4);' out/188program.c
+	sh tests/std_run.sh $(BIN) 188sample
+	sh tests/std_run.sh $(BIN) 188sample --alloc=arena -I .
+	sh tests/std_run.sh $(BIN) 188sample --alloc=gc --heap-words=16384 -I .
+	$(TBIN)  -vvv --alloc=gc -I . -o out/188gc.c tests/188sample.cpp 1> out/188gc.txt 2>&1
+	grep -q '(int)&a__inner__c;\|(int)&a__px;' out/188gc.c
+	$(TBIN)  -vvv -c -o out/188extern.c tests/188extern.cpp 1> out/188extern.txt 2>&1
+	grep -q '^int c_side;' out/188extern.c
+	grep -q '^int \* c_table;' out/188extern.c
+	grep -q '^int hw__mine = 2;' out/188extern.c
+	grep -q '^int other__mine = 3;' out/188extern.c
+	! grep -q 'hw__c_side' out/188extern.c
+	$(TBIN)  -vvv    -o out/189program.c tests/189sample.cpp 1> out/189sample.txt 2>&1
+	grep -q '^D \*()\* g = (&make__void);' out/189program.c
+	grep -q '^int(int)\* h = (&square__int);' out/189program.c
+	grep -q '(&inc__int), (&dec__int)' out/189program.c
+	grep -q '^int(int)\* n__hp = (&n__tw__int);' out/189program.c
+	grep -q '^int(int)\* hs = (&n__tw__int);' out/189program.c
+	grep -q '^int(float)\* ho_float = (&over__float);' out/189program.c
+	grep -q '^int(int)\* ho_int = (&over__int);' out/189program.c
+	test "`grep -n '^int square__int(int x);' out/189program.c | head -1 | cut -d: -f1`" -lt "`grep -n '^D \*()\* g = ' out/189program.c | head -1 | cut -d: -f1`"
+	sh tests/std_run.sh $(BIN) 189sample
+	sh tests/std_run.sh $(BIN) 189sample --alloc=arena -I .
+	sh tests/std_run.sh $(BIN) 189sample --alloc=gc --heap-words=16384 -I .
+	! $(TBIN) -o out/189bad.c tests/189bad.cpp 1> out/189bad.txt 2>&1
+	grep -q "189bad.cpp:5: error: 'over' is overloaded and no overload has the signature" out/189bad.txt
+	grep -q "189bad.cpp:9: error: 'over' is overloaded and no overload has the signature" out/189bad.txt
+	! grep -q "189bad.cpp:6" out/189bad.txt
+	$(TBIN)  -vvv    -o out/190program.c tests/190sample.cpp 1> out/190sample.txt 2>&1
+	grep -q 'Node \* \* v = ((Node \* \*)v32_new_arr_ptr(n));' out/190program.c
+	grep -q '^int \*\*v32_new_arr_ptr(int n)' out/190program.c
+	grep -q 'void reset__Node_ptr_ref(Node \* \* p);' out/190program.c
+	grep -q 'reset__Node_ptr_ref((&arr\[0\]));' out/190program.c
+	grep -q 'reset__Node_ptr_ref((&h.pair\[1\]));' out/190program.c
+	grep -q 'Node \* \* rc = (&c);' out/190program.c
+	grep -q 'put__Node_ptr_ref_int(p, n);' out/190program.c
+	! grep -q 'v32_new_arr_ptr' out/188program.c out/189program.c
+	sh tests/std_run.sh $(BIN) 190sample
+	sh tests/std_run.sh $(BIN) 190sample --alloc=arena -I .
+	sh tests/std_run.sh $(BIN) 190sample --alloc=gc --heap-words=16384 -I .
 # `-vvv` (this project's own verbosity flag, a later round -- see
 # main.c) is passed to every sample specifically so `make test`'s own
 # output still captures the full AST/semantic-analysis/lowering dumps

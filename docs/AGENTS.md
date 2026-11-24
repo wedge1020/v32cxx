@@ -14,10 +14,10 @@ and comma operators anywhere; `switch` with fall-through, `goto`, `do`/`while`;
 classes with inheritance (the base may be a typedef of a class: `typedef Base B; class D : public B`, `D() : B(3)`; `ast.c` canonicalize_typedef_bases) and virtual functions, constructors/destructors (array members of
 class type take `= {...}` / `: m{...}`; global objects, namespace ones too, are built at the start of `main` and
 destroyed when it ends, and by v32libc's `exit()`),
-operators, references, `const`; objects and structs by value (parameters,
+operators, references (`T&`, `T*&`), `const`; objects and structs by value (parameters,
 returns); `new`/`delete`; namespaces and `using`; `auto` and range-based `for`;
 `std::string`, `std::array<T,N>`, `std::vector<T>` (fixed per-type forms, not
-templates); `new T[n]`/`delete[]` that construct/destroy every element (`new T[n]{a, b}` too); `--alloc=arena` or `--alloc=gc` with
+templates); `new T[n]`/`delete[]` that construct/destroy every element (`new T[n]{a, b}` too; `new T*[n]` is a plain array of pointers); `--alloc=arena` or `--alloc=gc` with
 `<v32/memory.hpp>` (see "Memory management" below); `static` locals and file-scope `static`/`extern`/`volatile`; float
 literals of any C form (`1e3`, `.5`, `5.f`); octal/hex/binary literals and
 escapes; `int main()` with `return 0;`; `0` as a null pointer; `<v32/*.hpp>`
@@ -41,7 +41,7 @@ compound literals (file scope too); `_Static_assert`; function-typed parameters;
 **Do not use** (clear error or unsupported): templates, exceptions, RTTI
 (`dynamic_cast` warns only), multiple inheritance, lambdas, `enum class`,
 `constexpr`, `mutable`, nested classes and class-scope enums, `static` class
-members, `T *&`, 2-D array *parameters*, an object passed through `...`.
+members, 2-D array *parameters*, an object passed through `...`.
 
 **Behaves differently than C++:**
 - `unsigned`, `short`, `long`... are one signed 32-bit `int`; `double` is `float`.
@@ -49,6 +49,16 @@ members, `T *&`, 2-D array *parameters*, an object passed through `...`.
   an `unsigned` value shifts logically and is left alone. `--no-signed-shift` turns the
   rewrite off. `unsigned` `<`, `>`, `/`, `%` act unsigned too (`--no-unsigned-ops` turns that off).
 - `delete[]` through a base pointer to a derived array is undefined. `new T[n]{a, b}` builds the listed elements and default-constructs the rest (n smaller than the list: the list's length is allocated; lowered in `lower.c` as a comma sequence on a function-level `__v32_nl_tmpN`, helpers `v32_new_arr_T_init/_rest`, only emitted when used). `delete[]` needs the element class (`delete_array_element_class`, `infer_expr_type`): unknown + some class with a destructor = error asking for a cast.
+- A variable declared in a namespace is `a__x` in the C output (`a::inner::x` is `a__inner__x`), like a namespace function; file-scope
+  and `extern` ones keep their names (lexer.l drops `extern` in C++ input, so prescan notes the lines holding it:
+  `prescan_line_has_extern`). sema.c's variable registry (`GlobalVarRegEntry`: namespace, C name, `resolve_global_var`)
+  does the C++ lookup (enclosing namespaces, then `using`; qualified relative to the current one); `lower.c` phase 0c
+  (`namespace_vars_rename`, right after this-injection) renames the declarations and every reference, a local or
+  parameter hiding it, asm `{x}` operands too. Later phases (global construction, the gc root table, `infer_expr_type`)
+  see the C name only, and the registry answers to both. Enumerators of a namespace enum are not renamed.
+- A file- or namespace-scope function pointer (or an array of them) initialised with a function name gets the C name and
+  the `&` (`fnptr_init`, `lower.c`, with the overload picked by the pointer's type, an error when none or several fit);
+  prototypes are then printed ahead of the variables (`g_globals_name_functions`).
 - Global objects in a namespace (nested too) are built and destroyed like top-level ones, in source order (phase 7b/9c in `lower.c`, `collect_scope_vars`); `static` class data members are an error; two `#texture`/`#sound` hints with one name are an error.
 - `goto` into a scope past the declaration of an object with a destructor is an error; `const` is not enforced (C input drops it from the
   output, since the SDK compiler enforces it where C does not).
@@ -92,7 +102,7 @@ per target. One block from the SDK `malloc` (+ page table + 512-entry mark stack
 `[size, state 0 free/1 used/3 marked, next-free offset]`, 32 exact size-class free lists + a first-fit list, wilderness
 bump, sweep coalesces and gives a trailing free run back to the wilderness. Marking: page table (256 units, rebuilt at the start of every
 collection) maps any interior word to its block; explicit mark stack, overflow = rescan all marked blocks until quiet.
-Every block has one trailing unit (`n = n + 1` in `__v32_alloc`, Boehm style), so a pointer one past the end of an object (`p + n`, an `end()`) lies in its own block, not the next one's (`185sample`). Roots (namespace-scope variables included, nested too): `__v32_gc_roots_init` (built from the file-scope `AST_VAR_DECL`s: pointers, class objects, arrays of them, `std::vector`s;
+Every block has one trailing unit (`n = n + 1` in `__v32_alloc`, Boehm style), so a pointer one past the end of an object (`p + n`, an `end()`) lies in its own block, not the next one's (`185sample`). Roots (namespace-scope variables included, nested too, under their C names `a__x`): `__v32_gc_roots_init` (built from the file-scope `AST_VAR_DECL`s: pointers, class objects, arrays of them, `std::vector`s;
 not plain numbers/enums/function pointers/`extern`/rom; hoisted function statics are file-scope, so they are included) and the
 stack: Vircon32 `__v32_gc_collect` pushes R0-R10 in asm, reads SP, scans `[SP, 0x400000)`; standard C uses
 `__builtin_unwind_init` + `setjmp` and scans from `__v32_gc_run`'s frame to `__libc_stack_end`. `delete` frees at once
@@ -104,7 +114,7 @@ Tests: `182sample` (`std_run` with `--alloc=gc --heap-words=16384`, also with `-
 `scrub()`s the stack first and is meant for the default `-O0` build (at `-O2` the cycle can be retained).
 `goto` destructors: `lower.c` phase 9 (`goto_prepass`, `destruct_goto`), phase 0b splits `label: D d;`.
 Behaviour tests built as standard C: `tests/std_run.sh NAME [flags]` with `tests/stddriver.c`
-(179, 180, 181, 182, 183-187; `tests/globals_destroy.sh` runs 177 and 186), `tests/arena_full.sh` and `tests/gc_full.sh` for the out-of-space path.
+(179, 180, 181, 182, 183-190; `tests/globals_destroy.sh` runs 177 and 186), `tests/arena_full.sh` and `tests/gc_full.sh` for the out-of-space path.
 
 ## Working on the project
 

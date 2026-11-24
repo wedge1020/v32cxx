@@ -175,7 +175,7 @@ a program got, read `ARRAY_TEMPLATE` and `VECTOR_TEMPLATE` in `src/generic.c`, o
 Names: `array_<T>_<N>`, with `::` and `*` spelled `_` and `_ptr`
 (`std::array<Enemy *, 2>` is `array_Enemy_ptr_2`; `std::vector<int>` is
 `vector_int`). For a pointer element type the generated text uses a
-typedef name, because this grammar has no `T *&` declarator; once parsed,
+typedef name (from before the grammar had a `T *&` declarator); once parsed,
 the typedef is replaced by the real pointer type and never reaches the
 generated C.
 

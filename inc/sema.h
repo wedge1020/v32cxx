@@ -437,6 +437,20 @@ const char *sema_get_lookup_namespace(void);
 void sema_set_lookup_namespace(const char *ns);   /* caller owns storage */
 char *sema_ns_join(const char *outer, const char *name);  /* malloc'd */
 
+/* Namespace-scope variables get their namespace in their C name, like
+ * namespace functions (`a::x` -> `a__x`); file-scope and `extern` ones keep
+ * theirs. sema_namespace_var_cname answers for one reference (an
+ * AST_IDENT / AST_QUALIFIED_ID, resolved from the current lookup
+ * namespace): the C name, or NULL when it needs no rewriting.
+ * sema_rename_namespace_vars renames the declarations (lower.c phase 0c). */
+const char *sema_namespace_var_cname(const AstNode *expr);
+
+/* 1 when the free function `func` has the signature that a pointer of type
+ * `fp_type` (AST_FUNC_PTR_TYPE) points to: picks the overload a function
+ * pointer's own type asks for. */
+int sema_function_matches_pointer_type(const AstNode *func, const AstNode *fp_type);
+void sema_rename_namespace_vars(void);
+
 /* Prints a human-readable summary of every class's computed layout,
  * every function's mangled name, and (in a "call resolutions:" section)
  * every call expression that successfully resolved to a specific

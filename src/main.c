@@ -41,6 +41,7 @@ const char *g_current_filename = "<stdin>";
 PreprocessorLines g_preprocessor_lines = {NULL, 0, 0};
 int g_uses_new_or_delete = 0;
 int g_uses_list_new = 0;
+int g_uses_ptr_array_new = 0;
 CodegenTarget g_target = TARGET_VIRCON32;
 int g_reject_bit_fields = 0;   /* --reject-bit-fields */
 int g_signed_shift = 1;        /* cleared by --no-signed-shift */

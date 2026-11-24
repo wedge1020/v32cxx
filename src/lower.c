@@ -2012,6 +2012,10 @@ static void wrap_addr_of(AstNode **slot) {
     *slot = addr;
 }
 
+static void fnptr_init(AstNode **slot, const AstNode *type, AstNode *class_decl, LocalVarType *locals);
+static void prepare_fn_ref(AstNode **slot, const AstNode *target_type, LocalVarType *locals);
+static int type_holds_func_ptr(const AstNode *type);
+
 static void finalize_calls_expr(AstNode **slot, AstNode *class_decl, LocalVarType *locals) {
     AstNode *n = *slot;
     if (n == NULL) return;
@@ -2276,6 +2280,8 @@ static void finalize_calls_expr(AstNode **slot, AstNode *class_decl, LocalVarTyp
              * plain "=" only -- a compound assignment on a function
              * pointer isn't meaningful and isn't supported anywhere
              * else in this project either. */
+            if (n->str1 != NULL && strcmp(n->str1, "=") == 0)
+                prepare_fn_ref(&n->b, infer_expr_type(n->a, class_decl, locals), locals);  /* an overload, by the pointer's type */
             if (n->str1 != NULL && strcmp(n->str1, "=") == 0 &&
                 is_bare_free_function_ref(n->b, locals) &&
                 type_is_func_ptr(infer_expr_type(n->a, class_decl, locals))) {
@@ -2469,6 +2475,97 @@ static void finalize_calls_expr(AstNode **slot, AstNode *class_decl, LocalVarTyp
     }
 }
 
+/* ---- a function used as the VALUE of a function pointer -------------------
+ *
+ * `int (*h)(int) = square;`, `fp = square;`, `Fn tab[2] = { inc, dec };`: a
+ * free function's C name carries its signature (`square__int`), and the
+ * Vircon32 compiler wants an explicit `&`. Locals and assignments have been
+ * rewritten for a long time (the AST_VAR_DECL / AST_ASSIGN cases of
+ * finalize_calls_expr/stmt); a file- or namespace-scope pointer, or an
+ * array of them, got none of it and kept the source name (`= f`, which
+ * does not exist in the output). fnptr_init does it for every such
+ * initializer.
+ *
+ * An OVERLOADED name is resolved by the pointer's own type, as in C++:
+ * with `int over(int)` and `int over(float)`, `int (*p)(float) = over;`
+ * means the second. When no overload, or more than one, has that
+ * signature it is an error -- never a guess. */
+static int g_fnref_errors = 0;
+int g_globals_name_functions = 0;
+static int g_fnptr_global = 0;      /* fnptr_init is working on a file-scope initializer */
+
+static void prepare_fn_ref(AstNode **slot, const AstNode *target_type, LocalVarType *locals) {
+    if (slot == NULL || *slot == NULL || !type_is_func_ptr(target_type)) return;
+    const AstNode *fpt = resolve_typedef_chain(target_type);
+    AstNode **op = slot;
+    if ((*op)->kind == AST_UNOP && (*op)->str1 != NULL && strcmp((*op)->str1, "addr") == 0 && (*op)->a != NULL)
+        op = &(*op)->a;
+    AstNode *e = *op;
+    if (e->kind != AST_IDENT && e->kind != AST_QUALIFIED_ID) return;
+    const char *name = (e->kind == AST_IDENT) ? e->str1
+                       : (e->list.count > 0 ? e->list.items[e->list.count - 1]->str1 : NULL);
+    if (name == NULL || find_local(locals, name) != NULL) return;
+    AstNode **cand = NULL;
+    int count = 0, cap = 0;
+    if (e->kind == AST_QUALIFIED_ID) collect_qualified_free_function_candidates(e, &cand, &count, &cap);
+    else collect_free_function_candidates(name, &cand, &count, &cap);
+    if (count > 1) {
+        AstNode *pick = NULL;
+        int matches = 0;
+        for (int i = 0; i < count; i++) {
+            if (sema_function_matches_pointer_type(cand[i], fpt)) {
+                if (pick == NULL || pick != cand[i]) matches++;
+                pick = cand[i];
+            }
+        }
+        if (matches == 1) {
+            FuncSemaInfo *info = (FuncSemaInfo *)pick->sema_info;
+            *op = ast_ident(info != NULL ? info->mangled_name : pick->str1, e->line);
+            if (op == slot) wrap_addr_of(slot);      /* a bare name: Vircon32 needs the & */
+        } else {
+            fprintf(stderr, "%s:%d: error: '%s' is overloaded and %s overload has the signature of "
+                    "the function pointer it is assigned to\n",
+                    e->file != NULL ? e->file : g_current_filename, e->line, name,
+                    matches == 0 ? "no" : "more than one");
+            g_fnref_errors++;
+        }
+    }
+    free(cand);
+}
+
+/* One function-pointer value: the overload by type, the `&`, the C name. */
+static void fnptr_value(AstNode **slot, const AstNode *fp_type, AstNode *class_decl, LocalVarType *locals) {
+    if (slot == NULL || *slot == NULL) return;
+    prepare_fn_ref(slot, fp_type, locals);
+    if (is_bare_free_function_ref(*slot, locals)) wrap_addr_of(slot);
+    finalize_calls_expr(slot, class_decl, locals);
+    if (g_fnptr_global) {                  /* does a file-scope initializer name a function? */
+        const AstNode *v = *slot;
+        if (v->kind == AST_UNOP && v->str1 != NULL && strcmp(v->str1, "addr") == 0 && v->a != NULL) v = v->a;
+        if (v->kind == AST_IDENT) g_globals_name_functions = 1;
+    }
+}
+
+/* An initializer of type `type`: a function pointer, or an array (of
+ * arrays...) of them with a brace list. */
+static int type_holds_func_ptr(const AstNode *type) {
+    const AstNode *t = type == NULL ? NULL : resolve_typedef_chain(type);
+    while (t != NULL && t->kind == AST_ARRAY_TYPE) t = (t->a == NULL) ? NULL : resolve_typedef_chain(t->a);
+    return t != NULL && t->kind == AST_FUNC_PTR_TYPE;
+}
+
+static void fnptr_init(AstNode **slot, const AstNode *type, AstNode *class_decl, LocalVarType *locals) {
+    if (slot == NULL || *slot == NULL || type == NULL) return;
+    const AstNode *t = resolve_typedef_chain(type);
+    if (t->kind == AST_ARRAY_TYPE) {
+        if ((*slot)->kind == AST_INIT_LIST)
+            for (int i = 0; i < (*slot)->list.count; i++)
+                fnptr_init(&(*slot)->list.items[i], t->a, class_decl, locals);
+    } else if (t->kind == AST_FUNC_PTR_TYPE) {
+        fnptr_value(slot, t, class_decl, locals);
+    }
+}
+
 static void finalize_calls_stmt(AstNode **slot, AstNode *class_decl, LocalVarType **locals) {
     AstNode *n = *slot;
     if (n == NULL) return;
@@ -2575,8 +2672,13 @@ static void finalize_calls_stmt(AstNode **slot, AstNode *class_decl, LocalVarTyp
              * typedef chain) BEFORE recursing into the initializer,
              * same reasoning as the AST_ASSIGN case: exactly one
              * wrap, around the user's original bare identifier. */
-            if (is_bare_free_function_ref(n->a, *locals) && type_is_func_ptr(n->type)) {
-                wrap_addr_of(&n->a);
+            if (n->a != NULL && n->a->kind == AST_INIT_LIST && type_holds_func_ptr(n->type)) {
+                fnptr_init(&n->a, n->type, class_decl, *locals);   /* `int (*ops[2])(int) = { inc, dec };` */
+            } else {
+                prepare_fn_ref(&n->a, n->type, *locals);   /* an overload, by the pointer's type */
+                if (is_bare_free_function_ref(n->a, *locals) && type_is_func_ptr(n->type)) {
+                    wrap_addr_of(&n->a);
+                }
             }
             finalize_calls_expr(&n->a, class_decl, *locals);
             /* `int size = other.size;`, the intro-level "copy a const
@@ -2792,6 +2894,12 @@ static void finalize_calls_free_functions(AstList *decls) {
             finalize_calls_free_functions(&n->list);
             sema_set_lookup_namespace(saved);
             free(inner);
+        } else if (n->kind == AST_VAR_DECL && n->a != NULL && type_holds_func_ptr(n->type)) {
+            /* a file- or namespace-scope function pointer (or array of
+             * them): `int (*h)(int) = square;` -- see fnptr_init */
+            g_fnptr_global = 1;
+            fnptr_init(&n->a, n->type, NULL, NULL);
+            g_fnptr_global = 0;
         } else if (n->kind == AST_FUNC_DEF && n->b == NULL) {
             /* n->b == NULL: a genuine free function, not an out-of-line
              * method's top-level duplicate (see attach_out_of_line and
@@ -3395,6 +3503,23 @@ static void new_delete_rewrite_expr(AstNode **slot, AstNode *class_decl, LocalVa
              * called here at all). codegen.c's emit_array_new_runtime
              * defines it: `malloc(N * sizeof(ClassName))`, cast to the
              * right pointer type, nothing more. */
+            if (n->a != NULL && type_is_plain_pointer(n->type)) {
+                /* `new T*[n]`: an array of POINTERS, one word each -- no
+                 * constructors, no count header, nothing for delete[] to
+                 * run (it releases it plainly, see delete_array_element_class).
+                 * v32_new_arr_ptr (n pointer-sized words), cast to the
+                 * pointer-to-element type the expression has. */
+                new_delete_rewrite_expr(&n->a, class_decl, locals);
+                AstNode *call = ast_new(AST_CALL, n->line);
+                call->a = ast_ident("v32_new_arr_ptr", n->line);
+                g_uses_ptr_array_new = 1;
+                ast_list_append(&call->list, n->a);
+                AstNode *cast = ast_new(AST_CAST, n->line);
+                cast->type = ast_wrap_pointer(n->type, n->line);
+                cast->a = call;
+                *slot = cast;
+                break;
+            }
             if (n->a != NULL) {
                 new_delete_rewrite_expr(&n->a, class_decl, locals); /* the size expression itself */
                 const char *type_name = type_name_for_new(n->type);
@@ -9645,6 +9770,231 @@ static int resolve_designated_inits(AstNode *program) {
 }
 
 
+/* ---- phase 0c: namespace-scope variables get their namespace in their C name ----
+ *
+ * The generated C has one flat namespace, so `namespace a { int x; }` and
+ * `namespace b { int x; }` (or a file-scope `x`) would be one variable, or a
+ * redefinition. Like a namespace function (`v32::draw` -> `v32__draw__...`),
+ * a variable declared inside a namespace is renamed `a__x` (`a__b__x` when
+ * nested); a file-scope variable and an `extern` declaration (a name
+ * defined elsewhere: the SDK, a C file; prescan_line_has_extern) keep
+ * their names. sema.c's registry (sema_namespace_var_cname) does the
+ * C++ lookup -- the enclosing namespaces from the innermost out, then the
+ * using-directives; a qualified name relative to the current namespace
+ * first -- and this phase walks every place a name can be written with the
+ * lookup namespace set, a local or parameter of the same name hiding the
+ * variable. It runs right after this-injection, so a class member named
+ * like a namespace variable is already `this->m` and is not touched.
+ * Every later phase (construction/destruction of global objects, the gc
+ * root table, type inference) then sees the C name only: the sema registry
+ * answers to both names. */
+typedef struct NvScope {
+    char **names;
+    int count, cap;
+} NvScope;
+static NvScope g_nv;
+
+static void nv_declare(const char *name) {
+    if (name == NULL) return;
+    if (g_nv.count == g_nv.cap) {
+        g_nv.cap = g_nv.cap ? g_nv.cap * 2 : 32;
+        g_nv.names = realloc(g_nv.names, sizeof(char *) * (size_t)g_nv.cap);
+    }
+    g_nv.names[g_nv.count++] = (char *)name;
+}
+
+static int nv_is_local(const char *name) {
+    for (int i = g_nv.count - 1; i >= 0; i--)
+        if (strcmp(g_nv.names[i], name) == 0) return 1;
+    return 0;
+}
+
+static void nv_walk(AstNode *n);
+
+static void nv_type(AstNode *t) {
+    if (t == NULL) return;
+    switch (t->kind) {
+        case AST_ARRAY_TYPE:
+            nv_walk(t->b);                 /* the length, `[N]` / `[ROWS * 2]` */
+            nv_type(t->a);
+            break;
+        case AST_POINTER_TYPE:
+        case AST_REFERENCE_TYPE:
+        case AST_CONST_TYPE:
+            nv_type(t->a);
+            break;
+        case AST_FUNC_PTR_TYPE:
+            nv_type(t->type);
+            for (int i = 0; i < t->list.count; i++) nv_type(t->list.items[i]);
+            break;
+        default:
+            break;
+    }
+}
+
+/* `{x}`, `{&x}`, `{*x}` in asm text name a variable. */
+static void nv_asm_text(AstNode *lit) {
+    const char *src = lit->str1;
+    if (src == NULL || strchr(src, '{') == NULL) return;
+    size_t cap = strlen(src) * 2 + 64, o = 0;
+    char *out = malloc(cap);
+    int changed = 0;
+    for (const char *p = src; *p; ) {
+        if (*p == '{') {
+            const char *q = p + 1;
+            char prefix = 0;
+            if (*q == '&' || *q == '*') prefix = *q++;
+            while (*q == ' ') q++;
+            char name[96];
+            size_t k = 0;
+            if (isalpha((unsigned char)*q) || *q == '_') {
+                while ((isalnum((unsigned char)*q) || *q == '_') && k + 1 < sizeof name) name[k++] = *q++;
+                name[k] = '\0';
+                while (*q == ' ') q++;
+                if (*q == '}' && !nv_is_local(name)) {
+                    AstNode *probe = ast_ident(name, lit->line);
+                    const char *c = sema_namespace_var_cname(probe);
+                    if (c != NULL) {
+                        size_t need = o + strlen(c) + 8;
+                        if (need > cap) { cap = need * 2; out = realloc(out, cap); }
+                        o += (size_t)sprintf(out + o, "{%s%s}", prefix ? (prefix == '&' ? "&" : "*") : "", c);
+                        p = q + 1;
+                        changed = 1;
+                        continue;
+                    }
+                }
+            }
+        }
+        if (o + 2 > cap) { cap *= 2; out = realloc(out, cap); }
+        out[o++] = *p++;
+    }
+    out[o] = '\0';
+    if (changed) { lit->str1 = out; } else free(out);
+}
+
+static void nv_walk(AstNode *n) {
+    if (n == NULL) return;
+    switch (n->kind) {
+        case AST_IDENT:
+            if (n->str1 != NULL && !nv_is_local(n->str1)) {
+                const char *c = sema_namespace_var_cname(n);
+                if (c != NULL) n->str1 = strdup(c);
+            }
+            return;
+        case AST_QUALIFIED_ID: {
+            const char *c = sema_namespace_var_cname(n);
+            if (c != NULL) {          /* `a::x` -> the plain identifier `a__x` */
+                n->kind = AST_IDENT;
+                n->str1 = strdup(c);
+                n->list.count = 0;
+            }
+            return;
+        }
+        case AST_BLOCK:
+        case AST_SWITCH:
+        case AST_FOR: {
+            int mark = g_nv.count;
+            nv_walk(n->a); nv_walk(n->b); nv_walk(n->c); nv_walk(n->d);
+            for (int i = 0; i < n->list.count; i++) nv_walk(n->list.items[i]);
+            g_nv.count = mark;
+            return;
+        }
+        case AST_VAR_DECL:
+            nv_declare(n->str1);       /* in scope from its own initializer on */
+            nv_type(n->type);
+            nv_walk(n->a);
+            for (int i = 0; i < n->list.count; i++) nv_walk(n->list.items[i]);
+            return;
+        case AST_ASM:
+            for (int i = 0; i < n->list.count; i++)
+                if (n->list.items[i]->kind == AST_STRING_LIT) nv_asm_text(n->list.items[i]);
+            return;
+        default:
+            break;
+    }
+    nv_walk(n->a); nv_walk(n->b); nv_walk(n->c); nv_walk(n->d);
+    for (int i = 0; i < n->list.count; i++) nv_walk(n->list.items[i]);
+    nv_type(n->type);
+}
+
+static void nv_decls(AstList *decls, const char *ns);
+
+/* A function or method: its parameters are locals of its body. `ns` is the
+ * namespace the declaration sits in; an out-of-line method definition
+ * (`void a::C::m()`) also looks in its class's own namespace. */
+static void nv_func(AstNode *f, const char *ns) {
+    char *scope = strdup(ns);
+    if (f->b != NULL && f->b->kind == AST_QUALIFIED_ID) {
+        for (int i = 0; i < f->b->list.count - 1; i++) {   /* all but the class */
+            char *next = sema_ns_join(scope, f->b->list.items[i]->str1);
+            free(scope);
+            scope = next;
+        }
+    }
+    const char *saved = sema_get_lookup_namespace();
+    sema_set_lookup_namespace(scope);
+    int mark = g_nv.count;
+    nv_type(f->type);
+    for (int i = 0; i < f->list.count; i++) {
+        AstNode *p = f->list.items[i];
+        nv_type(p->type);
+        nv_walk(p->a);                 /* a default argument */
+        nv_declare(p->str1);
+    }
+    nv_walk(f->c);                     /* a constructor's member initializers */
+    nv_walk(f->a);
+    g_nv.count = mark;
+    sema_set_lookup_namespace(saved);
+    free(scope);
+}
+
+static void nv_decls(AstList *decls, const char *ns) {
+    for (int i = 0; i < decls->count; i++) {
+        AstNode *n = decls->items[i];
+        if (n == NULL) continue;
+        switch (n->kind) {
+            case AST_NAMESPACE_DECL: {
+                char *inner = sema_ns_join(ns, n->str1);
+                nv_decls(&n->list, inner);
+                free(inner);
+                break;
+            }
+            case AST_CLASS_DECL:
+                nv_decls(&n->list, ns);
+                break;
+            case AST_FUNC_DEF:
+            case AST_FUNC_DECL:
+                nv_func(n, ns);
+                break;
+            case AST_VAR_DECL: {
+                const char *saved = sema_get_lookup_namespace();
+                sema_set_lookup_namespace(ns);
+                int mark = g_nv.count;
+                nv_type(n->type);
+                nv_walk(n->a);
+                g_nv.count = mark;
+                sema_set_lookup_namespace(saved);
+                break;
+            }
+            case AST_TYPEDEF_DECL: {
+                const char *saved = sema_get_lookup_namespace();
+                sema_set_lookup_namespace(ns);
+                nv_type(n->type);
+                sema_set_lookup_namespace(saved);
+                break;
+            }
+            default:
+                break;
+        }
+    }
+}
+
+static void namespace_vars_rename(AstNode *program) {
+    sema_rename_namespace_vars();
+    g_nv.count = 0;
+    nv_decls(&program->list, "");
+}
+
 /* ---- phase 0b: a label in front of a declaration ---------------------------
  *
  * `again: D d(1);` -- a label may stand before a declaration in C++ -- is
@@ -9707,6 +10057,8 @@ int lower_run(AstNode *program) {
     g_udiv_needed = 0;
     g_goto_errors = 0;
     g_delete_errors = 0;
+    g_fnref_errors = 0;
+    g_globals_name_functions = 0;
     g_have_header_class = 0;
     scan_header_classes(&program->list);
     lower_notes_reset(); /* always start this run's log empty -- see
@@ -9721,6 +10073,7 @@ int lower_run(AstNode *program) {
      * multi-word struct passed or returned by value is now rewritten by
      * phase 9b instead of warned about.) */
     this_inject_classes(&program->list);
+    namespace_vars_rename(program);                   /* phase 0c */
     inject_member_ctor_calls_classes(&program->list); /* phase 8-pre -- MUST run
         before phase 8: both prepend, and member construction has to end up
         AFTER base-ctor (8b) / member-assigns (8a) / vtable-init (8) in the
@@ -9743,6 +10096,7 @@ int lower_run(AstNode *program) {
         the final body, matching real C++'s own construction order) */
     finalize_calls_classes(&program->list);       /* phase 3 + phase 4 (operator rewriting lives inside this same walk) */
     finalize_calls_free_functions(&program->list);
+    if (g_fnref_errors > 0) return g_fnref_errors;
     relabel_reference_members(&program->list);      /* phase 5 (members first) */
     fix_references_classes(&program->list);         /* phase 5 */
     fix_references_free_functions(&program->list);

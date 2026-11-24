@@ -188,10 +188,11 @@ static void parse_record_enum_values(const AstList *enumerators) {
  * AST_VAR_DECL_GROUP -- ast_list_append_flatten splices a group's entries
  * into the surrounding list, so an empty group vanishes and a two-entry
  * group lands as two ordinary top-level declarations. */
-/* pointer_opt's value: 0 nothing, 1 `*`, 2 `&`, and N+1 for N >= 2 stars
+/* pointer_opt's value: 0 nothing, 1 `*`, 2 `&`, 5 `*&`, and N+1 for N >= 2 stars
  * (`char **argv` is 3). */
 static AstNode *apply_ptr(AstNode *base, int ptr, int line) {
     if (ptr == 2) return ast_wrap_reference(base, line);
+    if (ptr == 5) return ast_wrap_reference(ast_wrap_pointer(base, line), line);   /* `T *&` */
     int depth = (ptr == 1) ? 1 : (ptr >= 3 ? ptr - 1 : 0);
     while (depth-- > 0) base = ast_wrap_pointer(base, line);
     return base;
@@ -968,8 +969,12 @@ static AstNode *finish_declarators(AstNode *first, AstNode *base, AstList more, 
 
 %type <str> name_tok func_name operator_symbol
 %type <access> access_spec
-%type <ival> pointer_opt opt_virtual opt_const class_or_struct_kw cpp_cast_kw opt_class_final
+%type <ival> new_stars pointer_opt opt_virtual opt_const class_or_struct_kw cpp_cast_kw opt_class_final
 
+/* `new T` followed by `*`: the star belongs to the type (`new T*[n]`), not to a
+ * multiplication, as in C++. The rule `NEW type_spec` has the lowest
+ * precedence so the shift wins without a reported conflict. */
+%nonassoc NEW_PLAIN_PREC
 %right '=' PLUSEQ MINUSEQ STAREQ SLASHEQ MODEQ ANDEQ OREQ XOREQ SHLEQ SHREQ
 %right '?'
 %left OROR
@@ -2065,6 +2070,7 @@ pointer_opt:
     | '*' '*' '*'  { $$ = 4; }
     | '*'          { $$ = 1; }
     | '&'          { $$ = 2; }
+    | '*' '&'      { $$ = 5; /* `T*&`: a reference to a pointer (lowered to `T**` like any `T&`) */ }
     | '*' CONST    { $$ = 1; /* `T* const p` -- a const POINTER (as opposed
                                 to pointer-to-const, `const T*`). Accepted
                                 and emitted as a plain `T*`: the qualifier
@@ -2072,6 +2078,12 @@ pointer_opt:
                                 this project enforces for any const, and
                                 keeping it would only feed Vircon32 C's
                                 const strictness (lower.c, phase 11). */ }
+    ;
+
+/* The stars of `new T*[n]` / `new T**[n]` (pointer_opt's codes 1 and 3). */
+new_stars:
+      '*'          { $$ = 1; }
+    | '*' '*'      { $$ = 3; }
     ;
 
 /* ---- types ------------------------------------------------------------ */
@@ -3510,7 +3522,7 @@ unary_expr:
         { $$ = ast_new(AST_UNOP, @1.first_line); $$->str1 = strdup("pre++"); $$->a = $2; }
     | DEC unary_expr
         { $$ = ast_new(AST_UNOP, @1.first_line); $$->str1 = strdup("pre--"); $$->a = $2; }
-    | NEW type_spec
+    | NEW type_spec %prec NEW_PLAIN_PREC
         { $$ = ast_new(AST_NEW, @1.first_line); $$->type = $2; }
     | NEW type_spec '(' opt_arg_list ')'
         { $$ = ast_new(AST_NEW, @1.first_line); $$->type = $2; $$->list = $4; }
@@ -3528,6 +3540,15 @@ unary_expr:
             $$ = ast_new(AST_NEW, @1.first_line);
             $$->type = $2;
             $$->a = $4;
+        }
+    | NEW type_spec new_stars '[' expr ']'
+        {
+            /* new T*[N], new T**[N] -- an array of pointers: the element
+             * type is the pointer type, so this is a plain array of
+             * pointer-sized words (no constructors, no count header). */
+            $$ = ast_new(AST_NEW, @1.first_line);
+            $$->type = apply_ptr($2, $3, @1.first_line);
+            $$->a = $5;
         }
     | NEW type_spec '[' expr ']' braced_init
         {

@@ -174,7 +174,7 @@ mira las estructuras y funciones `array_*` del C generado.
 Nombres: `array_<T>_<N>`, con `::` y `*` escritos `_` y `_ptr`
 (`std::array<Enemy *, 2>` es `array_Enemy_ptr_2`; `std::vector<int>` es
 `vector_int`). Para un tipo de elemento puntero, el texto generado usa un nombre
-de `typedef`, porque esta gramática no tiene un declarador `T *&`; una vez
+de `typedef` (de cuando la gramática aún no tenía un declarador `T *&`); una vez
 analizado, el `typedef` se sustituye por el tipo puntero real y nunca llega al C
 generado.
 

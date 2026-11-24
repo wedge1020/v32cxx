@@ -78,6 +78,10 @@ extern int g_uses_new_or_delete;
  * that leaves the first k elements to the caller). Programs without one are unchanged. */
 extern int g_uses_list_new;
 
+/* Set by lower.c when `new T*[n]` (an array of pointers) is lowered: codegen.c then
+ * also defines v32_new_arr_ptr(n), n pointer-sized words. */
+extern int g_uses_ptr_array_new;
+
 /*
  * The output C dialect: TARGET_VIRCON32 (the default -- every quirk
  * this project has ever had to reason through against the real

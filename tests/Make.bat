@@ -33,30 +33,30 @@ if "%HAVE_OPT%"=="0" echo note: v32opt not found in PATH -- skipping the optimiz
 
 REM create the output folders, since the development tools will not
 if not exist bin mkdir bin
-if not exist ..\..\..\..\tmp\tmp.kcP4BBJFD8 mkdir ..\..\..\..\tmp\tmp.kcP4BBJFD8
+if not exist ..\..\..\..\tmp\tmp.htZds7I2kL mkdir ..\..\..\..\tmp\tmp.htZds7I2kL
 
 echo.
 echo Transpile to Vircon32 C
 echo --------------------------
-v32c++ --line-markers --no-build-scripts -o ..\..\..\..\tmp\tmp.kcP4BBJFD8\lm.c line_markers.cpp || goto :failed
+v32c++ --line-markers --no-build-scripts -o ..\..\..\..\tmp\tmp.htZds7I2kL\lm.c line_markers.cpp || goto :failed
 
 echo.
 echo Compile the C code
 echo --------------------------
-compile ..\..\..\..\tmp\tmp.kcP4BBJFD8\lm.c -o ..\..\..\..\tmp\tmp.kcP4BBJFD8\lm.asm || goto :failed
-if "%HAVE_OPT%"=="1" v32opt -O3 ..\..\..\..\tmp\tmp.kcP4BBJFD8\lm.asm -o ..\..\..\..\tmp\tmp.kcP4BBJFD8\lmOpt.asm || goto :failed
+compile ..\..\..\..\tmp\tmp.htZds7I2kL\lm.c -o ..\..\..\..\tmp\tmp.htZds7I2kL\lm.asm || goto :failed
+if "%HAVE_OPT%"=="1" v32opt -O3 ..\..\..\..\tmp\tmp.htZds7I2kL\lm.asm -o ..\..\..\..\tmp\tmp.htZds7I2kL\lmOpt.asm || goto :failed
 
 echo.
 echo Assemble the ASM code
 echo --------------------------
-assemble ..\..\..\..\tmp\tmp.kcP4BBJFD8\lm.asm -o ..\..\..\..\tmp\tmp.kcP4BBJFD8\lm.vbin || goto :failed
-if "%HAVE_OPT%"=="1" assemble ..\..\..\..\tmp\tmp.kcP4BBJFD8\lmOpt.asm -o ..\..\..\..\tmp\tmp.kcP4BBJFD8\lmOpt.vbin || goto :failed
+assemble ..\..\..\..\tmp\tmp.htZds7I2kL\lm.asm -o ..\..\..\..\tmp\tmp.htZds7I2kL\lm.vbin || goto :failed
+if "%HAVE_OPT%"=="1" assemble ..\..\..\..\tmp\tmp.htZds7I2kL\lmOpt.asm -o ..\..\..\..\tmp\tmp.htZds7I2kL\lmOpt.vbin || goto :failed
 
 echo.
 echo Pack the ROM
 echo --------------------------
-packrom ..\..\..\..\tmp\tmp.kcP4BBJFD8\lm.xml -o bin\lm.v32 || goto :failed
-if "%HAVE_OPT%"=="1" packrom ..\..\..\..\tmp\tmp.kcP4BBJFD8\lmOpt.xml -o bin\lmOpt.v32 || goto :failed
+packrom ..\..\..\..\tmp\tmp.htZds7I2kL\lm.xml -o bin\lm.v32 || goto :failed
+if "%HAVE_OPT%"=="1" packrom ..\..\..\..\tmp\tmp.htZds7I2kL\lmOpt.xml -o bin\lmOpt.v32 || goto :failed
 goto :succeeded
 
 :failed

@@ -3263,6 +3263,9 @@ static void emit_primitive_array_new_runtime(FILE *out) {
     emit_array_new_runtime(out, "float");
     emit_array_new_runtime(out, "char");
     emit_array_new_runtime(out, "bool");
+    if (g_uses_ptr_array_new)         /* `new T*[n]`: n pointers, whatever they point to */
+        fprintf(out, "int **v32_new_arr_ptr(int n)\n{\n    return (int **)%s(n * sizeof(int *));\n}\n\n\n",
+                V32_ALLOC_HOOK ? "__v32_alloc" : "malloc");
     if (g_uses_list_new) {
         emit_array_new_runtime_init(out, "int");
         emit_array_new_runtime_init(out, "float");
@@ -3587,12 +3590,13 @@ void codegen_run(const AstNode *program, FILE *out, int verbose_comments) {
     emit_classes(out, &program->list);
     /* C input: a file-scope initializer may name a function (a table of
      * handlers), so the prototypes go ahead of the variables there. */
-    if (!g_c_mode) emit_globals(out, &program->list);
+    int globals_after = g_c_mode || g_globals_name_functions;   /* see g_globals_name_functions */
+    if (!globals_after) emit_globals(out, &program->list);
     emit_function_prototypes_classes(out, &program->list);
     SeenNames seen = {0};
     emit_function_prototypes_free_functions(out, &program->list, &seen);
     free(seen.names);
-    if (g_c_mode) emit_globals(out, &program->list);
+    if (globals_after) emit_globals(out, &program->list);
     fprintf(out, "\n");
     emit_vtable_instances_classes(out, &program->list);
     if (needs_misc) {

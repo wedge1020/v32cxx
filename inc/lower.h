@@ -351,6 +351,11 @@ typedef struct StructLayout {
  * reserved for a later phase that might have something to report. */
 int lower_run(AstNode *program);
 
+/* 1 when a file- or namespace-scope initializer names a function (`int (*h)(int)
+ * = square;`, a table of handlers): codegen then prints the function
+ * prototypes ahead of the variables, as C input always does. Set by lower_run. */
+extern int g_globals_name_functions;
+
 /* --rename old=new: applied to the parsed program, before sema. */
 void v32_explicit_renames(AstNode *program);
 

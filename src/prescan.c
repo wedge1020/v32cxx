@@ -2,6 +2,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <ctype.h>
 #include <errno.h>
 #include <unistd.h> /* access() */
 #include "prescan.h"
@@ -464,10 +465,49 @@ static int brace_delta(const char *line, int in_comment) {
     return delta;
 }
 
+/* ---- `extern` lines ---------------------------------------------------------
+ * lexer.l drops `extern` in C++ input (a single translation unit has no use
+ * for it), but one thing still needs to know that a declaration was written
+ * `extern`: a namespace-scope variable gets its namespace in its C name
+ * (`a::x` -> `a__x`), except one declared `extern`, which names something
+ * defined elsewhere (the SDK, a C file) and keeps its own name. So the
+ * (file, line) of every code line holding the word `extern` is
+ * noted here, and sema asks prescan_line_has_extern. */
+typedef struct ExternLine { const char *file; int line; struct ExternLine *next; } ExternLine;
+static ExternLine *g_extern_lines = NULL;
+
+static void note_extern_line(const char *path, int line, const char *text) {
+    if (strstr(text, "extern") == NULL) return;
+    for (const char *p = text; *p; p++) {
+        if (p[0] == '/' && (p[1] == '/' || p[1] == '*')) return;   /* a comment: stop looking */
+        if (*p == '"' || *p == '\'') return;                       /* a literal: not a declaration */
+        if (strncmp(p, "extern", 6) != 0) continue;
+        if (p > text && (isalnum((unsigned char)p[-1]) || p[-1] == '_')) continue;
+        if (!(p[6] == ' ' || p[6] == '\t')) continue;
+        const char *q = p + 6;
+        while (*q == ' ' || *q == '\t') q++;
+        if (*q == '"') continue;                                   /* extern "C" ... */
+        ExternLine *e = malloc(sizeof(ExternLine));
+        e->file = prescan_intern_filename(path);
+        e->line = line;
+        e->next = g_extern_lines;
+        g_extern_lines = e;
+        return;
+    }
+}
+
+int prescan_line_has_extern(const char *file, int line) {
+    if (file == NULL) return 0;
+    for (const ExternLine *e = g_extern_lines; e != NULL; e = e->next)
+        if (e->line == line && strcmp(e->file, file) == 0) return 1;
+    return 0;
+}
+
 /* Expands one code line (plus however many following lines a multi-line
  * function-like invocation needs) and writes it out. Returns 0 or -1. */
 static int emit_code_line(FILE *out, LineReader *r, char *line, int first, int nphys,
                           int state_before, int *in_block_comment, const char *path) {
+    note_extern_line(path, first, line);
     if (macro_count() == 0 && strstr(line, "__") == NULL) {
         fprintf(out, "%s\n", line);
         free(line);

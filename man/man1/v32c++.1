@@ -860,9 +860,22 @@ class members;
 .BR constexpr ,
 lambdas,
 .BR mutable ,
-nested classes and class-scope enums, and stacked declarators such as
-.IR "T *&" ;
+nested classes and class-scope enums;
 a two-dimensional array parameter.
+.PP
+A reference to a pointer
+.RI ( "void reset(Node*& p)" ,
+also a local and a return type) is lowered to a pointer to a pointer, as
+.I T&
+is
+.IR T* .
+.PP
+.B "new T*[n]"
+(an array of pointers) allocates n pointer-sized words: no constructors and no count header;
+.B delete[]
+releases it and leaves the pointed-to objects to the caller. Function pointers declared at file or namespace scope may be initialised with a function's name
+.RI ( "int (*h)(int) = square;" ,
+also in brace lists); an overloaded name is picked by the pointer's own type, and it is an error when no overload, or more than one, fits.
 .PP
 Array
 .B new
@@ -1087,6 +1100,25 @@ below).
 Objects declared inside a namespace (nested ones too) are constructed at the start of
 .B main
 and destroyed when it ends, in source order with the file-scope ones. A typedef of a class may name a base class, in the class head and in a constructor's initializer list.
+.PP
+A variable declared inside a namespace is emitted under a C name that includes the namespace too
+.RI ( a::x
+becomes
+.IR a__x ,
+.I a::inner::x
+becomes
+.IR a__inner__x ),
+so
+.IR a::x ,
+.I b::x
+and a file-scope
+.I x
+are three variables, as in C++. Every way of naming one resolves: qualified, unqualified inside the namespace (reopened ones too),
+through
+.B using
+and with a local of the same name hiding it. A file-scope variable keeps its name, and so does an
+.B extern
+declaration inside a namespace (it names something defined elsewhere, such as the SDK or a C file).
 .PP
 A free function declared inside a namespace is emitted under a C name
 that includes the namespace
