@@ -1390,6 +1390,10 @@ static void print_unop(FILE *out, const AstNode *e) {
         fprintf(out, "(-");
         print_expr(out, e->a);
         fprintf(out, ")");
+    } else if (strcmp(op, "+") == 0) {
+        fprintf(out, "(");        /* unary plus: no Vircon32 C operator, nothing to do */
+        print_expr(out, e->a);
+        fprintf(out, ")");
     } else if (strcmp(op, "addr") == 0) {
         fprintf(out, "(&");
         print_expr(out, e->a);

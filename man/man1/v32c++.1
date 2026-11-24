@@ -1,4 +1,4 @@
-.TH V32C++ 1 "November 23, 2026" "v32c++ 20261123-dev" "User Commands"
+.TH V32C++ 1 "November 24, 2026" "v32c++ 20261124-dev" "User Commands"
 .SH NAME
 v32c++, v32c \- transpile a subset of C/C++ to Vircon32 C
 .SH SYNOPSIS
@@ -778,6 +778,22 @@ function objects (a call through
 prefix and postfix
 .BR operator++ / operator\-\-
 .RI ( "operator++()" " and " "operator++(int)" );
+the rest of C++'s set as members or free functions:
+.BR "% & | ^ << >>" ,
+.BR "%= &= |= ^= <<= >>=" ,
+unary
+.BR "+ \- ~ *" ,
+.B ->
+(applied again while the result is an object with an
+.BR operator\-> ),
+.B &&
+and
+.B ||
+(both sides evaluated, left first) and
+.BR , ;
+unary
+.B &
+cannot be overloaded;
 conversion operators
 .RI ( "operator int() const" ", " "operator bool()" ", " "operator Vec2 *()" ),
 called wherever the object is used as a value of that type (an

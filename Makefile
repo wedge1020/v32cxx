@@ -31,7 +31,7 @@ FLEX    = flex
 # \t in brackets, no `date +%-d` (the day's leading zero is cut by sed).
 VERSION := $(shell sed -n 's/^\#define[[:space:]]*VERSION[[:space:]]*"\(.*\)".*/\1/p' $(INC_DIR)/v32cxx.h)
 # The date part (YYYYMMDD) of VERSION names the project archive: `make archive` writes
-# ../v32cxx-project-YYYYMMDD.zip ("20261123-dev" -> ../v32cxx-project-20261123.zip)
+# ../v32cxx-project-YYYYMMDD.zip ("20261124-dev" -> ../v32cxx-project-20261124.zip)
 ARCHDATE := $(shell echo '$(VERSION)' | sed 's/^\([0-9]\{8\}\).*/\1/')
 MANDATE := $(shell LC_ALL=C date +"%B %d, %Y" | sed 's/ 0\([1-9]\),/ \1,/')
 # The same date in the translated pages' .TH line (man/es, man/fr): month
@@ -871,6 +871,18 @@ test: all | $(OUT_DIR)
 	grep -q "212bad2.cpp:6: no function 'g' is declared in namespace 'a'" out/212bad2.txt
 	grep -q "212bad2.cpp:7: no function 'g' is declared in namespace 'in'" out/212bad2.txt
 	test "$$(grep -c 'is declared in namespace' out/212bad2.txt)" = 2
+	$(TBIN)  -vvv    -o out/213program.c tests/213sample.cpp 1> out/213sample.txt 2>&1
+	grep -q 'op_shl' out/213program.c
+	grep -q 'op_deref' out/213program.c
+	grep -q 'op_arrow' out/213program.c
+	grep -q '__v32_seq_tmp' out/213program.c
+	! $(TBIN) -o out/213bad.c tests/213bad.cpp 1> out/213bad.txt 2>&1
+	test "$$(grep -c 'overloading unary operator& is not supported' out/213bad.txt)" = 2
+	grep -q 'line 3: overloading unary operator& is not supported' out/213bad.txt
+	grep -q 'line 4: overloading unary operator& is not supported' out/213bad.txt
+	test "$$(grep -c 'operator-> must be a member function taking no parameters' out/213bad.txt)" = 2
+	grep -q 'line 5: operator-> must be a member function' out/213bad.txt
+	grep -q 'line 7: operator-> must be a member function' out/213bad.txt
 	@if [ -f tools/vircon32/bin/include/video.h ]; then \
 	    echo "209bad: a C program defining SDK functions, with --alloc=arena (needs the SDK headers)"; \
 	    ! V32CXX_SDK_INCLUDE=tools/vircon32/bin/include $(TBIN) --alloc=arena -o out/209bad.c tests/209bad.c 1> out/209bad.txt 2>&1 \

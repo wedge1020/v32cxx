@@ -1,5 +1,5 @@
 '\" -*- coding: UTF-8 -*-
-.TH V32C++ 1 "23 novembre 2026" "v32c++ 20261123-dev" "Commandes utilisateur"
+.TH V32C++ 1 "24 novembre 2026" "v32c++ 20261124-dev" "Commandes utilisateur"
 .SH NOM
 v32c++, v32c \- transpile un sous-ensemble de C++ (ou de C) en C Vircon32
 .SH SYNOPSIS
@@ -786,6 +786,22 @@ objets fonction (un appel via
 .BR operator++ / operator\-\-
 préfixe et suffixe
 .RI ( "operator++()" " et " "operator++(int)" ) ;
+le reste de l'ensemble de C++ comme membres ou fonctions libres :
+.BR "% & | ^ << >>" ,
+.BR "%= &= |= ^= <<= >>=" ,
+unaires
+.BR "+ \- ~ *" ,
+.B ->
+(appliqué de nouveau tant que le résultat est un objet ayant un
+.BR operator\-> ),
+.B &&
+et
+.B ||
+(les deux côtés sont évalués, le gauche d'abord) et
+.BR , ;
+le
+.B &
+unaire ne peut pas être surchargé ;
 opérateurs de conversion
 .RI ( "operator int() const" ", " "operator bool()" ", " "operator Vec2 *()" ),
 appelés partout où l'objet est utilisé comme valeur de ce type (un initialiseur,

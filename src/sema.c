@@ -964,8 +964,16 @@ static char *param_signature_str(const AstList *params) {
  * given the grammar only ever builds names from this fixed list -- fails
  * safe (a working but oddly-named mangled name) rather than crashing if
  * that assumption is ever wrong. */
-static const char *mangle_operator_symbol(const char *name) {
+static int g_mangling_free = 0; /* set while mangling a free function (a namespace prefix also arrives as class_name) */
+
+static const char *mangle_operator_symbol(const char *name, const AstList *params) {
     const char *sym = name + 8; /* skip past the literal "operator" prefix */
+    /* the unary forms of `*` and `+` (a member with no parameter, a free
+     * function with one) get their own names; unary `-` keeps op_sub */
+    if (params != NULL && params->count == (g_mangling_free ? 1 : 0)) {
+        if (strcmp(sym, "*") == 0) return "op_deref";
+        if (strcmp(sym, "+") == 0) return "op_pos";
+    }
     if (strcmp(sym, "+") == 0) return "op_add";
     if (strcmp(sym, "-") == 0) return "op_sub";
     if (strcmp(sym, "*") == 0) return "op_mul";
@@ -986,6 +994,23 @@ static const char *mangle_operator_symbol(const char *name) {
     if (strcmp(sym, "()") == 0) return "op_call";
     if (strcmp(sym, "++") == 0) return "op_inc";
     if (strcmp(sym, "--") == 0) return "op_dec";
+    if (strcmp(sym, "%") == 0) return "op_mod";
+    if (strcmp(sym, "&") == 0) return "op_band";
+    if (strcmp(sym, "|") == 0) return "op_bor";
+    if (strcmp(sym, "^") == 0) return "op_bxor";
+    if (strcmp(sym, "~") == 0) return "op_bnot";
+    if (strcmp(sym, "<<") == 0) return "op_shl";
+    if (strcmp(sym, ">>") == 0) return "op_shr";
+    if (strcmp(sym, "%=") == 0) return "op_modeq";
+    if (strcmp(sym, "&=") == 0) return "op_andeq";
+    if (strcmp(sym, "|=") == 0) return "op_oreq";
+    if (strcmp(sym, "^=") == 0) return "op_xoreq";
+    if (strcmp(sym, "<<=") == 0) return "op_shleq";
+    if (strcmp(sym, ">>=") == 0) return "op_shreq";
+    if (strcmp(sym, "&&") == 0) return "op_land";
+    if (strcmp(sym, "||") == 0) return "op_lor";
+    if (strcmp(sym, "->") == 0) return "op_arrow";
+    if (strcmp(sym, ",") == 0) return "op_comma";
     return "op_unknown";
 }
 
@@ -1040,7 +1065,7 @@ static char *mangle(const char *class_name, const char *method_name, const AstLi
         conv[k] = '\0';
         name_part = conv;
     } else if (strncmp(method_name, "operator", 8) == 0) {
-        name_part = mangle_operator_symbol(method_name);
+        name_part = mangle_operator_symbol(method_name, params);
     }
 
     char *param_sig = param_signature_str(params);
@@ -1058,11 +1083,31 @@ static char *mangle(const char *class_name, const char *method_name, const AstLi
     return out;
 }
 
+/* Declarations of operators this project cannot overload. */
+static void check_operator_decl(const AstNode *f, int is_free) {
+    if (f == NULL || f->str1 == NULL || strncmp(f->str1, "operator", 8) != 0) return;
+    const char *sym = f->str1 + 8;
+    if (strcmp(sym, "&") == 0 && f->list.count == (is_free ? 1 : 0))
+        sema_error(f->line, "overloading unary operator& is not supported "
+                            "(`&x` always takes the address; the binary operator& is fine)");
+    if (strcmp(sym, "->") == 0 && (is_free || f->list.count != 0))
+        sema_error(f->line, "operator-> must be a member function taking no parameters");
+}
+
 static FuncSemaInfo *make_func_info(const char *class_name, const char *method_name,
                                      const AstList *params, int is_out_of_line) {
     FuncSemaInfo *info = calloc(1, sizeof(FuncSemaInfo));
     info->mangled_name = mangle(class_name, method_name, params);
     info->is_out_of_line = is_out_of_line;
+    return info;
+}
+
+/* a free function (class_name is NULL or a namespace prefix) */
+static FuncSemaInfo *make_free_func_info(const char *prefix, const char *name,
+                                          const AstList *params, int is_out_of_line) {
+    g_mangling_free = 1;
+    FuncSemaInfo *info = make_func_info(prefix, name, params, is_out_of_line);
+    g_mangling_free = 0;
     return info;
 }
 
@@ -1344,6 +1389,7 @@ static void compute_layout(AstNode *class_decl) {
         } else if (member->kind == AST_FUNC_DECL || member->kind == AST_FUNC_DEF) {
             member->access = current_access;
             ast_list_append(&layout->methods, member);
+            check_operator_decl(member, 0);
             if (member->sema_info == NULL) {
                 /* Wasn't touched by attach_out_of_line (either it's an
                  * in-class-only method, or it never got a body at all --
@@ -1396,12 +1442,13 @@ static void compute_layout(AstNode *class_decl) {
              * matching the namespace-scope definition it befriends.
              * compute_layouts keeps g_lookup_ns pointed at that
              * namespace while it walks. */
+            check_operator_decl(member, 1);
             if (member->sema_info == NULL) {
                 if (g_lookup_ns[0] == '\0') {
-                    member->sema_info = make_func_info(NULL, member->str1, &member->list, 0);
+                    member->sema_info = make_free_func_info(NULL, member->str1, &member->list, 0);
                 } else {
                     char *prefix = ns_mangle_prefix(g_lookup_ns);
-                    member->sema_info = make_func_info(prefix, member->str1, &member->list, 0);
+                    member->sema_info = make_free_func_info(prefix, member->str1, &member->list, 0);
                     free(prefix);
                 }
             }
@@ -1487,11 +1534,12 @@ static void mangle_free_functions_in(AstList *decls, const char *ns) {
             mangle_free_functions_in(&n->list, inner);
             free(inner);
         } else if ((n->kind == AST_FUNC_DECL || n->kind == AST_FUNC_DEF) && n->sema_info == NULL) {
+            check_operator_decl(n, 1);
             if (ns[0] == '\0') {
-                n->sema_info = make_func_info(NULL, n->str1, &n->list, 0);
+                n->sema_info = make_free_func_info(NULL, n->str1, &n->list, 0);
             } else {
                 char *prefix = ns_mangle_prefix(ns);
-                n->sema_info = make_func_info(prefix, n->str1, &n->list, 0);
+                n->sema_info = make_free_func_info(prefix, n->str1, &n->list, 0);
                 free(prefix);
             }
         }
@@ -2021,7 +2069,8 @@ AstNode *infer_expr_type(const AstNode *expr, AstNode *current_class, LocalVarTy
              * against an int/float overload pair. `++x`/`--x` keep their
              * operand's type exactly. */
             if (expr->str1 != NULL &&
-                (strcmp(expr->str1, "neg") == 0 || strcmp(expr->str1, "~") == 0)) {
+                (strcmp(expr->str1, "neg") == 0 || strcmp(expr->str1, "~") == 0 ||
+                 strcmp(expr->str1, "+") == 0)) {
                 const AstNode *operand_type = resolve_typedef_chain(
                     infer_expr_type(expr->a, current_class, locals));
                 while (operand_type != NULL && operand_type->kind == AST_CONST_TYPE)
@@ -2029,7 +2078,7 @@ AstNode *infer_expr_type(const AstNode *expr, AstNode *current_class, LocalVarTy
                 if (operand_type == NULL || operand_type->kind != AST_IDENT ||
                     operand_type->str1 == NULL) return NULL;
                 if (strcmp(operand_type->str1, "float") == 0)
-                    return strcmp(expr->str1, "neg") == 0 ? ast_ident("float", expr->line) : NULL;
+                    return strcmp(expr->str1, "~") != 0 ? ast_ident("float", expr->line) : NULL;
                 if (strcmp(operand_type->str1, "int") == 0 ||
                     strcmp(operand_type->str1, "char") == 0 ||
                     strcmp(operand_type->str1, "bool") == 0 ||
@@ -3576,41 +3625,84 @@ static void resolve_member_init_list(AstNode *func, AstNode *current_class, Loca
 }
 
 static const char *binop_operator_name(const char *op) {
-    if (strcmp(op, "+") == 0) return "operator+";
-    if (strcmp(op, "-") == 0) return "operator-";
-    if (strcmp(op, "*") == 0) return "operator*";
-    if (strcmp(op, "/") == 0) return "operator/";
-    if (strcmp(op, "==") == 0) return "operator==";
-    if (strcmp(op, "!=") == 0) return "operator!=";
-    if (strcmp(op, "<") == 0) return "operator<";
-    if (strcmp(op, ">") == 0) return "operator>";
-    if (strcmp(op, "<=") == 0) return "operator<=";
-    if (strcmp(op, ">=") == 0) return "operator>=";
-    return NULL; /* &&/|| aren't in this project's supported operator_symbol
-                  * list at all (see parser.y), so they're never overloadable
-                  * here -- always a plain built-in BinOp. */
+    static const char *const ops[] = { "+", "-", "*", "/", "%", "&", "|", "^", "<<", ">>",
+        "==", "!=", "<", ">", "<=", ">=", "&&", "||", ",", NULL };
+    static const char *const names[] = { "operator+", "operator-", "operator*", "operator/", "operator%",
+        "operator&", "operator|", "operator^", "operator<<", "operator>>",
+        "operator==", "operator!=", "operator<", "operator>", "operator<=", "operator>=",
+        "operator&&", "operator||", "operator,", NULL };
+    for (int i = 0; ops[i] != NULL; i++)
+        if (strcmp(op, ops[i]) == 0) return names[i];
+    return NULL;
 }
 
 static const char *assign_operator_name(const char *op) {
-    if (strcmp(op, "=") == 0) return "operator=";
-    if (strcmp(op, "+=") == 0) return "operator+=";
-    if (strcmp(op, "-=") == 0) return "operator-=";
-    if (strcmp(op, "*=") == 0) return "operator*=";
-    if (strcmp(op, "/=") == 0) return "operator/=";
+    static const char *const ops[] = { "=", "+=", "-=", "*=", "/=", "%=", "&=", "|=", "^=", "<<=", ">>=", NULL };
+    static const char *const names[] = { "operator=", "operator+=", "operator-=", "operator*=", "operator/=",
+        "operator%=", "operator&=", "operator|=", "operator^=", "operator<<=", "operator>>=", NULL };
+    for (int i = 0; ops[i] != NULL; i++)
+        if (strcmp(op, ops[i]) == 0) return names[i];
     return NULL;
 }
 
 static const char *unop_operator_name(const char *op) {
-    /* Only "neg" (unary minus) and "!" correspond to operators this
-     * project's grammar actually supports overloading (see
-     * operator_symbol in parser.y) -- "~", "addr", "deref", and the
-     * pre/post ++/-- forms have no overload syntax to have matched, so
-     * they're never rewritten here, always plain built-in AST_UNOP. */
+    /* "addr" (`&x`) is never overloadable here (declaring a unary
+     * operator& is an error); "arrow" is the node sema itself builds for
+     * `p->m` through an operator->. */
     if (strcmp(op, "neg") == 0) return "operator-";
+    if (strcmp(op, "+") == 0) return "operator+";
+    if (strcmp(op, "~") == 0) return "operator~";
+    if (strcmp(op, "deref") == 0) return "operator*";
+    if (strcmp(op, "arrow") == 0) return "operator->";
     if (strcmp(op, "!") == 0) return "operator!";
     if (strcmp(op, "pre++") == 0 || strcmp(op, "post++") == 0) return "operator++";
     if (strcmp(op, "pre--") == 0 || strcmp(op, "post--") == 0) return "operator--";
     return NULL;
+}
+
+/* The free functions named `op_name` that the operands (1 or 2 of them) can be passed to: an
+ * operator declared for some OTHER class (std::string's `operator==(const char *, const string &)`,
+ * say) must not capture `a == b` on unrelated objects just because it is the only free
+ * operator== in the program. Returns the count; the caller frees *out. */
+static int free_operator_candidates(const char *op_name, AstNode **args, int argc, AstNode *current_class,
+                                    LocalVarType *locals, AstNode ***out) {
+    *out = NULL;
+    int total = 0;
+    /* pass 0: the ordinary lookup (this scope outwards, usings); pass 1: every namespace -- the
+     * stand-in for argument-dependent lookup (`a % b` on objects of a::M finds a::operator%).
+     * Classes are known by their bare names, and the parameter types must match the operands
+     * anyway, so an operator of an unrelated namespace cannot capture the expression. */
+    for (int pass = 0; pass < 2 && total == 0; pass++) {
+        int count = 0, cap = 0;
+        free(*out);
+        *out = NULL;
+        if (pass == 0) collect_free_function_candidates(op_name, out, &count, &cap);
+        else collect_free_in_ns(op_name, NULL, out, &count, &cap);
+        int kept = 0;
+        g_enum_promotes = 1;
+        for (int i = 0; i < count; i++) {
+            AstNode *cand = (*out)[i];
+            int ok = (cand->list.count == argc);
+            for (int j = 0; ok && j < argc; j++) {
+                AstNode *at = infer_expr_type(args[j], current_class, locals);
+                if (at != NULL && !type_matches_param(cand->list.items[j]->type, at)) ok = 0;
+            }
+            if (ok) (*out)[kept++] = cand;
+        }
+        g_enum_promotes = 0;
+        total = kept;
+    }
+    return total;
+}
+
+/* The operators v32c++ learned to overload after the first set (+ - * / == != < > <= >= = += -= *= /= ! [] () ++ --). */
+static int operator_is_late_addition(const char *op_name) {
+    static const char *const late[] = { "operator%", "operator&", "operator|", "operator^", "operator~",
+        "operator<<", "operator>>", "operator%=", "operator&=", "operator|=", "operator^=", "operator<<=",
+        "operator>>=", "operator&&", "operator||", "operator->", "operator,", NULL };
+    for (int i = 0; late[i] != NULL; i++)
+        if (strcmp(op_name, late[i]) == 0) return 1;
+    return 0;
 }
 
 /* Resolves natural operator syntax (`a + b`, `a == b`, `v[i]`) against a
@@ -3643,6 +3735,13 @@ static void resolve_operator_use(AstNode *node, const char *op_name, AstNode *lh
     if (op_name == NULL) return;
 
     AstNode *obj_class = resolve_expr_class(lhs_or_operand, current_class, locals);
+    /* `*this << x` inside a member: infer_expr_type gives `this` its class (not a pointer), so a
+     * dereference of it has no type. Only the operators added for 20261124 (those
+     * past `[]`/`++`) rely on this, so the older ones keep their exact behaviour. */
+    if (obj_class == NULL && lhs_or_operand->kind == AST_UNOP && lhs_or_operand->str1 != NULL &&
+        strcmp(lhs_or_operand->str1, "deref") == 0 && lhs_or_operand->a != NULL &&
+        lhs_or_operand->a->kind == AST_THIS && current_class != NULL && operator_is_late_addition(op_name))
+        obj_class = current_class;
     /* A POINTER to an object (or an array of objects) is not an object:
      * `p[0]`, `p == q`, `p + 1` on a `std::string *` are the built-in
      * pointer operations, never the class's own operator[], ==, +.
@@ -3682,6 +3781,41 @@ static void resolve_operator_use(AstNode *node, const char *op_name, AstNode *lh
     int member_count = 0, member_cap = 0;
     if (obj_class != NULL)
         collect_method_candidates(obj_class, op_name, &member_candidates, &member_count, &member_cap);
+    /* The unary `+`, `~`, `*` and `->`: only a member with no parameter is a
+     * unary form (`a * b`'s operator* is the binary one, and `*p` on a class
+     * that has only that is the built-in dereference). */
+    int strict_unary = (rhs_or_null == NULL && node->kind == AST_UNOP &&
+                        (strcmp(op_name, "operator~") == 0 || strcmp(op_name, "operator*") == 0 ||
+                         strcmp(op_name, "operator->") == 0 || strcmp(op_name, "operator+") == 0));
+    if (strict_unary) {
+        int kept = 0;
+        for (int i = 0; i < member_count; i++)
+            if (member_candidates[i]->list.count == 0) member_candidates[kept++] = member_candidates[i];
+        member_count = kept;
+    }
+
+    /* Member operators take precedence, but when none of them can take the
+     * operand and a free operator can (`out << pair` with a member
+     * `operator<<(int)` and a free `operator<<(Out &, const Pair &)`), the
+     * free one is the match, as in C++ where both are candidates. */
+    if (member_count > 0 && member_arg_count == 1) {
+        int member_ok = 0;
+        const AstNode *at = infer_expr_type(member_args[0], current_class, locals);
+        g_enum_promotes = 1;
+        for (int i = 0; i < member_count && !member_ok; i++) {
+            AstNode *cand = member_candidates[i];
+            if (cand->list.count != 1 || at == NULL || type_matches_param(cand->list.items[0]->type, at))
+                member_ok = 1;
+        }
+        g_enum_promotes = 0;
+        if (!member_ok) {
+            AstNode *fa[2] = { lhs_or_operand, rhs_or_null };
+            AstNode **fc = NULL;
+            int fcount = free_operator_candidates(op_name, fa, 2, current_class, locals, &fc);
+            free(fc);
+            if (fcount > 0) member_count = 0;   /* take the free path below */
+        }
+    }
 
     if (member_count > 0) {
         resolve_overload_generic(node, op_name, member_candidates, member_count,
@@ -3706,29 +3840,8 @@ static void resolve_operator_use(AstNode *node, const char *op_name, AstNode *lh
     if (rhs_or_null != NULL) free_args[free_arg_count++] = rhs_or_null;
 
     AstNode **free_candidates = NULL;
-    int free_count = 0, free_cap = 0;
-    collect_free_function_candidates(op_name, &free_candidates, &free_count, &free_cap);
-
-    /* Keep only the free operators these operands can actually be passed
-     * to. An operator declared for some OTHER class (std::string's
-     * `operator==(const char *, const string &)`, say) must not capture
-     * `a == b` on unrelated objects just because it is the only free
-     * operator== in the program. */
-    {
-        int kept = 0;
-        g_enum_promotes = 1;
-        for (int i = 0; i < free_count; i++) {
-            AstNode *cand = free_candidates[i];
-            int ok = (cand->list.count == free_arg_count);
-            for (int j = 0; ok && j < free_arg_count; j++) {
-                AstNode *at = infer_expr_type(free_args[j], current_class, locals);
-                if (at != NULL && !type_matches_param(cand->list.items[j]->type, at)) ok = 0;
-            }
-            if (ok) free_candidates[kept++] = cand;
-        }
-        g_enum_promotes = 0;
-        free_count = kept;
-    }
+    int free_count = free_operator_candidates(op_name, free_args, free_arg_count, current_class, locals,
+                                              &free_candidates);
 
     if (free_count == 0) {
         free(free_candidates);
@@ -4236,7 +4349,8 @@ static void check_node(AstNode *n, AstNode *current_class, LocalVarType **locals
                 resolve_operator_use(n, unop_operator_name(n->str1), n->a, NULL, current_class, *locals);
                 if (n->sema_info == NULL && n->str1 != NULL) {
                     if (strcmp(n->str1, "!") == 0) convert_condition(&n->a, current_class, *locals);
-                    else if (strcmp(n->str1, "neg") == 0) {
+                    else if (strcmp(n->str1, "neg") == 0 || strcmp(n->str1, "+") == 0 ||
+                             strcmp(n->str1, "~") == 0) {
                         static AstNode *int_type = NULL;
                         if (int_type == NULL) int_type = ast_ident("int", 0);
                         apply_conversion_op(&n->a, int_type, 0, current_class, *locals);
@@ -4320,6 +4434,22 @@ static void check_node(AstNode *n, AstNode *current_class, LocalVarType **locals
         }
         case AST_MEMBER:
             check_node(n->a, current_class, locals); /* the object -- catches chains like a.b.c */
+            /* `p->m` where p is an object whose class has operator->: C++ reads it as
+             * (p.operator->())->m, again for as long as the result is such an object.
+             * Each step is an AST_UNOP "arrow" resolved like any unary operator. */
+            while (n->str1 != NULL && strcmp(n->str1, "->") == 0) {
+                AstNode *vc = value_class_of(infer_expr_type(n->a, current_class, *locals), 1);
+                if (vc == NULL) break;
+                AstNode *owner = NULL;
+                if (find_member_in_hierarchy(vc, "operator->", &owner) == NULL) break;
+                AstNode *arrow = ast_new(AST_UNOP, n->line);
+                arrow->file = n->file;
+                arrow->str1 = strdup("arrow");
+                arrow->a = n->a;
+                resolve_operator_use(arrow, "operator->", arrow->a, NULL, current_class, *locals);
+                if (arrow->sema_info == NULL) break;
+                n->a = arrow;
+            }
             {
                 AstNode *obj_class = resolve_expr_class(n->a, current_class, *locals);
                 if (obj_class != NULL) {

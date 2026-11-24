@@ -113,7 +113,12 @@ alcance](#deliberadamente-fuera-del-alcance).
   (objetos función: `f(5)` sobre un objeto) e `++`/`--` prefijo y posfijo
   (`operator++()` / `operator++(int)` de C++), como miembros o como funciones
   libres, usados con sintaxis natural (`a + b`, `list[i]->draw()`, `++it`,
-  `it++`).
+  `it++`). También `% & | ^ << >>` y `%= &= |= ^= <<= >>=`, `+` `-` `~` unarios,
+  `*` y `->` unarios (un puntero inteligente; `p->m` es `(p.operator->())->m`,
+  otra vez mientras el resultado sea un objeto con `operator->`), `&&` y `||`
+  (se evalúan ambos lados, el izquierdo primero, sin cortocircuito, como en C++)
+  y `,`; las cadenas al estilo de flujos (`out << a << b`, de izquierda a derecha)
+  funcionan. El `&` unario no se puede sobrecargar (un error lo dice).
 
 - **Operadores de conversión** (`operator int() const`, `operator bool()`,
   `operator Vec2 *()`), dentro o fuera de la clase, también heredados: se
@@ -471,7 +476,7 @@ Comprobadas con el transpilador actual y el compilador real de Vircon32
 - **Un `::` inicial** (`::x`, `::f()`, `::a::D`, `::a::f()`, `: public ::B`) alcanza el nombre del ámbito de archivo donde un espacio de nombres o un local declara
   uno propio. No se acepta: `::new`, `::delete`, `::operator` (un error lo dice), ni `a::D()` / `::a::D()` como expresión.
 - **Operadores fuera de la clase de una clase de un espacio de nombres**: el primer parámetro puede ser un tipo desnudo de ese espacio (`a::C a::C::operator-(D d)`, `operator()`,
-  `operator[]`, `operator==`, `operator a::D()`); los operadores distintos de `+ - * / = ! == != < > <= >= += -= *= /= [] () ++ --` no se aceptan en ninguna forma.
+  `operator[]`, `operator==`, `operator a::D()`).
 - **Un programa C no puede definir lo que definen las cabeceras del SDK.** `misc.h` (añadida por `new` y
   `--alloc`) y `video.h` (añadida por `--alloc`) tienen cuerpos de funciones: una función C del mismo nombre
   (`malloc`, `clear_screen`) es un error que nombra la cabecera; renómbrala o usa `--rename`. El runtime del

@@ -190,7 +190,7 @@ int ast_dim_expr_printable(const AstNode *e) {
             return 1;
         case AST_UNOP:
             return (strcmp(e->str1, "neg") == 0 || strcmp(e->str1, "~") == 0 ||
-                    strcmp(e->str1, "!") == 0) && ast_dim_expr_printable(e->a);
+                    strcmp(e->str1, "+") == 0 || strcmp(e->str1, "!") == 0) && ast_dim_expr_printable(e->a);
         case AST_BINOP:
             return ast_dim_expr_printable(e->a) && ast_dim_expr_printable(e->b);
         default:

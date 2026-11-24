@@ -1873,6 +1873,13 @@ static void rewrite_operator_use(AstNode **slot, AstNode *lhs_or_operand, AstNod
         }
     }
 
+    {
+        const char *tn = cr->resolved_target->str1;
+        if (tn != NULL && (strcmp(tn, "operator<<") == 0 || strcmp(tn, "operator>>") == 0 ||
+                           strcmp(tn, "operator&&") == 0 || strcmp(tn, "operator||") == 0 ||
+                           strcmp(tn, "operator,") == 0))
+            call->seq_args = 1;
+    }
     call->sema_info = cr; /* reuse the SAME CallResolution sema already
         built -- finalize_call only ever reads ->resolved_target off of
         it, so sharing it here (rather than allocating a fresh copy) is
@@ -3539,6 +3546,60 @@ static AstNode *list_new_element(AstNode *item, const char *tmp, int idx, AstNod
     return assign;
 }
 
+/* Does evaluating `e` do anything an argument evaluated earlier or later could observe? */
+static int expr_has_effects(const AstNode *e) {
+    if (e == NULL) return 0;
+    switch (e->kind) {
+        case AST_CALL: case AST_ASSIGN: case AST_NEW: case AST_DELETE: return 1;
+        case AST_UNOP:
+            if (e->str1 != NULL && (strcmp(e->str1, "pre++") == 0 || strcmp(e->str1, "pre--") == 0 ||
+                                    strcmp(e->str1, "post++") == 0 || strcmp(e->str1, "post--") == 0)) return 1;
+            break;
+        default: break;
+    }
+    if (expr_has_effects(e->a) || expr_has_effects(e->b) || expr_has_effects(e->c)) return 1;
+    for (int i = 0; i < e->list.count; i++)
+        if (expr_has_effects(e->list.items[i])) return 1;
+    return 0;
+}
+
+static int expr_is_literal(const AstNode *e) {
+    return e != NULL && (e->kind == AST_INT_LIT || e->kind == AST_FLOAT_LIT || e->kind == AST_CHAR_LIT ||
+                         e->kind == AST_STRING_LIT);
+}
+
+/* An overloaded `a << b`, `a && b`... is the call op(a, b), and Vircon32 C evaluates a call's
+ * arguments right to left. C++ says `a` goes first: when it does something (`out << f() << g()`,
+ * `mk(0) && mk(1)`) it is evaluated into a temporary of the first parameter's type, ahead of the call:
+ * ( tmp = a, op(tmp, b) ). */
+static void sequence_first_operand(AstNode **slot) {
+    AstNode *call = *slot;
+    CallResolution *cr = (CallResolution *)call->sema_info;
+    if (cr == NULL || cr->resolved_target == NULL || call->list.count < 2) return;
+    AstNode *target = cr->resolved_target;
+    if (target->list.count < 1 || target->list.items[0]->type == NULL) return;
+    if (!expr_has_effects(call->list.items[0])) return;
+    int trivial = 1;
+    for (int i = 1; i < call->list.count; i++)
+        if (!expr_is_literal(call->list.items[i])) trivial = 0;
+    if (trivial) return;
+    AstNode *ptype = target->list.items[0]->type;
+    if (ptype->kind == AST_CONST_TYPE && ptype->a != NULL) ptype = ptype->a;
+    if (ptype->kind == AST_REFERENCE_TYPE) return;       /* not lowered yet: leave it */
+    char tmp[64];
+    snprintf(tmp, sizeof tmp, "__v32_seq_tmp%d", g_nl_counter++);
+    AstNode *decl = ast_new(AST_VAR_DECL, call->line);
+    decl->str1 = strdup(tmp);
+    decl->type = ptype;
+    ast_list_append(&g_nl_temps, decl);
+    AstNode *set = ast_new(AST_ASSIGN, call->line);
+    set->str1 = strdup("=");
+    set->a = ast_ident(tmp, call->line);
+    set->b = call->list.items[0];
+    call->list.items[0] = ast_ident(tmp, call->line);
+    *slot = comma_of(set, call, call->line);
+}
+
 static void new_delete_rewrite_expr(AstNode **slot, AstNode *class_decl, LocalVarType *locals) {
     AstNode *n = *slot;
     if (n == NULL) return;
@@ -3974,6 +4035,7 @@ static void new_delete_rewrite_expr(AstNode **slot, AstNode *class_decl, LocalVa
             for (int i = 0; i < n->list.count; i++) {
                 new_delete_rewrite_expr(&n->list.items[i], class_decl, locals);
             }
+            if (n->seq_args && g_nl_in_func) sequence_first_operand(slot);
             break;
         case AST_BINOP:
         case AST_ASSIGN:
@@ -8646,6 +8708,47 @@ static void abi_expr(AstNode **slot, AbiCtx *cx, LocalVarType **locals) {
         case AST_UNOP:
         case AST_CAST:
             abi_expr(&n->a, cx, locals);
+            /* `&make()` of a ONE-word struct (a by-value operand bound to a reference parameter,
+             * the receiver of `a.op()` -- `x | y | z`, `p->m` through a returned object): the
+             * call returns in a register, which has no address. Park it first:
+             * ( tmp = make(), &tmp ). A big struct is already in a temporary (the case above). */
+            if (n->kind == AST_UNOP && n->str1 != NULL && strcmp(n->str1, "addr") == 0 &&
+                n->a != NULL) {
+                AstNode *tail = n->a;       /* a call, or `(tmp = first operand, call)` from sequence_first_operand */
+                while (tail->kind == AST_BINOP && tail->str1 != NULL && strcmp(tail->str1, ",") == 0 && tail->b != NULL)
+                    tail = tail->b;
+                const AstNode *rt = NULL;
+                const AstList *sig_params = NULL;
+                int sig_types = 0, sig_this = 0;
+                if (tail->kind != AST_CALL ||
+                    !abi_call_signature(tail, cx, *locals, &rt, &sig_params, &sig_types, &sig_this)) rt = NULL;
+                rt = resolve_typedef_chain(rt);
+                while (rt != NULL && rt->kind == AST_CONST_TYPE) rt = resolve_typedef_chain(rt->a);
+                AstNode *cls = (rt != NULL && rt->kind != AST_POINTER_TYPE && rt->kind != AST_REFERENCE_TYPE)
+                               ? type_to_class(rt) : NULL;
+                if (cls != NULL && abi_type_words(rt) <= 1) {
+                    char name[64];
+                    snprintf(name, sizeof name, "__v32_sret_tmp%d", cx->next_tmp++);
+                    AstNode *decl = ast_new(AST_VAR_DECL, n->line);
+                    decl->str1 = strdup(name);
+                    decl->type = ast_ident(cls->str1, n->line);
+                    ast_list_append(&cx->temps, decl);
+                    LocalVarType *lv = calloc(1, sizeof(LocalVarType));
+                    lv->name = decl->str1;
+                    lv->type = decl->type;
+                    lv->next = *locals;
+                    *locals = lv;
+                    AstNode *assign = ast_new(AST_ASSIGN, n->line);
+                    assign->str1 = strdup("=");
+                    assign->a = ast_ident(name, n->line);
+                    assign->b = n->a;
+                    AstNode *comma = ast_new(AST_BINOP, n->line);
+                    comma->str1 = strdup(",");
+                    comma->a = assign;
+                    comma->b = abi_addr(ast_ident(name, n->line));
+                    *slot = comma;
+                }
+            }
             return;
         case AST_MEMBER: {
             abi_expr(&n->a, cx, locals);
@@ -8654,9 +8757,13 @@ static void abi_expr(AstNode **slot, AbiCtx *cx, LocalVarType **locals) {
              * ("cannot emit memory placement when an expression has
              * none"): park it in a temporary first. */
             AstNode *call = n->a;
-            if (call == NULL || call->kind != AST_CALL) return;
+            if (call == NULL) return;
+            AstNode *ctail = call;     /* `(tmp = first operand, call)` from sequence_first_operand */
+            while (ctail->kind == AST_BINOP && ctail->str1 != NULL && strcmp(ctail->str1, ",") == 0 && ctail->b != NULL)
+                ctail = ctail->b;
+            if (ctail->kind != AST_CALL) return;
             if (n->str1 != NULL && strcmp(n->str1, ".") != 0) return;
-            const AstNode *rt = resolve_typedef_chain(infer_expr_type(call, cx->cls, *locals));
+            const AstNode *rt = resolve_typedef_chain(infer_expr_type(ctail, cx->cls, *locals));
             while (rt != NULL && rt->kind == AST_CONST_TYPE) rt = resolve_typedef_chain(rt->a);
             if (rt == NULL || rt->kind == AST_POINTER_TYPE || type_to_class(rt) == NULL) return;
             AstNode *cls = type_to_class(rt);
@@ -8725,6 +8832,7 @@ static void abi_stmt_list(AstList *list, AbiCtx *cx, LocalVarType **locals) {
                 ast_list_append(&out, st);
                 ast_list_append(&out, abi_expr_stmt(call));
             } else {
+                if (cls == NULL) abi_expr(&st->a, cx, locals);   /* its arguments still need their temporaries */
                 ast_list_append(&out, st);
             }
             lv->next = *locals;

@@ -111,7 +111,13 @@ of scope](#deliberately-out-of-scope).
   unary minus  and `!`,  assignment, `[]`,  function call  `()` (function
   objects:  `f(5)` on  an  object), and  prefix/postfix `++`/`--`  (C++'s
   `operator++()` / `operator++(int)`), as members or free functions, used
-  with natural syntax (`a + b`, `list[i]->draw()`, `++it`, `it++`).
+  with natural syntax (`a + b`, `list[i]->draw()`, `++it`, `it++`). Also
+  `% & | ^ << >>` and `%= &= |= ^= <<= >>=`, unary `+` `-` `~`, unary `*`
+  and `->` (a smart pointer; `p->m` is `(p.operator->())->m`, again while
+  the result is an object with an `operator->`), `&&` and `||` (both sides
+  evaluated, left first, no short-circuit, as in C++) and `,`; stream-style
+  chains (`out << a << b`, left to right) work. Unary `&` cannot be
+  overloaded (an error says so).
 
 - **Conversion operators**  (`operator int()  const`, `operator  bool()`,
   `operator Vec2  *()`), inline  or out  of line,  inherited too:  called
@@ -450,7 +456,7 @@ Checked against  the current  transpiler and  the real  Vircon32 compiler
 - **A leading `::`** (`::x`, `::f()`, `::a::D`, `::a::f()`, `: public ::B`) reaches the file-scope name where a namespace or a local declares
   one of its own. Not supported: `::new`, `::delete`, `::operator` (an error says so), and `a::D()` / `::a::D()` as an expression.
 - **Out-of-line operators of a namespaced class** may take a bare type of that namespace first (`a::C a::C::operator-(D d)`, `operator()`,
-  `operator[]`, `operator==`, `operator a::D()`); operators other than `+ - * / = ! == != < > <= >= += -= *= /= [] () ++ --` are not supported in any form.
+  `operator[]`, `operator==`, `operator a::D()`).
 - **A C program cannot define what the SDK headers define.** `misc.h` (added for `new` and `--alloc`) and
   `video.h` (added for `--alloc`) hold function bodies: a C function of the same name (`malloc`, `clear_screen`) is an error
   naming the header; rename it or use `--rename`. The allocator runtime does not include `time.h`, so

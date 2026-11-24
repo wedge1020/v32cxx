@@ -118,7 +118,13 @@ du périmètre](#délibérément-hors-du-périmètre).
   (objets fonction : `f(5)` sur un objet) et `++`/`--` préfixe et suffixe
   (`operator++()` / `operator++(int)` de C++), comme membres ou comme fonctions
   libres, utilisés avec la syntaxe naturelle (`a + b`, `list[i]->draw()`,
-  `++it`, `it++`).
+  `++it`, `it++`). Aussi `% & | ^ << >>` et `%= &= |= ^= <<= >>=`, `+` `-` `~`
+  unaires, `*` et `->` unaires (un pointeur intelligent ; `p->m` est
+  `(p.operator->())->m`, de nouveau tant que le résultat est un objet ayant un
+  `operator->`), `&&` et `||` (les deux côtés sont évalués, le gauche d'abord,
+  sans court-circuit, comme en C++) et `,` ; les chaînes de style flux
+  (`out << a << b`, de gauche à droite) fonctionnent. Le `&` unaire ne peut pas
+  être surchargé (une erreur le dit).
 
 - **Opérateurs de conversion** (`operator int() const`, `operator bool()`,
   `operator Vec2 *()`), dans la classe ou hors classe, y compris hérités :
@@ -476,7 +482,7 @@ Vérifiées avec le transpileur actuel et le vrai compilateur Vircon32 (novembre
 - **Un `::` initial** (`::x`, `::f()`, `::a::D`, `::a::f()`, `: public ::B`) atteint le nom du portée fichier là où un espace de noms ou une variable locale en déclare un
   du même nom. Non accepté : `::new`, `::delete`, `::operator` (une erreur le dit), et `a::D()` / `::a::D()` comme expression.
 - **Opérateurs hors classe d'une classe d'un espace de noms** : le premier paramètre peut être un type nu de cet espace (`a::C a::C::operator-(D d)`, `operator()`,
-  `operator[]`, `operator==`, `operator a::D()`) ; les opérateurs autres que `+ - * / = ! == != < > <= >= += -= *= /= [] () ++ --` ne sont acceptés sous aucune forme.
+  `operator[]`, `operator==`, `operator a::D()`) .
 - **Un programme C ne peut pas définir ce que définissent les en-têtes du SDK.** `misc.h` (ajouté pour `new` et
   `--alloc`) et `video.h` (ajouté pour `--alloc`) contiennent des corps de fonctions : une fonction C du même nom
   (`malloc`, `clear_screen`) est une erreur nommant l'en-tête ; renomme-la ou utilise `--rename`. Le runtime de

@@ -1782,24 +1782,18 @@ opt_const:
  * maps a destructor's "~Foo" to "dtor" -- see mangle_operator_symbol()
  * there.
  *
- * Deliberately supported: binary +, -, *, /; comparisons ==, !=, <, >,
- * <=, >=; compound assignment +=, -=, *=, /=; plain assignment =; unary
- * !; subscript []; call (). Unary vs. binary +/- needs no special
- * grammar handling at all -- it falls out entirely from how many
- * parameters the surrounding param list happens to have, exactly the
- * same way it would for any other overloaded method name.
+ * Supported: every C++ operator but the unary & (sema.c rejects its
+ * declaration) and new/delete: + - * / % & | ^ << >> && || , the comparisons,
+ * all the compound assignments, = ! ~ [] () ++ -- and ->. Unary vs. binary
+ * (+ - * &) needs no special grammar handling at all -- it falls out entirely
+ * from how many parameters the surrounding param list happens to have,
+ * exactly the same way it would for any other overloaded method name.
+ * (`++`/`--`: prefix is `operator++()`, postfix `operator++(int)` with C++'s
+ * dummy int parameter -- sema.c passes a literal 0 for it; see
+ * resolve_operator_use's AST_UNOP case.)
  *
- * Deliberately NOT supported yet:
- *   - `<<`/`>>` -- this project doesn't have shift-operator TOKENS at all
- *     yet (not even as ordinary bitwise operators in `expr`), so there's
- *     nothing for operator_symbol to reuse; would need its own lexer/expr
- *     work first, unrelated to operator overloading specifically.
- *   (`++`/`--` ARE supported now, 20261009: prefix is `operator++()`,
- *   postfix `operator++(int)` with C++'s dummy int parameter -- sema.c
- *   passes a literal 0 for it; see resolve_operator_use's AST_UNOP case.)
- *   - `operator ReturnType()` (user-defined conversion operators) --
- *     structurally different (no separate return-type token at all,
- *     which is what everything else here assumes exists).
+ * `operator ReturnType()` (conversion operators) has its own func_header
+ * alternative below: no separate return-type token is written there.
  */
 
 func_name:
@@ -1828,6 +1822,23 @@ operator_symbol:
     | '(' ')'   { $$ = strdup("operator()"); }
     | INC       { $$ = strdup("operator++"); }   /* prefix: (); postfix: (int) */
     | DEC       { $$ = strdup("operator--"); }
+    | '%'       { $$ = strdup("operator%"); }
+    | '&'       { $$ = strdup("operator&"); }    /* binary; the unary form is rejected in sema.c */
+    | '|'       { $$ = strdup("operator|"); }
+    | '^'       { $$ = strdup("operator^"); }
+    | '~'       { $$ = strdup("operator~"); }
+    | SHL       { $$ = strdup("operator<<"); }
+    | SHR       { $$ = strdup("operator>>"); }
+    | MODEQ     { $$ = strdup("operator%="); }
+    | ANDEQ     { $$ = strdup("operator&="); }
+    | OREQ      { $$ = strdup("operator|="); }
+    | XOREQ     { $$ = strdup("operator^="); }
+    | SHLEQ     { $$ = strdup("operator<<="); }
+    | SHREQ     { $$ = strdup("operator>>="); }
+    | ANDAND    { $$ = strdup("operator&&"); }
+    | OROR      { $$ = strdup("operator||"); }
+    | ARROW     { $$ = strdup("operator->"); }
+    | ','       { $$ = strdup("operator,"); }
     ;
 
 func_header:
@@ -3757,6 +3768,8 @@ unary_expr:
         { $$ = ast_new(AST_UNOP, @1.first_line); $$->str1 = strdup("~"); $$->a = $2; }
     | '-' unary_expr
         { $$ = ast_new(AST_UNOP, @1.first_line); $$->str1 = strdup("neg"); $$->a = $2; }
+    | '+' unary_expr
+        { $$ = ast_new(AST_UNOP, @1.first_line); $$->str1 = strdup("+"); $$->a = $2; }
     | '&' unary_expr
         { $$ = ast_new(AST_UNOP, @1.first_line); $$->str1 = strdup("addr"); $$->a = $2; }
     | '*' unary_expr

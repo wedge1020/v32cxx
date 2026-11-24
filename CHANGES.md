@@ -1,9 +1,9 @@
 # v32c++ changes
 
-## 20261123-dev
+## 20261124-dev
 
-Every feature below has a self-checking sample that passes on the machine (`make realcheck`: 240 programs compiled and
-assembled, 0 failed, 171 cartridges all passing in v32sim, the `--alloc=arena` / `--alloc=gc` variants included).
+Every feature below has a self-checking sample that passes on the machine (`make realcheck`: 241 programs compiled and
+assembled, 0 failed, 172 cartridges all passing in v32sim, the `--alloc=arena` / `--alloc=gc` variants included).
 
 ### New features
 
@@ -149,6 +149,22 @@ assembled, 0 failed, 171 cartridges all passing in v32sim, the `--alloc=arena` /
 - **Options.** `V32CXX_SDK_INCLUDE=` (set but empty) turns the SDK header search off (setting the variable only ever added folders in
   front of the search, so on a machine with the DevTools installed sample 154, "SDK header not found", failed); unset keeps the full
   search.
+- **The rest of C++'s operator overloading.** A class (or a free function, a friend, one in a namespace defined out of line) can now
+  define `%`, `&`, `|`, `^`, `<<`, `>>`, the compound `%=`, `&=`, `|=`, `^=`, `<<=`, `>>=`, unary `+` (new in the grammar: `+x` was a syntax
+  error even on an `int`; on a built-in it prints as `(x)`), unary `-` and `~`, unary `*` (`*p` on a smart pointer), `->`, `&&`, `||` and `,`.
+  Members and free functions both resolve by argument types, mixed operands included (`v * 2`, `2 * v`), const references, by-value operands,
+  returns by value, by reference (`(a <<= 1) <<= 2`) and by pointer. A member operator that cannot take the operand yields to a free one that
+  can (`out << pair` with a member `operator<<(int)` and a free `operator<<(Out &, const Pair &)`), and a free operator of any namespace is
+  found when the operands' types fit (C++'s argument-dependent lookup, by type). Built-in operators on scalars are never rewritten, and the
+  grammar's precedence is C++'s (`a << b + c`, `a & b == c`). `p->m` through an `operator->` is `(p.operator->())->m`, applied again while
+  the result is an object with an `operator->` (a two- or three-level smart pointer). The overloaded `&&`, `||` and `,` evaluate both operands,
+  left first; so do `<<` and `>>` (`out << f() << g()` calls `f` first: Vircon32 C evaluates a call's arguments right to left, so the
+  left operand goes into a `__v32_seq_tmpN` ahead of the call when it has side effects). Mangled names: `op_mod`, `op_band`, `op_bor`, `op_bxor`,
+  `op_bnot`, `op_shl`, `op_shr`, `op_modeq`, `op_andeq`, `op_oreq`, `op_xoreq`, `op_shleq`, `op_shreq`, `op_land`, `op_lor`, `op_arrow`, `op_comma`,
+  and for the unary forms `op_deref` (`operator*()`) and `op_pos` (`operator+()`); unary `-` stays `op_sub`, as before. Not supported: the unary `&`
+  (declaring it is the error "overloading unary operator& is not supported": `&x` is always the address), `operator->` as a free function or with
+  parameters (an error), `operator new` / `delete`, and calling an operator by name (`a.operator+(b)`). `tests/213sample.cpp` (on the machine),
+  `tests/213bad.cpp`.
 
 ### Fixes
 
@@ -209,7 +225,7 @@ assembled, 0 failed, 171 cartridges all passing in v32sim, the `--alloc=arena` /
   `[]`, `+=`, `-=`, `=`, unary `-` / `!`, `++`, `operator a::D()`, `operator Mode()`) were a syntax error. The lexer's qualifier armed by `C::` was still pending when
   `D` was read, so `D` was looked up in the class; `ool_enter` now clears it, and a conversion operator enters its namespace before its type is read. (Not a bison
   mid-rule problem: the action ran in time, the stale lexer state was the cause.) `operator a::D` and `operator D` are one name. `tests/211sample.cpp`. Also fixed on the way: an
-  out-of-line method with a by-value struct parameter wrote its copy (`P p = *__v32_byval_p;`) twice. Operators `%`, `&`, `|`, `<<`... were never supported, in or out of a class.
+  out-of-line method with a by-value struct parameter wrote its copy (`P p = *__v32_byval_p;`) twice. (The operators `%`, `&`, `|`, `<<`... came later, see New features.)
 - **A leading `::`**: `::x`, `::f()`, `::a::D`, `::a::f()`, `new ::a::D`, `: public ::B`, in expressions and types. It never reaches the grammar (whose conflict counts are
   pinned: a production adds a conflict to each of the five declaration-start states): `parse_lex` in parser.y drops it, arms the lexer's qualifier with the file scope and marks the
   name that follows. A rooted name is an `AST_QUALIFIED_ID` with `ival` 1 (`::x` has one component); sema looks it up in the file scope only (`sema_qualifier_of` writes it `::a`,
@@ -217,6 +233,10 @@ assembled, 0 failed, 171 cartridges all passing in v32sim, the `--alloc=arena` /
   function's `::x` would hide another name (`x__hid`). `::print_at(...)` of an SDK function resolves as an unqualified one. `::new`, `::delete`, `::operator` are a clear error. `tests/212sample.cpp`, `212bad.cpp`, `212bad2.cpp`.
 - **`Counter arr[3]` and friends** no longer run constructors or destructors twice (see List-initialization).
 - **Class members**: a class member named like an enumerator of an `enum class`, a local, a parameter or a function is not mistaken for it.
+- **A one-word object returned by value and bound to a reference** (`x | y | z`, a call result as the receiver or as a `const T &` argument)
+  made the Vircon32 compiler stop with "reference can only be applied to a memory address": it is now parked in a temporary first
+  (`lower.c` `abi_expr`, `(tmp = call(), &tmp)`). A local initialized from a call (`L x = f(g())`) of a class that is not a big struct no
+  longer skips the temporaries of its arguments. Neither changes any output of the tests, demos or `v32/` users.
 
 ### Vircon32 output changes users will notice
 

@@ -1,4 +1,4 @@
-.TH V32LIBC 3v32 "November 23, 2026" "v32c++ 20261123-dev" "v32c++ Library"
+.TH V32LIBC 3v32 "November 24, 2026" "v32c++ 20261124-dev" "v32c++ Library"
 .SH NAME
 v32libc \- standard C library functions for C programs transpiled by v32c++
 .SH SYNOPSIS

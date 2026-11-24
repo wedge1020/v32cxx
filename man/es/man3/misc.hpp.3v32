@@ -1,5 +1,5 @@
 '\" -*- coding: UTF-8 -*-
-.TH MISC.HPP 3v32 "23 de noviembre de 2026" "v32c++ 20261123-dev" "Biblioteca v32c++"
+.TH MISC.HPP 3v32 "24 de noviembre de 2026" "v32c++ 20261124-dev" "Biblioteca v32c++"
 .SH NOMBRE
 v32/misc.hpp \- ayudas de C++ para números aleatorios, arreglos de palabras y bloques de memoria dinámica
 .SH SINOPSIS

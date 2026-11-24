@@ -903,6 +903,11 @@ struct AstNode {
      * and must be rewritten exactly once). */
     int v32_abi_done;
 
+    /* AST_CALL made from an overloaded `<<` `>>` `&&` `||` `,` : C++ evaluates the left operand
+     * first, Vircon32 C evaluates arguments right to left, so new_delete_rewrite_expr (phase 6)
+     * parks the first argument in a temporary when it has side effects. */
+    int seq_args;
+
     /* AST_IDENT only: set by lower.c's address_of_if_needed on a bare
      * reference-typed parameter/local that is being used AS the pointer
      * it lowers to (forwarded to another reference parameter, returned

@@ -14,7 +14,7 @@ and comma operators anywhere; `switch` with fall-through, `goto`, `do`/`while`;
 classes with inheritance (the base may be a typedef of a class: `typedef Base B; class D : public B`, `D() : B(3)`; `ast.c` canonicalize_typedef_bases) and virtual functions, constructors/destructors (array members of
 class type take `= {...}` / `: m{...}`; global objects, namespace ones too, are built at the start of `main` and
 destroyed when it ends, and by v32libc's `exit()`),
-operators, references (`T&`, `T*&`), `const`; objects and structs by value (parameters,
+operators (all of C++'s but unary `&`: see "Operator overloading" below), references (`T&`, `T*&`), `const`; objects and structs by value (parameters,
 returns); `new`/`delete`; namespaces and `using`; `auto` and range-based `for`;
 `std::string`, `std::array<T,N>`, `std::vector<T>` (fixed per-type forms, not
 templates); `new T[n]`/`delete[]` that construct/destroy every element (`new T[n]{a, b}` too; `new T*[n]` is a plain array of pointers, `new T*[n]{p, q}` nulls the rest; aggregate elements `{ T(), T(1, 2) }` / `{ {1, 2}, {} }` are zeroed by `_rest` then assigned; `new U` / `new U[n]` of a union and `new E[n]` of an enum work: `new_union_of`, `lower_union_new_bits`, codegen `emit_union_new_runtime`, enums are `int` arrays with casts); `new int(5)`, `new float{2.5f}`, `new Node*` (one scalar word through the hook: helpers `v32_new_int/float/char/bool/ptr`, `g_uses_scalar_new`, `lower.c` phase 6); list-initialization wherever a constructor call goes (`P m{1, 2};` / `int w{5};` / `int a[3]{1, 2};` as in-class defaults (`ast.c` `apply_default_member_initializers`), `: w{5}` / `: p{1, 2}` (sema `ival` 1 / 4, `lower.c` 8a / 8-pre), `new P{1, 2}` (a comma sequence on `__v32_nl_tmpN`), `new Counter{3}`); brace-initialized unions (`U u = {1};` is a declaration plus an assignment of the first member, a global one at the start of `main`: `lower.c` phase 10b, `ui_init`); `enum class E : int {...}`; out-of-line definitions with namespace-qualified names (`int a::f(E e) {...}`, `void a::C::m()`, `a::C::C(int x) : ... {}`, `a::C::~C()`: `ast.c` `qualify_namespace_definitions` wraps each in `namespace a { ... }` where it stands and strips the namespace names from its qualifier, `parser.y` `ool_enter` points the lexer at the namespace for the parameter types (and clears the lexer's pending `C::` qualifier, so `a::C::operator-(D d)` sees `D`), `sema.c` `register_free_function` copies a prototype's default arguments onto the definition, and `check_qualified_definition` rejects one no declaration of that name AND signature in the namespace matches (`ATTR_QUALIFIED_DEF`, set by ast.c); sema's `canonical_type` makes every spelling of a parameter type (`a::D`, `D` by `using`, a typedef) one type for `types_equal` and the mangled name; lower.c's `c_resolved_type` does the same for the zero helpers, so members of a namespace-qualified type are zeroed); `--alloc=arena` or `--alloc=gc` with
@@ -88,6 +88,26 @@ members, 2-D array *parameters*, an object passed through `...`.
 rule means for your source**. Read its first section before assuming a
 construct is unsupported: its headings state the Vircon32 C *output* rule,
 which v32c++ almost always works around.
+
+## Operator overloading
+
+`parser.y` `operator_symbol` builds the name (`operator%`, `operator<<=`, `operator->`, `operator,`...; every operator token the lexer
+makes is there, and the grammar's `expr` already parses all of them, so no lexer or conflict change). `sema.c` resolves a use
+(`resolve_operator_use`, tables `binop_operator_name` / `assign_operator_name` / `unop_operator_name`; a BINOP / ASSIGN / UNOP / SUBSCRIPT node
+gets a `CallResolution`) and `lower.c` `rewrite_operator_use` turns it into the call, a reference return into a `deref` of it. Members win
+unless none can take the operand and a free one can; free ones are looked up here and, failing that, in every namespace (by parameter
+types: classes keep bare names, so that is C++'s ADL). Mangled names: `op_add op_sub op_mul op_div op_assign op_not op_eq op_ne op_lt op_gt op_le op_ge
+op_addeq op_subeq op_muleq op_diveq op_index op_call op_inc op_dec` and `op_mod op_band op_bor op_bxor op_bnot op_shl op_shr op_modeq op_andeq op_oreq
+op_xoreq op_shleq op_shreq op_land op_lor op_arrow op_comma`; the unary `operator*()` / `operator+()` (a member with no parameter, a free function
+with one) are `op_deref` / `op_pos` (`mangle_operator_symbol`; `make_free_func_info` tells a free function from a member), unary `-` is `op_sub`.
+Unary `~ + * ->` take only a zero-parameter member or a one-parameter free function (`strict_unary`); `*this << x` inside a member needs
+`operator_is_late_addition` (infer_expr_type gives `this` its class, not a pointer; the older operators keep their old behaviour). `p->m`
+(`check_node` AST_MEMBER) wraps `p` in an AST_UNOP `arrow` per `operator->`, again while the result is an object. `+x` is `AST_UNOP "+"`
+(prints as `(x)`). Unary `&` is the error from `check_operator_decl`, which also rejects a free or parameterized `operator->`.
+Evaluation order: Vircon32 C evaluates call arguments right to left, C++17 wants the left operand of `<< >> && || ,` first: `rewrite_operator_use`
+marks the call (`seq_args`) and `lower.c` `sequence_first_operand` (phase 6) assigns a left operand with side effects to a `__v32_seq_tmpN` first.
+The overloaded `&&` / `||` do not short-circuit (both sides evaluated), as in C++. An object returned by value and bound to a reference is parked in a
+temporary (`abi_expr`, `(tmp = call(), &tmp)`); `--target=standard` still prints `&call()` there (gcc rejects it for a by-value rvalue). `tests/213sample.cpp`, `213bad.cpp`.
 
 ## Memory management (`--alloc=arena`, `--alloc=gc`)
 
