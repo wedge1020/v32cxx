@@ -3293,9 +3293,12 @@ static void new_delete_rewrite_expr(AstNode **slot, AstNode *class_decl, LocalVa
             const char *fn_name = "v32_delete";
             char *built_name = NULL;
             if (obj_class != NULL) {
-                size_t len = strlen("v32_delete_") + strlen(obj_class->str1) + 1;
+                /* `delete[] p`: v32_delete_arr_ClassName destroys every
+                 * element (n is read from the header `new T[n]` left) */
+                const char *prefix = n->ival ? "v32_delete_arr_" : "v32_delete_";
+                size_t len = strlen(prefix) + strlen(obj_class->str1) + 1;
                 built_name = malloc(len);
-                snprintf(built_name, len, "v32_delete_%s", obj_class->str1);
+                snprintf(built_name, len, "%s%s", prefix, obj_class->str1);
                 fn_name = built_name;
             }
             AstNode *call = ast_new(AST_CALL, n->line);
@@ -3727,6 +3730,7 @@ static AstNode *build_array_ctor_loop(AstNode *stmt, AstNode *var_class, int *ar
  * destructors are run by destruct_scope_block, the whole array in
  * reverse order. */
 #define MAX_ARRAY_DIMS 8
+#define MEMBER_ARRAY_MARK 0x6d41 /* AST_EXPR_STMT.ival: an array member's initializer list, expanded in phase 7 */
 
 typedef struct {
     int is_var;      /* the index is a loop variable, else the constant `value` */
@@ -3760,8 +3764,18 @@ static int has_in_place_element(const AstNode *n) {
 }
 
 /* `name[i0][i1]...` for the first `n` entries of `path` */
+static const char *g_array_this_field = NULL; /* set: the array is the member `this->NAME`, not a variable */
+
 static AstNode *array_element_ref(const char *name, const ArrayIndex *path, int n, int line) {
-    AstNode *e = ast_ident(name, line);
+    AstNode *e;
+    if (g_array_this_field != NULL) {
+        e = ast_new(AST_MEMBER, line);
+        e->str1 = strdup("->");
+        e->str2 = strdup(g_array_this_field);
+        e->a = ast_ident("this", line);
+    } else {
+        e = ast_ident(name, line);
+    }
     for (int i = 0; i < n; i++) {
         AstNode *sub = ast_new(AST_SUBSCRIPT, line);
         sub->a = e;
@@ -3932,6 +3946,24 @@ static void inject_ctor_calls_block(AstNode *block, AstNode *class_decl, LocalVa
     AstList new_list = ast_list_new();
     for (int i = 0; i < block->list.count; i++) {
         AstNode *stmt = block->list.items[i];
+        if (stmt != NULL && stmt->kind == AST_EXPR_STMT && stmt->ival == MEMBER_ARRAY_MARK &&
+            stmt->a != NULL && stmt->a->kind == AST_INIT_LIST && class_decl != NULL) {
+            /* a constructor's `m{...}` for an array member (see phase 8-pre) */
+            ClassLayout *layout = (ClassLayout *)class_decl->sema_info;
+            AstNode *field = NULL;
+            for (int f = 0; layout != NULL && f < layout->data_members.count; f++)
+                if (strcmp(layout->data_members.items[f]->str1, stmt->str1) == 0) field = layout->data_members.items[f];
+            int adims[MAX_ARRAY_DIMS], andims = 0;
+            AstNode *aclass = field != NULL ? array_object_dims(field->type, adims, &andims) : NULL;
+            if (aclass != NULL) {
+                ArrayIndex path[MAX_ARRAY_DIMS];
+                g_array_this_field = stmt->str1;
+                construct_array_from_list(&new_list, stmt->str1, path, 0, stmt->a, adims, andims, aclass,
+                                          arr_ctor_counter, stmt->line, class_decl, *locals);
+                g_array_this_field = NULL;
+            }
+            continue;
+        }
         inject_ctor_calls_stmt(&stmt, class_decl, locals, arr_ctor_counter);
         ast_list_append(&new_list, stmt);
 
@@ -4195,10 +4227,16 @@ static void inject_ctor_calls_stmt(AstNode **slot, AstNode *class_decl, LocalVar
  * Covers what the local case covers: a default constructor, constructor
  * arguments (`Enemy g_boss(1, 2);`), arrays, and vtable-only classes.
  * Top-level declarations only (not ones inside a namespace), and only
- * when this file defines main(). Destructors of globals are not run:
- * the program ends when main() does.
+ * when this file defines main().
+ *
+ * The destructors of those objects (and arrays of them) run when main()
+ * ends, after its own locals', in the reverse of this order -- see
+ * destroy_globals_in_main (phase 9c), and from exit()/abort() of v32libc.
  */
+static int g_main_ctor_stmts = 0; /* how many statements main() starts with for the above */
+
 static void construct_globals_in_main(AstNode *program) {
+    g_main_ctor_stmts = 0;
     AstNode *main_func = NULL;
     AstNode *scratch = ast_new(AST_BLOCK, 0);
     for (int i = 0; i < program->list.count; i++) {
@@ -4225,6 +4263,7 @@ static void construct_globals_in_main(AstNode *program) {
     if (added == 0) return;
     for (int i = 0; i < main_func->a->list.count; i++) ast_list_append(&body, main_func->a->list.items[i]);
     main_func->a->list = body;
+    g_main_ctor_stmts = added;
     lower_note(main_func->line, "main() now begins by constructing %d file-scope object(s)", added);
 }
 
@@ -4313,28 +4352,36 @@ static void inject_ctor_calls_free_functions(AstList *decls) {
  *   - Prototype-only member constructors are skipped (no body -- the
  *     emitted call would reference a C function never defined).
  */
-/* The class of a one-dimensional member array's elements
- * (`Counter items[3];`), or NULL. */
-static AstNode *member_array_elem_class(const AstNode *type) {
+/* The class of a member array's elements (`Counter items[3];`,
+ * `Counter grid[2][2];`), or NULL; *ndims gets the number of dimensions. */
+static AstNode *member_array_elem_class(const AstNode *type, int *ndims) {
+    int n = 0;
     while (type != NULL && type->kind == AST_CONST_TYPE) type = type->a;
-    if (type == NULL || type->kind != AST_ARRAY_TYPE) return NULL;
-    const AstNode *elem = type->a;
-    while (elem != NULL && elem->kind == AST_CONST_TYPE) elem = elem->a;
-    if (elem == NULL || (elem->kind != AST_IDENT && elem->kind != AST_QUALIFIED_ID)) return NULL;
-    return type_to_class(elem);
+    while (type != NULL && type->kind == AST_ARRAY_TYPE) {
+        n++;
+        type = type->a;
+        while (type != NULL && type->kind == AST_CONST_TYPE) type = type->a;
+    }
+    if (n == 0 || n > MAX_ARRAY_DIMS || type == NULL ||
+        (type->kind != AST_IDENT && type->kind != AST_QUALIFIED_ID)) return NULL;
+    if (ndims != NULL) *ndims = n;
+    return type_to_class((AstNode *)type);
 }
 
-/* `this->member`, or `this->member[index_name]` for an array member. */
-static AstNode *member_object_ref(const AstNode *field, const char *index_name, int line) {
+/* `this->member`, or `this->member[i0][i1]...` for an array member: one
+ * index variable name per dimension. */
+static AstNode *member_object_ref(const AstNode *field, char idx[][64], int ndims, int line) {
     AstNode *ref = ast_new(AST_MEMBER, line);
     ref->str1 = strdup("->");
     ref->str2 = strdup(field->str1);
     ref->a = ast_ident("this", line);
-    if (index_name == NULL) return ref;
-    AstNode *sub = ast_new(AST_SUBSCRIPT, line);
-    sub->a = ref;
-    sub->b = ast_ident(index_name, line);
-    return sub;
+    for (int d = 0; d < ndims; d++) {
+        AstNode *sub = ast_new(AST_SUBSCRIPT, line);
+        sub->a = ref;
+        sub->b = ast_ident(idx[d], line);
+        ref = sub;
+    }
+    return ref;
 }
 
 /* The array's length as an expression: what the source wrote if it was
@@ -4347,47 +4394,67 @@ static AstNode *array_length_expr(const AstNode *array_type, int line) {
     return lit;
 }
 
-/* Wraps `body_stmt` (which uses `index_name`) in a loop over a member
- * array: forwards for construction, backwards for destruction. */
-static AstNode *member_array_loop(const AstNode *array_type, const char *index_name,
-                                  AstNode *body_stmt, int backwards, int line) {
-    AstNode *idx_decl = ast_new(AST_VAR_DECL, line);
-    idx_decl->str1 = strdup(index_name);
-    idx_decl->type = ast_ident("int", line);
-    AstNode *cond = ast_new(AST_BINOP, line);
-    cond->a = ast_ident(index_name, line);
-    AstNode *step = ast_new(AST_UNOP, line);
-    step->a = ast_ident(index_name, line);
-    AstNode *zero = ast_new(AST_INT_LIT, line);
-    zero->ival = 0;
-    if (!backwards) {
-        idx_decl->a = zero;
-        cond->str1 = strdup("<");
-        cond->b = array_length_expr(array_type, line);
-        step->str1 = strdup("post++");
-    } else {
-        AstNode *one = ast_new(AST_INT_LIT, line);
-        one->ival = 1;
-        AstNode *last = ast_new(AST_BINOP, line);
-        last->str1 = strdup("-");
-        last->a = array_length_expr(array_type, line);
-        last->b = one;
-        idx_decl->a = last;
-        cond->str1 = strdup(">=");
-        cond->b = zero;
-        step->str1 = strdup("post--");
+/* The length of dimension `k` of a (possibly multi-dimensional) array type */
+static AstNode *array_dim_length_expr(const AstNode *array_type, int k, int line) {
+    while (array_type != NULL && array_type->kind == AST_CONST_TYPE) array_type = array_type->a;
+    for (; k > 0; k--) {
+        array_type = array_type->a;
+        while (array_type != NULL && array_type->kind == AST_CONST_TYPE) array_type = array_type->a;
     }
-    AstNode *body = ast_new(AST_BLOCK, line);
-    ast_list_append(&body->list, body_stmt);
-    AstNode *loop = ast_new(AST_FOR, line);
-    loop->a = idx_decl;
-    loop->b = cond;
-    loop->c = step;
-    loop->d = body;
-    return loop;
+    return array_length_expr(array_type, line);
+}
+
+/* Wraps `body_stmt` (which uses the index variables `idx`) in one loop per
+ * dimension, the first dimension outermost: forwards for construction,
+ * backwards for destruction (so the last element goes first). */
+static AstNode *member_array_loop(const AstNode *array_type, char idx[][64], int ndims,
+                                  AstNode *body_stmt, int backwards, int line) {
+    AstNode *inner = body_stmt;
+    for (int d = ndims - 1; d >= 0; d--) {
+        AstNode *idx_decl = ast_new(AST_VAR_DECL, line);
+        idx_decl->str1 = strdup(idx[d]);
+        idx_decl->type = ast_ident("int", line);
+        AstNode *cond = ast_new(AST_BINOP, line);
+        cond->a = ast_ident(idx[d], line);
+        AstNode *step = ast_new(AST_UNOP, line);
+        step->a = ast_ident(idx[d], line);
+        AstNode *zero = ast_new(AST_INT_LIT, line);
+        zero->ival = 0;
+        if (!backwards) {
+            idx_decl->a = zero;
+            cond->str1 = strdup("<");
+            cond->b = array_dim_length_expr(array_type, d, line);
+            step->str1 = strdup("post++");
+        } else {
+            AstNode *one = ast_new(AST_INT_LIT, line);
+            one->ival = 1;
+            AstNode *last = ast_new(AST_BINOP, line);
+            last->str1 = strdup("-");
+            last->a = array_dim_length_expr(array_type, d, line);
+            last->b = one;
+            idx_decl->a = last;
+            cond->str1 = strdup(">=");
+            cond->b = zero;
+            step->str1 = strdup("post--");
+        }
+        AstNode *body = ast_new(AST_BLOCK, line);
+        ast_list_append(&body->list, inner);
+        AstNode *loop = ast_new(AST_FOR, line);
+        loop->a = idx_decl;
+        loop->b = cond;
+        loop->c = step;
+        loop->d = body;
+        inner = loop;
+    }
+    return inner;
 }
 
 static int g_member_array_loop_counter = 0;
+
+/* Fills `idx` with fresh index variable names (prefix `__v32_mctor_i` / `__v32_mdtor_i`) */
+static void member_array_index_names(char idx[][64], int ndims, const char *prefix) {
+    for (int d = 0; d < ndims; d++) snprintf(idx[d], 64, "%s%d", prefix, g_member_array_loop_counter++);
+}
 
 static AstNode *build_object_ctor_stmt(AstNode *member_ref, AstNode *var_class, int line);
 
@@ -4398,16 +4465,16 @@ static AstNode *build_object_ctor_stmt(AstNode *member_ref, AstNode *var_class, 
  * Member arrays used to be skipped outright, leaving every element
  * unconstructed (no constructor body run, no vtable pointer set). */
 static AstNode *build_member_ctor_stmt(AstNode *field, int line) {
-    AstNode *elem_class = member_array_elem_class(field->type);
+    int nd = 0;
+    AstNode *elem_class = member_array_elem_class(field->type, &nd);
     if (elem_class != NULL) {
-        char idx[64];
-        snprintf(idx, sizeof idx, "__v32_mctor_i%d", g_member_array_loop_counter);
-        AstNode *one = build_object_ctor_stmt(member_object_ref(field, idx, line), elem_class, line);
+        char idx[MAX_ARRAY_DIMS][64];
+        member_array_index_names(idx, nd, "__v32_mctor_i");
+        AstNode *one = build_object_ctor_stmt(member_object_ref(field, idx, nd, line), elem_class, line);
         if (one == NULL) return NULL;
-        g_member_array_loop_counter++;
-        return member_array_loop(field->type, idx, one, 0, line);
+        return member_array_loop(field->type, idx, nd, one, 0, line);
     }
-    return build_object_ctor_stmt(member_object_ref(field, NULL, line), type_to_class(field->type), line);
+    return build_object_ctor_stmt(member_object_ref(field, NULL, 0, line), type_to_class(field->type), line);
 }
 
 static AstNode *build_object_ctor_stmt(AstNode *member_ref, AstNode *var_class, int line) {
@@ -4503,7 +4570,7 @@ static void inject_member_ctor_calls_classes(AstList *decls) {
                         if (field->type->kind == AST_POINTER_TYPE) continue;
                         if (field->type->kind == AST_REFERENCE_TYPE) continue;
                         AstNode *var_class = (field->type->kind == AST_ARRAY_TYPE)
-                                           ? member_array_elem_class(field->type)
+                                           ? member_array_elem_class(field->type, NULL)
                                            : type_to_class(field->type);
                         if (var_class == NULL) continue;         /* not a class */
                         if (var_class == n) continue;            /* self-recursion */
@@ -4519,6 +4586,23 @@ static void inject_member_ctor_calls_classes(AstList *decls) {
                             }
                             CallResolution *ecr = (entry != NULL && entry->ival == 2)
                                                 ? (CallResolution *)entry->sema_info : NULL;
+                            if (entry != NULL && entry->ival == 3 && field->type->kind == AST_ARRAY_TYPE) {
+                                /* `: m{ {1}, {2} }` (or the member's own `= {...}`): the elements are
+                                 * built in place from the list. Kept as a marker statement here, so the
+                                 * element constructor calls go through the phases that finalize and
+                                 * lower every call in a body; phase 7 (inject_ctor_calls_block) turns
+                                 * it into the constructor calls. */
+                                AstNode *lst = ast_new(AST_INIT_LIST, m->line);
+                                lst->file = entry->file;
+                                lst->list = entry->list;
+                                entry->list = ast_list_new(); /* not walked twice */
+                                AstNode *st = ast_new(AST_EXPR_STMT, m->line);
+                                st->a = lst;
+                                st->str1 = strdup(field->str1);
+                                st->ival = MEMBER_ARRAY_MARK;
+                                ast_list_append(&injected, st);
+                                continue;
+                            }
                             if (ecr != NULL && ecr->resolved_target != NULL &&
                                 field->type->kind != AST_ARRAY_TYPE) {
                                 AstNode *ctor = ecr->resolved_target;
@@ -4527,7 +4611,7 @@ static void inject_member_ctor_calls_classes(AstList *decls) {
                                 fill_default_args(&args, ctor, 1);
                                 AstNode *addr = ast_new(AST_UNOP, m->line);
                                 addr->str1 = strdup("addr");
-                                addr->a = member_object_ref(field, NULL, m->line);
+                                addr->a = member_object_ref(field, NULL, 0, m->line);
                                 AstNode *call = ast_new(AST_CALL, m->line);
                                 call->a = ast_ident(cinfo != NULL ? cinfo->mangled_name : ctor->str1, m->line);
                                 ast_list_append(&call->list, addr);
@@ -4966,6 +5050,10 @@ typedef struct DestructibleLocal {
     int array_len[MAX_ARRAY_DIMS]; /* ...of these lengths, every object destroyed,
                                        last element first */
     struct DestructibleLocal *next;
+    struct DestructibleLocal *up;  /* the destructible local live when this one was
+                       declared (the previous one in this block, else the
+                       innermost one of an enclosing block): `goto` follows it */
+    int depth;                     /* 1 + up's depth */
 } DestructibleLocal;
 
 typedef struct DestructScope {
@@ -5073,6 +5161,137 @@ static int stmt_always_returns(AstNode *n)
     if (n->kind == AST_IF )
         return stmt_always_returns(n->b) && stmt_always_returns(n->c);
     return 0;
+}
+
+/* ---- `goto` and destructors ----------------------------------------------
+ *
+ * A pre-pass over each function (goto_prepass) gives every block-level
+ * declaration of a class object with a destructor its DestructibleLocal, and
+ * records, for every label, the innermost such object that is live at the
+ * label (every one declared before it in an enclosing block). A `goto` then
+ * destroys what is live at the goto but not at its label: the chain of `up`
+ * links from the goto's innermost live object, stopping where it meets the
+ * label's chain. If the label's chain holds something the goto's does not,
+ * the jump would bypass a declaration -- ill-formed C++, reported as an error.
+ */
+typedef struct { const AstNode *stmt; DestructibleLocal *dl; } DeclMapEntry;
+typedef struct { const char *name; DestructibleLocal *live; } LabelMapEntry;
+static DeclMapEntry *g_decl_map; static int g_decl_map_n, g_decl_map_cap;
+static LabelMapEntry *g_label_map; static int g_label_map_n, g_label_map_cap;
+static int g_goto_errors = 0;
+
+static DestructibleLocal *decl_map_get(const AstNode *stmt) {
+    for (int i = 0; i < g_decl_map_n; i++)
+        if (g_decl_map[i].stmt == stmt) return g_decl_map[i].dl;
+    return NULL;
+}
+
+/* The destructor-bearing class object (or array of them) a block-level
+ * declaration makes, or NULL. */
+static DestructibleLocal *make_destructible(const AstNode *stmt) {
+    int array_dims = 0, array_len[MAX_ARRAY_DIMS];
+    AstNode *obj_type = (stmt->kind == AST_VAR_DECL) ? stmt->type : NULL;
+    while (obj_type != NULL && obj_type->kind == AST_ARRAY_TYPE && obj_type->ival > 0 &&
+           obj_type->a != NULL && array_dims < MAX_ARRAY_DIMS) {
+        array_len[array_dims++] = obj_type->ival;      /* every dimension */
+        obj_type = obj_type->a;
+    }
+    if (obj_type != NULL && obj_type->kind == AST_ARRAY_TYPE) obj_type = NULL; /* a length not known */
+    if (obj_type == NULL ||
+        (obj_type->kind != AST_IDENT && obj_type->kind != AST_QUALIFIED_ID)) return NULL;
+    AstNode *var_class = type_to_class(obj_type);
+    if (var_class == NULL) return NULL;
+    AstNode *dtor = find_destructor_with_body(var_class);
+    if (dtor == NULL) return NULL;
+    DestructibleLocal *dl = calloc(1, sizeof(DestructibleLocal));
+    dl->var_name = stmt->str1;
+    dl->dtor = dtor;
+    dl->array_dims = array_dims;
+    for (int d = 0; d < array_dims; d++) dl->array_len[d] = array_len[d];
+    return dl;
+}
+
+static void goto_prepass(AstNode *n, DestructibleLocal **cur) {
+    if (n == NULL) return;
+    switch (n->kind) {
+        case AST_BLOCK:
+        case AST_SWITCH: {
+            DestructibleLocal *saved = *cur;
+            for (int i = 0; i < n->list.count; i++) {
+                AstNode *st = n->list.items[i];
+                goto_prepass(st, cur);
+                if (st != NULL && st->kind == AST_VAR_DECL) {
+                    DestructibleLocal *dl = make_destructible(st);
+                    if (dl != NULL) {
+                        dl->up = *cur;
+                        dl->depth = (*cur != NULL ? (*cur)->depth : 0) + 1;
+                        if (g_decl_map_n == g_decl_map_cap) {
+                            g_decl_map_cap = g_decl_map_cap ? g_decl_map_cap * 2 : 16;
+                            g_decl_map = realloc(g_decl_map, g_decl_map_cap * sizeof *g_decl_map);
+                        }
+                        g_decl_map[g_decl_map_n].stmt = st;
+                        g_decl_map[g_decl_map_n++].dl = dl;
+                        *cur = dl;
+                    }
+                }
+            }
+            *cur = saved;
+            break;
+        }
+        case AST_IF:
+            goto_prepass(n->b, cur);
+            goto_prepass(n->c, cur);
+            break;
+        case AST_LABEL:
+            if (g_label_map_n == g_label_map_cap) {
+                g_label_map_cap = g_label_map_cap ? g_label_map_cap * 2 : 16;
+                g_label_map = realloc(g_label_map, g_label_map_cap * sizeof *g_label_map);
+            }
+            g_label_map[g_label_map_n].name = n->str1;
+            g_label_map[g_label_map_n++].live = *cur;
+            goto_prepass(n->a, cur);
+            break;
+        case AST_WHILE: goto_prepass(n->b, cur); break;
+        case AST_FOR:   goto_prepass(n->d, cur); break;
+        default: break;
+    }
+}
+
+/* Replaces `goto L;` by `{ <destructor calls>; goto L; }` when objects
+ * live here are not live at L. `scope` is the innermost block's scope. */
+static void destruct_goto(AstNode **slot, DestructScope *scope) {
+    AstNode *n = *slot;
+    const LabelMapEntry *lab = NULL;
+    for (int i = 0; i < g_label_map_n; i++)
+        if (strcmp(g_label_map[i].name, n->str1) == 0) { lab = &g_label_map[i]; break; }
+    if (lab == NULL) return; /* an unknown label: left to the C compiler, as before */
+    DestructibleLocal *here = NULL;
+    for (DestructScope *s = scope; s != NULL && here == NULL; s = s->parent) here = s->locals;
+    DestructibleLocal *a = here, *b = lab->live;
+    while ((a != NULL ? a->depth : 0) > (b != NULL ? b->depth : 0)) a = a->up;
+    while ((b != NULL ? b->depth : 0) > (a != NULL ? a->depth : 0)) {
+        /* the label has live objects the goto has not built yet */
+        b = b->up;
+    }
+    while (a != b) { a = a->up; b = b->up; }
+    DestructibleLocal *common = a;
+    if (lab->live != common) {
+        DestructibleLocal *skipped = lab->live;
+        while (skipped->up != common) skipped = skipped->up;
+        fprintf(stderr, "%s:%d: error: goto '%s' jumps past the declaration of '%s' (a class object with a destructor): "
+                "its constructor would be bypassed\n",
+                n->file != NULL ? n->file : g_current_filename, n->line, n->str1, skipped->var_name);
+        g_goto_errors++;
+        return;
+    }
+    if (here == common) return;
+    AstList stmts = ast_list_new();
+    for (DestructibleLocal *dl = here; dl != common; dl = dl->up)
+        ast_list_append(&stmts, build_dtor_call_stmt(dl));
+    ast_list_append(&stmts, n);
+    AstNode *blk = ast_new(AST_BLOCK, n->line);
+    blk->list = stmts;
+    *slot = blk;
 }
 
 static void destruct_scope_block(AstNode *block, DestructScope *parent_scope,
@@ -5214,6 +5433,9 @@ static void destruct_scope_stmt(AstNode **slot, DestructScope *scope,
              * fallback either. */
             install_destructor_sequence(slot, scope, loop_boundary, n);
             break;
+        case AST_GOTO:
+            destruct_goto(slot, scope);
+            break;
         case AST_ASM:
             /* Nothing to do: an asm body is opaque string literals --
              * no `this`, member references, or references to rewrite.
@@ -5298,28 +5520,11 @@ static void destruct_scope_block(AstNode *block, DestructScope *parent_scope,
         destruct_scope_stmt(&stmt, &this_scope, loop_boundary, break_boundary, func_return_type, ret_tmp_counter);
         ast_list_append(&new_list, stmt);
 
-        int array_dims = 0, array_len[MAX_ARRAY_DIMS];
-        AstNode *obj_type = (stmt->kind == AST_VAR_DECL) ? stmt->type : NULL;
-        while (obj_type != NULL && obj_type->kind == AST_ARRAY_TYPE && obj_type->ival > 0 &&
-               obj_type->a != NULL && array_dims < MAX_ARRAY_DIMS) {
-            array_len[array_dims++] = obj_type->ival;      /* every dimension */
-            obj_type = obj_type->a;
-        }
-        if (obj_type != NULL && obj_type->kind == AST_ARRAY_TYPE) obj_type = NULL; /* a length not known */
-        if (obj_type != NULL &&
-            (obj_type->kind == AST_IDENT || obj_type->kind == AST_QUALIFIED_ID)) {
-            AstNode *var_class = type_to_class(obj_type);
-            if (var_class != NULL) {
-                AstNode *dtor = find_destructor_with_body(var_class);
-                if (dtor != NULL) {
-                    DestructibleLocal *dl = malloc(sizeof(DestructibleLocal));
-                    dl->var_name = stmt->str1;
-                    dl->dtor = dtor;
-                    dl->array_dims = array_dims;
-                    for (int d = 0; d < array_dims; d++) dl->array_len[d] = array_len[d];
-                    dl->next = this_scope.locals;
-                    this_scope.locals = dl;
-                }
+        if (stmt->kind == AST_VAR_DECL) {
+            DestructibleLocal *dl = decl_map_get(stmt);
+            if (dl != NULL) {
+                dl->next = this_scope.locals;
+                this_scope.locals = dl;
             }
         }
     }
@@ -5345,6 +5550,10 @@ static void destruct_scope_block(AstNode *block, DestructScope *parent_scope,
 static void destruct_scope_in_method(AstNode *method) {
     if (method->kind != AST_FUNC_DEF) return;
     int ret_tmp_counter = 0;
+    g_decl_map_n = 0;
+    g_label_map_n = 0;
+    DestructibleLocal *cur = NULL;
+    goto_prepass(method->a, &cur);
     destruct_scope_block(method->a, NULL, NULL, NULL, method->type, &ret_tmp_counter);
 }
 
@@ -7209,16 +7418,17 @@ static void chain_destructors_classes(AstList *decls) {
                 field->type->kind == AST_REFERENCE_TYPE) continue;
             /* A member array of class objects is destroyed element by
              * element, last first -- the mirror of build_member_ctor_stmt. */
-            AstNode *aclass = member_array_elem_class(field->type);
+            int nd = 0;
+            AstNode *aclass = member_array_elem_class(field->type, &nd);
             if (aclass != NULL) {
                 AstNode *adtor = (aclass != n) ? find_destructor_with_body(aclass) : NULL;
                 if (adtor == NULL) continue;
-                char idx[64];
-                snprintf(idx, sizeof idx, "__v32_mdtor_i%d", g_member_array_loop_counter++);
+                char idx[MAX_ARRAY_DIMS][64];
+                member_array_index_names(idx, nd, "__v32_mdtor_i");
                 AstNode *eaddr = ast_new(AST_UNOP, line);
                 eaddr->str1 = strdup("addr");
-                eaddr->a = member_object_ref(field, idx, line);
-                ast_list_append(&chain, member_array_loop(field->type, idx,
+                eaddr->a = member_object_ref(field, idx, nd, line);
+                ast_list_append(&chain, member_array_loop(field->type, idx, nd,
                                     dtor_call_on(adtor, eaddr, line), 1, line));
                 continue;
             }
@@ -7262,6 +7472,229 @@ static void chain_destructors_classes(AstList *decls) {
         for (int k = 0; k < chain.count; k++) ast_list_append(&dtor->a->list, chain.items[k]);
         lower_note(line, "appended %d member/base destructor call(s) to %s",
                    chain.count, dtor->str1);
+    }
+}
+
+/* ---- phase 9d: the arena is acquired at the start of main (--alloc=arena) ----
+ * (--alloc=gc: the same slot, `__v32_gc_init();`, which also records the stack's
+ * top and the table of global roots)
+ *
+ * `__v32_arena_init();` goes first in main(), ahead of the construction of
+ * file-scope objects (whose constructors may allocate). v32_restart re-enters
+ * main(), so the region is taken afresh on every start of the cartridge. */
+static void arena_init_in_main(AstNode *program) {
+    for (int i = 0; i < program->list.count; i++) {
+        AstNode *n = program->list.items[i];
+        if (n == NULL || n->kind != AST_FUNC_DEF || n->b != NULL || n->str1 == NULL ||
+            strcmp(n->str1, "main") != 0 || n->a == NULL || n->a->kind != AST_BLOCK) continue;
+        AstNode *call = ast_new(AST_CALL, n->line);
+        call->a = ast_ident(g_alloc_gc ? "__v32_gc_init" : "__v32_arena_init", n->line);
+        AstNode *st = ast_new(AST_EXPR_STMT, n->line);
+        st->a = call;
+        AstList body = ast_list_new();
+        ast_list_append(&body, st);
+        for (int k = 0; k < n->a->list.count; k++) ast_list_append(&body, n->a->list.items[k]);
+        n->a->list = body;
+        lower_note(n->line, g_alloc_gc ? "main() now begins by acquiring the gc heap" : "main() now begins by acquiring the arena");
+        return;
+    }
+}
+
+/* ---- phase 9c: destructors of file-scope objects --------------------------
+ *
+ * Phase 7b constructs the global objects (and arrays of objects) at the top
+ * of main(); this destroys them, in the reverse order of construction, at
+ * every way out of main() -- after main's own locals', which phase 9 has
+ * already destroyed at those points:
+ *
+ *     int main(void) {
+ *         Counter__Counter__int(&g_a, 1);  ...      // phase 7b
+ *         __v32_globals_live = 1;
+ *         ...
+ *         { int __v32_gret_tmp = f(); __v32_destroy_globals(); return __v32_gret_tmp; }
+ *         __v32_destroy_globals();                  // falling off the end
+ *     }
+ *     void __v32_destroy_globals(void) {
+ *         if (__v32_globals_live) { __v32_globals_live = 0; Counter__dtor__void(&g_b); ... }
+ *     }
+ *
+ * The value of a `return` is computed before the destructors run. The guard
+ * makes the function run once, and not at all before the objects exist.
+ *
+ * A program that uses v32libc (an `#include` of v32libc.c / v32libc.h, or
+ * the library in the program itself) also gets, right after that flag is
+ * set, `v32_exit_destructors = &__v32_destroy_globals;`. exit() and abort()
+ * go through v32_exit(), which never returns (it waits for START and restarts
+ * the cartridge): it calls v32_exit_destructors first, then the program's own
+ * v32_exit_hook, so a hook the program sets keeps working beside it. A
+ * program with no global that needs a destructor, or with no main(), is not
+ * touched at all. Objects in a namespace are not covered (nor are they
+ * constructed, see phase 7b).
+ */
+static void wrap_main_returns(AstNode **slot, AstNode *ret_type) {
+    AstNode *n = *slot;
+    if (n == NULL) return;
+    if (n->kind == AST_RETURN) {
+        int line = n->line;
+        AstNode *blk = ast_new(AST_BLOCK, line);
+        if (n->a != NULL && n->a->kind != AST_INT_LIT &&
+            !(n->a->kind == AST_IDENT && n->a->str1 != NULL && strncmp(n->a->str1, "__v32_ret_tmp", 13) == 0)) {
+            AstNode *decl = ast_new(AST_VAR_DECL, line);
+            decl->str1 = strdup("__v32_gret_tmp");
+            decl->type = ret_type != NULL ? ast_clone_expr(ret_type) : ast_ident("int", line);
+            decl->a = n->a;
+            ast_list_append(&blk->list, decl);
+            n->a = ast_ident("__v32_gret_tmp", line);
+        }
+        AstNode *call = ast_new(AST_CALL, line);
+        call->a = ast_ident("__v32_destroy_globals", line);
+        AstNode *st = ast_new(AST_EXPR_STMT, line);
+        st->a = call;
+        ast_list_append(&blk->list, st);
+        ast_list_append(&blk->list, n);
+        *slot = blk;
+        return;
+    }
+    switch (n->kind) {
+        case AST_BLOCK:
+        case AST_SWITCH:
+            for (int i = 0; i < n->list.count; i++) wrap_main_returns(&n->list.items[i], ret_type);
+            break;
+        case AST_IF:    wrap_main_returns(&n->b, ret_type); wrap_main_returns(&n->c, ret_type); break;
+        case AST_WHILE: wrap_main_returns(&n->b, ret_type); break;
+        case AST_FOR:   wrap_main_returns(&n->d, ret_type); break;
+        case AST_LABEL: wrap_main_returns(&n->a, ret_type); break;
+        default: break;
+    }
+}
+
+static AstNode *call_global_destroyer(int line) {
+    AstNode *call = ast_new(AST_CALL, line);
+    call->a = ast_ident("__v32_destroy_globals", line);
+    AstNode *st = ast_new(AST_EXPR_STMT, line);
+    st->a = call;
+    return st;
+}
+
+static void destroy_globals_in_main(AstNode *program) {
+    AstNode *main_func = NULL;
+    int uses_libc = 0;
+    for (int i = 0; i < program->list.count; i++) {
+        AstNode *n = program->list.items[i];
+        if (n == NULL || n->str1 == NULL) continue;
+        if (n->kind == AST_FUNC_DEF && n->b == NULL && strcmp(n->str1, "main") == 0) main_func = n;
+        if (n->kind == AST_VAR_DECL && strcmp(n->str1, "v32_exit_destructors") == 0) uses_libc = 1;
+    }
+    for (int i = 0; i < g_preprocessor_lines.count; i++)
+        if (strstr(g_preprocessor_lines.lines[i], "include") != NULL &&
+            strstr(g_preprocessor_lines.lines[i], "v32libc") != NULL) uses_libc = 1;
+    if (main_func == NULL || main_func->a == NULL || main_func->a->kind != AST_BLOCK) return;
+
+    /* the file-scope objects whose class has a destructor, in declaration order */
+    DestructibleLocal *list = NULL, *tail = NULL;
+    int count = 0;
+    for (int i = 0; i < program->list.count; i++) {
+        AstNode *n = program->list.items[i];
+        if (n == NULL || n->kind != AST_VAR_DECL || n->type == NULL || n->str1 == NULL || n->is_extern) continue;
+        const AstNode *rt = resolve_typedef_chain(n->type);
+        while (rt != NULL && rt->kind == AST_CONST_TYPE) rt = rt->a;
+        if (rt == NULL) continue;
+        int dims[MAX_ARRAY_DIMS], nd = 0;
+        AstNode *cls = NULL;
+        if (rt->kind == AST_ARRAY_TYPE) cls = array_object_dims(n->type, dims, &nd);
+        else if (rt->kind == AST_IDENT || rt->kind == AST_QUALIFIED_ID) cls = type_to_class((AstNode *)rt);
+        AstNode *dtor = cls != NULL ? find_destructor_with_body(cls) : NULL;
+        if (dtor == NULL) continue;
+        DestructibleLocal *dl = calloc(1, sizeof *dl);
+        dl->var_name = n->str1;
+        dl->dtor = dtor;
+        dl->array_dims = nd;
+        for (int d = 0; d < nd; d++) dl->array_len[d] = dims[d];
+        if (tail != NULL) tail->next = dl; else list = dl;
+        tail = dl;
+        count++;
+    }
+    if (count == 0) return;
+    int line = main_func->line;
+
+    /* void __v32_destroy_globals(void), last declared first */
+    DestructibleLocal **order = malloc(sizeof *order * count);
+    {
+        int k = 0;
+        for (DestructibleLocal *dl = list; dl != NULL; dl = dl->next) order[k++] = dl;
+    }
+    AstNode *fn = ast_new(AST_FUNC_DEF, line);
+    fn->str1 = strdup("__v32_destroy_globals");
+    fn->type = ast_ident("void", line);
+    fn->access = ACC_PUBLIC;
+    AstNode *inner = ast_new(AST_BLOCK, line);
+    AstNode *clear = ast_new(AST_ASSIGN, line);
+    clear->str1 = strdup("=");
+    clear->a = ast_ident("__v32_globals_live", line);
+    clear->b = ast_new(AST_INT_LIT, line);
+    clear->b->ival = 0;
+    AstNode *clear_st = ast_new(AST_EXPR_STMT, line);
+    clear_st->a = clear;
+    ast_list_append(&inner->list, clear_st);
+    for (int k = count - 1; k >= 0; k--)
+        ast_list_append(&inner->list, build_dtor_call_stmt(order[k]));
+    free(order);
+    AstNode *guard = ast_new(AST_IF, line);
+    guard->a = ast_ident("__v32_globals_live", line);
+    guard->b = inner;
+    fn->a = ast_new(AST_BLOCK, line);
+    ast_list_append(&fn->a->list, guard);
+    ast_list_append(&program->list, fn);
+
+    AstNode *live = ast_new(AST_VAR_DECL, line);
+    live->str1 = strdup("__v32_globals_live");
+    live->type = ast_ident("int", line);
+    live->a = ast_new(AST_INT_LIT, line);
+    live->a->ival = 0;
+    AstList out = ast_list_new();
+    ast_list_append(&out, live);
+    for (int i = 0; i < program->list.count; i++) ast_list_append(&out, program->list.items[i]);
+    program->list = out;
+
+    /* main: flag set after the construction, destructors at every exit */
+    wrap_main_returns(&main_func->a, main_func->type);
+    AstNode *body = main_func->a;
+    if (body->list.count == 0 || !stmt_always_returns(body->list.items[body->list.count - 1]))
+        ast_list_append(&body->list, call_global_destroyer(line));
+    AstNode *set = ast_new(AST_ASSIGN, line);
+    set->str1 = strdup("=");
+    set->a = ast_ident("__v32_globals_live", line);
+    set->b = ast_new(AST_INT_LIT, line);
+    set->b->ival = 1;
+    AstNode *set_st = ast_new(AST_EXPR_STMT, line);
+    set_st->a = set;
+    AstList nb = ast_list_new();
+    for (int i = 0; i < body->list.count; i++) {
+        if (i == g_main_ctor_stmts) ast_list_append(&nb, set_st);
+        ast_list_append(&nb, body->list.items[i]);
+    }
+    if (g_main_ctor_stmts >= body->list.count) ast_list_append(&nb, set_st);
+    body->list = nb;
+    lower_note(line, "main() destroys %d file-scope object(s) when it ends", count);
+
+    /* exit() / abort(): v32libc's v32_exit() runs this first */
+    if (uses_libc) {
+        AstNode *hook = ast_new(AST_ASSIGN, line);
+        hook->str1 = strdup("=");
+        hook->a = ast_ident("v32_exit_destructors", line);
+        AstNode *addr = ast_new(AST_UNOP, line);
+        addr->str1 = strdup("addr");
+        addr->a = ast_ident("__v32_destroy_globals", line);
+        hook->b = addr;
+        AstNode *hook_st = ast_new(AST_EXPR_STMT, line);
+        hook_st->a = hook;
+        AstList hb = ast_list_new();
+        for (int i = 0; i < body->list.count; i++) {
+            ast_list_append(&hb, body->list.items[i]);
+            if (body->list.items[i] == set_st) ast_list_append(&hb, hook_st);
+        }
+        body->list = hb;
+        lower_note(line, "exit() will destroy the file-scope objects (v32_exit_destructors)");
     }
 }
 
@@ -8983,10 +9416,67 @@ static int resolve_designated_inits(AstNode *program) {
 }
 
 
+/* ---- phase 0b: a label in front of a declaration ---------------------------
+ *
+ * `again: D d(1);` -- a label may stand before a declaration in C++ -- is
+ * split into `again: { }` and the declaration proper, so that later phases
+ * (constructor and destructor injection, which look for declarations as
+ * statements of a block) see it. */
+static void split_label_decls_stmt(AstNode *n);
+
+static void split_label_decls_list(AstList *list) {
+    AstList out = ast_list_new();
+    for (int i = 0; i < list->count; i++) {
+        AstNode *st = list->items[i];
+        split_label_decls_stmt(st);
+        AstNode *inner = st;
+        while (inner != NULL && inner->kind == AST_LABEL) inner = inner->a;
+        if (st != NULL && st->kind == AST_LABEL && inner != NULL && inner->kind == AST_VAR_DECL) {
+            AstNode *last = st;
+            while (last->a != inner) last = last->a;
+            last->a = ast_new(AST_BLOCK, last->line);
+            ast_list_append(&out, st);
+            ast_list_append(&out, inner);
+        } else {
+            ast_list_append(&out, st);
+        }
+    }
+    *list = out;
+}
+
+static void split_label_decls_stmt(AstNode *n) {
+    if (n == NULL) return;
+    switch (n->kind) {
+        case AST_BLOCK:
+        case AST_SWITCH: split_label_decls_list(&n->list); break;
+        case AST_IF: split_label_decls_stmt(n->b); split_label_decls_stmt(n->c); break;
+        case AST_LABEL: split_label_decls_stmt(n->a); break;
+        case AST_WHILE: split_label_decls_stmt(n->b); break;
+        case AST_FOR: split_label_decls_stmt(n->d); break;
+        default: break;
+    }
+}
+
+static void split_label_decls(AstList *decls) {
+    for (int i = 0; i < decls->count; i++) {
+        AstNode *n = decls->items[i];
+        if (n->kind == AST_NAMESPACE_DECL) split_label_decls(&n->list);
+        else if (n->kind == AST_FUNC_DEF) split_label_decls_stmt(n->a);
+        else if (n->kind == AST_CLASS_DECL) {
+            ClassLayout *layout = (ClassLayout *)n->sema_info;
+            if (layout == NULL) continue;
+            for (int j = 0; j < layout->methods.count; j++)
+                if (layout->methods.items[j]->kind == AST_FUNC_DEF)
+                    split_label_decls_stmt(layout->methods.items[j]->a);
+        }
+    }
+}
+
 int lower_run(AstNode *program) {
     g_hoisted_names = NULL;                 /* phase 12/12b's literal table: per run */
     g_sar_needed = 0;
     g_udiv_needed = 0;
+    g_goto_errors = 0;
     lower_notes_reset(); /* always start this run's log empty -- see
         lower_notes_print's own doc comment */
     {   /* phase 0: designated initializers become positional (G2) */
@@ -8994,6 +9484,7 @@ int lower_run(AstNode *program) {
         if (errors > 0) return errors;
     }
     compute_struct_layouts(&program->list);
+    split_label_decls(&program->list);                /* phase 0b */
     /* (The by-value word-size check that used to run here is gone: a
      * multi-word struct passed or returned by value is now rewritten by
      * phase 9b instead of warned about.) */
@@ -9035,6 +9526,9 @@ int lower_run(AstNode *program) {
     destruct_scope_classes(&program->list);           /* phase 9 */
     destruct_scope_free_functions(&program->list);
     chain_destructors_classes(&program->list);        /* phase 9a */
+    destroy_globals_in_main(program);                 /* phase 9c */
+    if (V32_ALLOC_HOOK) arena_init_in_main(program);   /* phase 9d */
+    if (g_goto_errors > 0) return g_goto_errors;
     if (g_target == TARGET_VIRCON32) {
         /* phase 10 -- deliberately conditional, unlike every earlier
          * phase: standard C supports the ternary operator natively,

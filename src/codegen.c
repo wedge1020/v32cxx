@@ -2232,6 +2232,721 @@ static void emit_function_definitions_free_functions(FILE *out, const AstList *d
  * without running it -- a real, known gap, not silently papered over.
  */
 
+/* ---- allocation hook, arena runtime (--alloc=arena) --------------------------
+ *
+ * Every allocation the generated program makes goes through one pair of
+ * calls, `__v32_alloc(words)` / `__v32_release(ptr)`. Without --alloc=arena
+ * they are not emitted at all: the helpers print plain `malloc`/`free`, so
+ * the output is what it always was. With it, the runtime below is emitted
+ * (emit_arena_runtime): one block taken from the SDK's malloc at the start of
+ * main(), bumped by __v32_alloc, never freed by __v32_release.
+ *
+ * An object whose class has a destructor with a body gets a 4-word RECORD
+ * in front of it: [previous record's offset, class id, count, words from the
+ * record's end to the first element]. Releasing back to a mark walks the
+ * records newest first and runs the destructors (__v32_arena_dtor, a switch
+ * on the class id -- no function pointers needed). `delete` runs the
+ * destructor itself and sets the record's id to 0, so release skips it.
+ *
+ * Units are the SDK's sizeof unit: words on Vircon32, bytes in standard C,
+ * where sizes are rounded to 16 so that every object stays aligned. */
+static int arena_rec_units(void) { return g_target == TARGET_STANDARD ? 16 : 4; }
+static int array_hdr_units(void) { return g_target == TARGET_STANDARD ? 16 : 1; }
+
+static const AstNode *g_arena_classes[256];
+static int g_arena_class_count = 0;
+
+static const AstNode *class_dtor_with_body(const AstNode *class_decl) {
+    ClassLayout *layout = (ClassLayout *)class_decl->sema_info;
+    if (layout == NULL) return NULL;
+    for (int i = 0; i < layout->methods.count; i++) {
+        AstNode *m = layout->methods.items[i];
+        if (m->str1 == NULL || m->str1[0] != '~') continue;
+        if (m->kind != AST_FUNC_DEF) continue;
+        return m;
+    }
+    return NULL;
+}
+
+static void collect_arena_classes(const AstList *decls) {
+    for (int i = 0; i < decls->count; i++) {
+        const AstNode *n = decls->items[i];
+        if (n->kind == AST_CLASS_DECL) {
+            if (class_dtor_with_body(n) != NULL && g_arena_class_count < 256)
+                g_arena_classes[g_arena_class_count++] = n;
+        } else if (n->kind == AST_NAMESPACE_DECL) {
+            collect_arena_classes(&n->list);
+        }
+    }
+}
+
+/* the id a class's destructor records carry (1..), 0: none needed */
+static int arena_class_id(const AstNode *class_decl) {
+    if (!g_alloc_arena) return 0;
+    for (int i = 0; i < g_arena_class_count; i++)
+        if (g_arena_classes[i] == class_decl) return i + 1;
+    return 0;
+}
+
+static const char *dtor_mangled_name(const AstNode *dtor) {
+    FuncSemaInfo *info = (FuncSemaInfo *)dtor->sema_info;
+    return (info != NULL) ? info->mangled_name : dtor->str1;
+}
+
+/* `malloc(sizeof(T))`, or the arena's call for one object of the class */
+static void emit_obj_alloc(FILE *out, const AstNode *cd) {
+    if (!V32_ALLOC_HOOK) {
+        fprintf(out, "malloc(sizeof(");
+        print_class_type_name(out, cd->str1);
+        fprintf(out, "))");
+        return;
+    }
+    int id = arena_class_id(cd);
+    fprintf(out, id ? "__v32_alloc_rec(sizeof(" : "__v32_alloc(sizeof(");
+    print_class_type_name(out, cd->str1);
+    fprintf(out, id ? "), %d, 1, 0)" : "))", id);
+}
+
+/* out of space: say so on the screen (stderr in standard C) and stop; shared by the arena and the gc */
+static void emit_alloc_fatal(FILE *out, const char *fname, const char *std_text, const char *screen_text) {
+    fprintf(out, "void %s(void)\n{\n", fname);
+    if (g_target == TARGET_STANDARD) {
+        fprintf(out, "    fputs(\"v32c++: out of memory (%s)\\n\", stderr);\n    exit(1);\n", std_text);
+    } else {
+        fprintf(out, "    clear_screen(color_black);\n    select_texture(-1);\n"
+                     "    print_at(8, 8, \"%s\");\n"
+                     "    print_at(8, 24, \"See --heap-words\");\n"
+                     "    end_frame();\n    asm {\n        \"hlt\"\n    }\n", screen_text);
+    }
+    fprintf(out, "}\n\n\n");
+}
+
+static void emit_arena_runtime(FILE *out, const AstList *decls) {
+    int rec = arena_rec_units();
+    int std = (g_target == TARGET_STANDARD);
+    fprintf(out, "/* ---- --alloc=arena runtime (see docs/AGENTS.md, \"Memory management\") ---- */\n");
+    fprintf(out, "char *__v32_arena_base = NULL;\nint __v32_arena_size = 0;\nint __v32_arena_top = 0;\nint __v32_arena_rec = -1;\n\n\n");
+
+    /* out of space: say so on the screen (stderr in standard C) and stop */
+    emit_alloc_fatal(out, "__v32_arena_fatal", "--alloc=arena heap is full", "OUT OF MEMORY (arena full)");
+
+    fprintf(out, "void __v32_arena_init(void)\n{\n"
+                 "    __v32_arena_size = %d * sizeof(int);\n"
+                 "    __v32_arena_base = (char *)malloc(__v32_arena_size);\n"
+                 "    if (__v32_arena_base == NULL) __v32_arena_fatal();\n"
+                 "    __v32_arena_top = 0;\n    __v32_arena_rec = -1;\n}\n\n\n", g_heap_words);
+
+    fprintf(out, "void *__v32_alloc(int n)\n{\n    char *p;\n");
+    if (std) fprintf(out, "    n = (n + 15) & ~15;\n");
+    fprintf(out, "    if (n < 0 || n > __v32_arena_size - __v32_arena_top) __v32_arena_fatal();\n"
+                 "    p = __v32_arena_base + __v32_arena_top;\n"
+                 "    __v32_arena_top = __v32_arena_top + n;\n    return p;\n}\n\n\n");
+
+    fprintf(out, "void __v32_release(void *ptr)\n{\n    /* an arena frees nothing one by one */\n    ptr = ptr;\n}\n\n\n");
+
+    fprintf(out, "void *__v32_alloc_rec(int n, int id, int count, int skip)\n{\n"
+                 "    int off = __v32_arena_top;\n    int *r = (int *)__v32_alloc(%d + n);\n"
+                 "    r[0] = __v32_arena_rec;\n    r[1] = id;\n    r[2] = count;\n    r[3] = skip;\n"
+                 "    __v32_arena_rec = off;\n    return (char *)r + %d;\n}\n\n\n", rec, rec);
+
+    fprintf(out, "void __v32_arena_kill(void *payload)\n{\n"
+                 "    int *r = (int *)((char *)payload - %d);\n    r[1] = 0;\n}\n\n\n", rec);
+
+    fprintf(out, "void __v32_arena_dtor(int id, void *obj, int count)\n{\n    int i;\n    i = 0;\n");
+    fprintf(out, "    obj = obj;\n    count = count;\n");
+    for (int k = 0; k < g_arena_class_count; k++) {
+        const AstNode *cd = g_arena_classes[k];
+        fprintf(out, "    if (id == %d) {\n        for (i = count - 1; i >= 0; i--) %s(&((", k + 1,
+                dtor_mangled_name(class_dtor_with_body(cd)));
+        print_class_type_name(out, cd->str1);
+        fprintf(out, " *)obj)[i]);\n        return;\n    }\n");
+    }
+    fprintf(out, "}\n\n\n");
+
+    fprintf(out, "void __v32_arena_release(int mark)\n{\n"
+                 "    if (mark < 0 || mark > __v32_arena_top) return;\n"
+                 "    while (__v32_arena_rec >= mark) {\n"
+                 "        int *r = (int *)(__v32_arena_base + __v32_arena_rec);\n"
+                 "        __v32_arena_rec = r[0];\n"
+                 "        if (r[1] != 0) __v32_arena_dtor(r[1], (char *)r + %d + r[3], r[2]);\n"
+                 "    }\n    __v32_arena_top = mark;\n}\n\n\n", rec);
+    fprintf(out, "int __v32_arena_mark(void)\n{\n    return __v32_arena_top;\n}\n\n\n");
+    fprintf(out, "void __v32_arena_reset(void)\n{\n    __v32_arena_release(0);\n}\n\n\n");
+    fprintf(out, "int __v32_arena_used(void)\n{\n    return __v32_arena_top;\n}\n\n\n");
+    fprintf(out, "int __v32_arena_free(void)\n{\n    return __v32_arena_size - __v32_arena_top;\n}\n\n\n");
+    (void)decls;
+}
+
+
+/* ---- --alloc=gc runtime -------------------------------------------------------
+ *
+ * The same hook as the arena (`__v32_alloc` / `__v32_release`, `__v32_gc_init()`
+ * first in main by lower.c phase 9d), over a conservative mark-sweep collector.
+ * The runtime is the template `gc_runtime_tpl` below (plain C, valid Vircon32 C
+ * as it stands: no ternary, no unsigned, declarations first, pointer returns
+ * assigned to a local before they are indexed), with a few numbers and the
+ * target-dependent pieces substituted by emit_gc_runtime:
+ *   - roots: a table of {address, size} of every file-scope variable that can
+ *     hold a pointer (`__v32_gc_roots_init`, built here from the declarations),
+ *     plus the machine stack from the stack pointer to its top;
+ *   - Vircon32: the stack pointer is read with inline asm after R0-R10 were
+ *     pushed (so values living only in registers are on the scanned stack), the
+ *     top of the stack is 0x400000 (RAM is 0..0x3FFFFF, SP starts at 0x3FFFFF);
+ *   - standard C: __builtin_unwind_init + setjmp spill the callee-saved
+ *     registers, the scan starts at the frame of __v32_gc_run and ends at glibc's
+ *     __libc_stack_end (or the caller-of-init frame elsewhere).
+ * Units are the SDK's sizeof unit: words on Vircon32, bytes in standard C, where
+ * blocks are 16-aligned and a "slot" (the unit a pointer is scanned in) is 8. */
+static const char *const gc_runtime_tpl[] = {
+    "/* ---- --alloc=gc runtime (see docs/AGENTS.md, \"Memory management\") ----\n",
+    " * Conservative mark-sweep over one block taken from the SDK's malloc.\n",
+    " * Blocks tile [0, top) of the region; each has a 3-int header\n",
+    " * [size incl. header, state (0 free, 1 used, 3 used+marked), next free offset]. */\n",
+    "void __v32_gc_roots_init(void);\n",
+    "char *__v32_gc_base = NULL;\n",
+    "int __v32_gc_size = 0;\n",
+    "int __v32_gc_top = 0;\n",
+    "int __v32_gc_inuse = 0;\n",
+    "int __v32_gc_since = 0;\n",
+    "int __v32_gc_thresh = 0;\n",
+    "int __v32_gc_count = 0;\n",
+    "int __v32_gc_ovf = 0;\n",
+    "int __v32_gc_msp = 0;\n",
+    "int __v32_gc_nroots = 0;\n",
+    "@IT@ __v32_gc_lo = 0;\n",
+    "@IT@ __v32_gc_stack_top = 0;\n",
+    "int *__v32_gc_page = NULL;\n",
+    "int *__v32_gc_ms = NULL;\n",
+    "int __v32_gc_flist[@NCLS1@];\n",
+    "@IT@ __v32_gc_root_a[@NR@];\n",
+    "int __v32_gc_root_n[@NR@];\n",
+    "\n",
+    "\n",
+    "int *__v32_gc_hdr(int off)\n",
+    "{\n",
+    "    return (int *)(__v32_gc_base + off);\n",
+    "}\n",
+    "\n",
+    "\n",
+    "/* a free block goes on the list of its size class (0: large, first fit) */\n",
+    "void __v32_gc_push_free(int off)\n",
+    "{\n",
+    "    int *h;\n",
+    "    int cls;\n",
+    "    h = __v32_gc_hdr(off);\n",
+    "    cls = h[0] - @HDR@;\n",
+    "    if (cls <= @NCLS@ * @G@) cls = cls / @G@;\n",
+    "    else cls = 0;\n",
+    "    h[1] = 0;\n",
+    "    h[2] = __v32_gc_flist[cls];\n",
+    "    __v32_gc_flist[cls] = off;\n",
+    "}\n",
+    "\n",
+    "\n",
+    "/* the free block at off becomes a used block of `need` units; the rest is split off */\n",
+    "int __v32_gc_carve(int off, int need)\n",
+    "{\n",
+    "    int *h;\n",
+    "    int *r;\n",
+    "    int rest;\n",
+    "    h = __v32_gc_hdr(off);\n",
+    "    rest = h[0] - need;\n",
+    "    if (rest >= @MINBLK@) {\n",
+    "        h[0] = need;\n",
+    "        r = __v32_gc_hdr(off + need);\n",
+    "        r[0] = rest;\n",
+    "        __v32_gc_push_free(off + need);\n",
+    "    }\n",
+    "    h[1] = 1;\n",
+    "    __v32_gc_inuse = __v32_gc_inuse + h[0];\n",
+    "    return off;\n",
+    "}\n",
+    "\n",
+    "\n",
+    "/* offset of a used block of `need` units (header included), or -1 */\n",
+    "int __v32_gc_find(int need)\n",
+    "{\n",
+    "    int cls;\n",
+    "    int c;\n",
+    "    int off;\n",
+    "    int prev;\n",
+    "    int *h;\n",
+    "    int *p;\n",
+    "    cls = need - @HDR@;\n",
+    "    if (cls <= @NCLS@ * @G@) cls = cls / @G@;\n",
+    "    else cls = 0;\n",
+    "    if (cls > 0) {\n",
+    "        off = __v32_gc_flist[cls];\n",
+    "        if (off >= 0) {\n",
+    "            h = __v32_gc_hdr(off);\n",
+    "            __v32_gc_flist[cls] = h[2];\n",
+    "            return __v32_gc_carve(off, need);\n",
+    "        }\n",
+    "    }\n",
+    "    if (need <= __v32_gc_size - __v32_gc_top) {\n",
+    "        off = __v32_gc_top;\n",
+    "        h = __v32_gc_hdr(off);\n",
+    "        h[0] = need;\n",
+    "        h[1] = 1;\n",
+    "        h[2] = -1;\n",
+    "        __v32_gc_top = __v32_gc_top + need;\n",
+    "        __v32_gc_inuse = __v32_gc_inuse + need;\n",
+    "        return off;\n",
+    "    }\n",
+    "    for (c = cls + 1; cls > 0 && c <= @NCLS@; c++) {\n",
+    "        off = __v32_gc_flist[c];\n",
+    "        if (off >= 0) {\n",
+    "            h = __v32_gc_hdr(off);\n",
+    "            __v32_gc_flist[c] = h[2];\n",
+    "            return __v32_gc_carve(off, need);\n",
+    "        }\n",
+    "    }\n",
+    "    prev = -1;\n",
+    "    off = __v32_gc_flist[0];\n",
+    "    while (off >= 0) {\n",
+    "        h = __v32_gc_hdr(off);\n",
+    "        if (h[0] >= need) {\n",
+    "            if (prev < 0) {\n",
+    "                __v32_gc_flist[0] = h[2];\n",
+    "            } else {\n",
+    "                p = __v32_gc_hdr(prev);\n",
+    "                p[2] = h[2];\n",
+    "            }\n",
+    "            return __v32_gc_carve(off, need);\n",
+    "        }\n",
+    "        prev = off;\n",
+    "        off = h[2];\n",
+    "    }\n",
+    "    return -1;\n",
+    "}\n",
+    "\n",
+    "\n",
+    "/* v: a word that might be a pointer into the heap (anywhere inside a used block) */\n",
+    "void __v32_gc_mark(@IT@ v)\n",
+    "{\n",
+    "    int off;\n",
+    "    int b;\n",
+    "    int *h;\n",
+    "    if (v < __v32_gc_lo) return;\n",
+    "    v = v - __v32_gc_lo;\n",
+    "    if (v >= __v32_gc_top) return;\n",
+    "    off = (int)v;\n",
+    "    b = __v32_gc_page[off / @PAGE@];\n",
+    "    h = __v32_gc_hdr(b);\n",
+    "    while (b + h[0] <= off) {\n",
+    "        b = b + h[0];\n",
+    "        h = __v32_gc_hdr(b);\n",
+    "    }\n",
+    "    if (h[1] != 1) return;\n",
+    "    h[1] = 3;\n",
+    "    if (__v32_gc_msp < @MSTACK@) {\n",
+    "        __v32_gc_ms[__v32_gc_msp] = b;\n",
+    "        __v32_gc_msp = __v32_gc_msp + 1;\n",
+    "    } else {\n",
+    "        __v32_gc_ovf = 1;\n",
+    "    }\n",
+    "}\n",
+    "\n",
+    "\n",
+    "/* every slot of [lo, hi) is a candidate pointer */\n",
+    "void __v32_gc_scan(@IT@ lo, @IT@ hi)\n",
+    "{\n",
+    "    @IT@ a;\n",
+    "    a = (lo + @SLOT@ - 1) / @SLOT@ * @SLOT@;\n",
+    "    while (a + @SLOT@ <= hi) {\n",
+    "        __v32_gc_mark(*(@WORD@ *)a);\n",
+    "        a = a + @SLOT@;\n",
+    "    }\n",
+    "}\n",
+    "\n",
+    "\n",
+    "void __v32_gc_drain(void)\n",
+    "{\n",
+    "    int b;\n",
+    "    int *h;\n",
+    "    @IT@ a;\n",
+    "    while (__v32_gc_msp > 0) {\n",
+    "        __v32_gc_msp = __v32_gc_msp - 1;\n",
+    "        b = __v32_gc_ms[__v32_gc_msp];\n",
+    "        h = __v32_gc_hdr(b);\n",
+    "        a = __v32_gc_lo + b + @HDR@;\n",
+    "        __v32_gc_scan(a, a + (h[0] - @HDR@));\n",
+    "    }\n",
+    "}\n",
+    "\n",
+    "\n",
+    "/* the mark stack overflowed: rescan every marked block until nothing is left behind */\n",
+    "void __v32_gc_rescan(void)\n",
+    "{\n",
+    "    int off;\n",
+    "    int *h;\n",
+    "    @IT@ a;\n",
+    "    while (__v32_gc_ovf) {\n",
+    "        __v32_gc_ovf = 0;\n",
+    "        off = 0;\n",
+    "        while (off < __v32_gc_top) {\n",
+    "            h = __v32_gc_hdr(off);\n",
+    "            if (h[1] == 3) {\n",
+    "                a = __v32_gc_lo + off + @HDR@;\n",
+    "                __v32_gc_scan(a, a + (h[0] - @HDR@));\n",
+    "            }\n",
+    "            off = off + h[0];\n",
+    "        }\n",
+    "        __v32_gc_drain();\n",
+    "    }\n",
+    "}\n",
+    "\n",
+    "\n",
+    "/* page table: the block that holds the first unit of each page */\n",
+    "void __v32_gc_index(void)\n",
+    "{\n",
+    "    int off;\n",
+    "    int end;\n",
+    "    int pg;\n",
+    "    int *h;\n",
+    "    off = 0;\n",
+    "    pg = 0;\n",
+    "    while (off < __v32_gc_top) {\n",
+    "        h = __v32_gc_hdr(off);\n",
+    "        end = off + h[0];\n",
+    "        while (pg * @PAGE@ < end) {\n",
+    "            __v32_gc_page[pg] = off;\n",
+    "            pg = pg + 1;\n",
+    "        }\n",
+    "        off = end;\n",
+    "    }\n",
+    "}\n",
+    "\n",
+    "\n",
+    "/* a run of free blocks [run, run + size) is joined; at the end of the heap it goes back to the wilderness */\n",
+    "void __v32_gc_close_run(int run, int size)\n",
+    "{\n",
+    "    int *h;\n",
+    "    if (run + size >= __v32_gc_top) {\n",
+    "        __v32_gc_top = run;\n",
+    "        return;\n",
+    "    }\n",
+    "    h = __v32_gc_hdr(run);\n",
+    "    h[0] = size;\n",
+    "    __v32_gc_push_free(run);\n",
+    "}\n",
+    "\n",
+    "\n",
+    "void __v32_gc_sweep(void)\n",
+    "{\n",
+    "    int off;\n",
+    "    int sz;\n",
+    "    int run;\n",
+    "    int runsz;\n",
+    "    int i;\n",
+    "    int *h;\n",
+    "    for (i = 0; i <= @NCLS@; i++) __v32_gc_flist[i] = -1;\n",
+    "    __v32_gc_inuse = 0;\n",
+    "    run = -1;\n",
+    "    runsz = 0;\n",
+    "    off = 0;\n",
+    "    while (off < __v32_gc_top) {\n",
+    "        h = __v32_gc_hdr(off);\n",
+    "        sz = h[0];\n",
+    "        if (h[1] == 3) {\n",
+    "            h[1] = 1;\n",
+    "            __v32_gc_inuse = __v32_gc_inuse + sz;\n",
+    "            if (run >= 0) {\n",
+    "                __v32_gc_close_run(run, runsz);\n",
+    "                run = -1;\n",
+    "                runsz = 0;\n",
+    "            }\n",
+    "        } else {\n",
+    "            if (run < 0) run = off;\n",
+    "            runsz = runsz + sz;\n",
+    "        }\n",
+    "        off = off + sz;\n",
+    "    }\n",
+    "    if (run >= 0) __v32_gc_close_run(run, runsz);\n",
+    "}\n",
+    "\n",
+    "\n",
+    "@RUNDECL@void __v32_gc_run(@IT@ sp)\n",
+    "{\n",
+    "    int i;\n",
+    "@SPDECL@    if (__v32_gc_base == NULL) return;\n",
+    "@SPSET@    __v32_gc_index();\n",
+    "    __v32_gc_msp = 0;\n",
+    "    __v32_gc_ovf = 0;\n",
+    "    for (i = 0; i < __v32_gc_nroots; i++)\n",
+    "        __v32_gc_scan(__v32_gc_root_a[i], __v32_gc_root_a[i] + __v32_gc_root_n[i]);\n",
+    "    __v32_gc_scan(sp, __v32_gc_stack_top);\n",
+    "    __v32_gc_drain();\n",
+    "    __v32_gc_rescan();\n",
+    "    __v32_gc_sweep();\n",
+    "    __v32_gc_since = 0;\n",
+    "    __v32_gc_count = __v32_gc_count + 1;\n",
+    "}\n",
+    "\n",
+    "\n",
+    "@COLLECT@\n",
+    "\n",
+    "void *__v32_alloc(int n)\n",
+    "{\n",
+    "    int need;\n",
+    "    int off;\n",
+    "    char *p;\n",
+    "    if (n < 1) n = 1;\n",
+    "    if (n > __v32_gc_size) __v32_gc_fatal();\n",
+    "@ROUNDN@    need = n + @HDR@;\n",
+    "    if (need > __v32_gc_size) __v32_gc_fatal();\n",
+    "    if (__v32_gc_since >= __v32_gc_thresh) __v32_gc_collect();\n",
+    "    off = __v32_gc_find(need);\n",
+    "    if (off < 0) {\n",
+    "        __v32_gc_collect();\n",
+    "        off = __v32_gc_find(need);\n",
+    "        if (off < 0) __v32_gc_fatal();\n",
+    "    }\n",
+    "    __v32_gc_since = __v32_gc_since + need;\n",
+    "    p = __v32_gc_base + off + @HDR@;\n",
+    "    memset((void *)p, 0, n);\n",
+    "    return p;\n",
+    "}\n",
+    "\n",
+    "\n",
+    "/* delete: the block is free at once (a pointer that is not a live block's start is ignored) */\n",
+    "void __v32_release(void *ptr)\n",
+    "{\n",
+    "    int off;\n",
+    "    int *h;\n",
+    "    if (ptr == NULL) return;\n",
+    "    if ((@IT@)ptr < __v32_gc_lo + @HDR@) return;\n",
+    "    off = (int)((@IT@)ptr - __v32_gc_lo) - @HDR@;\n",
+    "    if (off < 0 || off >= __v32_gc_top) return;\n",
+    "    h = __v32_gc_hdr(off);\n",
+    "    if (h[1] != 1) return;\n",
+    "    __v32_gc_inuse = __v32_gc_inuse - h[0];\n",
+    "    __v32_gc_push_free(off);\n",
+    "}\n",
+    "\n",
+    "\n",
+    "void __v32_gc_init(void)\n",
+    "{\n",
+    "    int i;\n",
+    "    int pages;\n",
+    "    __v32_gc_size = @SIZEEXPR@;\n",
+    "    pages = __v32_gc_size / @PAGE@ + 2;\n",
+    "    __v32_gc_base = (char *)malloc(@HDR@ + __v32_gc_size + (pages + @MSTACK@) * sizeof(int));\n",
+    "    if (__v32_gc_base == NULL) __v32_gc_fatal();\n",
+    "    __v32_gc_base = __v32_gc_base + @HDR@;   /* a stale copy of malloc's pointer is then not inside any block */\n",
+    "    __v32_gc_lo = (@IT@)__v32_gc_base;\n",
+    "    __v32_gc_page = (int *)(__v32_gc_base + __v32_gc_size);\n",
+    "    __v32_gc_ms = (int *)(__v32_gc_base + __v32_gc_size + pages * sizeof(int));\n",
+    "    __v32_gc_top = 0;\n",
+    "    __v32_gc_inuse = 0;\n",
+    "    __v32_gc_since = 0;\n",
+    "    __v32_gc_count = 0;\n",
+    "    __v32_gc_msp = 0;\n",
+    "    __v32_gc_ovf = 0;\n",
+    "    __v32_gc_thresh = @THRESHEXPR@;\n",
+    "    for (i = 0; i <= @NCLS@; i++) __v32_gc_flist[i] = -1;\n",
+    "    __v32_gc_roots_init();\n",
+    "@STACKTOP@}\n",
+    "\n",
+    "\n",
+    "int __v32_gc_get_used(void)\n",
+    "{\n",
+    "    return __v32_gc_inuse;\n",
+    "}\n",
+    "\n",
+    "\n",
+    "int __v32_gc_get_free(void)\n",
+    "{\n",
+    "    return __v32_gc_size - __v32_gc_inuse;\n",
+    "}\n",
+    "\n",
+    "\n",
+    "int __v32_gc_get_collections(void)\n",
+    "{\n",
+    "    return __v32_gc_count;\n",
+    "}\n",
+    NULL
+};
+
+/* could a file-scope variable of this type hold a heap pointer? Pointers, class
+ * objects (scanned whole, conservatively) and arrays of them; not plain numbers,
+ * enums or function pointers (code addresses). */
+static int gc_type_may_hold_pointer(const AstNode *t, int depth) {
+    while (t != NULL && (t->kind == AST_CONST_TYPE || t->kind == AST_ARRAY_TYPE)) t = t->a;
+    if (t == NULL || depth > 8) return 1;
+    switch (t->kind) {
+        case AST_FUNC_PTR_TYPE: return 0;
+        case AST_IDENT: {
+            static const char *const plain[] = { "int", "float", "char", "bool", "void", "double",
+                "short", "long", "unsigned", "signed", "size_t", NULL };
+            for (int i = 0; plain[i] != NULL; i++)
+                if (t->str1 != NULL && strcmp(t->str1, plain[i]) == 0) return 0;
+            if (t->str1 != NULL) {
+                AstNode *tag = find_enum_or_union_decl(&g_program->list, t->str1);
+                if (tag != NULL && tag->kind == AST_ENUM_DECL) return 0;
+            }
+            const AstNode *under = resolve_typedef_chain(t);
+            if (under != NULL && under != t) return gc_type_may_hold_pointer(under, depth + 1);
+            return 1;
+        }
+        default: return 1;
+    }
+}
+
+static int gc_root_wanted(const AstNode *n) {
+    if (n->kind != AST_VAR_DECL || n->str1 == NULL || n->is_extern) return 0;
+    if (n->attr_flags & ATTR_ROM) return 0;
+    const AstNode *t = n->type;
+    while (t != NULL && t->kind == AST_CONST_TYPE) t = t->a;
+    if (t != NULL && t->kind == AST_ARRAY_TYPE && t->ival <= 0 && t->b == NULL && n->a == NULL) return 0; /* unsized, no storage here */
+    return gc_type_may_hold_pointer(n->type, 0);
+}
+
+static int gc_count_roots(const AstList *decls) {
+    int c = 0;
+    for (int i = 0; i < decls->count; i++) {
+        const AstNode *n = decls->items[i];
+        if (n->kind == AST_VAR_DECL) c += gc_root_wanted(n);
+        else if (n->kind == AST_NAMESPACE_DECL) c += gc_count_roots(&n->list);
+    }
+    return c;
+}
+
+/* one assignment pair per root: the table is filled at run time, not as a file-scope
+ * initializer, so no address constant is needed in a Vircon32 data declaration */
+static int gc_emit_root_entries(FILE *out, const AstList *decls, int k, const char *it) {
+    for (int i = 0; i < decls->count; i++) {
+        const AstNode *n = decls->items[i];
+        if (n->kind == AST_VAR_DECL && gc_root_wanted(n)) {
+            const AstNode *t = n->type;
+            while (t != NULL && t->kind == AST_CONST_TYPE) t = t->a;
+            fprintf(out, "    __v32_gc_root_a[%d] = (%s)&%s", k, it, n->str1);
+            while (t != NULL && t->kind == AST_ARRAY_TYPE) {   /* the first element: arrays are not taken by & */
+                fprintf(out, "[0]");
+                t = t->a;
+                while (t != NULL && t->kind == AST_CONST_TYPE) t = t->a;
+            }
+            fprintf(out, ";\n    __v32_gc_root_n[%d] = sizeof(%s);\n", k, n->str1);
+            k++;
+        } else if (n->kind == AST_NAMESPACE_DECL) {
+            k = gc_emit_root_entries(out, &n->list, k, it);
+        }
+    }
+    return k;
+}
+
+/* the template, with @NAME@ replaced */
+static void gc_emit_template(FILE *out, const char *const *lines, const char *const *names, const char *const *values) {
+    for (int i = 0; lines[i] != NULL; i++) {
+        for (const char *p = lines[i]; *p != '\0'; ) {
+            int hit = 0;
+            if (*p == '@') {
+                for (int k = 0; names[k] != NULL; k++) {
+                    size_t len = strlen(names[k]);
+                    if (strncmp(p + 1, names[k], len) == 0 && p[1 + len] == '@') {
+                        fputs(values[k], out);
+                        p += len + 2;
+                        hit = 1;
+                        break;
+                    }
+                }
+            }
+            if (!hit) { fputc(*p, out); p++; }
+        }
+    }
+}
+
+static void emit_gc_runtime(FILE *out, const AstList *decls) {
+    int std = (g_target == TARGET_STANDARD);
+    int nroots = gc_count_roots(decls);
+    char nr[32], size_expr[96], thresh_expr[96], nr1[32];
+    snprintf(nr, sizeof nr, "%d", nroots > 0 ? nroots : 1);
+    snprintf(nr1, sizeof nr1, "%d", 32 + 1);
+    if (std) snprintf(size_expr, sizeof size_expr, "(%d * sizeof(int)) / 16 * 16", g_heap_words);
+    else snprintf(size_expr, sizeof size_expr, "%d * sizeof(int)", g_heap_words);
+    if (g_gc_threshold > 0) snprintf(thresh_expr, sizeof thresh_expr, "%d * sizeof(int)", g_gc_threshold);
+    else snprintf(thresh_expr, sizeof thresh_expr, "__v32_gc_size / 4");
+
+    const char *collect =
+        std ?
+        "#if defined(__GNUC__)\n__attribute__((noinline))\n#endif\n"
+        "void __v32_gc_collect(void)\n{\n"
+        "    jmp_buf jb;\n"
+        "    /* callee-saved registers: into this frame, which __v32_gc_run scans */\n"
+        "#if defined(__GNUC__)\n    __builtin_unwind_init();\n#endif\n"
+        "    setjmp(jb);\n"
+        "    __v32_gc_run(0);\n}\n"
+        :
+        "void __v32_gc_collect(void)\n{\n"
+        "    int stk;\n"
+        "    stk = 0;\n"
+        "    /* Vircon32: PUSH decrements SP, then stores. Pushing R0-R10 puts every value that lives\n"
+        "     * only in a register on the stack, below the caller's frames; SP then points at the\n"
+        "     * lowest of them. They are not popped: this function's epilogue resets SP from BP, and\n"
+        "     * __v32_gc_run must run with them still in place. */\n"
+        "    asm {\n"
+        "        \"push R0\"\n        \"push R1\"\n        \"push R2\"\n        \"push R3\"\n"
+        "        \"push R4\"\n        \"push R5\"\n        \"push R6\"\n        \"push R7\"\n"
+        "        \"push R8\"\n        \"push R9\"\n        \"push R10\"\n"
+        "        \"mov {stk}, SP\"\n"
+        "    }\n"
+        "    __v32_gc_run(stk);\n}\n";
+    const char *stacktop =
+        std ?
+        "#if defined(__GLIBC__)\n    __v32_gc_stack_top = (intptr_t)__libc_stack_end;\n"
+        "#elif defined(__GNUC__)\n    __v32_gc_stack_top = (intptr_t)__builtin_frame_address(1);\n"
+        "#else\n    { char m; __v32_gc_stack_top = (intptr_t)&m; }\n#endif\n"
+        :
+        "    /* RAM is 0x000000-0x3FFFFF and the stack starts at its last word (v32_restart sets\n"
+        "     * SP to 0x003FFFFF and it grows down): scan [SP, 0x400000) */\n"
+        "    __v32_gc_stack_top = 4194304;\n";
+    const char *names[] = { "IT", "WORD", "SLOT", "HDR", "G", "NCLS", "NCLS1", "PAGE", "MSTACK", "MINBLK", "NR",
+        "SIZEEXPR", "THRESHEXPR", "RUNDECL", "SPDECL", "SPSET", "ROUNDN", "COLLECT", "STACKTOP", NULL };
+    const char *values[] = {
+        std ? "intptr_t" : "int",
+        std ? "__v32_gc_word" : "int",
+        std ? "(int)sizeof(intptr_t)" : "1",
+        std ? "16" : "3",
+        std ? "16" : "1",
+        "32", nr1, "256", "512",
+        std ? "32" : "4",
+        nr, size_expr, thresh_expr,
+        std ? "#if defined(__GNUC__)\n__attribute__((noinline))\n#endif\n" : "",
+        std ? "    char marker;\n" : "",
+        std ? "#if defined(__GNUC__)\n    sp = (intptr_t)__builtin_frame_address(0);\n#else\n    sp = (intptr_t)&marker;\n#endif\n" : "",
+        std ? "    n = (n + 15) / 16 * 16;\n" : "",
+        collect, stacktop };
+
+    fprintf(out, "/* ---- --alloc=gc runtime: see docs/AGENTS.md, \"Memory management\" ---- */\n");
+    if (std) {
+        fprintf(out, "#if defined(__GNUC__)\ntypedef intptr_t __attribute__((may_alias)) __v32_gc_word;\n#else\n"
+                     "typedef intptr_t __v32_gc_word;\n#endif\n"
+                     "#if defined(__GLIBC__)\nextern void *__libc_stack_end;\n#endif\n");
+    }
+    emit_alloc_fatal(out, "__v32_gc_fatal", "--alloc=gc heap is full", "OUT OF MEMORY (gc heap full)");
+    gc_emit_template(out, gc_runtime_tpl, names, values);
+    fprintf(out, "\n\n/* the roots: every file-scope variable that can hold a pointer */\n"
+                 "void __v32_gc_roots_init(void)\n{\n");
+    gc_emit_root_entries(out, decls, 0, std ? "intptr_t" : "int");
+    fprintf(out, "    __v32_gc_nroots = %d;\n}\n\n\n", nroots);
+}
+
+/* the zero-argument constructor (defaults allowed) of a class, or NULL */
+static const AstNode *class_zero_ctor(const AstNode *class_decl) {
+    ClassLayout *layout = (ClassLayout *)class_decl->sema_info;
+    if (layout == NULL) return NULL;
+    for (int i = 0; i < layout->methods.count; i++) {
+        AstNode *m = layout->methods.items[i];
+        if (strcmp(m->str1, class_decl->str1) != 0) continue;
+        if (m->kind != AST_FUNC_DEF) continue;
+        int all_defaulted = 1;
+        for (int p = 1; p < m->list.count; p++)
+            if (m->list.items[p]->a == NULL) { all_defaulted = 0; break; }
+        if (all_defaulted) return m;
+    }
+    return NULL;
+}
+
 static void emit_new_delete_runtime(FILE *out, const AstNode *class_decl) {
     ClassLayout *layout = (ClassLayout *)class_decl->sema_info;
     if (layout == NULL) return;
@@ -2270,9 +2985,9 @@ static void emit_new_delete_runtime(FILE *out, const AstNode *class_decl) {
         print_class_type_name(out, class_decl->str1);
         fprintf(out, " *self = (");
         print_class_type_name(out, class_decl->str1);
-        fprintf(out, " *)malloc(sizeof(");
-        print_class_type_name(out, class_decl->str1);
-        fprintf(out, "));\n");
+        fprintf(out, " *)");
+        emit_obj_alloc(out, class_decl);
+        fprintf(out, ";\n");
         if (has_body) {
             fprintf(out, "    %s(self", ctor_mangled);
             for (int p = start; p < m->list.count; p++) {
@@ -2324,9 +3039,9 @@ static void emit_new_delete_runtime(FILE *out, const AstNode *class_decl) {
         print_class_type_name(out, class_decl->str1);
         fprintf(out, " *self = (");
         print_class_type_name(out, class_decl->str1);
-        fprintf(out, " *)malloc(sizeof(");
-        print_class_type_name(out, class_decl->str1);
-        fprintf(out, "));\n");
+        fprintf(out, " *)");
+        emit_obj_alloc(out, class_decl);
+        fprintf(out, ";\n");
         if (layout->vtable != NULL) {
             fprintf(out, "    self->vtable = &%s_vtable_instance;\n", class_decl->str1);
         }
@@ -2357,19 +3072,99 @@ static void emit_new_delete_runtime_classes(FILE *out, const AstList *decls) {
  * with array-`new` goes unused rather than being scoped out by an
  * "only if actually used" scan this project hasn't built). */
 static void emit_array_new_runtime(FILE *out, const char *type_name) {
+    /* a primitive element type: no constructor, no destructor, no header */
     print_class_type_name(out, type_name);
     fprintf(out, " *v32_new_arr_%s(int n)\n{\n    return (", type_name);
     print_class_type_name(out, type_name);
-    fprintf(out, " *)malloc(n * sizeof(");
+    fprintf(out, " *)%s(n * sizeof(", V32_ALLOC_HOOK ? "__v32_alloc" : "malloc");
     print_class_type_name(out, type_name);
     fprintf(out, "));\n}\n\n\n");
+}
+
+/* `new T[n]` of a class: every element is default-constructed, in order.
+ * A class with a destructor gets one header word in front of the elements
+ * holding n (the pointer handed out is past it), so that `delete[]` can
+ * destroy them last first; a class without one has no header and
+ * `delete[]` is a plain release. n < 0 counts as 0. */
+static void emit_array_new_runtime_class(FILE *out, const AstNode *cd) {
+    const AstNode *dtor = class_dtor_with_body(cd);
+    const AstNode *ctor = class_zero_ctor(cd);
+    ClassLayout *layout = (ClassLayout *)cd->sema_info;
+    int vt = (layout != NULL && layout->vtable != NULL);
+    int hdr = array_hdr_units();
+    if (dtor == NULL && ctor == NULL && !vt) { emit_array_new_runtime(out, cd->str1); return; }
+
+    print_class_type_name(out, cd->str1);
+    fprintf(out, " *v32_new_arr_%s(int n)\n{\n    ", cd->str1);
+    print_class_type_name(out, cd->str1);
+    fprintf(out, " *p;\n    int i;\n");
+    if (dtor != NULL) fprintf(out, "    char *raw;\n    int *hdr;\n");
+    fprintf(out, "    if (n < 0) n = 0;\n");
+    if (dtor != NULL) {
+        if (g_alloc_arena)
+            fprintf(out, "    raw = (char *)__v32_alloc_rec(n * sizeof(");
+        else if (g_alloc_gc)   /* collected objects get no destructor: no record */
+            fprintf(out, "    raw = (char *)__v32_alloc(n * sizeof(");
+        else
+            fprintf(out, "    raw = (char *)malloc(n * sizeof(");
+        print_class_type_name(out, cd->str1);
+        if (g_alloc_arena) fprintf(out, ") + %d, %d, n, %d);\n", hdr, arena_class_id(cd), hdr);
+        else fprintf(out, ") + %d);\n", hdr);
+        fprintf(out, "    if (raw == NULL) return NULL;\n    hdr = (int *)raw;\n    hdr[0] = n;\n    p = (");
+        print_class_type_name(out, cd->str1);
+        fprintf(out, " *)(raw + %d);\n", hdr);
+    } else {
+        fprintf(out, "    p = (");
+        print_class_type_name(out, cd->str1);
+        fprintf(out, " *)%s(n * sizeof(", V32_ALLOC_HOOK ? "__v32_alloc" : "malloc");
+        print_class_type_name(out, cd->str1);
+        fprintf(out, "));\n    if (p == NULL) return NULL;\n");
+    }
+    if (ctor != NULL) {
+        fprintf(out, "    for (i = 0; i < n; i++) %s(&p[i]", dtor_mangled_name(ctor));
+        for (int k = 1; k < ctor->list.count; k++) {
+            fprintf(out, ", ");
+            print_expr(out, ctor->list.items[k]->a);
+        }
+        fprintf(out, ");\n");
+    } else if (vt) {
+        fprintf(out, "    for (i = 0; i < n; i++) p[i].vtable = &%s_vtable_instance;\n", cd->str1);
+    }
+    fprintf(out, "    return p;\n}\n\n\n");
+}
+
+/* `delete[] p` where p's static class is known: destroys the elements last
+ * first (each through its own class's destructor, not the vtable: the
+ * array is of exactly this type -- through a Base * to a Derived array it
+ * is undefined, as in C++), then releases the block from its header. */
+static void emit_array_delete_runtime(FILE *out, const AstNode *cd) {
+    const AstNode *dtor = class_dtor_with_body(cd);
+    fprintf(out, "void v32_delete_arr_%s(", cd->str1);
+    print_class_type_name(out, cd->str1);
+    fprintf(out, " *ptr)\n{\n");
+    if (dtor == NULL) {
+        fprintf(out, "    if (ptr == NULL) return;\n");
+        if (V32_ALLOC_HOOK) fprintf(out, "    __v32_release(ptr);\n");
+        else fprintf(out, "    free(ptr);\n");
+        fprintf(out, "}\n\n\n");
+        return;
+    }
+    fprintf(out, "    char *raw;\n    int i;\n    if (ptr == NULL) return;\n"
+                 "    raw = (char *)ptr - %d;\n"
+                 "    for (i = ((int *)raw)[0] - 1; i >= 0; i--) %s(&ptr[i]);\n",
+            array_hdr_units(), dtor_mangled_name(dtor));
+    if (g_alloc_arena) fprintf(out, "    __v32_arena_kill(raw);\n");
+    else if (g_alloc_gc) fprintf(out, "    __v32_release(raw);\n");
+    else fprintf(out, "    free(raw);\n");
+    fprintf(out, "}\n\n\n");
 }
 
 static void emit_array_new_runtime_classes(FILE *out, const AstList *decls) {
     for (int i = 0; i < decls->count; i++) {
         const AstNode *n = decls->items[i];
         if (n->kind == AST_CLASS_DECL) {
-            emit_array_new_runtime(out, n->str1);
+            emit_array_new_runtime_class(out, n);
+            emit_array_delete_runtime(out, n);
         } else if (n->kind == AST_NAMESPACE_DECL) {
             emit_array_new_runtime_classes(out, &n->list);
         }
@@ -2407,7 +3202,10 @@ static void emit_v32_delete(FILE *out) {
      * Vircon32's NULL is -1 (address 0 is a legitimate address there) --
      * free() has no reason to treat -1 specially the way standard C's
      * free(NULL) must. */
-    fprintf(out, "void v32_delete(void *ptr)\n{\n    if (ptr == NULL) return;\n    free(ptr);\n}\n\n\n");
+    if (V32_ALLOC_HOOK)
+        fprintf(out, "void v32_delete(void *ptr)\n{\n    if (ptr == NULL) return;\n    __v32_release(ptr);\n}\n\n\n");
+    else
+        fprintf(out, "void v32_delete(void *ptr)\n{\n    if (ptr == NULL) return;\n    free(ptr);\n}\n\n\n");
 }
 
 /* ---- destructor invocation via delete ------------------------------------
@@ -2527,7 +3325,15 @@ static void emit_delete_runtime(FILE *out, const AstNode *class_decl) {
     /* else: no destructor with a body exists for this class -- nothing
      * to call, same as a class with no constructor gets no call from
      * v32_new_ClassName either. */
-    fprintf(out, "    free(ptr);\n");
+    if (g_alloc_arena) {
+        /* the destructor has run: the arena's record must not run it again */
+        if (class_dtor_with_body(class_decl) != NULL) fprintf(out, "    __v32_arena_kill(ptr);\n");
+    } else if (g_alloc_gc) {
+        /* the destructor has run: the block goes back to the collector's free lists at once */
+        fprintf(out, "    __v32_release(ptr);\n");
+    } else {
+        fprintf(out, "    free(ptr);\n");
+    }
     fprintf(out, "}\n\n\n");
 }
 
@@ -2649,8 +3455,8 @@ void codegen_run(const AstNode *program, FILE *out, int verbose_comments) {
      * which "any class exists" alone would never catch, silently
      * dropping misc.h and every runtime function that depends on it
      * from the output despite being called. */
-    int needs_misc = program_has_any_class(&program->list) || g_uses_new_or_delete;
-    if (needs_misc && g_c_mode && !g_uses_new_or_delete) {
+    int needs_misc = program_has_any_class(&program->list) || g_uses_new_or_delete || V32_ALLOC_HOOK;
+    if (needs_misc && g_c_mode && !g_uses_new_or_delete && !V32_ALLOC_HOOK) {
         /* C input: a struct is only data, and nothing from misc.h is
          * needed on its account. */
         needs_misc = 0;
@@ -2669,6 +3475,13 @@ void codegen_run(const AstNode *program, FILE *out, int verbose_comments) {
         } else {
             fprintf(out, "#include \"misc.h\"\n");
         }
+        if (V32_ALLOC_HOOK) {
+            /* the arena's out-of-space message */
+            if (g_target == TARGET_STANDARD) fprintf(out, "#include <stdio.h>\n");
+            else fprintf(out, "#include \"video.h\"\n#include \"time.h\"\n");
+        }
+        if (g_alloc_gc && g_target == TARGET_STANDARD)   /* memset, setjmp, intptr_t for the collector */
+            fprintf(out, "#include <string.h>\n#include <setjmp.h>\n#include <stdint.h>\n");
     }
     fprintf(out, "/* Auto-generated Vircon32 C -- do not edit by hand. */\n\n");
     /* Structs read from a pass-through header (prescan.c) are declared for
@@ -2706,6 +3519,13 @@ void codegen_run(const AstNode *program, FILE *out, int verbose_comments) {
     fprintf(out, "\n");
     emit_vtable_instances_classes(out, &program->list);
     if (needs_misc) {
+        if (g_alloc_arena) {
+            g_arena_class_count = 0;
+            collect_arena_classes(&program->list);
+            emit_arena_runtime(out, &program->list);
+        } else if (g_alloc_gc) {
+            emit_gc_runtime(out, &program->list);
+        }
         emit_new_delete_runtime_classes(out, &program->list);
         emit_array_new_runtime_classes(out, &program->list);
         emit_primitive_array_new_runtime(out);

@@ -51,6 +51,10 @@ extern int g_yield_quantum;
 extern const char *g_yield_func, *g_yield_counter;
 int g_unsigned_ops = 1;        /* cleared by --no-unsigned-ops */
 int g_silence_unused = 0;      /* set by --silence-unused-args */
+int g_alloc_arena = 0;         /* --alloc=arena: new/new[]/vector buffers come from an arena */
+int g_heap_words = 262144;     /* --heap-words=N: the arena's size, in words */
+int g_alloc_gc = 0;            /* --alloc=gc: the same hook, over a conservative mark-sweep heap */
+int g_gc_threshold = 0;        /* --gc-threshold=N: words allocated between collections (0: a quarter of the heap) */
 CartResourceList g_cart_textures = {NULL, 0, 0};
 CartResourceList g_cart_sounds = {NULL, 0, 0};
 char *g_cart_title = NULL;
@@ -91,7 +95,7 @@ static char *invoked_name(const char *argv0) {
 }
 
 static void print_usage(const char *prog_name) {
-    fprintf(stderr, "usage: %s [-o output.c] [-c] [-v[v[v]]] [-I dir] [-D name[=value]] [-U name] [-x] [--xml-preserve-paths] [--no-build-scripts] [--title-opt=TEXT] [--no-diff-opt-title] [-b] [-g] [--target=vircon32|standard] [--reject-bit-fields] [--no-signed-shift] [--no-unsigned-ops] [--yield-points[=N]] [--rename old=new] [--assembler=CMD] [--assembler-style=stock|v32as] [--compiler=CMD] [--compiler-style=stock|v32cc] [--yield-func=NAME] [--yield-counter=NAME] [--silence-unused-args] [--allow-undefined] [--warn-error[=kind,...]] [--list-warnings] [-L dir] [-lname] [--mklib lib.v32a] [--no-inline-containers] [--version] <input.cpp> [more inputs] [lib.v32a ...]\n", prog_name);
+    fprintf(stderr, "usage: %s [-o output.c] [-c] [-v[v[v]]] [-I dir] [-D name[=value]] [-U name] [-x] [--xml-preserve-paths] [--no-build-scripts] [--title-opt=TEXT] [--no-diff-opt-title] [-b] [-g] [--target=vircon32|standard] [--reject-bit-fields] [--no-signed-shift] [--no-unsigned-ops] [--yield-points[=N]] [--rename old=new] [--assembler=CMD] [--assembler-style=stock|v32as] [--compiler=CMD] [--compiler-style=stock|v32cc] [--yield-func=NAME] [--yield-counter=NAME] [--silence-unused-args] [--alloc=malloc|arena|gc] [--heap-words=N] [--gc-threshold=N] [--allow-undefined] [--warn-error[=kind,...]] [--list-warnings] [-L dir] [-lname] [--mklib lib.v32a] [--no-inline-containers] [--version] <input.cpp> [more inputs] [lib.v32a ...]\n", prog_name);
     fprintf(stderr, "  -o output.c   write generated Vircon32 C to this file (default:\n"
                      "                <input> with its extension replaced by .c)\n");
     fprintf(stderr,  "  --no-signed-shift\n"
@@ -115,7 +119,23 @@ static void print_usage(const char *prog_name) {
                      "                unsigned operations (Vircon32's are signed, so a\n"
                      "                value above 2^31 would read as negative); use this\n"
                      "                when no such value occurs and the code costs too much\n");
-    fprintf(stderr,  "  --silence-unused-args\n"
+    fprintf(stderr,  "  --alloc=malloc|arena|gc\n"
+                     "                where new, new[] and std::vector buffers come from:\n"
+                     "                the SDK's malloc/free (default, output unchanged),\n"
+                     "                an arena (<v32/memory.hpp>: arena_mark/arena_release/\n"
+                     "                arena_reset/arena_used/arena_free; delete runs the\n"
+                     "                destructor only, releasing an arena runs the\n"
+                     "                destructors of what is left, newest first), or a\n"
+                     "                conservative mark-sweep garbage collector (gc_collect/\n"
+                     "                gc_used/gc_free/gc_collections; delete frees at once,\n"
+                     "                collected objects get no destructor)\n"
+                     "  --heap-words=N\n"
+                     "                size of the arena or gc heap, taken from the SDK's\n"
+                     "                malloc at the start of main (default 262144 words)\n"
+                     "  --gc-threshold=N\n"
+                     "                --alloc=gc: collect after N words allocated since the\n"
+                     "                last collection (default: a quarter of the heap)\n"
+                     "  --silence-unused-args\n"
                      "                start every function that ignores one of its\n"
                      "                parameters (`this` of a method that touches no\n"
                      "                member, a callback's unused argument) with a\n"
@@ -503,6 +523,9 @@ int  main (int  argc, char **argv)
         { "compiler-style", required_argument, 0, 0x10e },
         { "yield-counter", required_argument, 0, 0x108 },
         { "mklib", required_argument, 0, 0x102 },
+        { "alloc", required_argument, 0, 0x10f },
+        { "heap-words", required_argument, 0, 0x110 },
+        { "gc-threshold", required_argument, 0, 0x111 },
         { 0,         0,                 0, 0   }
     };
 
@@ -659,6 +682,21 @@ int  main (int  argc, char **argv)
                 break;
             case 0x108:
                 g_yield_counter = optarg;
+                break;
+            case 0x10f:
+                g_alloc_arena = 0;
+                g_alloc_gc = 0;
+                if (strcmp(optarg, "arena") == 0) g_alloc_arena = 1;
+                else if (strcmp(optarg, "gc") == 0) g_alloc_gc = 1;
+                else if (strcmp(optarg, "malloc") != 0) { fprintf(stderr, "error: --alloc is malloc, arena or gc\n"); return 2; }
+                break;
+            case 0x111:
+                g_gc_threshold = atoi(optarg);
+                if (g_gc_threshold <= 0) { fprintf(stderr, "error: --gc-threshold needs a positive number of words\n"); return 2; }
+                break;
+            case 0x110:
+                g_heap_words = atoi(optarg);
+                if (g_heap_words <= 0) { fprintf(stderr, "error: --heap-words needs a positive number of words\n"); return 2; }
                 break;
             case 0x101:
                 list_symbols = 1;       /* internal: what archive.c asks of a child run */

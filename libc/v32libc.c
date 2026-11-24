@@ -234,10 +234,13 @@ static void v32_restart(void)
 }
 
 void (*v32_exit_hook)(int status) = NULL;
+void (*v32_exit_destructors)(void) = NULL;
 char *v32_exit_prompt = "\n[Press START to play again]";
 
 void v32_exit(int status)
 {
+    if (v32_exit_destructors != NULL)
+        v32_exit_destructors();
     if (v32_exit_hook != NULL)
         v32_exit_hook(status);
     v32term_attr(V32TERM_INK(V32INK_YELLOW));

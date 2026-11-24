@@ -22,6 +22,8 @@ v32c++, v32c \- transpile a subset of C/C++ to Vircon32 C
 .RB [ \-b ]
 .RB [ \-g ]
 .RB [ \-\-line\-markers ]
+.RB [ \-\-alloc=malloc | arena ]
+.RB [ \-\-heap\-words=N ]
 .RB [ \-\-target=vircon32 | standard ]
 .RB [ \-\-reject\-bit\-fields ]
 .RB [ \-\-no\-signed\-shift ]
@@ -406,6 +408,50 @@ struct is larger and no longer matches a packed layout, and a value
 wider than the declared width is kept whole instead of being truncated.
 Use this flag for code that depends on either.
 .TP
+.BI \-\-alloc= X
+Where every allocation of the generated program comes from:
+.B malloc
+(the default; the output is unchanged),
+.B arena
+or
+.BR gc .
+With
+.B arena
+.BR new ,
+.BR new[] ,
+the
+.B std::vector
+buffers and the other generated allocations come from one block, taken from
+the SDK's malloc at the start of
+.BR main ,
+and nothing is freed one by one:
+.B delete
+runs the destructor only, and
+.IR arena_release (3v32)
+(see
+.BR memory.hpp (3v32))
+gives back everything allocated since a mark, running the destructors of the
+objects still alive there, newest first. Out of space, the program prints a
+message on the screen and halts. With
+.B gc
+the same allocations come from one garbage-collected heap (a conservative mark-sweep
+collector): nothing has to be deleted,
+.B delete
+still runs the destructor and frees at once, and an object that is collected gets no
+destructor. See MEMORY MANAGEMENT.
+.TP
+.BI \-\-heap\-words= N
+The size of the arena or of the gc heap, in words (default 262144). Only with
+.B \-\-alloc=arena
+or
+.BR \-\-alloc=gc .
+.TP
+.BI \-\-gc\-threshold= N
+With
+.BR \-\-alloc=gc :
+start a collection after N words were allocated since the last one (default: a quarter
+of the heap).
+.TP
 .BI \-\-target= X
 Output C dialect:
 .B vircon32
@@ -645,8 +691,8 @@ and
 with a call inside the expression form correctly resolved, not
 skipped);
 .B goto
-and labeled statements (a real, deliberately-flagged limitation here
-\(em see BUGS below);
+and labeled statements (a goto out of a scope runs the destructors of the
+objects it leaves; see BUGS);
 function pointers, in BOTH Vircon32's own quirky declarator style
 .RI ( "ReturnType(ParamTypes)* name;" )
 and standard C's
@@ -750,14 +796,22 @@ member initializers for members that are themselves objects
 .RI ( ": mVel(vx, vy)" );
 in-class default member initializers
 .RI ( "int mLives = 3;" ),
-applied by every constructor that doesn't initialize the member itself;
+applied by every constructor that doesn't initialize the member itself
+(also for an array of objects:
+.IR "Counter m[2] = { {1}, Counter(2) };" ,
+or in a constructor's list,
+.IR ": m{ {1}, {2} }" ;
+each element is built in place);
 pure virtual functions
 .RI ( "= 0" );
 unnamed temporaries
 .RI ( "return Vec(x, y);" );
 file-scope objects, constructed at the top of
 .B main
-(with constructor arguments if given);
+(with constructor arguments if given) and destroyed, last first, when it ends
+(and by
+.BR exit ,
+for a program that uses v32libc);
 arrays of objects, constructed and destroyed element by element
 (member arrays included);
 structs and classes larger than one word passed and returned by value
@@ -813,11 +867,16 @@ a two-dimensional array parameter.
 Array
 .B new
 .RI ( "new T[n]" )
-allocates without constructing each element, and
+default-constructs each element, in order; for a class with a destructor it
+keeps the element count in one extra word in front of the array, and
 .B delete[]
-runs no destructors; prefer
-.B std::vector
-or a stack array.
+reads it back and destroys the elements, last first. A null pointer or a
+count of zero is fine.
+.B delete[]
+through a base pointer to an array of a derived class is undefined, as in
+C++, and a list-initialized array new
+.RI ( "new T[n]{a, b}" )
+is not supported.
 .PP
 Never supported, by design: templates, exceptions, RTTI, multiple
 inheritance.
@@ -1209,6 +1268,8 @@ is always id 0, the second id 1, and so on; likewise for
 .I NAME
 is then usable anywhere an integer constant would be, as an argument to
 whatever texture/sound-selecting function the target program calls.
+A name can be used once: two hints with the same name (two textures, two sounds,
+or a texture and a sound) are an error naming both lines.
 The same declaration order also determines each resource's position
 in the generated XML's
 .B <textures>
@@ -1464,6 +1525,74 @@ member-access chain; a
 .I v32_new_
 function-name prefix) \(em nothing C++ source could itself trigger by
 coincidence.
+.SH MEMORY MANAGEMENT
+By default every allocation is the SDK's
+.BR malloc / free .
+.B \-\-alloc=arena
+routes them all (\fBnew\fP, \fBnew[]\fP, the \fBstd::vector\fP buffers) through one
+pair of runtime calls, \fB__v32_alloc\fP / \fB__v32_release\fP, backed by one block of
+.B \-\-heap\-words
+words taken from the SDK's malloc at the start of
+.BR main ,
+so the cartridge acquires it again whenever it restarts. An object whose class
+has a destructor is recorded in the arena; releasing back to a mark runs those
+destructors, newest first. \fBdelete\fP runs the destructor at once and marks
+the record, so release does not run it twice; \fBdelete[]\fP does the same for each
+element. A \fBstd::vector\fP that grows takes new space and copies; the old
+space comes back only on release. \fBstd::string\fP keeps its characters inside the
+object, so it allocates nothing. Calls to \fBmalloc\fP in your own code, and
+.B v32::HeapBlock
+are not rerouted.
+.PP
+.B <v32/memory.hpp>
+(see
+.BR memory.hpp (3v32))
+gives
+.BR v32::arena_mark ,
+.BR arena_release ,
+.BR arena_reset ,
+.B arena_used
+and
+.BR arena_free .
+.PP
+.B \-\-alloc=gc
+serves the same allocations from one heap of
+.B \-\-heap\-words
+words, garbage collected by a conservative mark-sweep collector. A collection starts
+when an allocation finds no room (the allocation is then retried), after
+.B \-\-gc\-threshold
+words were allocated since the last one, and on
+.BR v32::gc_collect .
+Blocks have a header (size, mark bit, free-list link); small blocks are kept on
+size-class free lists, large ones first fit, and the sweep coalesces neighbours. The
+roots are the file-scope variables that can hold a pointer (a table v32c++ emits:
+pointers, objects,
+.BR std::vector s,
+arrays of them) and the machine stack from the stack pointer to its top together with
+the registers; a word pointing anywhere inside a block keeps it alive (a page table
+finds the block), and live blocks are scanned conservatively too. \fBdelete\fP runs the
+destructor and frees at once; collected objects get no destructor. Out of space after a
+collection the cartridge prints "OUT OF MEMORY (gc heap full)" and halts. An integer
+that looks like a heap address keeps a dead block alive; a pointer hidden from the
+collector (xor-ed, or one past the end of its block) keeps nothing alive; raw
+\fBmalloc\fP memory is not managed. Precise per-class pointer maps and finalizers are
+future work.
+.B <v32/memory.hpp>
+gives
+.BR v32::gc_collect ,
+.BR gc_used ,
+.B gc_free
+and
+.BR gc_collections ;
+the
+.B arena_*
+functions do not exist with
+.BR \-\-alloc=gc ,
+nor the
+.B gc_*
+ones with
+.BR \-\-alloc=arena .
+Including it without either option is a compile-time error.
 .SH FILES
 .TP
 .I *.cpp
@@ -1638,20 +1767,15 @@ Project repository:
 .I https://github.com/wedge1020/v32cxx
 .SH BUGS
 .B goto
-does not interact correctly with destructors: jumping into or out of a
-scope holding a live class-typed local does not invoke that local's
-own destructor the way
-.BR break / continue / return
-already correctly do \(em there is no equivalent pass for
+out of a scope destroys the class objects (and arrays of them) that are live
+there and not at the label, last built first, before it jumps. A
 .B goto
-yet. A
+that would jump past the declaration of an object with a destructor (forward
+in one block, or into a block) is an error, as in C++. A
 .B goto
 to a label that doesn't exist is not reported by
 .B v32c++
-(the Vircon32 compiler reports it). Keep
-.B goto
-to flat scopes with no destructible locals in play until this is
-addressed.
+(the Vircon32 compiler reports it).
 .PP
 .B const
 is only accepted as a PREFIX before a type
@@ -1671,16 +1795,6 @@ function, the generated
 .I this
 parameter's own type \(em with real violations left for the downstream
 C/C++ compiler to catch.
-.PP
-Array
-.B new
-does not construct each element and
-.B delete[]
-destroys none;
-.B delete[]
-through a base pointer to an array of a derived class is undefined.
-Multi-dimensional arrays of objects are constructed but not destroyed
-at scope exit.
 .PP
 The Vircon32 assembler rejects a string holding control codes (1 to 8, 11,
 12, 14 to 31 and 127, which include the BIOS font's box drawing characters),

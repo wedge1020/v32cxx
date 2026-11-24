@@ -26,6 +26,8 @@ public:
 
 enum Shade { SHADE_LIGHT, SHADE_DARK };
 typedef int score_t;
+typedef Counter C;      // a typedef of a class names the class everywhere
+typedef C C2;           // ... through a chain of them too
 
 struct P { int x; int y; };
 
@@ -85,6 +87,24 @@ int main(void)
     score_t s8{9};
     if (s7 != SHADE_DARK || s8 != 9) e++;
     if (s6 != 0) e++;
+
+    // a typedef of a class: the same constructor calls as the class's own name
+    {
+        int before = g_built;
+        C t1{1};
+        C t2 = {2};
+        C t3(3);
+        C2 t4{4, 5};
+        C t5{};
+        C t6 = C(6);
+        C t7[2] = { C(7), { 8 } };
+        C t8[2] = { { 1 }, { 2 } };
+        if (t1.id != 10 || t2.id != 20 || t3.id != 30 || t4.id != 9 || t5.id != 9) e++;
+        if (t6.id != 60 || t7[0].id != 70 || t7[1].id != 80 || t8[0].id != 10 || t8[1].id != 20) e++;
+        if (g_built != before + 10) e++;
+        if (g_live != base + 10) e++;
+    }
+    if (g_live != base) e++;
 
     // an aggregate keeps its brace list
     P p{1, 2};

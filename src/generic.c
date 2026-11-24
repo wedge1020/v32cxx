@@ -69,7 +69,7 @@ static const char *const ARRAY_TEMPLATE =
  *     a class whose constructor only fills in fields (virtual functions
  *     keep working: the vtable pointer is copied with the rest). A class
  *     with a DESTRUCTOR is the one that loses out, and gets a warning;
- *   - storage comes from Vircon32's malloc()/free(). There are no
+ *   - storage comes from Vircon32's malloc()/free() (or the arena's allocator, --alloc=arena). There are no
  *     exceptions, so running out of memory is not reported;
  *   - `a = b` copies every element (operator= below). Other copies --
  *     `vector<T> b = a;`, passing or returning one by value -- would
@@ -87,7 +87,7 @@ static const char *const VECTOR_TEMPLATE =
     "    int m_size;\n"
     "    int m_capacity;\n"
     "    @NAME@() { m_data = 0; m_size = 0; m_capacity = 0; }\n"
-    "    ~@NAME@() { free(m_data); }\n"
+    "    ~@NAME@() { @FREE@(m_data); }\n"
     "    int size() const { return m_size; }\n"
     "    int capacity() const { return m_capacity; }\n"
     "    bool empty() const { return m_size == 0; }\n"
@@ -100,9 +100,9 @@ static const char *const VECTOR_TEMPLATE =
     "    @T@ *end() { return m_data + m_size; }\n"
     "    void reserve(int n) {\n"
     "        if (n <= m_capacity) return;\n"
-    "        @T@ *grown = (@T@ *)malloc(n * sizeof(@T@));\n"
+    "        @T@ *grown = (@T@ *)@ALLOC@(n * sizeof(@T@));\n"
     "        for (int i = 0; i < m_size; i++) grown[i] = m_data[i];\n"
-    "        free(m_data);\n"
+    "        @FREE@(m_data);\n"
     "        m_data = grown;\n"
     "        m_capacity = n;\n"
     "    }\n"
@@ -346,6 +346,9 @@ static void write_instance(FILE *out, const Instance *inst) {
         if      (strncmp(p, "@NAME@", 6) == 0) { fputs(inst->name, out);      p += 6; }
         else if (strncmp(p, "@T@", 3) == 0)    { fputs(elem, out);            p += 3; }
         else if (strncmp(p, "@N@", 3) == 0)    { fputs(inst->len_text, out);  p += 3; }
+        /* the allocation hook: malloc/free, or the arena's / the collector's (--alloc=arena, --alloc=gc) */
+        else if (strncmp(p, "@ALLOC@", 7) == 0) { fputs(V32_ALLOC_HOOK ? "__v32_alloc" : "malloc", out); p += 7; }
+        else if (strncmp(p, "@FREE@", 6) == 0)  { fputs(V32_ALLOC_HOOK ? "__v32_release" : "free", out); p += 6; }
         else                                   { fputc(*p, out);              p++;    }
     }
     for (int k = 0; k < inst->ns_depth; k++) fputs("}\n", out);

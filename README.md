@@ -62,6 +62,7 @@ of scope](#deliberately-out-of-scope).
 
 - [What it supports](#what-it-supports)
 - [C++ headers for the Vircon32 API](#c-headers-for-the-vircon32-api)
+- [Memory management](#memory-management)
 - [Keyboard and mouse: v32io](#keyboard-and-mouse-v32io)
 - [Known limitations](#known-limitations)
 - [Requirements](#requirements) · [Building](#building) · [Checking with the real toolchain](#checking-with-the-real-toolchain) · [Debugging with v32sim](#debugging-with-v32sim)
@@ -86,15 +87,19 @@ of scope](#deliberately-out-of-scope).
   lists for base  classes (`: Base(args)`), primitive  members (`: x(v)`,
   in *declaration* order,  as C++ requires) and members  that are objects
   (`: mVel(vx, vy)`). In-class default member initializers (`int mLives =
-  3;`).  A base  with a  default constructor  is constructed  implicitly;
-  destructors chain to members and bases.
+  3;`), also for an array of objects (`Counter m[2] = { {1}, Counter(2) };`,
+  or `Holder() : m{ {1}, {2} } {}`: each element is built in place; the
+  elements left out are default-constructed). A base  with a  default
+  constructor  is constructed  implicitly; destructors chain to members and
+  bases (member arrays too, of any number of dimensions, last element first).
 
 - Objects  on  the   stack  (`Shape  s;`,  `Shape   s(7);`),  as  unnamed
   temporaries (`return  Vec(x, y);`, `v.push_back(Enemy(1, 2,  3));`), in
   arrays  (constructed and  destroyed element  by element,  member arrays
   included; `Enemy a[2] =  { Enemy(1), {2} };` builds each element in place,
   as C++17 does, also for several dimensions and at file scope),  at file  scope  (constructed  at the  top  of `main`,  with
-  constructor arguments if  given), and on the  heap with `new`/`delete`.
+  constructor arguments if  given, and destroyed, last first, when `main`
+  ends), and on the  heap with `new`/`delete`/`new[]`/`delete[]` (elements built and destroyed; opt-in arena or garbage collector: see *Memory management*).
   Destructors  run at  every  scope exit:  the  closing brace,  `return`,
   `break`, `continue`.
 
@@ -265,6 +270,69 @@ Use them with  `-I` pointing at the directory that  holds `v32/` (`v32c++
 -I path/to/v32c++ game.cpp`, then `#include <v32/video.hpp>`), or install
 them (see [Installing](#installing)).
 
+## Memory management
+
+`new`, `new[]` and the `std::vector` buffers use the SDK's `malloc`/`free`
+unless you ask otherwise. `--alloc=arena` (off by default; the output is
+unchanged without it) takes one block of `--heap-words=N` words (default
+262144) from the SDK's `malloc` at the start of `main` -- so a cartridge
+restart acquires it again -- and serves every generated allocation from it
+by bumping a pointer. Nothing is freed one by one: `delete` runs the
+destructor and keeps the space, and `<v32/memory.hpp>` gives it back in bulk:
+
+```cpp
+#include <v32/memory.hpp>
+int level = v32::arena_mark();       // at the start of a level or a frame
+Enemy *boss = new Enemy(3);
+std::vector<int> path;               // grows inside the arena
+v32::arena_release(level);           // boss's destructor runs; all is back
+```
+
+`arena_mark()`, `arena_release(mark)`, `arena_reset()`, `arena_used()` and
+`arena_free()` (words). Objects whose class has a destructor are recorded
+in the arena, and a release runs the destructors of those still alive, newest
+first; an object you already `delete`d is not destroyed twice (nor is a
+`delete[]`d array). A growing `std::vector` allocates anew and copies, the old
+buffer coming back only on release; `std::string` keeps its characters in the
+object and allocates nothing. Running out of space prints "OUT OF MEMORY
+(arena full)" on the screen and halts. Your own calls to `malloc` and
+`v32::HeapBlock` are not rerouted, and including `<v32/memory.hpp>` without
+`--alloc=arena` is a compile-time error.
+
+### `--alloc=gc`: a garbage collector
+
+`--alloc=gc` serves the same allocations (the same hook, `__v32_alloc` /
+`__v32_release`, acquired at the start of `main`) from one `--heap-words=N`
+heap that is garbage collected: a conservative mark-sweep collector, so
+nothing has to be `delete`d. `delete` stays legal, runs the destructor and
+frees at once; an object that is *collected* gets **no** destructor.
+
+```cpp
+#include <v32/memory.hpp>
+Enemy *boss = new Enemy(3);          // no delete needed
+...
+v32::gc_collect();                   // once per frame, at a quiet point
+```
+
+The roots are the file-scope variables that can hold a pointer (pointers,
+objects, `std::vector`s, arrays of them: v32c++ emits the table), and the
+machine stack from the stack pointer to its top plus the registers. Any word
+that points into a block, to its start or anywhere inside it (`&obj->member`,
+a pointer into the middle of a `new int[10]`, a vector's buffer), keeps the
+block and what it points to alive; the heap itself is scanned conservatively
+too. A collection runs when an allocation finds no room (then the allocation
+is retried), after `--gc-threshold=N` words were allocated since the last one
+(default: a quarter of the heap), and when you call `v32::gc_collect()`;
+`gc_used()`, `gc_free()` (words) and `gc_collections()` report the state. A full
+collection is a pause: call `gc_collect()` once per frame at a quiet point.
+Out of space after a collection prints "OUT OF MEMORY (gc heap full)" and
+halts. Limits: an integer that looks like a heap address keeps a dead block
+alive; a pointer hidden from the collector (xor-ed, or only one past the end
+of its block) keeps nothing alive; raw `malloc`/`v32::HeapBlock` memory is not
+managed; there are no finalizers, and the heap is scanned conservatively
+(precise per-class pointer maps are future work). The `arena_*` functions
+do not exist with `--alloc=gc`, nor the `gc_*` ones with `--alloc=arena`.
+
 ## Keyboard and mouse: v32io
 
 Three headers give programs a  real **keyboard** and **mouse**, split the
@@ -328,13 +396,18 @@ Checked against  the current  transpiler and  the real  Vircon32 compiler
 
 **Supported with caveats:**
 
-- **Array `new`**  (`new T[n]`) allocates  but does not  run constructors
-  per element; `delete[]`  runs no destructors, and  `delete[]` through a
-  base pointer to a derived array is undefined. Prefer `std::vector` or a
-  stack array, which are constructed and destroyed properly.
-- **`goto`** works, but  does not run destructors  for class-typed locals
-  it jumps out of; keep it to  scopes without them. A `goto` to a missing
-  label is caught by the Vircon32 compiler, not by v32c++.
+- **Array `new`** (`new T[n]`) default-constructs every element, in order;
+  for a class with a destructor one header word in front of the elements
+  keeps `n`, so `delete[]` destroys them last first and frees the block. `n`
+  may be zero or computed at run time, and `delete[]` of null does nothing.
+  `delete[]` through a base pointer to a derived array is undefined (as in
+  C++), and `new T[n]{a, b}` (a list-initialized array new) is not supported.
+- **`goto`** out of a scope destroys the class objects (and arrays of them)
+  that are live there and not at the label, last built first, as `break` and
+  `return` do. A `goto` that would jump past the declaration of an object
+  with a destructor (forward in one block, or into a block) is an error, as
+  in C++. A `goto` to a missing label is caught by the Vircon32 compiler,
+  not by v32c++.
 - **`>>` of a signed value costs a few instructions.** Vircon32's shift is
   logical, so v32c++ rewrites `x >> n` and `x >>= n` into an arithmetic shift
   (`-8 >> 1` is `-4`, as in C). A variable or member is written out in place
@@ -366,11 +439,11 @@ Checked against  the current  transpiler and  the real  Vircon32 compiler
   come from the C side.
 - **Unions** larger  than one word can't  be passed or returned  by value
   (v32c++ doesn't warn; the Vircon32 compiler reports it).
-- **Multi-dimensional  arrays  of  objects**   are  constructed  but  not
-  destroyed at scope exit.
-- **Cart hints**: two  `#texture` (or `#sound`) hints with  the same name
-  are not  reported — the  generated C defines  the name twice  and the
-  later one silently wins.
+- **File-scope objects** (and arrays of them) are constructed at the top of
+  `main` and destroyed when it ends (after its locals, in reverse order),
+  also from `exit()`/`abort()` of v32libc, whose `v32_exit` runs them first
+  (once). Objects declared inside a namespace are neither constructed nor
+  destroyed, and a program that does not define `main` constructs none.
 - An  `.h`  include  that  can't  be found  anywhere  is  passed  through
   each  time  it  appears  (the  C compiler  then  reports  it  missing).
   `docs/DESIGN_NOTES.md`  has  the  more  detailed  development  history,
@@ -530,6 +603,7 @@ v32c++ -I path/to/v32c++ -o obj/game.c game.cpp
 | `--no-unsigned-ops` | print `unsigned` `<`, `>`, `/`, `%` as written (signed in Vircon32) |
 | `--warn-error[=kind,...]` | make v32c++'s own warnings errors (no output file, exit 1); `--list-warnings` lists the kinds |
 | `--yield-points[=N]` | insert `if (get_cycle_counter() > N) yield();` at function entry, loops and labels (`--yield-func=`, `--yield-counter=`; `__attribute__((no_yield))` opts out) |
+| `--alloc=malloc\|arena\|gc`, `--heap-words=N`, `--gc-threshold=N` | where `new`/`new[]`/`std::vector` memory comes from: the SDK's malloc (default), an arena released in bulk, or a conservative mark-sweep garbage collector (`<v32/memory.hpp>`); the heap's size in words, and the words allocated between collections |
 | `--rename old=new` | rename a function/variable program-wide (SDK name clashes) |
 | `--assembler=CMD`, `--assembler-style=stock\|v32as` | assembler named in the generated Make.sh / Make.bat (default: `$V32CXX_ASSEMBLER`, else config.h `V32CXX_ASSEMBLER`, else `assemble`); a name starting with `v32as` is driven with `-B -c` / `-B -b` |
 | `--mklib lib.v32a` | write a library index over the source files given (see `docs/C_INPUT.md`, *Libraries*) |
@@ -594,6 +668,7 @@ the line after its last statement.
 | `Class__method__sig`, `Class__Class__void`, `Class__dtor__void` | a method, constructor (`sig` is the parameter types, `void` for none) and destructor, as C functions |
 | `__v32_ret_tmpN`, `__v32_tern_tmpN`, `__v32_ref_tmpN`, `__v32_sret_tmpN` | temporaries for a return value (kept alive across destructors), a hoisted `?:`, a reference argument |
 | `__v32_ctor_arr_iN`, `__v32_mctor_iN` | loop counters that construct array elements / array members |
+| `__v32_destroy_globals`, `__v32_globals_live`, `__v32_gret_tmp` | the function that destroys the file-scope objects (called when `main` ends and from `v32_exit`), its once-only flag, and a `return` value held while it runs |
 | `__v32_byval_x` | a class-type parameter passed by pointer: the function copies it to a local `x` on entry |
 | `v32_new_Class`, `v32_delete_Class`, `v32_new_arr_T` | `new`, `delete` and `new[]` helpers |
 
@@ -614,6 +689,8 @@ in, modeled on v32lua's:
 #sound   jump_sfx   "jump.wav"
 ```
 
+A name can be used  once: two hints with the same name  (two textures, two
+sounds, or a texture and a sound) are an error naming both lines.
 Each  `#texture`/`#sound`  name  becomes  a   `#define`  of  its  id  (0,
 1,  2…  in  order,  textures and  sounds  counted  separately),  usable
 anywhere an  integer is (`select_texture(  Background )`), and  fills the

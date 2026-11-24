@@ -31,35 +31,35 @@ fi
 
 # create the output folders, since the development tools will not
 mkdir -p bin
-mkdir -p ../../../../tmp/tmp.V0UtPWgIFX
+mkdir -p ../../../../tmp
 
 echo
 echo Transpile to Vircon32 C
 echo --------------------------
-v32c++ --line-markers --no-build-scripts -o ../../../../tmp/tmp.V0UtPWgIFX/lm.c line_markers.cpp || abort_build
+v32c++ --alloc=gc -I ../../src --no-build-scripts -o ../../../../tmp/g.c 182sample.cpp || abort_build
 
 echo
 echo Compile the C code
 echo --------------------------
-compile ../../../../tmp/tmp.V0UtPWgIFX/lm.c -o ../../../../tmp/tmp.V0UtPWgIFX/lm.asm || abort_build
+compile ../../../../tmp/g.c -o ../../../../tmp/g.asm || abort_build
 if [ "$HAVE_OPT" = 1 ]; then
-    v32opt -O3 ../../../../tmp/tmp.V0UtPWgIFX/lm.asm -o ../../../../tmp/tmp.V0UtPWgIFX/lmOpt.asm || abort_build
+    v32opt -O3 ../../../../tmp/g.asm -o ../../../../tmp/gOpt.asm || abort_build
 fi
 
 echo
 echo Assemble the ASM code
 echo --------------------------
-assemble ../../../../tmp/tmp.V0UtPWgIFX/lm.asm -o ../../../../tmp/tmp.V0UtPWgIFX/lm.vbin || abort_build
+assemble ../../../../tmp/g.asm -o ../../../../tmp/g.vbin || abort_build
 if [ "$HAVE_OPT" = 1 ]; then
-    assemble ../../../../tmp/tmp.V0UtPWgIFX/lmOpt.asm -o ../../../../tmp/tmp.V0UtPWgIFX/lmOpt.vbin || abort_build
+    assemble ../../../../tmp/gOpt.asm -o ../../../../tmp/gOpt.vbin || abort_build
 fi
 
 echo
 echo Pack the ROM
 echo --------------------------
-packrom ../../../../tmp/tmp.V0UtPWgIFX/lm.xml -o bin/lm.v32 || abort_build
+packrom ../../../../tmp/g.xml -o bin/g.v32 || abort_build
 if [ "$HAVE_OPT" = 1 ]; then
-    packrom ../../../../tmp/tmp.V0UtPWgIFX/lmOpt.xml -o bin/lmOpt.v32 || abort_build
+    packrom ../../../../tmp/gOpt.xml -o bin/gOpt.v32 || abort_build
 fi
 
 echo

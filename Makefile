@@ -511,8 +511,6 @@ test: all | $(OUT_DIR)
 	! grep -q '__v32_obj' out/174program.c
 	grep -q 'Counter__Counter__int((&a\[1\]\[1\]), 4);' out/174program.c
 	test "`grep -c 'Counter__Counter__int((&g_arr\[' out/174program.c`" = 2
-	! $(TBIN) -o out/174bad.c tests/174bad.cpp 1> out/174bad.txt 2>&1
-	grep -q 'an initializer for an array member of class type is not supported' out/174bad.txt
 	$(TBIN)  -vvv    -o out/175program.c tests/175sample.cpp 1> out/175sample.txt 2>&1
 	grep -q 'Counter__Counter__int((&g_brace), 5);' out/175program.c
 	grep -q 'Counter__Counter__int((&c), 1);' out/175program.c
@@ -525,6 +523,78 @@ test: all | $(OUT_DIR)
 	! grep -q 'Counter [a-z_]* = {' out/175program.c
 	! $(TBIN) -o out/175bad.c tests/175bad.cpp 1> out/175bad.txt 2>&1
 	grep -q 'at most one value in braces' out/175bad.txt
+	grep -q 'Counter__Counter__int_int((&t4), 4, 5);' out/175program.c
+	grep -q 'Counter__Counter__int((&t7\[1\]), 8);' out/175program.c
+	grep -q 'Counter__Counter__int((&t6), 6);' out/175program.c
+	! grep -q '[ (]C2\? t[0-9] = {' out/175program.c
+	$(TBIN)  -vvv    -o out/176program.c tests/176sample.cpp 1> out/176sample.txt 2>&1
+	grep -q 'Counter__Counter__int((&this->m\[1\]), 2);' out/176program.c
+	grep -q 'Counter__Counter__int((&this->g\[1\]\[0\]), 3);' out/176program.c
+	grep -q 'Counter__dtor__void((&this->g\[__v32_mdtor_i[0-9]*\]\[__v32_mdtor_i[0-9]*\]));' out/176program.c
+	grep -q 'Counter__Counter__int((&this->m\[1\]), (a + 1));' out/176program.c
+	! grep -q '__v32_obj' out/176program.c
+	! $(TBIN) -o out/176bad.c tests/176bad.cpp 1> out/176bad.txt 2>&1
+	grep -q "'m' is an array: a list of values can only initialize an array of objects whose class has a constructor" out/176bad.txt
+	$(TBIN)  -vvv    -o out/177program.c tests/177sample.cpp 1> out/177sample.txt 2>&1
+	grep -q '(v32_exit_destructors = (&__v32_destroy_globals));' out/177program.c
+	grep -q 'int __v32_globals_live = 0;' out/177program.c
+	grep -q 'D__dtor__void((&g_b));' out/177program.c
+	grep -q 'D__dtor__void((&g_a));' out/177program.c
+	test "`grep -n 'D__dtor__void((&g_b));' out/177program.c | head -1 | cut -d: -f1`" -lt "`grep -n 'D__dtor__void((&g_a));' out/177program.c | head -1 | cut -d: -f1`"
+	sh tests/globals_destroy.sh $(BIN)
+	! $(TBIN) -o out/178bad.c tests/178bad.cpp 1> out/178bad.txt 2>&1
+	grep -q "178bad.cpp:5: error: the cart hint name 'HERO' is already used: #texture here, and #texture at tests/178bad.cpp:3" out/178bad.txt
+	! $(TBIN) -o out/178bad_sound.c tests/178bad_sound.cpp 1> out/178bad_sound.txt 2>&1
+	grep -q "178bad_sound.cpp:4: error: the cart hint name 'MUSIC' is already used: #sound here, and #texture at tests/178bad_sound.cpp:3" out/178bad_sound.txt
+	$(TBIN)  -vvv    -o out/179program.c tests/179sample.cpp 1> out/179sample.txt 2>&1
+	grep -q 'v32_delete_arr_D(arr)\|v32_delete_arr_D(p)' out/179program.c
+	grep -q 'hdr\[0\] = n;' out/179program.c
+	! grep -q '__v32_alloc' out/179program.c
+	sh tests/std_run.sh $(BIN) 179sample
+	sh tests/std_run.sh $(BIN) 179sample --alloc=arena
+	$(TBIN)  -vvv    -o out/180program.c tests/180sample.cpp 1> out/180sample.txt 2>&1
+	grep -q 'D__dtor__void((&c));' out/180program.c
+	sh tests/std_run.sh $(BIN) 180sample
+	! $(TBIN) -o out/180bad.c tests/180bad.cpp 1> out/180bad.txt 2>&1
+	grep -q "180bad.cpp:12: error: goto 'over' jumps past the declaration of 'd'" out/180bad.txt
+	grep -q "180bad.cpp:20: error: goto 'inside' jumps past the declaration of 'd'" out/180bad.txt
+	$(TBIN)  -vvv --alloc=arena -I . -o out/181program.c tests/181sample.cpp 1> out/181sample.txt 2>&1
+	grep -q '__v32_arena_init();' out/181program.c
+	grep -q 'v32__arena_release__int' out/181program.c
+	grep -q 'vector_int__reserve__int' out/181program.c
+	grep -q '__v32_alloc((n \* sizeof(int)))' out/181program.c
+	! grep -q 'malloc(n \* sizeof(int))' out/181program.c
+	sh tests/std_run.sh $(BIN) 181sample --alloc=arena -I .
+	$(TBIN)  -vvv --alloc=arena -I . -o out/181string.c tests/181string.cpp 1> out/181string.txt 2>&1
+	sh tests/arena_full.sh $(BIN)
+	! $(TBIN) -I . -o out/181bad.c tests/181sample.cpp 1> out/181bad.txt 2>&1
+	grep -q 'needs --alloc=arena' out/181bad.txt
+	$(TBIN)  -vvv --alloc=arena --heap-words=1000 -o out/181words.c tests/181full.cpp -I . 1> out/181words.txt 2>&1
+	grep -q '__v32_arena_size = 1000 \* sizeof(int);' out/181words.c
+	! $(TBIN) --alloc=bogus -o out/181opt.c tests/181full.cpp 1> out/181opt.txt 2>&1
+	grep -q 'is malloc, arena or gc' out/181opt.txt
+	$(TBIN)  -vvv --alloc=gc -I . -o out/182program.c tests/182sample.cpp 1> out/182sample.txt 2>&1
+	grep -q '__v32_gc_init();' out/182program.c
+	grep -q '__v32_gc_root_a\[0\] = (int)&g_keep;' out/182program.c
+	grep -q '__v32_gc_root_a\[3\] = (int)&g_ring\[0\];' out/182program.c
+	grep -q '"push R10"' out/182program.c
+	grep -q 'mov {stk}, SP' out/182program.c
+	grep -q '__v32_gc_stack_top = 4194304;' out/182program.c
+	grep -q 'v32__gc_collect__void' out/182program.c
+	grep -q '__v32_alloc((n \* sizeof(int)))' out/182program.c
+	! grep -q '__v32_alloc_rec\|__v32_arena\|malloc(n \* sizeof' out/182program.c
+	sh tests/std_run.sh $(BIN) 182sample --alloc=gc --heap-words=16384 -I .
+	sh tests/std_run.sh $(BIN) 182sample --alloc=gc --heap-words=16384 -DGC_NO_THRESHOLD --gc-threshold=100000000 -I .
+	sh tests/gc_full.sh $(BIN)
+	$(TBIN)  -vvv --alloc=gc --heap-words=1000 --gc-threshold=300 -o out/182words.c tests/182full.cpp -I . 1> out/182words.txt 2>&1
+	grep -q '__v32_gc_size = 1000 \* sizeof(int);' out/182words.c
+	grep -q '__v32_gc_thresh = 300 \* sizeof(int);' out/182words.c
+	! $(TBIN) --alloc=gc -I . -o out/182bad.c tests/181sample.cpp 1> out/182bad.txt 2>&1
+	grep -q "no function 'arena_mark' is declared" out/182bad.txt
+	! $(TBIN) --alloc=arena -I . -o out/182bad2.c tests/182sample.cpp 1> out/182bad2.txt 2>&1
+	grep -q "no function 'gc_collect' is declared" out/182bad2.txt
+	! $(TBIN) --gc-threshold=0 -o out/182bad3.c tests/181full.cpp 1> out/182bad3.txt 2>&1
+	! grep -q '__v32_gc' out/179program.c out/181program.c
 # `-vvv` (this project's own verbosity flag, a later round -- see
 # main.c) is passed to every sample specifically so `make test`'s own
 # output still captures the full AST/semantic-analysis/lowering dumps

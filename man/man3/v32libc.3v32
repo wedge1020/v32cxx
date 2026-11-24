@@ -263,6 +263,9 @@ clear the screen and restart the program from the beginning, with RAM
 cleared and globals initialized again. If
 .B v32_exit_hook
 is set, it is called first with the exit status.
+A program written in C++ that has file-scope objects with destructors gets
+.B v32_exit_destructors
+set by v32c++ (to the function that destroys them, once); it is called before the hook.
 .SH LIMITS
 .BR INT_MAX ,
 .BR INT_MIN ,

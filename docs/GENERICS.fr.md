@@ -208,9 +208,6 @@ boucles à indice.
 
 ## Lacunes connues
 
-- **Les tableaux membres multidimensionnels d'objets de classe** (`Counter
-  grid[2][2];` comme membre) ne sont toujours pas construits. Un `std::array` de
-  `std::array` convient : chaque niveau est sa propre classe.
 - **Les longueurs nommées sont comparées par leur nom.** `std::array<int, MAX>` et
   `std::array<int, 8>` sont des types différents même quand `MAX` vaut 8. Un
   `#define` n'est pas concerné (il est développé avant l'analyse).

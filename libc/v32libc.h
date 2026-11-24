@@ -155,6 +155,10 @@ void abort(void);
  * wants something else sets v32_exit_hook. */
 void v32_exit(int status);
 extern void (*v32_exit_hook)(int status);
+/* v32c++ sets this, in a program written in C++ that has global objects with
+ * destructors, to the function that destroys them: v32_exit() calls it first
+ * (the hook after it). Leave it alone. */
+extern void (*v32_exit_destructors)(void);
 extern char *v32_exit_prompt;           /* what is shown while waiting for START */
 #define exit(status) v32_exit(status)
 

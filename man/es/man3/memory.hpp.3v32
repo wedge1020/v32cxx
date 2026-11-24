@@ -1,0 +1,126 @@
+'\" -*- coding: UTF-8 -*-
+.TH MEMORY.HPP 3v32 "23 de noviembre de 2026" "v32c++ 20261123-dev" "Biblioteca v32c++"
+.SH NOMBRE
+v32/memory.hpp \- el asignador de arena y el recolector de basura de v32c++ (--alloc=arena, --alloc=gc)
+.SH SINOPSIS
+.nf
+.B #include <v32/memory.hpp>
+.PP
+.B namespace v32 {
+.PP
+.B  "int   arena_mark();"
+.BI "void  arena_release( int " mark " );"
+.B  "void  arena_reset();"
+.B  "int   arena_used();"
+.B  "int   arena_free();"
+.PP
+.B  "void  gc_collect();"
+.B  "int   gc_used();"
+.B  "int   gc_free();"
+.B  "int   gc_collections();"
+.PP
+.B }
+.fi
+.SH DESCRIPCIÓN
+Solo está disponible cuando el programa se transpila con
+.B \-\-alloc=arena
+o
+.BR \-\-alloc=gc ;
+incluirlo de otro modo es un error de compilación. Las funciones
+.B arena_*
+existen solo con la primera y las
+.B gc_*
+solo con la segunda: llamar a una en el otro modo no compila. Con
+.B \-\-alloc=arena
+cada búfer de
+.BR new ,
+.B new[]
+y
+.B std::vector
+sale de un solo bloque (véase
+.BR \-\-heap\-words )
+y nada se libera una por una. Todos los tamaños son en palabras de 32 bits.
+.TP
+.B arena_mark
+Una marca opaca de la cima actual de la arena.
+.TP
+.B arena_release
+Libera todo lo asignado desde
+.IR mark ,
+tras ejecutar los destructores de los objetos aún vivos allí, el más nuevo primero.
+Un objeto ya destruido con
+.B delete
+no se destruye dos veces. Liberar una marca más antigua invalida las más nuevas.
+.TP
+.B arena_reset
+Libera todo.
+.TP
+.B arena_used
+Palabras en uso.
+.TP
+.B arena_free
+Palabras todavía libres. Si una asignación no cabe, el cartucho muestra
+"OUT OF MEMORY (arena full)" en pantalla y se detiene.
+.PP
+Con
+.B \-\-alloc=gc
+las mismas asignaciones salen de un montón (véase
+.BR \-\-heap\-words )
+que un recolector conservador de marcado y barrido mantiene limpio, así que no hace
+falta hacer
+.BR delete ;
+.B delete
+sigue ejecutando el destructor y libera al instante, y un objeto recolectado no recibe
+destructor. Las raíces son las variables de ámbito de archivo que pueden contener un
+puntero, la pila de la máquina y los registros; una palabra que apunte a cualquier punto
+dentro de un bloque lo mantiene vivo. Una recolección se ejecuta cuando una asignación no
+encuentra sitio (y se reintenta), cuando se asignaron
+.B \-\-gc\-threshold
+palabras desde la última (por defecto, un cuarto del montón) y con
+.BR gc_collect .
+.TP
+.B gc_collect
+Ejecuta una recolección completa ahora. Es una pausa: llámala una vez por fotograma en un
+momento tranquilo.
+.TP
+.B gc_used
+Palabras en uso (con las cabeceras de bloque).
+.TP
+.B gc_free
+Palabras sin usar. Si una asignación no cabe ni siquiera tras una recolección, el cartucho
+muestra "OUT OF MEMORY (gc heap full)" en pantalla y se detiene.
+.TP
+.B gc_collections
+Cuántas recolecciones se han ejecutado desde el inicio de
+.BR main .
+.PP
+Un entero que parece una dirección del montón mantiene vivo un bloque muerto; un puntero
+oculto al recolector (con XOR, o una posición más allá del final de su bloque) no mantiene
+nada vivo; la memoria de
+.B malloc
+directo no se gestiona. Los mapas de punteros precisos por clase y los finalizadores quedan
+para el futuro.
+.SH EJEMPLO
+.nf
+.RS
+void play_level()
+{
+    int level = v32::arena_mark();
+    Enemy* boss = new Enemy( 3 );
+    std::vector<int> path;          // grows inside the arena
+    // ...
+    v32::arena_release( level );    // boss's destructor runs; all is given back
+}
+
+// with --alloc=gc: no delete; once per frame, at a quiet point
+void end_of_frame()
+{
+    v32::gc_collect();
+}
+.RE
+.fi
+.SH VÉASE TAMBIÉN
+.BR v32c++ (1),
+.BR misc.hpp (3v32)
+.SH AUTOR
+Matthew Haas

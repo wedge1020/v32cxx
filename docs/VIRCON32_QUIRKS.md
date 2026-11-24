@@ -55,7 +55,7 @@ literals, `1e3`, `.5` and `5.` (`tests/133sample.cpp`, `134sample.c`,
 | 5 | pointer null needs `NULL` | `p = 0;`, `p == 0` | handled |
 | 6 | `void main(void)` only | `int main()` and `return 0;` | handled |
 | 7 | prototype parameters need names | names optional | handled |
-| 8 | no `new`/`delete` | `new`/`delete` work (malloc-based); `new T[n]` skips per-element constructors | handled, with caveats |
+| 8 | no `new`/`delete` | `new`/`delete` work (malloc-based, or an arena with `--alloc=arena`, or a garbage collector with `--alloc=gc`); `new T[n]` constructs every element and `delete[]` destroys them | handled, with caveats |
 | 9 | `misc.h` for `malloc`/`rand`... | `<cstdlib>`, `<cstring>` | handled |
 | 10 | no ternary operator | `?:` anywhere | **lowered** |
 | 11 | one-word parameters and returns | structs and classes by value | **lowered** (unions larger than a word still can't) |

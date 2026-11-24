@@ -62,6 +62,7 @@ alcance](#deliberadamente-fuera-del-alcance).
 
 - [Qué soporta](#qué-soporta)
 - [Cabeceras de C++ para la API de Vircon32](#cabeceras-de-c-para-la-api-de-vircon32)
+- [Gestión de memoria](#gestión-de-memoria)
 - [Teclado y ratón: v32io](#teclado-y-ratón-v32io)
 - [Limitaciones conocidas](#limitaciones-conocidas)
 - [Requisitos](#requisitos) · [Compilación](#compilación) · [Verificación con la cadena de herramientas real](#verificación-con-la-cadena-de-herramientas-real)
@@ -86,16 +87,20 @@ alcance](#deliberadamente-fuera-del-alcance).
   inicialización de miembros para clases base (`: Base(args)`), miembros
   primitivos (`: x(v)`, en orden de *declaración*, como exige C++) y miembros
   que son objetos (`: mVel(vx, vy)`). Inicializadores de miembros por defecto
-  dentro de la clase (`int mLives = 3;`). Una base con constructor por defecto
-  se construye implícitamente; los destructores se encadenan a los miembros y a
-  las bases.
+  dentro de la clase (`int mLives = 3;`), también para un arreglo de objetos
+  (`Counter m[2] = { {1}, Counter(2) };`, o `Holder() : m{ {1}, {2} } {}`:
+  cada elemento se construye en su sitio; los que faltan se construyen por
+  defecto). Una base con constructor por defecto se construye implícitamente;
+  los destructores se encadenan a los miembros y a las bases (también a los
+  arreglos miembro, de cualquier número de dimensiones, del último elemento al
+  primero).
 
 - Objetos en la pila (`Shape s;`, `Shape s(7);`), como temporales sin nombre
   (`return Vec(x, y);`, `v.push_back(Enemy(1, 2, 3));`), en arreglos
   (construidos y destruidos elemento por elemento, incluidos los arreglos
   miembro; `Enemy a[2] = { Enemy(1), {2} };` construye cada elemento en su
   sitio, como C++17, también con varias dimensiones y en el ámbito de archivo), en el ámbito de archivo (construidos al comienzo de `main`, con los
-  argumentos del constructor si se indican) y en el montón con `new`/`delete`.
+  argumentos del constructor si se indican, y destruidos, el último primero, cuando `main` termina) y en el montón con `new`/`delete`/`new[]`/`delete[]` (elementos construidos y destruidos; arena o recolector de basura opcionales: véase *Gestión de memoria*).
   Los destructores se ejecutan en cada salida de ámbito: la llave de cierre,
   `return`, `break`, `continue`.
 
@@ -274,6 +279,73 @@ siendo invocable junto a ellos.
 -I ruta/a/v32c++ game.cpp`, y luego `#include <v32/video.hpp>`), o instálalas
 (ver [Instalación](#instalación)).
 
+## Gestión de memoria
+
+`new`, `new[]` y los búferes de `std::vector` usan el `malloc`/`free` del SDK
+salvo que se pida otra cosa. `--alloc=arena` (desactivado por defecto; sin él
+la salida no cambia) toma un bloque de `--heap-words=N` palabras (por defecto
+262144) del `malloc` del SDK al comienzo de `main` -- así que un reinicio del
+cartucho lo adquiere de nuevo -- y sirve de él toda asignación generada
+avanzando un puntero. Nada se libera una por una: `delete` ejecuta el
+destructor y conserva el espacio, y `<v32/memory.hpp>` lo devuelve de golpe:
+
+```cpp
+#include <v32/memory.hpp>
+int level = v32::arena_mark();       // al empezar un nivel o un fotograma
+Enemy *boss = new Enemy(3);
+std::vector<int> path;               // crece dentro de la arena
+v32::arena_release(level);           // se ejecuta el destructor de boss; todo vuelve
+```
+
+`arena_mark()`, `arena_release(mark)`, `arena_reset()`, `arena_used()` y
+`arena_free()` (en palabras). Los objetos cuya clase tiene destructor quedan
+registrados en la arena, y una liberación ejecuta los destructores de los que
+siguen vivos, el más nuevo primero; un objeto que ya borraste con `delete` no
+se destruye dos veces (ni un arreglo borrado con `delete[]`). Un `std::vector`
+que crece asigna de nuevo y copia, y el búfer viejo vuelve solo al liberar;
+`std::string` guarda sus caracteres en el objeto y no asigna nada. Quedarse sin
+espacio muestra "OUT OF MEMORY (arena full)" en pantalla y se detiene. Tus
+propias llamadas a `malloc` y `v32::HeapBlock` no se reencaminan, e incluir
+`<v32/memory.hpp>` sin `--alloc=arena` ni `--alloc=gc` es un error de compilación.
+
+### `--alloc=gc`: un recolector de basura
+
+`--alloc=gc` sirve las mismas asignaciones (el mismo gancho, `__v32_alloc` /
+`__v32_release`, adquirido al empezar `main`) desde un único montón de
+`--heap-words=N` palabras con recolección de basura: un recolector
+conservador de marcado y barrido, así que no hace falta hacer `delete` de
+nada. `delete` sigue siendo válido, ejecuta el destructor y libera al
+instante; un objeto *recolectado* **no** recibe destructor.
+
+```cpp
+#include <v32/memory.hpp>
+Enemy *boss = new Enemy(3);          // no hace falta delete
+...
+v32::gc_collect();                   // una vez por fotograma, en un momento tranquilo
+```
+
+Las raíces son las variables de ámbito de archivo que pueden contener un
+puntero (punteros, objetos, `std::vector`, arreglos de ellos: v32c++ emite la
+tabla) y la pila de la máquina desde el puntero de pila hasta su tope, más los
+registros. Toda palabra que apunte dentro de un bloque, a su inicio o a
+cualquier punto interior (`&obj->miembro`, un puntero a la mitad de un
+`new int[10]`, el búfer de un vector), mantiene vivo el bloque y lo que este
+apunta; el propio montón también se examina de forma conservadora. Una
+recolección se ejecuta cuando una asignación no encuentra sitio (y entonces se
+reintenta), cuando se asignaron `--gc-threshold=N` palabras desde la última
+(por defecto, un cuarto del montón) y cuando llamas a `v32::gc_collect()`;
+`gc_used()`, `gc_free()` (palabras) y `gc_collections()` informan del estado.
+Una recolección completa es una pausa: llama a `gc_collect()` una vez por
+fotograma en un momento tranquilo. Quedarse sin espacio tras una recolección
+muestra "OUT OF MEMORY (gc heap full)" y se detiene. Límites: un entero que
+parece una dirección del montón mantiene vivo un bloque muerto; un puntero
+oculto al recolector (con XOR, o solo una posición más allá del final de su
+bloque) no mantiene nada vivo; la memoria de `malloc`/`v32::HeapBlock` directos
+no se gestiona; no hay finalizadores, y el montón se examina de forma
+conservadora (los mapas de punteros precisos por clase quedan para el futuro).
+Las funciones `arena_*` no existen con `--alloc=gc`, ni las `gc_*` con
+`--alloc=arena`.
+
 ## Teclado y ratón: v32io
 
 Tres cabeceras dan a los programas un **teclado** y un **ratón** reales,
@@ -342,15 +414,20 @@ Comprobadas con el transpilador actual y el compilador real de Vircon32
 
 **Soportado con salvedades:**
 
-- **`new` de arreglos** (`new T[n]`) reserva memoria pero no ejecuta los
-  constructores de cada elemento; `delete[]` no ejecuta destructores, y
-  `delete[]` a través de un puntero a la base sobre un arreglo de derivadas es
-  indefinido. Prefiere `std::vector` o un arreglo en la pila, que se construyen
-  y se destruyen correctamente.
-- **`goto`** funciona, pero no ejecuta los destructores de las variables
-  locales de tipo clase de las que sale; úsalo solo en ámbitos que no las
-  tengan. Un `goto` a una etiqueta inexistente lo detecta el compilador de
-  Vircon32, no v32c++.
+- **`new` de arreglos** (`new T[n]`) construye por defecto cada elemento, en
+  orden; para una clase con destructor, una palabra de cabecera delante de los
+  elementos guarda `n`, de modo que `delete[]` los destruye del último al
+  primero y libera el bloque. `n` puede ser cero o calcularse en ejecución, y
+  `delete[]` de un puntero nulo no hace nada. `delete[]` a través de un puntero
+  a la base sobre un arreglo de derivadas es indefinido (como en C++), y
+  `new T[n]{a, b}` (`new` de arreglos con lista de inicialización) no está
+  soportado.
+- **`goto`** fuera de un ámbito destruye los objetos de clase (y sus arreglos)
+  que están vivos allí y no en la etiqueta, el último construido primero, como
+  hacen `break` y `return`. Un `goto` que saltaría por encima de la declaración
+  de un objeto con destructor (hacia delante en un bloque, o hacia dentro de un
+  bloque) es un error, como en C++. Un `goto` a una etiqueta inexistente lo
+  detecta el compilador de Vircon32, no v32c++.
 - **`>>` de un valor con signo cuesta unas pocas instrucciones.** El
   desplazamiento de Vircon32 es lógico, así que v32c++ reescribe `x >> n` y
   `x >>= n` como un desplazamiento aritmético (`-8 >> 1` es `-4`, como en C).
@@ -386,11 +463,12 @@ Comprobadas con el transpilador actual y el compilador real de Vircon32
   debe venir del lado de C.
 - Las **uniones** de más de una palabra no pueden pasarse ni devolverse por
   valor (v32c++ no avisa; lo informa el compilador de Vircon32).
-- Los **arreglos multidimensionales de objetos** se construyen pero no se
-  destruyen al salir del ámbito.
-- **Indicaciones de cartucho**: dos indicaciones `#texture` (o `#sound`) con el
-  mismo nombre no se notifican — el C generado define el nombre dos veces y la
-  última gana en silencio.
+- Los **objetos del ámbito de archivo** (y sus arreglos) se construyen al
+  comienzo de `main` y se destruyen cuando termina (después de sus locales, en
+  orden inverso), también desde `exit()`/`abort()` de v32libc, cuyo `v32_exit`
+  los ejecuta primero (una sola vez). Los objetos declarados dentro de un
+  espacio de nombres no se construyen ni se destruyen, y un programa que no
+  define `main` no construye ninguno.
 - Un `#include` de `.h` que no se encuentra en ningún sitio se pasa tal cual
   cada vez que aparece (el compilador de C informa entonces de que falta).
   `docs/DESIGN_NOTES.md` (solo en inglés) contiene la historia de desarrollo
@@ -545,6 +623,7 @@ v32c++ -I path/to/v32c++ -o obj/game.c game.cpp
 | `--no-signed-shift` | imprime `>>` / `>>=` tal como están escritos (el desplazamiento de Vircon32 es lógico; por defecto un desplazamiento con signo se reescribe para que sea aritmético) |
 | `--no-unsigned-ops` | imprime `<`, `>`, `/`, `%` de `unsigned` tal cual (con signo en Vircon32) |
 | `--warn-error[=tipo,...]` | convierte las advertencias de v32c++ en errores (sin archivo de salida, estado 1); `--list-warnings` lista los tipos |
+| `--alloc=malloc\|arena\|gc`, `--heap-words=N`, `--gc-threshold=N` | de dónde sale la memoria de `new`/`new[]`/`std::vector`: el malloc del SDK (por defecto), una arena que se libera de golpe o un recolector de basura conservador de marcado y barrido (`<v32/memory.hpp>`); el tamaño del montón en palabras y las palabras asignadas entre recolecciones |
 | `--yield-points[=N]` | inserta `if (get_cycle_counter() > N) yield();` en funciones, bucles y etiquetas (`--yield-func=`, `--yield-counter=`; `__attribute__((no_yield))` lo evita) |
 | `--rename viejo=nuevo` | renombra una función/variable en todo el programa (choques con el SDK) |
 | `--assembler=CMD`, `--assembler-style=stock\|v32as` | ensamblador que nombran Make.sh / Make.bat (por defecto `$V32CXX_ASSEMBLER`, luego `V32CXX_ASSEMBLER` de config.h, luego `assemble`); un nombre que empiece por `v32as` se invoca con `-B -c` / `-B -b` |
@@ -594,7 +673,9 @@ indicaciones en el código fuente lo rellenan, según el modelo de las de v32lua
 #sound   jump_sfx   "jump.wav"
 ```
 
-Cada nombre de `#texture`/`#sound` se convierte en un `#define` de su
+Un nombre solo puede usarse una vez: dos indicaciones con el mismo nombre (dos
+texturas, dos sonidos, o una textura y un sonido) son un error que nombra
+ambas líneas. Cada nombre de `#texture`/`#sound` se convierte en un `#define` de su
 identificador (0, 1, 2… en orden, contando por separado texturas y sonidos),
 utilizable en cualquier lugar donde se admita un entero
 (`select_texture( Background )`), y rellena `<textures>`/`<sounds>` del XML en

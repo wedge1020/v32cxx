@@ -3047,6 +3047,8 @@ static void resolve_new_expr(AstNode *new_node, AstNode *current_class, LocalVar
  * base-class delegation, checked first -- matching real C++'s own rule
  * that a member-initializer-list entry naming a direct base is ALWAYS
  * base-class initialization, never a member with the same name. */
+static void check_node(AstNode *n, AstNode *current_class, LocalVarType **locals);
+
 static void resolve_member_init_list(AstNode *func, AstNode *current_class, LocalVarType *locals) {
     if (func->c == NULL) return; /* no ": ..." was written -- ordinary case */
 
@@ -3105,6 +3107,30 @@ static void resolve_member_init_list(AstNode *func, AstNode *current_class, Loca
 
         if (member_field != NULL) {
             const AstNode *resolved_type = resolve_typedef_chain(member_field->type);
+            while (resolved_type != NULL && resolved_type->kind == AST_CONST_TYPE) resolved_type = resolved_type->a;
+            if (resolved_type != NULL && resolved_type->kind == AST_ARRAY_TYPE) {
+                /* `: m{ {1}, Counter(2) }` on an array member of class type: the entry's
+                 * items are the brace list of its elements, already turned into in-place
+                 * constructor calls (AST_DIRECT_INIT with the element class as type) by
+                 * ast.c. Each is resolved like `Counter c(1);`; lower.c builds the elements
+                 * in place (ival = 3). */
+                const AstNode *et = resolved_type;
+                while (et != NULL && (et->kind == AST_ARRAY_TYPE || et->kind == AST_CONST_TYPE)) et = et->a;
+                if (et != NULL) et = resolve_typedef_chain(et);
+                AstNode *ec = (et != NULL && et->kind == AST_IDENT) ? find_class(et->str1) : NULL;
+                AstNode **ctors = NULL;
+                int nctors = 0, cctors = 0;
+                if (ec != NULL) collect_method_candidates(ec, ec->str1, &ctors, &nctors, &cctors);
+                if (ec == NULL || nctors == 0) {
+                    sema_error(entry->line, "'%s' is an array: a list of values can only initialize an array "
+                                            "of objects whose class has a constructor", entry->str1);
+                    continue;
+                }
+                LocalVarType *scope = locals;
+                for (int k = 0; k < entry->list.count; k++) check_node(entry->list.items[k], current_class, &scope);
+                entry->ival = 3;
+                continue;
+            }
             int is_bare_class_type = (resolved_type != NULL && resolved_type->kind == AST_IDENT
                                        && find_class(resolved_type->str1) != NULL);
             if (is_bare_class_type) {

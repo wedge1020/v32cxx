@@ -1,0 +1,120 @@
+.TH MEMORY.HPP 3v32 "November 23, 2026" "v32c++ 20261123-dev" "v32c++ Library"
+.SH NAME
+v32/memory.hpp \- the arena allocator and the garbage collector of v32c++ (--alloc=arena, --alloc=gc)
+.SH SYNOPSIS
+.nf
+.B #include <v32/memory.hpp>
+.PP
+.B namespace v32 {
+.PP
+.B  "int   arena_mark();"
+.BI "void  arena_release( int " mark " );"
+.B  "void  arena_reset();"
+.B  "int   arena_used();"
+.B  "int   arena_free();"
+.PP
+.B  "void  gc_collect();"
+.B  "int   gc_used();"
+.B  "int   gc_free();"
+.B  "int   gc_collections();"
+.PP
+.B }
+.fi
+.SH DESCRIPTION
+Available only when the program is transpiled with
+.B \-\-alloc=arena
+or
+.BR \-\-alloc=gc ;
+including it otherwise is a compile-time error. The
+.B arena_*
+functions exist only with the first and the
+.B gc_*
+ones only with the second: calling one in the other mode does not compile. With
+.B \-\-alloc=arena
+every
+.BR new ,
+.B new[]
+and
+.B std::vector
+buffer comes from one block (see
+.BR \-\-heap\-words )
+and nothing is freed one by one. All sizes are in 32-bit words.
+.TP
+.B arena_mark
+An opaque mark of the arena's current top.
+.TP
+.B arena_release
+Frees everything allocated since
+.IR mark ,
+after running the destructors of the objects still alive there, newest first.
+An object already
+.BR delete d
+is not destroyed twice. Releasing an older mark invalidates newer ones.
+.TP
+.B arena_reset
+Releases everything.
+.TP
+.B arena_used
+Words in use.
+.TP
+.B arena_free
+Words still free. When an allocation does not fit, the cartridge prints
+"OUT OF MEMORY (arena full)" on the screen and halts.
+.PP
+With
+.B \-\-alloc=gc
+the same allocations come from one heap (see
+.BR \-\-heap\-words )
+that a conservative mark-sweep collector keeps clean, so nothing has to be
+.BR delete d;
+.B delete
+still runs the destructor and frees at once, and an object that is collected gets no
+destructor. The roots are the file-scope variables that can hold a pointer, the machine
+stack and the registers; a word pointing anywhere inside a block keeps it alive. A
+collection runs when an allocation finds no room (then it is retried), after
+.B \-\-gc\-threshold
+words were allocated since the last one (default a quarter of the heap), and on
+.BR gc_collect .
+.TP
+.B gc_collect
+Runs a full collection now. It is a pause: call it once per frame at a quiet point.
+.TP
+.B gc_used
+Words in use (block headers included).
+.TP
+.B gc_free
+Words not in use. When an allocation does not fit even after a collection, the cartridge
+prints "OUT OF MEMORY (gc heap full)" on the screen and halts.
+.TP
+.B gc_collections
+How many collections have run since the start of
+.BR main .
+.PP
+An integer that looks like a heap address keeps a dead block alive; a pointer hidden from
+the collector (xor-ed, or one past the end of its block) keeps nothing alive; raw
+.B malloc
+memory is not managed. Precise per-class pointer maps and finalizers are future work.
+.SH EXAMPLE
+.nf
+.RS
+void play_level()
+{
+    int level = v32::arena_mark();
+    Enemy* boss = new Enemy( 3 );
+    std::vector<int> path;          // grows inside the arena
+    // ...
+    v32::arena_release( level );    // boss's destructor runs; all is given back
+}
+
+// with --alloc=gc: no delete; once per frame, at a quiet point
+void end_of_frame()
+{
+    v32::gc_collect();
+}
+.RE
+.fi
+.SH SEE ALSO
+.BR v32c++ (1),
+.BR misc.hpp (3v32)
+.SH AUTHOR
+Matthew Haas

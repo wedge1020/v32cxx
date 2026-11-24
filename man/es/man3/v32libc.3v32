@@ -257,6 +257,10 @@ Muestran
 el programa desde el principio, con la RAM borrada y los globales inicializados de nuevo. Si
 .B v32_exit_hook
 está establecido, se llama primero con el estado de salida.
+En un programa escrito en C++ con objetos de ámbito de archivo que tienen destructores,
+v32c++ establece
+.B v32_exit_destructors
+(la función que los destruye, una sola vez); se llama antes que el hook.
 .SH LÍMITES
 Se definen
 .BR INT_MAX ,

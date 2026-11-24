@@ -201,9 +201,6 @@ en rango; los bucles que borran bombas por el camino son bucles con índice.
 
 ## Carencias conocidas
 
-- **Los arreglos miembro multidimensionales de objetos de clase** (`Counter
-  grid[2][2];` como miembro) siguen sin construirse. Un `std::array` de
-  `std::array` está bien: cada nivel es su propia clase.
 - **Las longitudes con nombre se comparan por nombre.** `std::array<int, MAX>` y
   `std::array<int, 8>` son tipos distintos incluso cuando `MAX` vale 8. Un
   `#define` no se ve afectado (se expande antes del análisis).

@@ -57,7 +57,7 @@ cadena de herramientas y el emulador reales).
 | 5 | el puntero nulo necesita `NULL` | `p = 0;`, `p == 0` | manejado |
 | 6 | solo `void main(void)` | `int main()` y `return 0;` | manejado |
 | 7 | los parámetros de prototipos necesitan nombres | nombres opcionales | manejado |
-| 8 | sin `new`/`delete` | `new`/`delete` funcionan (con `malloc`); `new T[n]` omite los constructores de cada elemento | manejado, con salvedades |
+| 8 | sin `new`/`delete` | `new`/`delete` funcionan (con `malloc`); `new T[n]` construye cada elemento y `delete[]` los destruye; con `--alloc=arena`, una arena en lugar de `malloc`; con `--alloc=gc`, un recolector de basura | manejado, con salvedades |
 | 9 | `misc.h` para `malloc`/`rand`... | `<cstdlib>`, `<cstring>` | manejado |
 | 10 | sin operador ternario | `?:` en cualquier lugar | **bajado** |
 | 11 | parámetros y retornos de una palabra | estructuras y clases por valor | **bajado** (las uniones de más de una palabra siguen sin poder) |

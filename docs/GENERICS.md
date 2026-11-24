@@ -204,9 +204,6 @@ loops.
 
 ## Known gaps
 
-- **Multi-dimensional member arrays of class objects** (`Counter
-  grid[2][2];` as a member) are still not constructed. A
-  `std::array` of `std::array` is fine: each level is its own class.
 - **Named lengths are compared by name.** `std::array<int, MAX>` and
   `std::array<int, 8>` are different types even when `MAX` is 8. A
   `#define` is not affected (it is expanded before parsing).

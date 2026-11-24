@@ -132,6 +132,12 @@ extern int g_reject_bit_fields;
  * C too. Read by lower.c. */
 extern int g_signed_shift;
 extern int g_unsigned_ops;      /* cleared by --no-unsigned-ops */
+extern int g_alloc_arena;       /* --alloc=arena */
+extern int g_heap_words;        /* --heap-words=N */
+extern int g_alloc_gc;          /* --alloc=gc (conservative mark-sweep; shares the arena's hook) */
+extern int g_gc_threshold;      /* --gc-threshold=N words allocated between collections (0: heap/4) */
+/* new/new[]/vector buffers go through __v32_alloc/__v32_release (arena or gc) */
+#define V32_ALLOC_HOOK (g_alloc_arena || g_alloc_gc)
 extern int g_silence_unused;     /* --silence-unused-args: see codegen.c */
 
 /*

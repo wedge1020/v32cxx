@@ -23,6 +23,8 @@ v32c++, v32c \- transpila un subconjunto de C++ (o C) a C de Vircon32
 .RB [ \-b ]
 .RB [ \-g ]
 .RB [ \-\-line\-markers ]
+.RB [ \-\-alloc=malloc | arena ]
+.RB [ \-\-heap\-words=N ]
 .RB [ \-\-target=vircon32 | standard ]
 .RB [ \-\-reject\-bit\-fields ]
 .RB [ \-\-no\-signed\-shift ]
@@ -412,6 +414,50 @@ de bits: la estructura es mayor y ya no coincide con una disposición empaquetad
 y un valor más ancho que la anchura declarada se conserva entero en lugar de
 truncarse. Usa esta opción para código que dependa de alguna de las dos cosas.
 .TP
+.BI \-\-alloc= X
+De dónde sale toda asignación del programa generado:
+.B malloc
+(por defecto; la salida no cambia),
+.B arena
+o
+.BR gc .
+Con
+.B arena
+.BR new ,
+.BR new[] ,
+los búferes de
+.B std::vector
+y las demás asignaciones generadas salen de un solo bloque, tomado del malloc
+del SDK al inicio de
+.BR main ,
+y nada se libera una por una:
+.B delete
+solo ejecuta el destructor, y
+.I arena_release
+(véase
+.BR memory.hpp (3v32))
+devuelve todo lo asignado desde una marca, ejecutando los destructores de los
+objetos aún vivos allí, el más nuevo primero. Sin espacio, el programa muestra un
+mensaje en pantalla y se detiene. Con
+.B gc
+esas mismas asignaciones salen de un montón con recolección de basura (un recolector
+conservador de marcado y barrido): nada hay que borrar,
+.B delete
+sigue ejecutando el destructor y libera al instante, y un objeto recolectado no recibe
+destructor. Véase GESTIÓN DE MEMORIA.
+.TP
+.BI \-\-heap\-words= N
+El tamaño de la arena o del montón gc, en palabras (por defecto 262144). Solo con
+.B \-\-alloc=arena
+o
+.BR \-\-alloc=gc .
+.TP
+.BI \-\-gc\-threshold= N
+Con
+.BR \-\-alloc=gc :
+iniciar una recolección tras N palabras asignadas desde la última (por defecto, un
+cuarto del montón).
+.TP
 .BI \-\-target= X
 Dialecto de C de salida:
 .B vircon32
@@ -651,8 +697,8 @@ como
 con una llamada dentro de la forma de expresión correctamente resuelta, no
 omitida);
 .B goto
-y sentencias con etiqueta (una limitación real, señalada deliberadamente \(em
-véase ERRORES más abajo); punteros a función, en AMBOS estilos de declarador: el
+y sentencias con etiqueta (un goto fuera de un ámbito ejecuta los destructores de los
+objetos que abandona; véase ERRORES); punteros a función, en AMBOS estilos de declarador: el
 peculiar de Vircon32
 .RI ( "TipoRetorno(TiposParam)* nombre;" )
 y el del C estándar
@@ -754,14 +800,22 @@ inicializadores de miembros que son ellos mismos objetos
 .RI ( ": mVel(vx, vy)" );
 inicializadores de miembros por defecto dentro de la clase
 .RI ( "int mLives = 3;" ),
-aplicados por todo constructor que no inicialice él mismo el miembro; funciones
+aplicados por todo constructor que no inicialice él mismo el miembro (también
+para un arreglo de objetos:
+.IR "Counter m[2] = { {1}, Counter(2) };" ,
+o en la lista de un constructor,
+.IR ": m{ {1}, {2} }" ;
+cada elemento se construye en su sitio); funciones
 virtuales puras
 .RI ( "= 0" );
 temporales sin nombre
 .RI ( "return Vec(x, y);" );
 objetos a nivel de archivo, construidos al principio de
 .B main
-(con argumentos de constructor si se dan); arreglos de objetos, construidos y
+(con argumentos de constructor si se dan) y destruidos, el último primero, cuando
+termina (y por
+.BR exit ,
+en un programa que usa v32libc); arreglos de objetos, construidos y
 destruidos elemento a elemento (los arreglos miembro incluidos); estructuras y
 clases de más de una palabra pasadas y devueltas por valor (reescritas con
 punteros ocultos para el C de Vircon32); referencias como parámetros, valores de
@@ -816,11 +870,18 @@ El
 .B new
 de arreglos
 .RI ( "new T[n]" )
-reserva memoria sin construir cada elemento, y
+construye por defecto cada elemento, en orden; para una clase con destructor guarda
+el número de elementos en una palabra extra delante del arreglo, y
 .B delete[]
-no ejecuta destructores; prefiere
-.B std::vector
-o un arreglo en la pila.
+la lee y destruye los elementos, el último primero. Un puntero nulo o una cantidad
+cero no dan problema.
+.B delete[]
+a través de un puntero base a un arreglo de una clase derivada es indefinido, como en
+C++, y el
+.B new
+de arreglos con lista de inicialización
+.RI ( "new T[n]{a, b}" )
+no está soportado.
 .PP
 Nunca soportado, por diseño: plantillas, excepciones, RTTI, herencia múltiple.
 .SH ENTRADA EN C
@@ -1215,7 +1276,9 @@ es siempre el id 0, el segundo el id 1, y así sucesivamente; igual para
 .I NOMBRE
 puede entonces usarse en cualquier lugar donde iría una constante entera, como
 argumento de la función de selección de textura/sonido que llame el programa de
-destino. El mismo orden de declaración determina también la posición de cada recurso
+destino. Un nombre solo puede usarse una vez: dos indicaciones con el mismo nombre (dos
+texturas, dos sonidos, o una textura y un sonido) son un error que nombra ambas
+líneas. El mismo orden de declaración determina también la posición de cada recurso
 en las secciones
 .B <textures>
 /
@@ -1467,6 +1530,78 @@ una cadena de acceso a miembros
 un prefijo de nombre de función
 .IR v32_new_ )
 \(em nada que el código fuente de C++ pueda desencadenar por coincidencia.
+.SH GESTIÓN DE MEMORIA
+Por defecto toda asignación es
+.BR malloc / free
+del SDK.
+.B \-\-alloc=arena
+las encamina todas (\fBnew\fP, \fBnew[]\fP, los búferes de \fBstd::vector\fP) por un par de
+llamadas del runtime, \fB__v32_alloc\fP / \fB__v32_release\fP, respaldadas por un bloque de
+.B \-\-heap\-words
+palabras tomado del malloc del SDK al inicio de
+.BR main ,
+de modo que el cartucho lo adquiere de nuevo cada vez que se reinicia. Un objeto
+cuya clase tiene destructor queda registrado en la arena; liberar hasta una marca
+ejecuta esos destructores, el más nuevo primero. \fBdelete\fP ejecuta el destructor
+de inmediato y marca el registro, de modo que la liberación no lo ejecuta dos
+veces; \fBdelete[]\fP hace lo mismo con cada elemento. Un \fBstd::vector\fP que crece toma
+espacio nuevo y copia; el espacio viejo vuelve solo al liberar. \fBstd::string\fP guarda
+sus caracteres dentro del objeto, así que no asigna nada. Las llamadas a \fBmalloc\fP
+de tu propio código y
+.B v32::HeapBlock
+no se reencaminan.
+.PP
+.B <v32/memory.hpp>
+(véase
+.BR memory.hpp (3v32))
+da
+.BR v32::arena_mark ,
+.BR arena_release ,
+.BR arena_reset ,
+.B arena_used
+y
+.BR arena_free .
+.PP
+.B \-\-alloc=gc
+sirve las mismas asignaciones desde un montón de
+.B \-\-heap\-words
+palabras con recolección de basura por un recolector conservador de marcado y barrido.
+Una recolección empieza cuando una asignación no encuentra sitio (y se reintenta),
+cuando se asignaron
+.B \-\-gc\-threshold
+palabras desde la última, y con
+.BR v32::gc_collect .
+Los bloques tienen una cabecera (tamaño, bit de marca, enlace de la lista libre); los
+pequeños van en listas libres por clase de tamaño, los grandes por primer ajuste, y el
+barrido une los vecinos. Las raíces son las variables de ámbito de archivo que pueden
+contener un puntero (una tabla que emite v32c++: punteros, objetos,
+.BR std::vector ,
+arreglos de ellos) y la pila de la máquina desde el puntero de pila hasta su tope junto
+con los registros; una palabra que apunte a cualquier punto dentro de un bloque lo
+mantiene vivo (una tabla de páginas encuentra el bloque), y los bloques vivos también se
+examinan de forma conservadora. \fBdelete\fP ejecuta el destructor y libera al instante;
+los objetos recolectados no reciben destructor. Sin espacio tras una recolección el
+cartucho muestra "OUT OF MEMORY (gc heap full)" y se detiene. Un entero que parece una
+dirección del montón mantiene vivo un bloque muerto; un puntero oculto al recolector
+(con XOR, o una posición más allá del final de su bloque) no mantiene nada vivo; la
+memoria de \fBmalloc\fP directo no se gestiona. Los mapas de punteros precisos por clase
+y los finalizadores quedan para el futuro.
+.B <v32/memory.hpp>
+da
+.BR v32::gc_collect ,
+.BR gc_used ,
+.B gc_free
+y
+.BR gc_collections ;
+las funciones
+.B arena_*
+no existen con
+.BR \-\-alloc=gc ,
+ni las
+.B gc_*
+con
+.BR \-\-alloc=arena .
+Incluirlo sin ninguna de las dos opciones es un error de compilación.
 .SH ARCHIVOS
 .TP
 .I *.cpp
@@ -1644,20 +1779,15 @@ Repositorio del proyecto:
 .I https://github.com/wedge1020/v32cxx
 .SH ERRORES
 .B goto
-no interactúa correctamente con los destructores: saltar hacia dentro o hacia fuera
-de un ámbito que contiene una variable local viva de tipo clase no invoca el
-destructor de esa variable como ya hacen correctamente
-.BR break / continue / return
-\(em todavía no hay un paso equivalente para
-.BR goto .
-Un
+fuera de un ámbito destruye los objetos de clase (y sus arreglos) que están vivos
+allí y no en la etiqueta, el último construido primero, antes de saltar. Un
+.B goto
+que saltaría por encima de la declaración de un objeto con destructor (hacia
+delante en un bloque, o hacia dentro de un bloque) es un error, como en C++. Un
 .B goto
 a una etiqueta que no existe no lo informa
 .B v32c++
-(lo informa el compilador de Vircon32). Mantén
-.B goto
-en ámbitos planos, sin variables locales destructibles de por medio, hasta que esto se
-aborde.
+(lo informa el compilador de Vircon32).
 .PP
 .B const
 solo se acepta como PREFIJO delante de un tipo
@@ -1674,16 +1804,6 @@ generado \(em incluido, para una función miembro const, el tipo del propio par�
 .I this
 generado \(em dejando las infracciones reales para que las detecte el compilador de C/C++
 posterior.
-.PP
-El
-.B new
-de arreglos no construye cada elemento y
-.B delete[]
-no destruye ninguno;
-.B delete[]
-a través de un puntero base a un arreglo de una clase derivada es indefinido. Los
-arreglos multidimensionales de objetos se construyen pero no se destruyen al salir del
-ámbito.
 .PP
 El ensamblador de Vircon32 rechaza una cadena que contenga códigos de control (del 1 al 8,
 11, 12, 14 a 31 y 127, que incluyen los caracteres de dibujo de recuadros de la fuente de

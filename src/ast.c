@@ -539,11 +539,29 @@ static void collect_classes(AstList *decls, ClassList *out) {
     }
 }
 
-static AstNode *class_named(const ClassList *all, const char *name) {
-    if (name == NULL) return NULL;
+/* The typedefs of the program (`typedef Counter C;`), filled by
+ * desugar_unnamed_objects (collect_scalar_names): a class is also known by
+ * the names that are typedefs of it. */
+static AstList g_scalar_typedefs;
+
+static AstNode *class_named_depth(const ClassList *all, const char *name, int depth) {
+    if (name == NULL || depth > 16) return NULL;
     for (int i = 0; i < all->count; i++)
         if (strcmp(all->items[i]->str1, name) == 0) return all->items[i];
+    for (int i = 0; i < g_scalar_typedefs.count; i++) {
+        const AstNode *td = g_scalar_typedefs.items[i];
+        if (strcmp(td->str1, name) != 0) continue;
+        const AstNode *t = td->type;
+        while (t != NULL && t->kind == AST_CONST_TYPE) t = t->a;
+        if (t != NULL && t->kind == AST_IDENT && t->str1 != NULL && strcmp(t->str1, name) != 0)
+            return class_named_depth(all, t->str1, depth + 1);
+    }
     return NULL;
+}
+
+/* the class `name` stands for: a class's own name, or a typedef of it */
+static AstNode *class_named(const ClassList *all, const char *name) {
+    return class_named_depth(all, name, 0);
 }
 
 static int is_func(const AstNode *m) {
@@ -583,15 +601,17 @@ static int class_has_virtuals(const ClassList *all, const AstNode *c) {
     return 0;
 }
 
-/* The class of a by-value member, or of the elements of a one-dimensional
- * member ARRAY (`Counter items[3];`) -- the same members constructor
+/* The class of a by-value member, or of the elements of a member ARRAY of
+ * any number of dimensions (`Counter items[3]`, `Counter grid[2][2]`) -- the same members constructor
  * injection handles -- or NULL. Not a pointer or reference. */
 static AstNode *member_value_class(const ClassList *all, const AstNode *m) {
     if (m == NULL || m->kind != AST_VAR_DECL || m->type == NULL) return NULL;
     const AstNode *t = m->type;
     while (t != NULL && t->kind == AST_CONST_TYPE) t = t->a;
-    if (t != NULL && t->kind == AST_ARRAY_TYPE) t = t->a;
-    while (t != NULL && t->kind == AST_CONST_TYPE) t = t->a;
+    while (t != NULL && t->kind == AST_ARRAY_TYPE) {
+        t = t->a;
+        while (t != NULL && t->kind == AST_CONST_TYPE) t = t->a;
+    }
     if (t == NULL || t->kind != AST_IDENT) return NULL;
     return class_named(all, t->str1);
 }
@@ -793,7 +813,7 @@ static void keep_array_elements(AstNode *list, int depth, int ndims, AstNode *cl
             else lift_objects_expr(slot, all, prefix);
             continue;
         }
-        int own = is_unnamed_object(item) && strcmp(item->str1, cls->str1) == 0;
+        int own = is_unnamed_object(item) && class_named(all, item->str1) == cls;
         int braced = item->kind == AST_INIT_LIST && class_declares_ctor(cls);
         if (!own && !braced) {
             lift_objects_expr(slot, all, prefix);
@@ -829,8 +849,9 @@ static void elide_copy_from_object(AstNode *decl, const ClassList *all, AstList 
     if (decl->kind != AST_VAR_DECL || !is_unnamed_object(decl->a)) return;
     const AstNode *t = decl->type;
     while (t != NULL && t->kind == AST_CONST_TYPE) t = t->a;
-    if (t == NULL || t->kind != AST_IDENT || strcmp(t->str1, decl->a->str1) != 0) return;
-    if (class_named(all, decl->a->str1) == NULL) return;
+    if (t == NULL || t->kind != AST_IDENT) return;
+    AstNode *cls = class_named(all, decl->a->str1);
+    if (cls == NULL || class_named(all, t->str1) != cls) return; /* `C x = C(1);` and `Counter x = C(1);` */
     AstNode *obj = decl->a;
     for (int i = 0; i < obj->list.count; i++) lift_objects_expr(&obj->list.items[i], all, prefix);
     decl->a = object_initializer(obj);
@@ -845,7 +866,6 @@ static void elide_copy_from_object(AstNode *decl, const ClassList *all, AstList 
 /* Enum names and typedefs, for `Color c{RED}` / `score_t s{4}`: both are
  * scalars too. Filled by desugar_unnamed_objects before the rewrite runs. */
 static AstList g_scalar_names_enums;
-static AstList g_scalar_typedefs;
 
 static void collect_scalar_names(const AstList *decls) {
     for (int i = 0; i < decls->count; i++) {
@@ -1025,6 +1045,39 @@ static void report_leftover_objects(const AstNode *n) {
     for (int i = 0; i < n->list.count; i++) report_leftover_objects(n->list.items[i]);
 }
 
+static AstNode *g_obj_class = NULL; /* the class whose body desugar_objects_decls is in */
+
+/* `Holder() : m{ {1}, Counter(2) } {}` -- a constructor's initializer for an
+ * array member of class type: the elements become in-place constructor calls,
+ * exactly as for `Counter m[2] = {...}` (the member's own list is handled in
+ * desugar_objects_decls). Any other entry is left alone. */
+static void desugar_member_init_arrays(AstNode *func, const ClassList *all) {
+    const AstNode *owner = g_obj_class;
+    if (func->b != NULL) { /* defined out of line: `Holder::Holder() : ...` */
+        const AstNode *q = func->b;
+        const char *name = q->kind == AST_IDENT ? q->str1
+                         : (q->list.count > 0 ? q->list.items[q->list.count - 1]->str1 : NULL);
+        owner = class_named(all, name);
+    }
+    if (owner == NULL) return;
+    for (int i = 0; i < func->c->list.count; i++) {
+        AstNode *entry = func->c->list.items[i];
+        const AstNode *field = NULL;
+        for (int j = 0; j < owner->list.count; j++) {
+            const AstNode *m = owner->list.items[j];
+            if (m != NULL && m->kind == AST_VAR_DECL && m->str1 != NULL && strcmp(m->str1, entry->str1) == 0) field = m;
+        }
+        int ndims = 0;
+        AstNode *cls = field != NULL ? array_object_class(field->type, all, &ndims) : NULL;
+        if (cls == NULL || !class_declares_ctor(cls)) continue;
+        AstList none = ast_list_new();
+        keep_array_elements(entry, 0, ndims, cls, all, &none);
+        if (none.count > 0)
+            obj_error(entry, "an unnamed object nested in an array member's initializer is not supported: "
+                             "write the elements as `Counter(args)` or `{args}`");
+    }
+}
+
 static void desugar_objects_decls(AstList *decls, const ClassList *all) {
     for (int i = 0; i < decls->count; i++) {
         AstNode *n = decls->items[i];
@@ -1032,11 +1085,14 @@ static void desugar_objects_decls(AstList *decls, const ClassList *all) {
         int errors_before = g_obj_errors;
         if (n->kind == AST_NAMESPACE_DECL || n->kind == AST_CLASS_DECL) {
             int was_in_class = g_obj_in_class;
-            if (n->kind == AST_CLASS_DECL) g_obj_in_class = 1;
+            AstNode *was_class = g_obj_class;
+            if (n->kind == AST_CLASS_DECL) { g_obj_in_class = 1; g_obj_class = n; }
             desugar_objects_decls(&n->list, all);
             g_obj_in_class = was_in_class;
+            g_obj_class = was_class;
         } else if (n->kind == AST_FUNC_DEF) {
             g_obj_counter = 0;
+            if (n->c != NULL) desugar_member_init_arrays(n, all);
             desugar_objects_slot(&n->a, all);
         } else if (n->kind == AST_VAR_DECL || n->kind == AST_VAR_DECL_GROUP) {
             /* file scope: only the `T g = T(args);` form has anywhere to go */
@@ -1054,17 +1110,19 @@ static void desugar_objects_decls(AstList *decls, const ClassList *all) {
                 AstNode *cls = (n->a != NULL && n->a->kind == AST_INIT_LIST)
                                    ? array_object_class(n->type, all, &ndims) : NULL;
                 if (cls != NULL && g_obj_in_class) {
-                    /* the brace list used to be dropped without a word, the elements
-                     * left to the default constructor */
-                    if (class_declares_ctor(cls))
-                        obj_error(n, "an initializer for an array member of class type is not "
-                                     "supported: construct the elements in the constructor");
+                    /* `Counter m[2] = { {1}, Counter(2) };` as a member: the elements
+                     * become in-place constructor calls, run by every constructor that
+                     * does not name the member (apply_default_member_initializers) */
+                    if (class_declares_ctor(cls)) keep_array_elements(n->a, 0, ndims, cls, all, &none);
                 } else if (cls != NULL) {
                     keep_array_elements(n->a, 0, ndims, cls, all, &none);
                 }
                 if (none.count > 0)
-                    obj_error(n, "an unnamed object nested in a file-scope initializer is not supported: "
-                                 "declare it as a variable");
+                    obj_error(n, g_obj_in_class
+                                 ? "an unnamed object nested in an array member's initializer is not supported: "
+                                   "write the elements as `Counter(args)` or `{args}`"
+                                 : "an unnamed object nested in a file-scope initializer is not supported: "
+                                   "declare it as a variable");
             }
         }
         if (g_obj_errors == errors_before) report_leftover_objects(n);
@@ -1112,8 +1170,11 @@ AstNode *ast_clone_expr(const AstNode *n) {
  * constructor of the class (in-class or defined outside it), and a class
  * with no constructor at all gets one.
  *
- * Simple values only -- the initializer is an expression assigned with
- * `=`; a brace list (an array member's `= {1, 2, 3}`) is left alone.
+ * The initializer is an expression assigned with `=`. A brace list on an array
+ * of objects whose class has a constructor (`Counter m[2] = { {1}, Counter(2) };`)
+ * becomes an entry of the constructor's own initializer list instead (the
+ * elements are built in place, see add_array_member_init); any other brace
+ * list (a plain C array member's `= {1, 2, 3}`) is left alone.
  */
 static int ctor_initializes(const AstNode *ctor, const char *member) {
     if (ctor->c == NULL) return 0;
@@ -1122,12 +1183,29 @@ static int ctor_initializes(const AstNode *ctor, const char *member) {
     return 0;
 }
 
+/* An array member of class type with a brace list (`Counter m[2] = {{1}, {2}};`):
+ * not an assignment but a constructor-initializer entry, `: m{...}`, which
+ * lower.c turns into one constructor call per element (phase 8-pre / 7). */
+static void add_array_member_init(AstNode *ctor, const AstNode *f) {
+    AstNode *entry = ast_new(AST_MEMBER_INIT, f->line);
+    entry->file = f->file;
+    entry->str1 = strdup(f->str1);
+    AstNode *items = ast_clone_expr(f->a);
+    entry->list = items->list;
+    if (ctor->c == NULL) {
+        ctor->c = ast_new(AST_MEMBER_INIT_LIST, f->line);
+        ctor->c->file = f->file;
+    }
+    ast_list_append(&ctor->c->list, entry);
+}
+
 static void prepend_member_defaults(AstNode *ctor, const AstList *fields) {
     if (ctor->a == NULL || ctor->a->kind != AST_BLOCK) return;
     AstList body = ast_list_new();
     for (int i = 0; i < fields->count; i++) {
         AstNode *f = fields->items[i];
         if (ctor_initializes(ctor, f->str1)) continue;
+        if (f->a->kind == AST_INIT_LIST) { add_array_member_init(ctor, f); continue; }
         AstNode *assign = ast_new(AST_ASSIGN, f->line);
         assign->file = f->file;
         assign->str1 = strdup("=");
@@ -1174,7 +1252,15 @@ void apply_default_member_initializers(AstList *decls) {
         for (int j = 0; j < c->list.count; j++) {
             AstNode *m = c->list.items[j];
             if (m == NULL || m->kind != AST_VAR_DECL || m->a == NULL) continue;
-            if (m->a->kind == AST_INIT_LIST || m->a->kind == AST_DIRECT_INIT) continue;
+            if (m->a->kind == AST_INIT_LIST) {
+                /* only an array of objects whose class has a constructor: the rest of the
+                 * brace lists are C aggregates, left alone */
+                int nd = 0;
+                AstNode *ec = array_object_class(m->type, &all, &nd);
+                if (ec == NULL || !class_declares_ctor(ec)) continue;
+            } else if (m->a->kind == AST_DIRECT_INIT) {
+                continue;
+            }
             ast_list_append(&fields, m);
         }
         if (fields.count == 0) continue;

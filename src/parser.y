@@ -3841,6 +3841,23 @@ member_init:
             $$->str1 = strdup($1);
             $$->list = $3;
         }
+    | IDENTIFIER braced_init
+        {
+            /* `: m{ {1}, {2} }` / `: x{5}` -- the C++11 braced form. The items
+             * are the argument list of the parenthesized form (for an array
+             * member of class type, the brace list of its elements: a
+             * nested `{1}` stays an AST_INIT_LIST until ast.c turns it into
+             * an element constructor call). */
+            $$ = ast_new(AST_MEMBER_INIT, @1.first_line);
+            $$->str1 = strdup($1);
+            $$->list = $2->list;
+        }
+    | TYPE_NAME braced_init
+        {
+            $$ = ast_new(AST_MEMBER_INIT, @1.first_line);
+            $$->str1 = strdup($1);
+            $$->list = $2->list;
+        }
     | TYPE_NAME '(' opt_arg_list ')'
         {
             /* A registered class name -- the base-class-delegation case

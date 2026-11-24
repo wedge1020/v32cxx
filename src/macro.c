@@ -21,6 +21,8 @@
 #include <ctype.h>
 #include <stdint.h>
 #include "macro.h"
+extern int g_alloc_arena;   /* --alloc=arena (main.c) */
+extern int g_alloc_gc;      /* --alloc=gc (main.c) */
 #include "config.h"
 
 /* ---- growable text buffer ---------------------------------------------- */
@@ -260,6 +262,22 @@ static void ensure_builtins(void) {
     m->file = "<built-in>";
     m->is_builtin = 1;
     table_add(m);
+    if (g_alloc_arena) {   /* <v32/memory.hpp> checks this */
+        m = calloc(1, sizeof(Macro));
+        m->name = strdup("__V32_ARENA__");
+        m->body = strdup("1");
+        m->file = "<built-in>";
+        m->is_builtin = 1;
+        table_add(m);
+    }
+    if (g_alloc_gc) {      /* <v32/memory.hpp> checks this */
+        m = calloc(1, sizeof(Macro));
+        m->name = strdup("__V32_GC__");
+        m->body = strdup("1");
+        m->file = "<built-in>";
+        m->is_builtin = 1;
+        table_add(m);
+    }
     /* NULL is a keyword of Vircon32 C, not a macro from some header, so
      * portable C's `#ifndef NULL / #define NULL 0 / #endif` would otherwise
      * take its fallback -- and that #define, passed through to the

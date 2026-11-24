@@ -906,6 +906,57 @@ static int header_seen_by_other_tu(const char *canonical, const char *path) {
     return 0;
 }
 
+/* ---- cart hints: one name, one resource ------------------------------------
+ *
+ * `#texture NAME "file.png"` / `#sound NAME "file.wav"` (recognized by the
+ * lexer, which numbers them in the order they come) each become
+ * `#define NAME id` in the generated C and an entry of the XML. Two hints with
+ * the same name -- two textures, two sounds, or a texture and a sound -- would
+ * define the name twice, and the later one would silently win. The lexer keeps
+ * no line numbers for them, so this is checked here, where the directive and
+ * its position are at hand: the same lines the lexer will accept (`#texture`
+ * written without a space, name, quoted file), in the active regions only. */
+typedef struct { char *name; const char *kind; const char *file; int line; } SeenHint;
+static SeenHint *g_seen_hints = NULL;
+static int g_seen_hint_count = 0, g_seen_hint_cap = 0;
+
+static int check_cart_hint_name(const char *line, const char *path, int lineno) {
+    const char *p = line;
+    while (*p == ' ' || *p == '\t') p++;
+    const char *kind = NULL;
+    if (strncmp(p, "#texture", 8) == 0) { kind = "texture"; p += 8; }
+    else if (strncmp(p, "#sound", 6) == 0) { kind = "sound"; p += 6; }
+    else return 0;
+    if (*p != ' ' && *p != '\t') return 0;
+    while (*p == ' ' || *p == '\t') p++;
+    const char *start = p;
+    if (!((*p >= 'A' && *p <= 'Z') || (*p >= 'a' && *p <= 'z') || *p == '_')) return 0;
+    while ((*p >= 'A' && *p <= 'Z') || (*p >= 'a' && *p <= 'z') || (*p >= '0' && *p <= '9') || *p == '_') p++;
+    size_t len = (size_t)(p - start);
+    if (*p != ' ' && *p != '\t') return 0;
+    while (*p == ' ' || *p == '\t') p++;
+    if (*p != '"') return 0;               /* not a hint the lexer takes: it passes through */
+    for (int i = 0; i < g_seen_hint_count; i++) {
+        SeenHint *h = &g_seen_hints[i];
+        if (strlen(h->name) != len || strncmp(h->name, start, len) != 0) continue;
+        fprintf(stderr, "%s:%d: error: the cart hint name '%.*s' is already used: #%s here, and #%s at %s:%d "
+                        "(each name becomes a `#define`, so the later one would silently replace the "
+                        "earlier one -- give them different names)\n",
+                path, lineno, (int)len, start, kind, h->kind, h->file, h->line);
+        return -1;
+    }
+    if (g_seen_hint_count == g_seen_hint_cap) {
+        g_seen_hint_cap = g_seen_hint_cap ? g_seen_hint_cap * 2 : 16;
+        g_seen_hints = realloc(g_seen_hints, sizeof(SeenHint) * (size_t)g_seen_hint_cap);
+    }
+    g_seen_hints[g_seen_hint_count].name = strndup(start, len);
+    g_seen_hints[g_seen_hint_count].kind = kind;
+    g_seen_hints[g_seen_hint_count].file = path;
+    g_seen_hints[g_seen_hint_count].line = lineno;
+    g_seen_hint_count++;
+    return 0;
+}
+
 static int expand_file_mode(const char *path, FILE *out,
                             char *const *dirs, int ndirs, int is_top, int harvest) {
     FILE *in = (strcmp(path, BUILTIN_STRING_PATH) == 0) ? open_builtin_string()
@@ -1282,6 +1333,7 @@ static int expand_file_mode(const char *path, FILE *out,
             /* #texture / #sound / #title / #titleopt / #version cart hints (lexer.l
              * recognizes those), and anything else: verbatim, as always. */
             consumed = 0;
+            if (!harvest && check_cart_hint_name(line, path, lineno) != 0) rc = -1;
         }
 
         if (harvest) {
