@@ -1,62 +1,35 @@
-# Prerequisites
-*.d
+# Build outputs of v32c++ (see `make clean`)
+/bin/*
+/obj/*
+/out/
+/put/*
+/build/
+/src/parser.output
+/counterexamples.txt
+/realcheck.txt
+# NOTE: src/parser.c, src/lexer.c and inc/parser.h are generated but committed
+# on purpose (the build works without flex/bison); do not ignore them.
 
-# Object files
-*.o
-*.ko
-*.obj
-*.elf
+# Left behind by `make realcheck` / older tooling (`make clean` removes them)
+/tools/vircon32/bin/
+/tools/vircon32/ComputerSoftware/
+/tests/Make.sh
+/tests/Make.bat
 
-# Linker output
-*.ilk
-*.map
-*.exp
+# Demo build outputs (demos/*/*/Makefile `clean`); the .wav/.png sources stay tracked
+/demos/**/bin/*
+/demos/**/obj/*
+/demos/c/spyvsspy/sounds/m_t*.wav
+/demos/**/*.v32
+/demos/**/*.vbin
+/demos/**/*.vtex
+/demos/**/*.vsnd
 
-# Precompiled Headers
-*.gch
-*.pch
+# Release archives and patches (`make archive` writes ../v32cxx-project-YYYYMMDD.zip)
+*.zip
+*.patch
 
-# Libraries
-*.lib
-*.a
-*.la
-*.lo
-
-# Shared objects (inc. Windows DLLs)
-*.dll
-*.so
-*.so.*
-*.dylib
-
-# Executables
-*.exe
-*.out
-*.app
-*.i*86
-*.x86_64
-*.hex
-
-# Debug files
-*.dSYM/
-*.su
-*.idb
-*.pdb
-
-# Kernel Module Compile Results
-*.mod*
-*.cmd
-.tmp_versions/
-modules.order
-Module.symvers
-Mkfile.old
-dkms.conf
-
-# debug information files
-*.dwo
-
-# v32cxx ignores
-bin/*
-obj/*
-out/*
-*.o
-*.txt
+# Editor / OS litter
+.DS_Store
+*~
+*.swp

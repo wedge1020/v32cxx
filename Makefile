@@ -31,7 +31,7 @@ FLEX    = flex
 # \t in brackets, no `date +%-d` (the day's leading zero is cut by sed).
 VERSION := $(shell sed -n 's/^\#define[[:space:]]*VERSION[[:space:]]*"\(.*\)".*/\1/p' $(INC_DIR)/v32cxx.h)
 # The date part (YYYYMMDD) of VERSION names the project archive: `make archive` writes
-# ../v32cxx-project-YYYYMMDD.zip ("20261124-dev" -> ../v32cxx-project-20261124.zip)
+# ../v32cxx-project-YYYYMMDD.zip ("20261126-dev" -> ../v32cxx-project-20261126.zip)
 ARCHDATE := $(shell echo '$(VERSION)' | sed 's/^\([0-9]\{8\}\).*/\1/')
 MANDATE := $(shell LC_ALL=C date +"%B %d, %Y" | sed 's/ 0\([1-9]\),/ \1,/')
 # The same date in the translated pages' .TH line (man/es, man/fr): month
@@ -795,9 +795,16 @@ test: all | $(OUT_DIR)
 	grep -q '^int g__a__E(a__E x);' out/200program.c
 	grep -q '^int g__b__E(b__E x);' out/200program.c
 	sh tests/std_run.sh $(BIN) 200sample
-	$(TBIN)  -vvv    -o out/201program.c tests/201sample.cpp 1> out/201sample.txt 2>&1
-	! grep -q '^[a-z_]* \*\? *malloc_first_block;\|^[a-z_]* \*\? *malloc_start_address;' out/201program.c
-	grep -q 'malloc_first_block == NULL' out/201program.c
+	@# 201 reads the real SDK's misc.h: $$V32CXX_SDK_INCLUDE, the toolchain build-tools.sh made, or an installed
+	@# DevTools; with none of them it is skipped (like 98), not failed.
+	@sdk=$${V32CXX_SDK_INCLUDE:-}; \
+	if [ -z "$$sdk" ] && [ -f tools/vircon32/bin/include/misc.h ]; then sdk=tools/vircon32/bin/include; fi; \
+	if [ -n "$$sdk" ] || [ -f /usr/local/Vircon32/DevTools/include/misc.h ]; then \
+	    echo "$(TBIN) -vvv -o out/201program.c tests/201sample.cpp"; \
+	    env $${sdk:+V32CXX_SDK_INCLUDE=$$sdk} $(TBIN) -vvv -o out/201program.c tests/201sample.cpp 1> out/201sample.txt 2>&1 && \
+	    ! grep -q '^[a-z_]* \*\? *malloc_first_block;\|^[a-z_]* \*\? *malloc_start_address;' out/201program.c && \
+	    grep -q 'malloc_first_block == NULL' out/201program.c || exit 1; \
+	else echo "skipping sample 201: needs the SDK headers (set V32CXX_SDK_INCLUDE, or run tools/vircon32/build-tools.sh)"; fi
 	V32CXX_SDK_INCLUDE=tests/sdkstub $(TBIN) -vvv -o out/201stub.c tests/201stub.cpp 1> out/201stub.txt 2>&1
 	! grep -q '^int .*sdk_\|^int \*sdk_' out/201stub.c
 	grep -q 'sdk_tick_count + sdk_table\[1\]' out/201stub.c
@@ -1143,8 +1150,9 @@ put: clean
 	@cp src/parser.y  put/parser.y.txt
 
 archive: clean
-	zip -r ../v32cxx-project-$(ARCHDATE).zip * .github \
-	    -x 'tools/vircon32/bin/*' 'tools/vircon32/ComputerSoftware/*' 'build/*' 'out/*'
+	zip -r ../v32cxx-project-$(ARCHDATE).zip * .github .gitignore \
+	    -x 'tools/vircon32/bin/*' 'tools/vircon32/ComputerSoftware/*' 'build/*' 'out/*' \
+	       'obj/*' 'bin/*' 'put/*' 'realcheck.txt' 'counterexamples.txt' '*.zip' '*.patch' '*.DS_Store'
 # out/* too: `clean` only removes the files directly in out/, not the directories a
 # `make test` leaves there (out/146, out/147...), and none of it belongs in the archive
 # -r matters: without it, `demos/*` stores only the demos/c and demos/cxx

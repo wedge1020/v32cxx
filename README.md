@@ -21,7 +21,7 @@ everything Vircon32's own C dialect does differently.
 > **Status: functional.** The whole  pipeline — preprocessing, parsing,
 > semantic analysis,  lowering and code  generation — works end  to end
 > and is  checked against the  **real** Vircon32 compiler,  assembler and
-> console (`make  realcheck`: 240  programs compiled  and assembled,  171 of
+> console (`make  realcheck`: 241  programs compiled  and assembled,  172 of
 > them self-checking  at run time  on a headless console).  Five sizeable
 > demos (three C++ games, a port of Rogue and a plain-C Spy vs Spy) build
 > with it. See [Known
@@ -635,8 +635,8 @@ shim `SDL_GetBasePath`, no `sed -i`).
 the compiler it uses, **refuses a `bin/` without `BUILD-INFO`** -- one built by an
 older `build-tools.sh` -- telling you to rebuild it, and warns when
 the ComputerSoftware checkout has moved since the build. Today it compiles and
-assembles 240 programs (4 are not packed: their `#texture`/`#sound` assets are not in
-`tests/`) and runs 171 self-checking cartridges, among them the `--alloc=arena` and
+assembles 241 programs (4 are not packed: their `#texture`/`#sound` assets are not in
+`tests/`) and runs 172 self-checking cartridges, among them the `--alloc=arena` and
 `--alloc=gc` builds listed in `tests/real_variants.txt` (`name source flags`: add a
 sample's variants there when it allocates). `tools/prune-release.sh [--apply]` is the
 release cleaner: a dry run by default, it lists (and with `--apply` removes, with

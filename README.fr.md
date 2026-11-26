@@ -22,8 +22,8 @@ différemment.
 > **État : fonctionnel.** Toute la chaîne — prétraitement, analyse syntaxique,
 > analyse sémantique, abaissement (*lowering*) et génération de code —
 > fonctionne de bout en bout et est vérifiée avec le compilateur, l'assembleur
-> et la console **réels** de Vircon32 (`make realcheck` : 240 programmes
-> compilés et assemblés, dont 171 s'auto-vérifient à l'exécution sur une
+> et la console **réels** de Vircon32 (`make realcheck` : 241 programmes
+> compilés et assemblés, dont 172 s'auto-vérifient à l'exécution sur une
 > console sans écran). Cinq démos d'une certaine taille (trois jeux en C++, un
 > portage de Rogue et un Spy vs Spy en C pur) se construisent avec lui. Voir les [Limitations
 > connues](#limitations-connues) pour un tableau honnête de ce qui manque.
@@ -668,8 +668,8 @@ un répertoire temporaire et s'arrête avec son message s'il ne trouve pas les e
 `make realcheck` après `make test`) affiche le compilateur utilisé, **refuse un `bin/` sans
 `BUILD-INFO`** (construit par un ancien `build-tools.sh`) en demandant
 de le reconstruire, et avertit si la copie de ComputerSoftware a avancé depuis la construction.
-Il compile et assemble aujourd'hui 240 programmes (4 ne sont pas empaquetés : leurs ressources
-`#texture`/`#sound` ne sont pas dans `tests/`) et lance 171 cartouches auto-vérifiantes, dont les
+Il compile et assemble aujourd'hui 241 programmes (4 ne sont pas empaquetés : leurs ressources
+`#texture`/`#sound` ne sont pas dans `tests/`) et lance 172 cartouches auto-vérifiantes, dont les
 constructions `--alloc=arena` et `--alloc=gc` de `tests/real_variants.txt` (`nom source options` :
 ajoutez-y les variantes d'un échantillon qui alloue). `tools/prune-release.sh [--apply]` est le
 nettoyeur de publication : par défaut une simulation, il liste (et avec `--apply` supprime, par

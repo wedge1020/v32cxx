@@ -10,7 +10,7 @@
 - **Vircon32 API wrappers.** `<v32/video.hpp>` and friends add typed enums, overloads and RAII scope guards on top of the real C functions, plus **keyboard and mouse** support through v32io (needs a v32io device).
 - **Output you can read and debug.** `-vv` explains the generated C as it goes, `-g` writes a C-line to C++-line map, and `--target=standard` emits portable C.
 - **Documented.** Manual pages for the tool and every header, and the README and reference documents in English, Spanish and French.
-- **Checked against the real thing.** `make realcheck` runs the output of 128 test programs through the official Vircon32 compiler and assembler, and boots 59 self-checking programs on a headless console.
+- **Checked against the real thing.** `make realcheck` runs the output of more than 240 test programs through the official Vircon32 compiler and assembler, and boots more than 170 self-checking cartridges on a headless console (the opt-in `--alloc=arena` and `--alloc=gc` variants included).
 - **Demos.** A Tempest-style tube shooter, Space Invaders++, a Star Raiders-style game, Spy vs Spy in plain C, Rogue, and keyboard and mouse examples.
 
 ## Downloads

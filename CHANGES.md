@@ -1,5 +1,18 @@
 # v32c++ changes
 
+## 20261126-dev
+
+Release prep; no change to the transpiler's output.
+
+- `make test` skips sample 201 (it reads the real SDK's `misc.h`) when no SDK headers can be found, as it already did
+  for sample 98, instead of failing: it runs with `$V32CXX_SDK_INCLUDE`, the toolchain `tools/vircon32/build-tools.sh`
+  builds, or an installed DevTools. Checked with the ComputerSoftware sources beside the project: `make realcheck`
+  compiles and assembles 241 programs (0 failed) and all 172 self-checking cartridges pass in v32sim.
+
+- New top-level `.gitignore`: `bin/`, `obj/`, `out/`, `put/`, `realcheck.txt`, `counterexamples.txt`, the toolchain `make realcheck` builds in `tools/vircon32/`, demo build products, `*.zip` and `*.patch`. The committed generated `src/parser.c`, `src/lexer.c` and `inc/parser.h` are not ignored.
+- `make archive` now includes `.gitignore` and leaves out `bin/`, `obj/`, `put/`, `realcheck.txt`, `counterexamples.txt`, `*.zip` and `*.patch` (the name still comes from the date of `VERSION`).
+- `make version VERSION=20261126-dev` re-stamped `inc/v32cxx.h` and every manual page (English, Spanish, French); `.github/release-notes.md` has current test counts.
+
 ## 20261124-dev
 
 Every feature below has a self-checking sample that passes on the machine (`make realcheck`: 241 programs compiled and

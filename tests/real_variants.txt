@@ -1,0 +1,73 @@
+# Arena / gc builds of the self-checking samples that allocate (new, delete, std::vector), built for the REAL
+# machine by tools/vircon32/check.sh: compiled with the stock compiler and run in v32sim (many of them are also
+# std_run as standard C by `make test`). Not here on purpose: 169sample (defines the SDK's get_cycle_counter, which
+# the allocator runtime's misc.h declares) and 181sample's gc build (it calls arena_* functions).
+#   output-name   source (tests/NAME.cpp or .c)   v32c++ flags...
+# The output is out/<output-name>program.{c,v32}; each source must declare `int test_errors`.
+179arena   179sample --alloc=arena
+179gc     179sample --alloc=gc --heap-words=16384
+182nothr   182sample --alloc=gc --heap-words=16384 -DGC_NO_THRESHOLD --gc-threshold=100000000
+184arena   184sample --alloc=arena
+184gc     184sample --alloc=gc --heap-words=16384
+185nothr   185sample --alloc=gc --heap-words=16384 -DGC_NO_THRESHOLD --gc-threshold=100000000
+186gc      186gc --alloc=gc --heap-words=16384
+187arena   187sample --alloc=arena
+187gc     187sample --alloc=gc --heap-words=16384
+188arena   188sample --alloc=arena
+188gc     188sample --alloc=gc --heap-words=16384
+189arena   189sample --alloc=arena
+189gc     189sample --alloc=gc --heap-words=16384
+190arena   190sample --alloc=arena
+190gc     190sample --alloc=gc --heap-words=16384
+192arena   192sample --alloc=arena
+192gc     192sample --alloc=gc --heap-words=16384
+193arena   193sample --alloc=arena
+193gc     193sample --alloc=gc --heap-words=16384
+194arena   194sample --alloc=arena
+194gc     194sample --alloc=gc --heap-words=16384
+195arena  195sample --alloc=arena
+195gc    195sample --alloc=gc --heap-words=16384
+196arena  196sample --alloc=arena
+196gc     196sample --alloc=gc --heap-words=16384
+197arena  197sample --alloc=arena
+197gc     197sample --alloc=gc --heap-words=16384
+198arena  198sample --alloc=arena
+198gc     198sample --alloc=gc --heap-words=16384
+199arena  199sample --alloc=arena
+199gc     199sample --alloc=gc --heap-words=16384
+102arena  102sample --alloc=arena
+102gc     102sample --alloc=gc --heap-words=16384
+105arena  105sample --alloc=arena
+105gc     105sample --alloc=gc --heap-words=16384
+108arena  108sample --alloc=arena
+108gc     108sample --alloc=gc --heap-words=16384
+110arena  110sample --alloc=arena
+110gc     110sample --alloc=gc --heap-words=16384
+111arena  111sample --alloc=arena
+111gc     111sample --alloc=gc --heap-words=16384
+112arena  112sample --alloc=arena
+112gc     112sample --alloc=gc --heap-words=16384
+114arena  114sample --alloc=arena
+114gc     114sample --alloc=gc --heap-words=16384
+115arena  115sample --alloc=arena
+115gc     115sample --alloc=gc --heap-words=16384
+116arena  116sample --alloc=arena
+116gc     116sample --alloc=gc --heap-words=16384
+117arena  117sample --alloc=arena
+117gc     117sample --alloc=gc --heap-words=16384
+125arena  125sample --alloc=arena
+125gc     125sample --alloc=gc --heap-words=16384
+176arena  176sample --alloc=arena
+176gc     176sample --alloc=gc --heap-words=16384
+183arena  183sample --alloc=arena
+183gc     183sample --alloc=gc --heap-words=16384
+202arena  202sample --alloc=arena
+202gc     202sample --alloc=gc --heap-words=16384
+206arena  206sample --alloc=arena
+206gc     206sample --alloc=gc --heap-words=16384
+169arena  169sample --alloc=arena --yield-points=10
+169gc     169sample --alloc=gc --heap-words=16384 --yield-points=10
+210arena  210sample --alloc=arena
+210gc     210sample --alloc=gc --heap-words=16384
+212arena  212sample --alloc=arena
+212gc     212sample --alloc=gc --heap-words=16384

@@ -21,8 +21,8 @@ dialecto de C de Vircon32 hace de forma distinta.
 > **Estado: funcional.** Toda la canalización — preprocesamiento, análisis
 > sintáctico, análisis semántico, bajada (*lowering*) y generación de código —
 > funciona de principio a fin y se comprueba con el compilador, el ensamblador y
-> la consola **reales** de Vircon32 (`make realcheck`: 240 programas compilados
-> y ensamblados, 171 de ellos con autocomprobación en tiempo de ejecución en una
+> la consola **reales** de Vircon32 (`make realcheck`: 241 programas compilados
+> y ensamblados, 172 de ellos con autocomprobación en tiempo de ejecución en una
 > consola sin pantalla). Con él se construyen cinco demos de buen tamaño (tres
 > juegos en C++, un port de Rogue y un Spy vs Spy en C puro). Consulta las [Limitaciones
 > conocidas](#limitaciones-conocidas) para ver con honestidad lo que falta.
@@ -662,8 +662,8 @@ macOS toda la comprobación necesita un v32sim con las correcciones de macOS: `S
 `make realcheck` tras `make test`) muestra el compilador que usa, **rechaza un `bin/` sin
 `BUILD-INFO`** (construido por un `build-tools.sh` antiguo) y pide
 reconstruirlo, y avisa si la copia de ComputerSoftware ha avanzado desde la construcción. Hoy
-compila y ensambla 240 programas (4 no se empaquetan: sus recursos `#texture`/`#sound` no están
-en `tests/`) y ejecuta 171 cartuchos con autocomprobación, entre ellos las construcciones
+compila y ensambla 241 programas (4 no se empaquetan: sus recursos `#texture`/`#sound` no están
+en `tests/`) y ejecuta 172 cartuchos con autocomprobación, entre ellos las construcciones
 `--alloc=arena` y `--alloc=gc` de `tests/real_variants.txt` (`nombre fuente opciones`: añade allí
 las variantes de una muestra que reserve memoria). `tools/prune-release.sh [--apply]` es el
 limpiador de versiones: por omisión solo simula; lista (y con `--apply` elimina, con `git rm`
